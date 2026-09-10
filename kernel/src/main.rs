@@ -6,6 +6,12 @@ use core::arch::asm;
 use limine::BaseRevision;
 use limine::request::{FramebufferRequest, RequestsEndMarker, RequestsStartMarker};
 
+use crate::graphics::write_pixel;
+use crate::memory::{
+    stress_test_heap, test_frame_allocator, test_get_request_memory_map,
+    test_get_request_memory_map_usable, test_heap_allocator,
+};
+
 /// Sets the base revision to the latest revision supported by the crate.
 /// See specification for further info.
 /// Be sure to mark all limine requests with #[used], otherwise they may be removed by the compiler.
@@ -25,6 +31,20 @@ static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 #[used]
 #[unsafe(link_section = ".requests_end_marker")]
 static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
+
+mod apic;
+mod gdt;
+mod graphics;
+mod idt;
+mod interrupt;
+mod io;
+mod memory;
+mod rsdp;
+mod terminal;
+
+extern crate alloc;
+
+use alloc::boxed::Box;
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kmain() -> ! {
@@ -50,12 +70,32 @@ unsafe extern "C" fn kmain() -> ! {
             }
         }
     }
+    asm!("cli");
 
+    gdt::load_gdt();
+    println!("GDT LOADED");
+    idt::load_idt();
+    println!("IDT LOADED");
+    println!("TES RSDP");
+    rsdp::test_rsdp();
+    apic::disable_pic();
+    apic::LAPIC.call_once(|| apic::init_lapic());
+    let ioapic = apic::init_ioapic();
+
+    asm!("sti");
+    memory::init();
+    test_heap_allocator();
+    stress_test_heap();
+    //write_pixel((0, 0), (500, 500), (255, 255, 0));
+    println!("halo {}", "andra");
+    println!("halo {}", "andra");
+    println!("halo {}", "andra");
     hcf();
 }
 
 #[panic_handler]
 fn rust_panic(_info: &core::panic::PanicInfo) -> ! {
+    print!("\n{:#?}\n", _info);
     hcf();
 }
 

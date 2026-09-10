@@ -39,8 +39,11 @@ run-hdd-x86_64: edk2-ovmf $(IMAGE_NAME).hdd
 		-M q35 \
 		-drive if=pflash,unit=0,format=raw,file=edk2-ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-hda $(IMAGE_NAME).hdd \
+		-no-reboot \
+        -no-shutdown \
+        -d int,cpu_reset \
+        -D qemu.log \
 		$(QEMUFLAGS)
-
 .PHONY: run-aarch64
 run-aarch64: edk2-ovmf $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
@@ -194,27 +197,30 @@ endif
 $(IMAGE_NAME).hdd: limine/limine kernel
 	rm -f $(IMAGE_NAME).hdd
 	dd if=/dev/zero bs=1M count=0 seek=64 of=$(IMAGE_NAME).hdd
-	sgdisk $(IMAGE_NAME).hdd -n 1:2048 -t 1:ef00
+	#sgdisk $(IMAGE_NAME).hdd -n 1:2048 -t 1:ef00
+	sgdisk $(IMAGE_NAME).hdd \
+    -n 1:2048:4095 -t 1:ef02 \
+    -n 2:4096:0    -t 2:ef00
 ifeq ($(KARCH),x86_64)
 	./limine/limine bios-install $(IMAGE_NAME).hdd
 endif
-	mformat -i $(IMAGE_NAME).hdd@@1M
-	mmd -i $(IMAGE_NAME).hdd@@1M ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
-	mcopy -i $(IMAGE_NAME).hdd@@1M kernel/bin-$(KARCH)/kernel ::/boot
-	mcopy -i $(IMAGE_NAME).hdd@@1M limine.conf ::/boot/limine
+	mformat -i $(IMAGE_NAME).hdd@@2M
+	mmd -i $(IMAGE_NAME).hdd@@2M ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
+	mcopy -i $(IMAGE_NAME).hdd@@2M kernel/kernel ::/boot
+	mcopy -i $(IMAGE_NAME).hdd@@2M limine.conf ::/boot/limine
 ifeq ($(KARCH),x86_64)
-	mcopy -i $(IMAGE_NAME).hdd@@1M limine/limine-bios.sys ::/boot/limine
-	mcopy -i $(IMAGE_NAME).hdd@@1M limine/BOOTX64.EFI ::/EFI/BOOT
-	mcopy -i $(IMAGE_NAME).hdd@@1M limine/BOOTIA32.EFI ::/EFI/BOOT
+	mcopy -i $(IMAGE_NAME).hdd@@2M limine/limine-bios.sys ::/boot/limine
+	mcopy -i $(IMAGE_NAME).hdd@@2M limine/BOOTX64.EFI ::/EFI/BOOT
+	mcopy -i $(IMAGE_NAME).hdd@@2M limine/BOOTIA32.EFI ::/EFI/BOOT
 endif
 ifeq ($(KARCH),aarch64)
 	mcopy -i $(IMAGE_NAME).hdd@@1M limine/BOOTAA64.EFI ::/EFI/BOOT
 endif
 ifeq ($(KARCH),riscv64)
-	mcopy -i $(IMAGE_NAME).hdd@@1M limine/BOOTRISCV64.EFI ::/EFI/BOOT
+	mcopy -i $(IMAGE_NAME).hdd@@2M limine/BOOTRISCV64.EFI ::/EFI/BOOT
 endif
 ifeq ($(KARCH),loongarch64)
-	mcopy -i $(IMAGE_NAME).hdd@@1M limine/BOOTLOONGARCH64.EFI ::/EFI/BOOT
+	mcopy -i $(IMAGE_NAME).hdd@@2M limine/BOOTLOONGARCH64.EFI ::/EFI/BOOT
 endif
 
 .PHONY: clean

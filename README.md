@@ -1,4 +1,4 @@
-# Limine Rust Template
+# OCTAGRAM-OS
 
 This repository will demonstrate how to set up a basic kernel in Rust using Limine.
 
@@ -31,4 +31,3 @@ Running `make run` will build the kernel and a bootable ISO (equivalent to make 
 Running `make run-hdd` will build the kernel and a raw HDD image (equivalent to make all-hdd) and then run it using `qemu` (if installed).
 
 The `run-uefi` and `run-hdd-uefi` targets are equivalent to their non `-uefi` counterparts except that they boot `qemu` using a UEFI-compatible firmware.
-# OCTAGRAM-OS

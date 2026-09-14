@@ -43,6 +43,9 @@ run-hdd-x86_64: edk2-ovmf $(IMAGE_NAME).hdd
         -no-shutdown \
         -d int,cpu_reset \
         -D qemu.log \
+        -monitor stdio \
+        -device qemu-xhci,id=xhci \
+        -device usb-kbd,bus=xhci.0 \
 		$(QEMUFLAGS)
 .PHONY: run-aarch64
 run-aarch64: edk2-ovmf $(IMAGE_NAME).iso

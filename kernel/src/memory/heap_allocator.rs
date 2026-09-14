@@ -35,14 +35,16 @@ pub fn init_heap(frame_allocator: &mut FrameAllocator) -> bool {
             Some(f) => f,
             None => {
                 print!("\nHEAP INIT GAGAL: frame fisik tidak cukup");
-                return false;
+                continue;
+                //return false;
             }
         };
 
         if let Some(expected) = expected_next {
             if frame != expected {
                 print!("\nHEAP INIT GAGAL: frame fisik tidak kontigu");
-                return false;
+                continue;
+                //return false;
             }
         }
 

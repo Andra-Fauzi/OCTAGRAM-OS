@@ -136,6 +136,7 @@ impl IoApic {
 }
 
 pub unsafe fn init_ioapic() -> IoApic {
+    // physical nya harusnya diambil dari ACPI RSDP tapi pake ini aja dulu
     let phys_base = 0xFEC00000u64;
     let virt_base = unsafe { map_mmio_page(phys_base) };
     let ioapic = IoApic { base: virt_base };

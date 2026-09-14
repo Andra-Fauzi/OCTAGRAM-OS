@@ -35,7 +35,7 @@ pub struct InterruptFrame {
 
 use core::arch::naked_asm;
 
-use crate::apic;
+use crate::{apic, keyboard_usb};
 
 macro_rules! interrupt_stub {
     ($name:ident, $vector:expr, no_error_code) => {
@@ -111,12 +111,27 @@ unsafe extern "C" fn stub_common() -> ! {
 #[unsafe(no_mangle)]
 extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) {
     let frame = unsafe { &*frame };
-    crate::println!(
-        "Interrupt vector={} error_code={:#x} rip={:#x}",
-        frame.vector,
-        frame.error_code,
-        frame.stack_frame.instruction_pointer
-    );
+    match frame.vector {
+        44 => {
+            if let Some(xhci_mutex) = crate::xhci::XHCI_INSTANCE.get() {
+                let mut xhci = xhci_mutex.lock();
+                unsafe {
+                    xhci.poll_event_ring();
+                }
+            }
+            unsafe {
+                keyboard_usb::poll_keyboard();
+            }
+        }
+        _ => {
+            crate::println!(
+                "Interrupt vector={} error_code={:#x} rip={:#x}",
+                frame.vector,
+                frame.error_code,
+                frame.stack_frame.instruction_pointer
+            )
+        }
+    }
     if frame.vector >= 32 {
         unsafe {
             if let Some(lapic) = apic::LAPIC.get() {
@@ -135,3 +150,13 @@ interrupt_stub!(breakpoint_stub, 3, no_error_code);
 interrupt_stub!(double_fault_stub, 8, has_error_code);
 interrupt_stub!(general_protection_fault_stub, 13, has_error_code);
 interrupt_stub!(page_fault_stub, 14, has_error_code);
+
+use seq_macro::seq;
+
+// stub generic buat semua vector yang belum di-handle spesifik.
+// nama fungsinya: irq33, irq34, ..., irq254
+seq!(N in 33..255 {
+    interrupt_stub!(irq~N, N, no_error_code);
+});
+
+interrupt_stub!(xhci_irq_stub, 44, no_error_code);

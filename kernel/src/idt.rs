@@ -1,7 +1,9 @@
+use crate::interrupt::{self, xhci_irq_stub};
 use crate::interrupt::{
     divide_error_stub, double_fault_stub, general_protection_fault_stub, page_fault_stub,
 };
 use core::arch::asm;
+use seq_macro::seq;
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -55,7 +57,10 @@ pub unsafe fn load_idt() {
     IDT[13] = IdtEntry::new(general_protection_fault_stub as u64, 0x08);
     IDT[14] = IdtEntry::new(page_fault_stub as u64, 0x08);
     // ... isi vector lain
-
+    seq!(N in 33..255 {
+        IDT[N] = IdtEntry::new(interrupt::irq~N as u64, 0x08);
+    });
+    IDT[44] = IdtEntry::new(xhci_irq_stub as u64, 0x08);
     let descriptor = IdtDescriptor {
         limit: (core::mem::size_of::<IdtEntry>() * 256 - 1) as u16,
         base: core::ptr::addr_of!(IDT) as u64,

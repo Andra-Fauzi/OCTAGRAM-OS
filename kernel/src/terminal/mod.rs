@@ -36,6 +36,26 @@ macro_rules! println {
     }};
 }
 
+/// Geser seluruh isi framebuffer ke atas sebanyak `line_height` baris pixel,
+/// lalu bersihkan (hitamkan) baris paling bawah yang baru kosong.
+/// Ini yang bikin efek "scroll" pas teks sampai baris terakhir layar.
+unsafe fn scroll_framebuffer(addr: *mut u8, pitch: u64, height: u64, line_height: u64) {
+    unsafe {
+        let pitch = pitch as usize;
+        let height = height as usize;
+        let line_height = line_height as usize;
+
+        let scroll_bytes = pitch * line_height;
+        let total_bytes = pitch * height;
+
+        // Geser semua baris ke atas: baris ke-N jadi baris ke-(N - line_height)
+        core::ptr::copy(addr.add(scroll_bytes), addr, total_bytes - scroll_bytes);
+
+        // Bersihkan baris-baris paling bawah yang sekarang "duplikat" dari sebelumnya
+        core::ptr::write_bytes(addr.add(total_bytes - scroll_bytes), 0, scroll_bytes);
+    }
+}
+
 pub fn terminal_clear() {
     if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
         if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
@@ -59,6 +79,15 @@ pub fn terminal_print(string: &str) {
                     unsafe {
                         POSITION_Y += 16;
                         POSITION_X = 0;
+                        if POSITION_Y + 16 > framebuffer.height() {
+                            scroll_framebuffer(
+                                framebuffer.addr(),
+                                framebuffer.pitch(),
+                                framebuffer.height(),
+                                16,
+                            );
+                            POSITION_Y -= 16;
+                        }
                     }
                     continue;
                 }
@@ -66,11 +95,15 @@ pub fn terminal_print(string: &str) {
                     if POSITION_X + 16 > framebuffer.width() {
                         POSITION_Y += 16;
                         POSITION_X = 0;
-                    }
-                    if POSITION_Y + 16 > framebuffer.height() {
-                        POSITION_Y = 0;
-                        POSITION_X = 0;
-                        terminal_clear();
+                        if POSITION_Y + 16 > framebuffer.height() {
+                            scroll_framebuffer(
+                                framebuffer.addr(),
+                                framebuffer.pitch(),
+                                framebuffer.height(),
+                                16,
+                            );
+                            POSITION_Y -= 16;
+                        }
                     }
                 }
                 let index = char as usize;

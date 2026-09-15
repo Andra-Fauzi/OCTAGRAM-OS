@@ -1,11 +1,15 @@
+//! Driver transport xHCI (USB 3.x host controller): setup MMIO/MSI-X,
+//! reset & init controller (DCBAA, Command Ring, Event Ring), device
+//! enumeration (enable slot, address device, get descriptor), sampai
+//! configure endpoint. Device-class driver (mis. HID keyboard di
+//! `keyboard_usb.rs`) dibangun di atas primitif-primitif di sini.
+
+use crate::usb::keyboard_usb::{KBD_DCI, KBD_REPORT_LEN, KBD_REPORT_PENDING, KBD_SLOT_ID};
+use crate::usb::mouse_usb::{MOUSE_DCI, MOUSE_REPORT_LEN, MOUSE_REPORT_PENDING, MOUSE_SLOT_ID};
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 use spin::Once;
-
-pub static KBD_DCI: AtomicU32 = AtomicU32::new(0);
-pub static KBD_REPORT_PENDING: AtomicBool = AtomicBool::new(false);
-pub static KBD_REPORT_LEN: AtomicU32 = AtomicU32::new(0);
 
 pub static COMPLETION_PENDING: AtomicBool = AtomicBool::new(false);
 pub static COMPLETION_CODE: AtomicU32 = AtomicU32::new(0);
@@ -14,6 +18,17 @@ pub static COMPLETION_SLOT: AtomicU32 = AtomicU32::new(0);
 pub static TRANSFER_COMPLETION_PENDING: AtomicBool = AtomicBool::new(false);
 pub static TRANSFER_COMPLETION_CODE: AtomicU32 = AtomicU32::new(0);
 pub static TRANSFER_COMPLETION_LENGTH: AtomicU32 = AtomicU32::new(0);
+
+// Di-set oleh `poll_event_ring` tiap kali ada Port Status Change Event
+// (trb_type 34) -- artinya SATU ATAU LEBIH port berubah status (connect
+// ATAU disconnect, event ini tidak bilang yang mana). Sengaja tidak
+// langsung diproses di sini: proses hotplug (enable_slot/address_device/
+// disable_slot) butuh cli/sti + spin-wait command completion, yang
+// butuh interrupt vector 44 bisa nembak LAGI -- itu tidak akan terjadi
+// selama kita masih di DALAM ISR vector 44 sekarang (EOI belum dikirim).
+// Makanya flag ini cuma dibaca dari luar ISR, lihat `usb::poll_hotplug`
+// yang dipanggil dari idle loop (`hcf`) di main.rs.
+pub static PORT_CHANGE_PENDING: AtomicBool = AtomicBool::new(false);
 
 pub static XHCI_INSTANCE: Once<Mutex<XHCI>> = Once::new();
 
@@ -47,6 +62,9 @@ impl XhciCapRegs {
         unsafe { (self.base.add(0x10) as *const u32).read_volatile() }
     }
 
+    /// Belum dipanggil di alur init sekarang -- berguna kalau nanti
+    /// mau validasi asumsi 32-bit addressing sebelum setup DMA.
+    #[allow(dead_code)]
     pub unsafe fn supports_64bit(&self) -> bool {
         unsafe { self.hccparams1() & 0x1 == 1 } // bit 0 = AC64
     }
@@ -59,6 +77,9 @@ impl XhciCapRegs {
         unsafe { (self.base.add(0x14) as *const u32).read_unaligned() & !0x3 }
     }
 
+    /// Belum dipakai -- kode sekarang mengasumsikan context size 32-byte;
+    /// cek ini dulu kalau mau dukung context 64-byte.
+    #[allow(dead_code)]
     pub unsafe fn context_size_64(&self) -> bool {
         unsafe { self.hccparams1() >> 2 & 0x1 == 1 }
     }
@@ -127,11 +148,6 @@ pub struct XHCI {
     ep0_ring_phys: u64,
     ep0_enqueue_index: usize,
     ep0_cycle_state: bool,
-    kbd_ring_virt: u64,
-    kbd_ring_phys: u64,
-    kbd_enqueue_index: usize,
-    kbd_cycle_state: bool,
-    kbd_dci: u8,
 }
 
 impl XHCI {
@@ -169,11 +185,6 @@ impl XHCI {
                 ep0_ring_phys: 0,
                 ep0_enqueue_index: 0,
                 ep0_cycle_state: true,
-                kbd_ring_phys: 0,
-                kbd_ring_virt: 0,
-                kbd_enqueue_index: 0,
-                kbd_cycle_state: true,
-                kbd_dci: 0,
             }
         }
     }
@@ -256,6 +267,11 @@ impl XHCI {
                 34 => {
                     let port_id = (trb.parameter >> 24) & 0xFF;
                     println!("EVENT: Port Status Change on port {}", port_id);
+                    // Jangan proses hotplug langsung di sini (lihat komentar
+                    // di deklarasi PORT_CHANGE_PENDING) -- cukup kasih tanda,
+                    // idle loop yang nanti diff & proses port mana yang
+                    // connect/disconnect.
+                    PORT_CHANGE_PENDING.store(true, Ordering::SeqCst);
                 }
                 33 => {
                     let completion_code = (trb.status >> 24) & 0xFF;
@@ -272,11 +288,29 @@ impl XHCI {
                     let completion_code = (trb.status >> 24) & 0xFF;
                     let residual_length = trb.status & 0xFF_FFFF; // bit 0-23
                     let endpoint_id = (trb.control >> 16) & 0x1F;
+                    let event_slot_id = (trb.control >> 24) & 0xFF; // sama posisi bit dengan Command Completion (trb_type 33)
 
                     let kbd_dci = KBD_DCI.load(Ordering::SeqCst);
-                    if kbd_dci != 0 && endpoint_id == kbd_dci {
+                    let kbd_slot = KBD_SLOT_ID.load(Ordering::SeqCst);
+                    let mouse_dci = MOUSE_DCI.load(Ordering::SeqCst);
+                    let mouse_slot = MOUSE_SLOT_ID.load(Ordering::SeqCst);
+
+                    // PENTING: DCI itu index LOKAL per-slot (dihitung dari
+                    // endpoint address device), BUKAN id unik global --
+                    // keyboard & mouse boot protocol sering sama-sama pakai
+                    // endpoint 0x81 sehingga DCI-nya kebetulan sama. Kalau
+                    // cuma dicocokkan lewat DCI doang, event dari slot mouse
+                    // bisa salah kebaca sebagai event keyboard (atau
+                    // sebaliknya). Makanya slot_id WAJIB ikut dicocokkan.
+                    if kbd_dci != 0 && event_slot_id == kbd_slot && endpoint_id == kbd_dci {
                         KBD_REPORT_LEN.store(residual_length, Ordering::SeqCst);
                         KBD_REPORT_PENDING.store(true, Ordering::SeqCst);
+                    } else if mouse_dci != 0
+                        && event_slot_id == mouse_slot
+                        && endpoint_id == mouse_dci
+                    {
+                        MOUSE_REPORT_LEN.store(residual_length, Ordering::SeqCst);
+                        MOUSE_REPORT_PENDING.store(true, Ordering::SeqCst);
                     } else {
                         println!(
                             "EVENT: Transfer Event, code={} residual={}",
@@ -304,6 +338,15 @@ impl XHCI {
         }
     }
 
+    // CATATAN (bukan compiler warning, tapi ketemu pas review): `last_completion`
+    // di struct XHCI cuma pernah di-set ke `None` di seluruh file ini --
+    // tidak ada tempat yang menyetelnya ke `Some(...)`. Artinya loop di
+    // bawah akan SELALU timeout, bukan langsung dapat completion. Command
+    // completion sesungguhnya ditangani lewat `COMPLETION_PENDING` +
+    // `COMPLETION_CODE`/`COMPLETION_SLOT` (lihat `enable_slot()` dan
+    // `address_device()`), jadi kemungkinan besar fungsi ini memang belum
+    // dipakai di alur sekarang -- perlu dicek lagi sebelum dipanggil.
+    #[allow(dead_code)]
     pub unsafe fn send_command_and_wait(
         &mut self,
         parameter: u64,
@@ -395,31 +438,10 @@ impl XHCI {
         }
     }
 
-    pub unsafe fn kbd_enqueue_trb(&mut self, parameter: u64, status: u32, control_no_cycle: u32) {
-        unsafe {
-            let trbs = self.kbd_ring_virt as *mut Trb;
-            let control = control_no_cycle | (self.kbd_cycle_state as u32);
-            trbs.add(self.kbd_enqueue_index).write_volatile(Trb {
-                parameter,
-                status,
-                control,
-            });
-            self.kbd_enqueue_index += 1;
-            if self.kbd_enqueue_index >= CONTROL_RING_SIZE - 1 {
-                self.kbd_enqueue_index = 0;
-                self.kbd_cycle_state = !self.kbd_cycle_state;
-            }
-        }
-    }
-
-    pub unsafe fn submit_keyboard_report(&mut self, slot_id: u32, buf_phys: u64, len: u32) {
-        unsafe {
-            let control = (TRB_TYPE_NORMAL << 10) | (1 << 5);
-            self.kbd_enqueue_trb(buf_phys, len & 0x1FFF, control);
-            self.ring_doorbell(slot_id as u8, self.kbd_dci as u32);
-        }
-    }
-
+    /// Enqueue satu TRB Normal ke ring endpoint mana pun lalu ring doorbell-nya.
+    /// Generic untuk semua endpoint interrupt IN (keyboard, mouse, atau HID lain) --
+    /// state ring (enqueue_index, cycle_state) dimiliki oleh device-class driver
+    /// masing-masing (lihat `keyboard_usb.rs` / `mouse_usb.rs`), bukan oleh XHCI.
     pub unsafe fn enqueue_normal_trb_and_ring(
         &self,
         ring_virt: u64,
@@ -502,6 +524,9 @@ impl CommandRing {
     }
 }
 
+/// Helper debug manual -- panggil sendiri dari `kmain` kalau perlu
+/// cetak info cap register xHCI, tidak dipanggil otomatis.
+#[allow(dead_code)]
 pub fn test_xhci(xhci: &XHCI) {
     let xhci_cap_regs = XhciCapRegs {
         base: xhci.virt_base as *const u8,
@@ -635,6 +660,9 @@ impl EventRingSegment {
     }
 }
 
+// Layout memori ERST entry sesuai spec xHCI -- field ditulis buat
+// dibaca controller lewat DMA, bukan lewat kode Rust.
+#[allow(dead_code)]
 #[repr(C, align(64))]
 struct ErstEntry {
     ring_segment_base: u64, // physical address segment harus 64 byte aligned
@@ -782,6 +810,66 @@ pub unsafe fn enable_slot() -> Result<u32, &'static str> {
     }
 }
 
+/// Lawan dari `enable_slot()` -- dipanggil waktu device dicabut (hotplug
+/// disconnect). Ngirim Disable Slot command lalu, kalau sukses, bersihin
+/// entry DCBAA milik slot itu (supaya controller/software lain tidak
+/// nganggep slot ini masih valid).
+///
+/// CATATAN (belum ditangani): device context, input context, dan
+/// transfer ring yang dulu dialokasikan buat slot ini (di
+/// `address_device`/`configure_endpoint`) sengaja TIDAK di-`Box::from_raw`
+/// balik di sini -- physical/virtual address-nya sudah tidak disimpan
+/// di mana pun setelah fungsi-fungsi itu return (cuma dikirim ke
+/// controller lewat DMA). Artinya tiap disconnect+reconnect sekarang
+/// masih leak memory sebesar device context + input context + EP0 ring
+/// per device. Cukup aman buat sekarang (heap kernel ini masih longgar),
+/// tapi kalau nanti butuh hotplug berulang kali dalam jumlah besar,
+/// `address_device`/`configure_endpoint` perlu direvisi supaya nyimpen
+/// alamat itu (mis. di `XHCI` struct per-slot) biar bisa dibebaskan di
+/// sini.
+pub unsafe fn disable_slot(slot_id: u32) -> Result<(), &'static str> {
+    COMPLETION_PENDING.store(false, Ordering::SeqCst);
+
+    unsafe {
+        core::arch::asm!("cli");
+        {
+            let mut guard = XHCI_INSTANCE.get().unwrap().lock();
+            guard.send_command(0, 0, TRB_TYPE_DISABLE_SLOT, slot_id);
+        }
+        core::arch::asm!("sti");
+    }
+
+    let mut timeout = 10_000_000;
+    loop {
+        if COMPLETION_PENDING.load(Ordering::SeqCst) {
+            let code = COMPLETION_CODE.load(Ordering::SeqCst);
+            if code != 1 {
+                return Err("Disable Slot gagal, completion code bukan Success");
+            }
+            break;
+        }
+        timeout -= 1;
+        if timeout == 0 {
+            return Err("Timeout menunggu Disable Slot completion");
+        }
+    }
+
+    unsafe {
+        let dcbaa_virt = XHCI_INSTANCE.get().unwrap().lock().dcbaa_virt;
+        (dcbaa_virt as *mut u64)
+            .add(slot_id as usize)
+            .write_volatile(0);
+    }
+
+    println!("Disable Slot sukses untuk slot {}", slot_id);
+    Ok(())
+}
+
+// Context struct di bawah ini adalah layout memori yang dibaca xHCI
+// controller lewat DMA (Slot/Endpoint/Input Context) -- field-nya
+// ditulis dari Rust tapi "dibaca" oleh hardware, bukan oleh kode Rust,
+// jadi banyak yang kena dead_code kalau tidak di-allow.
+#[allow(dead_code)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SlotContext {
@@ -792,6 +880,7 @@ struct SlotContext {
     reserved: [u32; 4],
 }
 
+#[allow(dead_code)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct EndpointContext {
@@ -803,6 +892,7 @@ struct EndpointContext {
     reserved: [u32; 3],
 }
 
+#[allow(dead_code)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct InputControlContext {
@@ -824,6 +914,7 @@ impl InputContext {
     }
 }
 
+#[allow(dead_code)]
 #[repr(C, align(64))]
 struct DeviceContext {
     slot: SlotContext,
@@ -935,6 +1026,10 @@ const USB_DESC_TYPE_DEVICE: u8 = 0x01;
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, Default)]
+// Sebagian field (bcd_usb, manufacturer_index, dst) belum dibaca kode
+// Rust sekarang, disimpan lengkap sesuai layout spec USB Device
+// Descriptor (18 byte) supaya `read_unaligned()` benar.
+#[allow(dead_code)]
 pub struct DeviceDescriptor {
     pub length: u8,
     pub descriptor_type: u8,
@@ -1099,6 +1194,11 @@ const USB_DESC_TYPE_CONFIGURATION: u8 = 0x02;
 const USB_DESC_TYPE_INTERFACE: u8 = 0x04;
 const USB_DESC_TYPE_ENDPOINT: u8 = 0x05;
 
+/// Info satu endpoint Interrupt IN beserta interface pemiliknya.
+/// Generic untuk endpoint HID apa pun (keyboard, mouse, atau device HID
+/// lain) -- xhci.rs tidak perlu tahu ini "keyboard" atau "mouse", itu
+/// keputusan device-class driver di atasnya lewat `interface_class`/
+/// `interface_protocol`.
 #[derive(Debug, Clone, Copy)]
 pub struct EndpointInfo {
     pub address: u8,
@@ -1106,11 +1206,20 @@ pub struct EndpointInfo {
     pub max_packet_size: u16,
     pub interval: u8,
     pub inteface_number: u8,
+    /// bInterfaceClass (mis. 3 = HID)
+    pub interface_class: u8,
+    /// bInterfaceProtocol (mis. 1 = Boot Keyboard, 2 = Boot Mouse; 0 kalau
+    /// device bukan Boot Protocol / field tidak relevan)
+    pub interface_protocol: u8,
 }
 
-pub unsafe fn get_configuration_descriptor_and_find_interrupt_in(
+/// Ambil Configuration Descriptor lalu kembalikan SEMUA endpoint Interrupt IN
+/// yang ditemukan di semua interface -- bukan cuma yang pertama ketemu.
+/// Caller (device-class driver di main.rs/keyboard_usb.rs/mouse_usb.rs) yang
+/// memilih endpoint mana yang relevan, biasanya lewat `interface_protocol`.
+pub unsafe fn get_configuration_descriptor_and_find_interrupt_endpoints(
     slot_id: u32,
-) -> Result<EndpointInfo, &'static str> {
+) -> Result<alloc::vec::Vec<EndpointInfo>, &'static str> {
     unsafe {
         const BUF_SIZE: usize = 256;
         let buf_box: Box<[u8; BUF_SIZE]> = Box::new([0u8; BUF_SIZE]);
@@ -1136,7 +1245,9 @@ pub unsafe fn get_configuration_descriptor_and_find_interrupt_in(
 
         let mut i = 0usize;
         let mut current_interface: u8 = 0;
-        let mut found: Option<EndpointInfo> = None;
+        let mut current_interface_class: u8 = 0;
+        let mut current_interface_protocol: u8 = 0;
+        let mut found: alloc::vec::Vec<EndpointInfo> = alloc::vec::Vec::new();
 
         while i + 2 <= buf_slice.len() {
             let b_length = buf_slice[i] as usize;
@@ -1148,10 +1259,11 @@ pub unsafe fn get_configuration_descriptor_and_find_interrupt_in(
 
             if b_descriptor_type == USB_DESC_TYPE_INTERFACE {
                 current_interface = buf_slice[i + 2];
-                let interface_class = buf_slice[i + 5];
+                current_interface_class = buf_slice[i + 5];
+                current_interface_protocol = buf_slice[i + 7];
                 println!(
-                    "  Interface {} class={:#04x}",
-                    current_interface, interface_class
+                    "  Interface {} class={:#04x} protocol={:#04x}",
+                    current_interface, current_interface_class, current_interface_protocol
                 );
             } else if b_descriptor_type == USB_DESC_TYPE_ENDPOINT {
                 let address = buf_slice[i + 2];
@@ -1166,23 +1278,31 @@ pub unsafe fn get_configuration_descriptor_and_find_interrupt_in(
 
                 let is_in = address & 0x80 != 0;
                 let is_interrupt = attributes & 0x3 == 0x3;
-                if is_in && is_interrupt && found.is_none() {
-                    found = Some(EndpointInfo {
+                if is_in && is_interrupt {
+                    found.push(EndpointInfo {
                         address,
                         attributes,
                         max_packet_size,
                         interval,
                         inteface_number: current_interface,
+                        interface_class: current_interface_class,
+                        interface_protocol: current_interface_protocol,
                     });
                 }
             }
             i += b_length;
         }
-        found.ok_or("Tidak ketemu Interrupt IN endpoint di Configuration Descriptor")
+
+        if found.is_empty() {
+            Err("Tidak ketemu Interrupt IN endpoint di Configuration Descriptor")
+        } else {
+            Ok(found)
+        }
     }
 }
 
 #[repr(C, align(64))]
+#[allow(dead_code)]
 struct InputContextFull {
     control: InputControlContext,
     slot: SlotContext,
@@ -1248,10 +1368,21 @@ pub unsafe fn control_transfer_no_data(
     }
 }
 
+/// Handle ke endpoint interrupt yang sudah dikonfigurasi: ring TRB miliknya
+/// (virt/phys) plus DCI-nya. Generic untuk endpoint HID apa pun -- device-class
+/// driver (keyboard_usb.rs, mouse_usb.rs, dst) yang menyimpan & memakainya.
+#[derive(Debug, Clone, Copy)]
+pub struct EndpointHandle {
+    pub ring_virt: u64,
+    pub ring_phys: u64,
+    pub dci: u32,
+}
+
 pub unsafe fn configure_endpoint(
     slot_id: u32,
+    root_port: u8,
     ep_info: EndpointInfo,
-) -> Result<KeyboardEndpoint, &'static str> {
+) -> Result<EndpointHandle, &'static str> {
     unsafe {
         let ep_number = (ep_info.address & 0x0F) as u32;
         let is_in = ep_info.address & 0x80 != 0;
@@ -1269,7 +1400,7 @@ pub unsafe fn configure_endpoint(
         input_ctx.control.add_flags = (1 << 0) | (1 << dci);
 
         input_ctx.slot.dword0 = (dci << 27) | (3u32 << 20);
-        input_ctx.slot.dword1 = (5u32) << 16;
+        input_ctx.slot.dword1 = (root_port as u32) << 16;
 
         let idx = (dci - 1) as usize;
         let ep_ctx = &mut input_ctx.endpoints[idx];
@@ -1299,7 +1430,7 @@ pub unsafe fn configure_endpoint(
                 let code = COMPLETION_CODE.load(Ordering::SeqCst);
                 return if code == 1 {
                     println!("Configure Endpoint sukses (DCI={}", dci);
-                    Ok(KeyboardEndpoint {
+                    Ok(EndpointHandle {
                         ring_virt: ep_ring_virt,
                         ring_phys: ep_ring_phys,
                         dci,
@@ -1314,12 +1445,6 @@ pub unsafe fn configure_endpoint(
             }
         }
     }
-}
-
-pub struct KeyboardEndpoint {
-    pub ring_virt: u64,
-    pub ring_phys: u64,
-    pub dci: u32,
 }
 
 const TRB_TYPE_LINK: u32 = 6;

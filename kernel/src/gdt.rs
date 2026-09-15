@@ -1,6 +1,11 @@
-use core::arch::asm;
+//! GDT (Global Descriptor Table) setup untuk mode long (64-bit).
+//!
+//! Modul ini membangun GDT flat minimal (null, code segment ring0,
+//! data segment ring0), lalu memuatnya lewat instruksi `lgdt` dan
+//! melakukan far-return supaya register CS ikut ter-reload ke selector
+//! code segment yang baru.
 
-use crate::println;
+use core::arch::asm;
 
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug)]
@@ -57,29 +62,30 @@ pub unsafe fn load_gdt() {
         base: 0, // Akan diisi sesaat sebelum lgdt dijalankan
     };
 
-    // Isi nilai base address secara dinamis saat runtime sebelum LGDT
-    GDTR.base = core::ptr::addr_of!(GDT) as u64;
+    // Semua operasi di bawah ini menyentuh static mut & inline asm --
+    // wajib eksplisit `unsafe { }` di edisi 2024 (unsafe_op_in_unsafe_fn).
+    unsafe {
+        // Isi nilai base address secara dinamis saat runtime sebelum LGDT
+        GDTR.base = core::ptr::addr_of!(GDT) as u64;
 
-    //println!("GDT : {:#?}", GDT);
-    //println!("GDTR : {:#?}", GDTR);
+        asm!(
+            // Gunakan instruksi 'sym' untuk langsung merujuk ke alamat static GDTR
+            "lgdt [{gdtr_ptr}]",
 
-    asm!(
-        // Gunakan instruksi 'sym' untuk langsung merujuk ke alamat static GDTR
-        "lgdt [{gdtr_ptr}]",
+            // Reload data segmen terlebih dahulu agar aman
+            "mov ax, 0x10",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov ss, ax",
 
-        // Reload data segmen terlebih dahulu agar aman
-        "mov ax, 0x10",
-        "mov ds, ax",
-        "mov es, ax",
-        "mov ss, ax",
-
-        // Gunakan retfq (Far Return) untuk mengubah Code Segment (CS) ke 0x08
-        "push 0x08",
-        "lea rax, [rip + 2f]",
-        "push rax",
-        "retfq",
-        "2:",
-        gdtr_ptr = in(reg) core::ptr::addr_of!(GDTR),
-        out("rax") _,
-    );
+            // Gunakan retfq (Far Return) untuk mengubah Code Segment (CS) ke 0x08
+            "push 0x08",
+            "lea rax, [rip + 2f]",
+            "push rax",
+            "retfq",
+            "2:",
+            gdtr_ptr = in(reg) core::ptr::addr_of!(GDTR),
+            out("rax") _,
+        );
+    }
 }

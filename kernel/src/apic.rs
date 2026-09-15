@@ -1,8 +1,10 @@
-use crate::{
-    io::{inb, outb},
-    memory::paging::map_mmio_page,
-    memory::physical_to_virtual,
-};
+//! Driver Local APIC & I/O APIC, plus disable legacy 8259 PIC.
+//!
+//! Alur pemakaian normal: `disable_pic()` -> `init_lapic()` (isi
+//! `LAPIC` global) -> `init_ioapic()` untuk routing IRQ legacy (mis.
+//! keyboard PS/2 lewat IRQ1) ke vector interrupt yang kita pakai.
+
+use crate::{io::outb, memory::paging::map_mmio_page};
 use spin::Once;
 
 // GLOBAL
@@ -107,6 +109,9 @@ pub struct IoApic {
 }
 
 impl IoApic {
+    /// Belum dipanggil di alur init sekarang (cuma `set_redirect` yang
+    /// dipakai), disimpan untuk kebutuhan baca redirection entry nanti.
+    #[allow(dead_code)]
     unsafe fn read(&self, reg: u32) -> u32 {
         unsafe {
             (self.base as *mut u32).write_volatile(reg);

@@ -1,3 +1,16 @@
+//! Stub interrupt/exception level rendah: naked-asm entry point yang
+//! nyimpen semua general-purpose register, panggil handler Rust biasa
+//! (`common_interrupt_handler`), lalu restore & `iretq`.
+//!
+//! `interrupt_stub!` generate satu fungsi naked per vector; `seq!`
+//! dipakai supaya vector 33..255 (semua IRQ non-exception) tidak perlu
+//! ditulis manual satu-satu.
+
+// Field individual di struct berikut cuma dibaca lewat memory layout
+// (CPU yang isi lewat `push`, kode Rust cuma butuh sebagian field-nya
+// misalnya `instruction_pointer` buat logging) -- bukan dead code yang
+// sengaja tak terpakai.
+#[allow(dead_code)]
 #[repr(C)]
 #[derive(Debug)]
 pub struct InterruptStackFrame {
@@ -8,6 +21,7 @@ pub struct InterruptStackFrame {
     pub stack_segment: u64,
 }
 
+#[allow(dead_code)]
 #[repr(C)]
 pub struct InterruptFrame {
     // register yang kita push manual, urutannya harus cocok dengan urutan push di asm
@@ -35,7 +49,7 @@ pub struct InterruptFrame {
 
 use core::arch::naked_asm;
 
-use crate::{apic, keyboard_usb};
+use crate::{apic, usb::keyboard_usb, usb::mouse_usb};
 
 macro_rules! interrupt_stub {
     ($name:ident, $vector:expr, no_error_code) => {
@@ -113,7 +127,7 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) {
     let frame = unsafe { &*frame };
     match frame.vector {
         44 => {
-            if let Some(xhci_mutex) = crate::xhci::XHCI_INSTANCE.get() {
+            if let Some(xhci_mutex) = crate::usb::xhci::XHCI_INSTANCE.get() {
                 let mut xhci = xhci_mutex.lock();
                 unsafe {
                     xhci.poll_event_ring();
@@ -121,6 +135,7 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) {
             }
             unsafe {
                 keyboard_usb::poll_keyboard();
+                mouse_usb::poll_mouse();
             }
         }
         _ => {
@@ -129,15 +144,14 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) {
                 frame.vector,
                 frame.error_code,
                 frame.stack_frame.instruction_pointer
-            )
+            );
+            loop {}
         }
     }
     if frame.vector >= 32 {
-        unsafe {
-            if let Some(lapic) = apic::LAPIC.get() {
-                unsafe {
-                    lapic.send_eoi();
-                }
+        if let Some(lapic) = apic::LAPIC.get() {
+            unsafe {
+                lapic.send_eoi();
             }
         }
     }

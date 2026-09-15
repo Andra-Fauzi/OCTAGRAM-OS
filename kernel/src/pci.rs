@@ -1,3 +1,7 @@
+//! Akses PCI Configuration Space (mechanism #1, port I/O `0xCF8`/`0xCFC`),
+//! enumerasi bus/device/function, serta helper enable device, baca BAR,
+//! dan cari capability (MSI/MSI-X) buat setup interrupt.
+
 use crate::io::{inl, outl};
 use crate::println;
 
@@ -283,9 +287,13 @@ pub fn find_usb_controllers() -> alloc::vec::Vec<PciDevice> {
 const PCI_STATUS: u8 = 0x06;
 const PCI_CAPABILITIES_PTR: u8 = 0x34;
 
+// Tabel referensi capability ID PCI -- POWER_MGMT & PCIE belum dipakai
+// di kode sekarang, disimpan supaya lengkap sesuai spec.
+#[allow(dead_code)]
 pub const CAP_ID_POWER_MGMT: u8 = 0x01;
 pub const CAP_ID_MSI: u8 = 0x05;
 pub const CAP_ID_MSIX: u8 = 0x11;
+#[allow(dead_code)]
 pub const CAP_ID_PCIE: u8 = 0x10;
 
 /// Cari capability tertentu di linked-list capability PCI device.
@@ -321,6 +329,10 @@ pub unsafe fn find_capability(dev: &PciDevice, cap_id: u8) -> Option<u8> {
     None
 }
 
+/// Legacy MSI (bukan MSI-X). Tidak dipanggil di alur sekarang karena
+/// MSI-X diprioritaskan (lihat `main.rs`), disimpan sebagai fallback
+/// untuk controller yang cuma dukung MSI biasa.
+#[allow(dead_code)]
 pub unsafe fn enable_msi(dev: &PciDevice, vector: u8, apic_id: u8) {
     unsafe {
         if let Some(msi_ptr) = find_capability(dev, 0x05) {
@@ -347,6 +359,9 @@ pub unsafe fn enable_msi(dev: &PciDevice, vector: u8, apic_id: u8) {
     }
 }
 
+// Belum dipakai langsung (xhci.rs::setup_msix nulis raw u32 ke MMIO
+// table), disimpan sebagai dokumentasi layout satu entry tabel MSI-X.
+#[allow(dead_code)]
 #[repr(C)]
 struct MsixTableEntry {
     msg_addr_low: u32,
@@ -355,6 +370,9 @@ struct MsixTableEntry {
     vector_control: u32,
 }
 
+// pba_bar/pba_offset (Pending Bit Array) belum dipakai -- disimpan
+// karena tetap bagian dari layout MSI-X Capability Register.
+#[allow(dead_code)]
 pub struct MsixInfo {
     pub cap_offset: u8,
     pub table_bar: u8,

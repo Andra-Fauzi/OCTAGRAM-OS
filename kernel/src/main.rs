@@ -11,7 +11,6 @@ use crate::memory::{
     stress_test_heap, test_frame_allocator, test_get_request_memory_map,
     test_get_request_memory_map_usable, test_heap_allocator,
 };
-use crate::xhci::{XHCI, XhciOpRegs, init_xhci, scan_ports, test_xhci};
 
 /// Sets the base revision to the latest revision supported by the crate.
 /// See specification for further info.
@@ -39,16 +38,14 @@ mod graphics;
 mod idt;
 mod interrupt;
 mod io;
-mod keyboard_usb;
 mod memory;
 mod pci;
 mod rsdp;
 mod terminal;
-mod xhci;
+mod usb;
+mod vfs;
 
 extern crate alloc;
-
-use alloc::boxed::Box;
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kmain() -> ! {
@@ -91,65 +88,9 @@ unsafe extern "C" fn kmain() -> ! {
     memory::init();
     pci::scan_pci_bus();
 
-    let usb_controllers = pci::find_usb_controllers();
-    for ctrl in &usb_controllers {
-        let kind = match ctrl.prog_if {
-            0x00 => "UHCI",
-            0x10 => "OHCI",
-            0x20 => "EHCI",
-            0x30 => "xHCI",
-            _ => "Unknown",
-        };
-        println!(
-            "USB Controller found: {} at {:02x}:{:02x}.{}",
-            kind, ctrl.bus, ctrl.device, ctrl.function
-        );
-
-        if ctrl.prog_if == 0x30 {
-            // xHCI ditemukan — enable & baca BAR0
-            unsafe {
-                pci::enable_device(ctrl);
-                let bar = pci::get_bar0(ctrl);
-                println!(
-                    "xHCI BAR0: phys={:#x} 64bit={} prefetchable={}",
-                    bar.address, bar.is_64bit, bar.is_prefetchable
-                );
-                // the controller
-                let mut xhci = XHCI::new(bar, ctrl);
-
-                let msix_ok = xhci.setup_msix(ctrl, 44, 0);
-
-                //pci::enable_msi(ctrl, 44, 0);
-                init_xhci(&mut xhci);
-                scan_ports(&xhci);
-                if msix_ok {
-                    xhci::XHCI_INSTANCE.call_once(|| spin::Mutex::new(xhci));
-                    println!("Interrupt-driven mode aktif (MSI-X)");
-
-                    println!("Sending enable slot command...");
-                    let slot_id = xhci::enable_slot().unwrap();
-                    println!("enable_slot returned: {:?}", slot_id);
-                    xhci::address_device(slot_id, 5, 3).unwrap();
-                    xhci::get_device_descriptor(slot_id).unwrap();
-                    let ep_info =
-                        xhci::get_configuration_descriptor_and_find_interrupt_in(slot_id).unwrap();
-                    println!(
-                        "Interrupt IN endpoint ketemu: addr={:#04x} max_packet_size={} interval={}",
-                        ep_info.address, ep_info.max_packet_size, ep_info.interval
-                    );
-                    xhci::control_transfer_no_data(slot_id, 0x00, 0x09, 1, 0).unwrap();
-                    let ep = xhci::configure_endpoint(slot_id, ep_info).unwrap();
-                    println!("Endpoint interrupt siap, device sudah configured!");
-                    keyboard_usb::init_keyboard(slot_id, ep, ep_info.inteface_number);
-                } else {
-                    println!("Fallback ke polling manual...");
-                    loop {
-                        xhci.poll_event_ring();
-                    }
-                }
-            }
-        }
-    }
+    // Cari & setup semua USB host controller (xHCI: init, MSI-X, lalu
+    // enumerasi device HID di atasnya). Lihat `usb.rs`.
+    usb::init_usb_controllers();
 
     hcf();
 }
@@ -169,6 +110,15 @@ fn hcf() -> ! {
             asm!("wfi");
             #[cfg(target_arch = "loongarch64")]
             asm!("idle 0");
+
+            // Dicek SETELAH bangun dari hlt -- di titik ini interrupt vector
+            // 44 (kalau itu yang membangunkan kita) sudah selesai diproses
+            // & EOI-nya sudah terkirim, jadi aman buat jalanin proses
+            // hotplug (yang butuh cli/sti + spin-wait command completion
+            // lewat interrupt vector 44 berikutnya). Lihat komentar di
+            // `usb::poll_hotplug` untuk alasan kenapa ini TIDAK boleh
+            // dipanggil langsung dari dalam ISR.
+            usb::poll_hotplug();
         }
     }
 }

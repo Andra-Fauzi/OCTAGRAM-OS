@@ -1,10 +1,28 @@
+//! Device-class driver untuk HID Boot Keyboard di atas transport xHCI generic
+//! (lihat `xhci.rs`). Modul ini yang "tahu" konsep keyboard -- xhci.rs sendiri
+//! cuma menyediakan primitif transport (ring, control transfer, dst).
+
 use crate::memory;
-use crate::xhci::{self, KeyboardEndpoint, XHCI_INSTANCE};
+use crate::usb::xhci::{self, EndpointHandle, XHCI_INSTANCE};
 use alloc::boxed::Box;
+use core::sync::atomic::{AtomicBool, AtomicU32};
 use spin::Mutex;
 
 const REPORT_LEN: usize = 8;
 const KBD_RING_SIZE: usize = 16; // sama seperti CONTROL_RING_SIZE di xhci.rs
+
+// Statics ini di-import oleh xhci.rs (lihat `poll_event_ring`) supaya interrupt
+// handler tahu Transfer Event yang masuk itu report keyboard atau bukan.
+pub static KBD_DCI: AtomicU32 = AtomicU32::new(0);
+// DCI (Device Context Index) itu index LOKAL per-slot, bukan ID unik
+// global -- device HID lain (mis. mouse) bisa punya DCI yang sama kalau
+// endpoint address-nya kebetulan sama (umum terjadi, keyboard & mouse
+// boot protocol sering sama-sama pakai endpoint 0x81). Makanya slot_id
+// WAJIB ikut dicocokkan di `xhci.rs::poll_event_ring`, tidak cukup DCI
+// doang -- lihat komentar di sana.
+pub static KBD_SLOT_ID: AtomicU32 = AtomicU32::new(0);
+pub static KBD_REPORT_PENDING: AtomicBool = AtomicBool::new(false);
+pub static KBD_REPORT_LEN: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -34,9 +52,9 @@ static KBD_STATE: Mutex<Option<KeyboardState>> = Mutex::new(None);
 const HID_SET_PROTOCOL: u8 = 0x0B;
 const HID_BOOT_PROTOCOL: u16 = 0;
 
-/// Panggil SEKALI, setelah xhci::configure_endpoint() sukses untuk
-/// endpoint interrupt IN milik keyboard.
-pub unsafe fn init_keyboard(slot_id: u32, ep: KeyboardEndpoint, interface_number: u8) {
+/// Panggil SEKALI, setelah `xhci::configure_endpoint()` sukses untuk
+/// endpoint interrupt IN milik keyboard (protocol == 1 dari `EndpointInfo`).
+pub unsafe fn init_keyboard(slot_id: u32, ep: EndpointHandle, interface_number: u8) {
     unsafe {
         // Set Boot Protocol -- bmRequestType=0x21 (Host->Device, Class, Interface)
         let _ = xhci::control_transfer_no_data(
@@ -53,7 +71,8 @@ pub unsafe fn init_keyboard(slot_id: u32, ep: KeyboardEndpoint, interface_number
         let phys = memory::virtual_to_physical(virt as usize)
             .expect("gagal translate report buffer keyboard");
 
-        xhci::KBD_DCI.store(ep.dci, core::sync::atomic::Ordering::SeqCst);
+        KBD_DCI.store(ep.dci, core::sync::atomic::Ordering::SeqCst);
+        KBD_SLOT_ID.store(slot_id, core::sync::atomic::Ordering::SeqCst);
 
         {
             let mut state = KBD_STATE.lock();
@@ -98,10 +117,39 @@ unsafe fn arm_next_report() {
     }
 }
 
+/// Panggil waktu keyboard dicabut (hotplug disconnect). No-op kalau slot
+/// yang dicabut bukan slot milik keyboard yang lagi aktif -- aman
+/// dipanggil dari `usb.rs` tanpa perlu cek dulu driver mana yang punya
+/// slot itu.
+pub unsafe fn shutdown_keyboard(slot_id: u32) {
+    unsafe {
+        let mut state_guard = KBD_STATE.lock();
+
+        let owns_slot = matches!(state_guard.as_ref(), Some(s) if s.slot_id == slot_id);
+        if !owns_slot {
+            return;
+        }
+
+        // Endpoint-nya sudah/segera di-disable di controller lewat
+        // `xhci::disable_slot`, jadi tidak akan ada DMA baru yang nulis
+        // ke buffer report ini -- aman untuk di-drop balik ke allocator
+        // (bukan cuma dibiarkan leak).
+        if let Some(state) = state_guard.take() {
+            let _ = Box::from_raw(state.report_buf_virt as *mut [u8; REPORT_LEN]);
+        }
+
+        KBD_DCI.store(0, core::sync::atomic::Ordering::SeqCst);
+        KBD_SLOT_ID.store(0, core::sync::atomic::Ordering::SeqCst);
+        KBD_REPORT_PENDING.store(false, core::sync::atomic::Ordering::SeqCst);
+
+        crate::println!("Keyboard driver shutdown (slot={})", slot_id);
+    }
+}
+
 /// Panggil dari interrupt handler (vector 44) setiap kali ada event masuk.
 pub unsafe fn poll_keyboard() {
     unsafe {
-        if !xhci::KBD_REPORT_PENDING.swap(false, core::sync::atomic::Ordering::SeqCst) {
+        if !KBD_REPORT_PENDING.swap(false, core::sync::atomic::Ordering::SeqCst) {
             return;
         }
 

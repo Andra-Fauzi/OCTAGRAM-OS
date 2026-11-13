@@ -1,25 +1,114 @@
-use crate::FRAMEBUFFER_REQUEST;
+//! Graphics subsystem: framebuffer singleton dan operasi pixel dasar.
+//!
+//! # Cara pakai
+//! ```ignore
+//! use crate::graphics::{Framebuffer, Color};
+//!
+//! if let Some(fb) = Framebuffer::get() {
+//!     fb.write_pixel(100, 100, Color::WHITE);
+//! }
+//! ```
 
-pub fn write_pixel(from_position: (u64, u64), to_position: (u64, u64), pixel: (u32, u32, u32)) {
-    let (r, g, b) = pixel;
-    if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
-        if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
-            for y in from_position.1..to_position.1 {
-                for x in from_position.0..to_position.0 {
-                    // Calculate the pixel offset using the framebuffer information we obtained above.
-                    // We skip `i` scanlines (pitch is provided in bytes) and add `i * 4` to skip `i` pixels forward.
-                    let pixel_offset = y * framebuffer.pitch() + x * 4;
+pub mod color;
+pub use color::Color;
 
-                    // Write 0xFFFFFFFF to the provided pixel offset to fill it white.
-                    unsafe {
-                        framebuffer
-                            .addr()
-                            .add(pixel_offset as usize)
-                            .cast::<u32>()
-                            .write(r << 16 | g << 8 | b)
-                    };
-                }
+use limine::framebuffer::Framebuffer as LimineFramebuffer;
+use limine::request::FramebufferRequest;
+
+/// Limine request untuk framebuffer — hanya boleh ada satu instance.
+#[used]
+#[unsafe(link_section = ".requests")]
+pub(crate) static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
+
+/// Handle ke framebuffer utama yang dipakai kernel.
+///
+/// Dapatkan instance dengan [`Framebuffer::get()`]. Struct ini hanya
+/// menyimpan referensi; tidak ada ownership transfer.
+pub struct Framebuffer {
+    inner: LimineFramebuffer<'static>,
+}
+
+impl Framebuffer {
+    /// Dapatkan handle ke framebuffer pertama yang dilaporkan Limine.
+    ///
+    /// Mengembalikan `None` kalau Limine tidak menyediakan framebuffer
+    /// (tidak seharusnya terjadi pada hardware/QEMU normal).
+    pub fn get() -> Option<Self> {
+        let resp = FRAMEBUFFER_REQUEST.get_response()?;
+        let fb = resp.framebuffers().next()?;
+        Some(Self { inner: fb })
+    }
+
+    /// Lebar framebuffer dalam pixel.
+    #[inline]
+    pub fn width(&self) -> u64 {
+        self.inner.width()
+    }
+    /// Tinggi framebuffer dalam pixel.
+    #[inline]
+    pub fn height(&self) -> u64 {
+        self.inner.height()
+    }
+    /// Pitch (bytes per scanline).
+    #[inline]
+    pub fn pitch(&self) -> u64 {
+        self.inner.pitch()
+    }
+    /// Pointer ke byte pertama framebuffer (writable).
+    #[inline]
+    pub fn addr(&self) -> *mut u8 {
+        self.inner.addr()
+    }
+
+    /// Tulis satu pixel di koordinat (x, y) dengan warna `color`.
+    ///
+    /// Tidak melakukan bounds check — pastikan x < width dan y < height.
+    ///
+    /// # Safety
+    /// Caller harus memastikan (x, y) berada dalam bounds framebuffer.
+    pub unsafe fn write_pixel_unchecked(&self, x: u64, y: u64, color: Color) {
+        let off = (y * self.pitch() + x * 4) as usize;
+        // Safety: caller menjamin in-bounds.
+        unsafe {
+            (self.addr().add(off) as *mut u32).write_volatile(color.as_u32());
+        }
+    }
+
+    /// Tulis satu pixel di koordinat (x, y). Bounds-checked; no-op kalau di luar.
+    pub fn write_pixel(&self, x: u64, y: u64, color: Color) {
+        if x < self.width() && y < self.height() {
+            // Safety: bounds sudah dicek.
+            unsafe { self.write_pixel_unchecked(x, y, color) };
+        }
+    }
+
+    /// Isi rectangle [x0..x1) x [y0..y1) dengan warna solid.
+    pub fn fill_rect(&self, x0: u64, y0: u64, x1: u64, y1: u64, color: Color) {
+        let x1 = x1.min(self.width());
+        let y1 = y1.min(self.height());
+        for y in y0..y1 {
+            for x in x0..x1 {
+                // Safety: dibatasi oleh min() di atas.
+                unsafe { self.write_pixel_unchecked(x, y, color) };
             }
         }
+    }
+
+    /// Clear seluruh layar dengan warna hitam.
+    pub fn clear(&self) {
+        // Safety: addr valid dan ukurannya pitch * height.
+        unsafe {
+            core::ptr::write_bytes(self.addr(), 0, (self.pitch() * self.height()) as usize);
+        }
+    }
+}
+
+/// Compatibility helper: tulis rectangle pixel dengan API lama.
+/// Dipertahankan sementara untuk transisi; gunakan [`Framebuffer::fill_rect`] langsung.
+#[deprecated(note = "Gunakan Framebuffer::get().fill_rect() langsung")]
+pub fn write_pixel(from: (u64, u64), to: (u64, u64), color: (u32, u32, u32)) {
+    if let Some(fb) = Framebuffer::get() {
+        let c = Color::rgb(color.0 as u8, color.1 as u8, color.2 as u8);
+        fb.fill_rect(from.0, from.1, to.0, to.1, c);
     }
 }

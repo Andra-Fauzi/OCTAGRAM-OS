@@ -4,8 +4,8 @@
 //! configure endpoint. Device-class driver (mis. HID keyboard di
 //! `keyboard_usb.rs`) dibangun di atas primitif-primitif di sini.
 
-use crate::usb::keyboard_usb::{KBD_DCI, KBD_REPORT_LEN, KBD_REPORT_PENDING, KBD_SLOT_ID};
-use crate::usb::mouse_usb::{MOUSE_DCI, MOUSE_REPORT_LEN, MOUSE_REPORT_PENDING, MOUSE_SLOT_ID};
+use super::keyboard_usb::{KBD_DCI, KBD_REPORT_LEN, KBD_REPORT_PENDING, KBD_SLOT_ID};
+use super::mouse_usb::{MOUSE_DCI, MOUSE_REPORT_LEN, MOUSE_REPORT_PENDING, MOUSE_SLOT_ID};
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
@@ -32,7 +32,8 @@ pub static PORT_CHANGE_PENDING: AtomicBool = AtomicBool::new(false);
 
 pub static XHCI_INSTANCE: Once<Mutex<XHCI>> = Once::new();
 
-use crate::{memory, pci, println};
+use super::super::pci;
+use crate::{memory, println};
 
 #[derive(Debug)]
 pub struct XhciCapRegs {
@@ -231,11 +232,11 @@ impl XHCI {
     }
 
     pub unsafe fn op_regs(&self) -> XhciOpRegs {
-        XhciOpRegs {
-            base: self
-                .cap_regs()
-                .base
-                .add(self.cap_regs().cap_length() as usize) as *mut u8,
+        unsafe {
+            let cap = self.cap_regs();
+            XhciOpRegs {
+                base: cap.base.add(cap.cap_length() as usize) as *mut u8,
+            }
         }
     }
 
@@ -253,88 +254,88 @@ impl XHCI {
     pub unsafe fn poll_event_ring(&mut self) {
         unsafe {
             let trbs = self.event_ring_virt as *const Trb;
-            let trb = trbs.add(self.dequeue_index).read_volatile();
-
-            let trb_cycle_bit = (trb.control & 0x1) != 0;
-
-            if trb_cycle_bit != self.cycle_state {
-                return;
-            }
-
-            let trb_type = (trb.control >> 10) & 0x3F;
-
-            match trb_type {
-                34 => {
-                    let port_id = (trb.parameter >> 24) & 0xFF;
-                    println!("EVENT: Port Status Change on port {}", port_id);
-                    // Jangan proses hotplug langsung di sini (lihat komentar
-                    // di deklarasi PORT_CHANGE_PENDING) -- cukup kasih tanda,
-                    // idle loop yang nanti diff & proses port mana yang
-                    // connect/disconnect.
-                    PORT_CHANGE_PENDING.store(true, Ordering::SeqCst);
-                }
-                33 => {
-                    let completion_code = (trb.status >> 24) & 0xFF;
-                    let slot_id = (trb.control >> 24) & 0xFF;
-                    println!(
-                        "EVENT: Command Completion, code={} slot_id={}",
-                        completion_code, slot_id
-                    );
-                    COMPLETION_CODE.store(completion_code, Ordering::SeqCst);
-                    COMPLETION_SLOT.store(slot_id, Ordering::SeqCst);
-                    COMPLETION_PENDING.store(true, Ordering::SeqCst);
-                }
-                32 => {
-                    let completion_code = (trb.status >> 24) & 0xFF;
-                    let residual_length = trb.status & 0xFF_FFFF; // bit 0-23
-                    let endpoint_id = (trb.control >> 16) & 0x1F;
-                    let event_slot_id = (trb.control >> 24) & 0xFF; // sama posisi bit dengan Command Completion (trb_type 33)
-
-                    let kbd_dci = KBD_DCI.load(Ordering::SeqCst);
-                    let kbd_slot = KBD_SLOT_ID.load(Ordering::SeqCst);
-                    let mouse_dci = MOUSE_DCI.load(Ordering::SeqCst);
-                    let mouse_slot = MOUSE_SLOT_ID.load(Ordering::SeqCst);
-
-                    // PENTING: DCI itu index LOKAL per-slot (dihitung dari
-                    // endpoint address device), BUKAN id unik global --
-                    // keyboard & mouse boot protocol sering sama-sama pakai
-                    // endpoint 0x81 sehingga DCI-nya kebetulan sama. Kalau
-                    // cuma dicocokkan lewat DCI doang, event dari slot mouse
-                    // bisa salah kebaca sebagai event keyboard (atau
-                    // sebaliknya). Makanya slot_id WAJIB ikut dicocokkan.
-                    if kbd_dci != 0 && event_slot_id == kbd_slot && endpoint_id == kbd_dci {
-                        KBD_REPORT_LEN.store(residual_length, Ordering::SeqCst);
-                        KBD_REPORT_PENDING.store(true, Ordering::SeqCst);
-                    } else if mouse_dci != 0
-                        && event_slot_id == mouse_slot
-                        && endpoint_id == mouse_dci
-                    {
-                        MOUSE_REPORT_LEN.store(residual_length, Ordering::SeqCst);
-                        MOUSE_REPORT_PENDING.store(true, Ordering::SeqCst);
-                    } else {
-                        println!(
-                            "EVENT: Transfer Event, code={} residual={}",
-                            completion_code, residual_length
-                        );
-                        TRANSFER_COMPLETION_CODE.store(completion_code, Ordering::SeqCst);
-                        TRANSFER_COMPLETION_LENGTH.store(residual_length, Ordering::SeqCst);
-                        TRANSFER_COMPLETION_PENDING.store(true, Ordering::SeqCst);
-                    }
-                }
-                _ => {
-                    println!("EVENT: unknown type={}", trb_type);
-                }
-            }
-
-            self.dequeue_index += 1;
-            if self.dequeue_index >= EVENT_RING_SIZE {
-                self.dequeue_index = 0;
-                self.cycle_state = !self.cycle_state;
-            }
-
-            let new_erdp = self.event_ring_phys + (self.dequeue_index as u64 * 16);
             let ir0 = self.interrupter0();
-            ir0.write_erdp(new_erdp | (1 << 3));
+            loop {
+                let mut processed = 0;
+                while processed < EVENT_RING_SIZE {
+                    let trb = trbs.add(self.dequeue_index).read_volatile();
+                    if (trb.control & 1 != 0) != self.cycle_state {
+                        break;
+                    }
+
+                    let trb_type = (trb.control >> 10) & 0x3F;
+                    match trb_type {
+                        34 => {
+                            let port_id = (trb.parameter >> 24) & 0xFF;
+                            println!("EVENT: Port Status Change on port {}", port_id);
+                            PORT_CHANGE_PENDING.store(true, Ordering::SeqCst);
+                        }
+                        33 => {
+                            let completion_code = (trb.status >> 24) & 0xFF;
+                            let slot_id = (trb.control >> 24) & 0xFF;
+                            println!(
+                                "EVENT: Command Completion, code={} slot_id={}",
+                                completion_code, slot_id
+                            );
+                            COMPLETION_CODE.store(completion_code, Ordering::SeqCst);
+                            COMPLETION_SLOT.store(slot_id, Ordering::SeqCst);
+                            COMPLETION_PENDING.store(true, Ordering::SeqCst);
+                        }
+                        32 => {
+                            let completion_code = (trb.status >> 24) & 0xFF;
+                            let residual_length = trb.status & 0xFF_FFFF;
+                            let endpoint_id = (trb.control >> 16) & 0x1F;
+                            let event_slot_id = (trb.control >> 24) & 0xFF;
+
+                            let kbd_dci = KBD_DCI.load(Ordering::SeqCst);
+                            let kbd_slot = KBD_SLOT_ID.load(Ordering::SeqCst);
+                            let mouse_dci = MOUSE_DCI.load(Ordering::SeqCst);
+                            let mouse_slot = MOUSE_SLOT_ID.load(Ordering::SeqCst);
+
+                            if kbd_dci != 0 && event_slot_id == kbd_slot && endpoint_id == kbd_dci {
+                                KBD_REPORT_LEN.store(residual_length, Ordering::SeqCst);
+                                KBD_REPORT_PENDING.store(true, Ordering::SeqCst);
+                            } else if mouse_dci != 0
+                                && event_slot_id == mouse_slot
+                                && endpoint_id == mouse_dci
+                            {
+                                MOUSE_REPORT_LEN.store(residual_length, Ordering::SeqCst);
+                                MOUSE_REPORT_PENDING.store(true, Ordering::SeqCst);
+                            } else {
+                                println!(
+                                    "EVENT: Transfer Event, code={} residual={}",
+                                    completion_code, residual_length
+                                );
+                                TRANSFER_COMPLETION_CODE.store(completion_code, Ordering::SeqCst);
+                                TRANSFER_COMPLETION_LENGTH.store(residual_length, Ordering::SeqCst);
+                                TRANSFER_COMPLETION_PENDING.store(true, Ordering::SeqCst);
+                            }
+                        }
+                        _ => println!("EVENT: unknown type={}", trb_type),
+                    }
+
+                    self.dequeue_index += 1;
+                    if self.dequeue_index >= EVENT_RING_SIZE {
+                        self.dequeue_index = 0;
+                        self.cycle_state = !self.cycle_state;
+                    }
+                    processed += 1;
+                }
+
+                if processed != 0 {
+                    let new_erdp = self.event_ring_phys + (self.dequeue_index as u64 * 16);
+                    ir0.write_erdp(new_erdp | (1 << 3));
+                }
+
+                let iman = ir0.read_iman();
+                ir0.write_iman((iman & (1 << 1)) | 1);
+                self.op_regs().write_usbsts(USBSTS_EINT);
+
+                let next = trbs.add(self.dequeue_index).read_volatile();
+                if (next.control & 1 != 0) != self.cycle_state {
+                    break;
+                }
+            }
         }
     }
 
@@ -564,11 +565,11 @@ Bit    Nama        Fungsi
 16     VTIOE       VTIO Enable
 17-31  Reserved
 */
-const USBCMD_RUN_OR_STOP: u32 = (1 << 0);
+const USBCMD_RUN_OR_STOP: u32 = 1 << 0;
 // host controller reset
-const USBCMD_HCRST: u32 = (1 << 1);
+const USBCMD_HCRST: u32 = 1 << 1;
 // interrupt enable
-const USBCMD_INTE: u32 = (1 << 2);
+const USBCMD_INTE: u32 = 1 << 2;
 
 /*
 Bit    Nama       Tipe      Fungsi
@@ -1194,11 +1195,7 @@ const USB_DESC_TYPE_CONFIGURATION: u8 = 0x02;
 const USB_DESC_TYPE_INTERFACE: u8 = 0x04;
 const USB_DESC_TYPE_ENDPOINT: u8 = 0x05;
 
-/// Info satu endpoint Interrupt IN beserta interface pemiliknya.
-/// Generic untuk endpoint HID apa pun (keyboard, mouse, atau device HID
-/// lain) -- xhci.rs tidak perlu tahu ini "keyboard" atau "mouse", itu
-/// keputusan device-class driver di atasnya lewat `interface_class`/
-/// `interface_protocol`.
+/// Info satu endpoint USB beserta interface pemiliknya.
 #[derive(Debug, Clone, Copy)]
 pub struct EndpointInfo {
     pub address: u8,
@@ -1206,6 +1203,8 @@ pub struct EndpointInfo {
     pub max_packet_size: u16,
     pub interval: u8,
     pub inteface_number: u8,
+    /// bInterfaceSubClass (6 = SCSI transparent command set).
+    pub interface_subclass: u8,
     /// bInterfaceClass (mis. 3 = HID)
     pub interface_class: u8,
     /// bInterfaceProtocol (mis. 1 = Boot Keyboard, 2 = Boot Mouse; 0 kalau
@@ -1213,11 +1212,9 @@ pub struct EndpointInfo {
     pub interface_protocol: u8,
 }
 
-/// Ambil Configuration Descriptor lalu kembalikan SEMUA endpoint Interrupt IN
-/// yang ditemukan di semua interface -- bukan cuma yang pertama ketemu.
-/// Caller (device-class driver di main.rs/keyboard_usb.rs/mouse_usb.rs) yang
-/// memilih endpoint mana yang relevan, biasanya lewat `interface_protocol`.
-pub unsafe fn get_configuration_descriptor_and_find_interrupt_endpoints(
+/// Ambil Configuration Descriptor lalu kembalikan semua endpoint di semua
+/// interface. Caller memilih endpoint yang cocok untuk driver device-class.
+pub unsafe fn get_configuration_descriptor_endpoints(
     slot_id: u32,
 ) -> Result<alloc::vec::Vec<EndpointInfo>, &'static str> {
     unsafe {
@@ -1246,6 +1243,7 @@ pub unsafe fn get_configuration_descriptor_and_find_interrupt_endpoints(
         let mut i = 0usize;
         let mut current_interface: u8 = 0;
         let mut current_interface_class: u8 = 0;
+        let mut current_interface_subclass: u8 = 0;
         let mut current_interface_protocol: u8 = 0;
         let mut found: alloc::vec::Vec<EndpointInfo> = alloc::vec::Vec::new();
 
@@ -1258,14 +1256,24 @@ pub unsafe fn get_configuration_descriptor_and_find_interrupt_endpoints(
             }
 
             if b_descriptor_type == USB_DESC_TYPE_INTERFACE {
+                if b_length < 9 {
+                    return Err("invalid USB interface descriptor");
+                }
                 current_interface = buf_slice[i + 2];
                 current_interface_class = buf_slice[i + 5];
+                current_interface_subclass = buf_slice[i + 6];
                 current_interface_protocol = buf_slice[i + 7];
                 println!(
-                    "  Interface {} class={:#04x} protocol={:#04x}",
-                    current_interface, current_interface_class, current_interface_protocol
+                    "  Interface {} class={:#04x} subclass={:#04x} protocol={:#04x}",
+                    current_interface,
+                    current_interface_class,
+                    current_interface_subclass,
+                    current_interface_protocol
                 );
             } else if b_descriptor_type == USB_DESC_TYPE_ENDPOINT {
+                if b_length < 7 {
+                    return Err("invalid USB endpoint descriptor");
+                }
                 let address = buf_slice[i + 2];
                 let attributes = buf_slice[i + 3];
                 let max_packet_size = (buf_slice[i + 4] as u16) | ((buf_slice[i + 5] as u16) << 8);
@@ -1276,25 +1284,22 @@ pub unsafe fn get_configuration_descriptor_and_find_interrupt_endpoints(
                     address, attributes, max_packet_size, interval
                 );
 
-                let is_in = address & 0x80 != 0;
-                let is_interrupt = attributes & 0x3 == 0x3;
-                if is_in && is_interrupt {
-                    found.push(EndpointInfo {
-                        address,
-                        attributes,
-                        max_packet_size,
-                        interval,
-                        inteface_number: current_interface,
-                        interface_class: current_interface_class,
-                        interface_protocol: current_interface_protocol,
-                    });
-                }
+                found.push(EndpointInfo {
+                    address,
+                    attributes,
+                    max_packet_size,
+                    interval,
+                    inteface_number: current_interface,
+                    interface_subclass: current_interface_subclass,
+                    interface_class: current_interface_class,
+                    interface_protocol: current_interface_protocol,
+                });
             }
             i += b_length;
         }
 
         if found.is_empty() {
-            Err("Tidak ketemu Interrupt IN endpoint di Configuration Descriptor")
+            Err("Tidak ketemu endpoint di Configuration Descriptor")
         } else {
             Ok(found)
         }
@@ -1376,6 +1381,8 @@ pub struct EndpointHandle {
     pub ring_virt: u64,
     pub ring_phys: u64,
     pub dci: u32,
+    enqueue_index: usize,
+    cycle_state: bool,
 }
 
 pub unsafe fn configure_endpoint(
@@ -1386,6 +1393,16 @@ pub unsafe fn configure_endpoint(
     unsafe {
         let ep_number = (ep_info.address & 0x0F) as u32;
         let is_in = ep_info.address & 0x80 != 0;
+        let transfer_type = ep_info.attributes & 0x3;
+        let endpoint_type = match (is_in, transfer_type) {
+            (false, 1) => 1,
+            (false, 2) => 2,
+            (false, 3) => 3,
+            (true, 1) => 5,
+            (true, 2) => 6,
+            (true, 3) => 7,
+            _ => return Err("unsupported endpoint transfer type"),
+        };
         let dci = (ep_number * 2) + if is_in { 1 } else { 0 };
 
         let ep_ring_box: Box<TransferRing> = Box::new(TransferRing::new());
@@ -1398,17 +1415,40 @@ pub unsafe fn configure_endpoint(
         let mut input_ctx: Box<InputContextFull> = Box::new(InputContextFull::zeroed());
 
         input_ctx.control.add_flags = (1 << 0) | (1 << dci);
-
-        input_ctx.slot.dword0 = (dci << 27) | (3u32 << 20);
-        input_ctx.slot.dword1 = (root_port as u32) << 16;
+        let slot_context = {
+            let guard = XHCI_INSTANCE.get().unwrap().lock();
+            let dcbaa_entry = (guard.dcbaa_virt as *const u64)
+                .add(slot_id as usize)
+                .read_volatile();
+            if dcbaa_entry == 0 {
+                return Err("device context tidak tersedia");
+            }
+            let device_context = memory::physical_to_virtual(dcbaa_entry as usize)
+                .ok_or("gagal translate device context")?;
+            (device_context as *const SlotContext).read_volatile()
+        };
+        let current_entries = slot_context.dword0 >> 27;
+        input_ctx.slot = slot_context;
+        input_ctx.slot.dword0 =
+            ((current_entries.max(dci)) << 27) | (slot_context.dword0 & 0x07FF_FFFF);
+        input_ctx.slot.dword1 = (input_ctx.slot.dword1 & !0x00FF_0000) | ((root_port as u32) << 16);
 
         let idx = (dci - 1) as usize;
         let ep_ctx = &mut input_ctx.endpoints[idx];
-        ep_ctx.dword0 = (ep_info.interval.saturating_sub(1) as u32) << 16;
-        ep_ctx.dword1 = (7u32 << 3) | (3 << 1) | ((ep_info.max_packet_size as u32) << 16);
+        let interval = if transfer_type == 1 || transfer_type == 3 {
+            ep_info.interval.saturating_sub(1) as u32
+        } else {
+            0
+        };
+        ep_ctx.dword0 = interval << 16;
+        ep_ctx.dword1 = (endpoint_type << 3) | (3 << 1) | ((ep_info.max_packet_size as u32) << 16);
         ep_ctx.tr_dequeue_lo = (ep_ring_phys as u32 & !0xF) | 1;
         ep_ctx.tr_dequeue_hi = (ep_ring_phys >> 32) as u32;
-        ep_ctx.dword4 = ep_info.max_packet_size as u32;
+        ep_ctx.dword4 = if transfer_type == 1 || transfer_type == 3 {
+            ep_info.max_packet_size as u32
+        } else {
+            0
+        };
 
         let input_ctx_virt = Box::into_raw(input_ctx) as u64;
         let input_ctx_phys = memory::virtual_to_physical(input_ctx_virt as usize)
@@ -1434,6 +1474,8 @@ pub unsafe fn configure_endpoint(
                         ring_virt: ep_ring_virt,
                         ring_phys: ep_ring_phys,
                         dci,
+                        enqueue_index: 0,
+                        cycle_state: true,
                     })
                 } else {
                     Err("Configure Endpoint gagal, completion code bukan Succes")
@@ -1443,6 +1485,54 @@ pub unsafe fn configure_endpoint(
             if timeout == 0 {
                 return Err("Timeout menunggu Configure Endpoint completion");
             }
+        }
+    }
+}
+
+pub unsafe fn bulk_transfer(
+    slot_id: u32,
+    endpoint: &mut EndpointHandle,
+    buffer_phys: u64,
+    length: u32,
+) -> Result<u32, &'static str> {
+    if length == 0 || length > 0x1_FFFF {
+        return Err("invalid bulk transfer length");
+    }
+
+    TRANSFER_COMPLETION_PENDING.store(false, Ordering::SeqCst);
+    unsafe {
+        core::arch::asm!("cli");
+        {
+            let guard = XHCI_INSTANCE.get().unwrap().lock();
+            guard.enqueue_normal_trb_and_ring(
+                endpoint.ring_virt,
+                endpoint.ring_phys,
+                &mut endpoint.enqueue_index,
+                &mut endpoint.cycle_state,
+                CONTROL_RING_SIZE,
+                slot_id,
+                endpoint.dci,
+                buffer_phys,
+                length,
+            );
+        }
+        core::arch::asm!("sti");
+
+        let mut timeout = 10_000_000;
+        loop {
+            if TRANSFER_COMPLETION_PENDING.swap(false, Ordering::SeqCst) {
+                let code = TRANSFER_COMPLETION_CODE.load(Ordering::SeqCst);
+                let residual = TRANSFER_COMPLETION_LENGTH.load(Ordering::SeqCst);
+                if code != 1 && code != 13 {
+                    return Err("bulk transfer failed");
+                }
+                return Ok(length.saturating_sub(residual));
+            }
+            timeout -= 1;
+            if timeout == 0 {
+                return Err("bulk transfer timeout");
+            }
+            core::hint::spin_loop();
         }
     }
 }

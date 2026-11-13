@@ -1,13 +1,41 @@
-//! Akses PCI Configuration Space (mechanism #1, port I/O `0xCF8`/`0xCFC`),
-//! enumerasi bus/device/function, serta helper enable device, baca BAR,
-//! dan cari capability (MSI/MSI-X) buat setup interrupt.
+//! Driver PCI: enumerasi bus, baca/tulis Configuration Space, MSI/MSI-X.
+//!
+//! # Cara pakai
+//! ```ignore
+//! // Scan semua bus:
+//! let devices = pci::scan_pci_bus();
+//!
+//! // Cari USB controller:
+//! let usb = pci::find_usb_controllers();
+//! ```
+//!
+//! Implementasi menggunakan PCI configuration mechanism #1 (port I/O
+//! 0xCF8/0xCFC) — kompatibel dengan semua hardware x86 modern.
 
-use crate::io::{inl, outl};
+use crate::arch::x86_64::io::{inl, outl};
 use crate::println;
 
 const CONFIG_ADDRESS: u16 = 0xCF8;
 const CONFIG_DATA: u16 = 0xCFC;
 
+/// USB class code di PCI (class = 0x0C, subclass = 0x03).
+pub const PCI_CLASS_USB: u8 = 0x0C;
+/// USB subclass code di PCI.
+pub const PCI_SUBCLASS_USB: u8 = 0x03;
+
+/// USB Programming Interface values.
+pub const PCI_PI_UHCI: u8 = 0x00;
+/// USB Programming Interface: OHCI.
+pub const PCI_PI_OHCI: u8 = 0x10;
+/// USB Programming Interface: EHCI.
+pub const PCI_PI_EHCI: u8 = 0x20;
+/// USB Programming Interface: xHCI.
+pub const PCI_PI_XHCI: u8 = 0x30;
+pub const PCI_CLASS_MASS_STORAGE: u8 = 0x01;
+pub const PCI_SUBCLASS_SATA: u8 = 0x06;
+pub const PCI_PI_AHCI: u8 = 0x01;
+
+/// Representasi satu PCI device/function yang berhasil dideteksi.
 #[derive(Debug, Clone, Copy)]
 pub struct PciDevice {
     pub bus: u8,
@@ -179,6 +207,7 @@ pub unsafe fn enable_device(dev: &PciDevice) {
 
 const PCI_BAR0: u8 = 0x10;
 
+/// Info lengkap tentang satu BAR (Base Address Register).
 #[derive(Debug, Clone, Copy)]
 pub struct BarInfo {
     pub address: u64,
@@ -189,7 +218,14 @@ pub struct BarInfo {
 /// Baca BAR0. Otomatis deteksi apakah 32-bit atau 64-bit BAR
 /// (xHCI hampir selalu 64-bit karena butuh address space besar).
 pub unsafe fn get_bar0(dev: &PciDevice) -> BarInfo {
-    let bar0 = unsafe { config_read_u32(dev.bus, dev.device, dev.function, PCI_BAR0) };
+    unsafe { get_bar(dev, 0) }
+}
+
+/// Read a memory BAR by index (0..=5).
+pub unsafe fn get_bar(dev: &PciDevice, index: u8) -> BarInfo {
+    assert!(index < 6, "PCI BAR index out of range");
+    let offset = PCI_BAR0 + index * 4;
+    let bar0 = unsafe { config_read_u32(dev.bus, dev.device, dev.function, offset) };
 
     // bit 0 harus 0 (memory space BAR, bukan I/O space BAR)
     assert!(
@@ -204,7 +240,8 @@ pub unsafe fn get_bar0(dev: &PciDevice) -> BarInfo {
     let base_low = (bar0 & 0xFFFF_FFF0) as u64; // buang 4 bit flag terbawah
 
     let address = if is_64bit {
-        let bar1 = unsafe { config_read_u32(dev.bus, dev.device, dev.function, PCI_BAR0 + 4) };
+        assert!(index < 5, "64-bit BAR cannot start at BAR5");
+        let bar1 = unsafe { config_read_u32(dev.bus, dev.device, dev.function, offset + 4) };
         ((bar1 as u64) << 32) | base_low
     } else {
         base_low
@@ -217,6 +254,7 @@ pub unsafe fn get_bar0(dev: &PciDevice) -> BarInfo {
     }
 }
 
+/// Baca ukuran region yang di-map oleh BAR0 (dalam byte).
 pub unsafe fn get_bar0_size(dev: &PciDevice) -> u64 {
     // 1. simpan nilai asli BAR (biar bisa dikembalikan lagi)
     let original = unsafe { config_read_u32(dev.bus, dev.device, dev.function, PCI_BAR0) };
@@ -251,6 +289,40 @@ pub unsafe fn get_bar0_size(dev: &PciDevice) -> u64 {
     }
 }
 
+/// Find PCI AHCI SATA controllers (class 01h, subclass 06h, prog-if 01h).
+pub fn find_ahci_controllers() -> alloc::vec::Vec<PciDevice> {
+    let mut found = alloc::vec::Vec::new();
+    for bus in 0..=255u8 {
+        for device in 0..32u8 {
+            if let Some(dev) = probe_function(bus, device, 0) {
+                if dev.class == PCI_CLASS_MASS_STORAGE
+                    && dev.subclass == PCI_SUBCLASS_SATA
+                    && dev.prog_if == PCI_PI_AHCI
+                {
+                    found.push(dev);
+                }
+
+                if dev.header_type & 0x80 != 0 {
+                    for function in 1..8u8 {
+                        if let Some(dev) = probe_function(bus, device, function) {
+                            if dev.class == PCI_CLASS_MASS_STORAGE
+                                && dev.subclass == PCI_SUBCLASS_SATA
+                                && dev.prog_if == PCI_PI_AHCI
+                            {
+                                found.push(dev);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if bus == 255 {
+            break;
+        }
+    }
+    found
+}
+
 /// Cari semua USB host controller (class 0x0C, subclass 0x03)
 /// prog_if: 0x00=UHCI, 0x10=OHCI, 0x20=EHCI, 0x30=xHCI
 pub fn find_usb_controllers() -> alloc::vec::Vec<PciDevice> {
@@ -259,7 +331,7 @@ pub fn find_usb_controllers() -> alloc::vec::Vec<PciDevice> {
     for bus in 0..=255u8 {
         for device in 0..32u8 {
             if let Some(dev) = probe_function(bus, device, 0) {
-                if dev.class == 0x0C && dev.subclass == 0x03 {
+                if dev.class == PCI_CLASS_USB && dev.subclass == PCI_SUBCLASS_USB {
                     found.push(dev);
                 }
 
@@ -267,7 +339,7 @@ pub fn find_usb_controllers() -> alloc::vec::Vec<PciDevice> {
                 if is_multifunction {
                     for function in 1..8u8 {
                         if let Some(dev) = probe_function(bus, device, function) {
-                            if dev.class == 0x0C && dev.subclass == 0x03 {
+                            if dev.class == PCI_CLASS_USB && dev.subclass == PCI_SUBCLASS_USB {
                                 found.push(dev);
                             }
                         }
@@ -291,7 +363,9 @@ const PCI_CAPABILITIES_PTR: u8 = 0x34;
 // di kode sekarang, disimpan supaya lengkap sesuai spec.
 #[allow(dead_code)]
 pub const CAP_ID_POWER_MGMT: u8 = 0x01;
+/// Capability ID untuk MSI (Message Signaled Interrupts).
 pub const CAP_ID_MSI: u8 = 0x05;
+/// Capability ID untuk MSI-X (Extended MSI).
 pub const CAP_ID_MSIX: u8 = 0x11;
 #[allow(dead_code)]
 pub const CAP_ID_PCIE: u8 = 0x10;
@@ -382,6 +456,7 @@ pub struct MsixInfo {
     pub table_size: u16,
 }
 
+/// Baca info MSI-X capability (table location, size) dari device.
 pub unsafe fn get_msix_info(dev: &PciDevice) -> Option<MsixInfo> {
     unsafe {
         let cap_offset = find_capability(dev, CAP_ID_MSIX)?;
@@ -409,6 +484,7 @@ pub unsafe fn get_msix_info(dev: &PciDevice) -> Option<MsixInfo> {
     }
 }
 
+/// Enable atau disable MSI-X global untuk device ini.
 pub unsafe fn set_msix_enable(dev: &PciDevice, cap_offset: u8, enable: bool) {
     unsafe {
         let mut ctrl = config_read_u16(dev.bus, dev.device, dev.function, cap_offset + 2);

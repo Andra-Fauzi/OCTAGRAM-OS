@@ -3,8 +3,8 @@
 //! spesifik, sisanya (vector 33..255) dengan stub generik dari
 //! `interrupt.rs`, lalu load lewat `lidt`.
 
-use crate::interrupt::{self, xhci_irq_stub};
-use crate::interrupt::{
+use super::interrupt::{self, syscall_stub, timer_irq_stub, xhci_irq_stub};
+use super::interrupt::{
     breakpoint_stub, debug_stub, divide_error_stub, double_fault_stub,
     general_protection_fault_stub, nmi_stub, page_fault_stub,
 };
@@ -51,6 +51,12 @@ impl IdtEntry {
             zero: 0,
         }
     }
+
+    fn new_user_callable(handler: u64, selector: u16) -> Self {
+        let mut entry = Self::new(handler, selector);
+        entry.type_attr = 0xEE;
+        entry
+    }
 }
 
 #[allow(dead_code)]
@@ -71,13 +77,36 @@ pub unsafe fn load_idt() {
         IDT[2] = IdtEntry::new(nmi_stub as u64, 0x08);
         IDT[3] = IdtEntry::new(breakpoint_stub as u64, 0x08);
         IDT[8] = IdtEntry::new(double_fault_stub as u64, 0x08);
+        seq!(N in 4..8 {
+            IDT[N] = IdtEntry::new(interrupt::exception_stub~N as u64, 0x08);
+        });
+        IDT[9] = IdtEntry::new(interrupt::exception_stub9 as u64, 0x08);
+        IDT[10] = IdtEntry::new(interrupt::exception_stub10 as u64, 0x08);
+        IDT[11] = IdtEntry::new(interrupt::exception_stub11 as u64, 0x08);
+        IDT[12] = IdtEntry::new(interrupt::exception_stub12 as u64, 0x08);
         IDT[13] = IdtEntry::new(general_protection_fault_stub as u64, 0x08);
         IDT[14] = IdtEntry::new(page_fault_stub as u64, 0x08);
+        seq!(N in 15..17 {
+            IDT[N] = IdtEntry::new(interrupt::exception_stub~N as u64, 0x08);
+        });
+        IDT[17] = IdtEntry::new(interrupt::exception_stub17 as u64, 0x08);
+        seq!(N in 18..21 {
+            IDT[N] = IdtEntry::new(interrupt::exception_stub~N as u64, 0x08);
+        });
+        IDT[21] = IdtEntry::new(interrupt::exception_stub21 as u64, 0x08);
+        seq!(N in 22..29 {
+            IDT[N] = IdtEntry::new(interrupt::exception_stub~N as u64, 0x08);
+        });
+        IDT[29] = IdtEntry::new(interrupt::exception_stub29 as u64, 0x08);
+        IDT[30] = IdtEntry::new(interrupt::exception_stub30 as u64, 0x08);
+        IDT[31] = IdtEntry::new(interrupt::exception_stub31 as u64, 0x08);
         // ... isi vector lain
+        IDT[32] = IdtEntry::new(timer_irq_stub as u64, 0x08);
         seq!(N in 33..255 {
             IDT[N] = IdtEntry::new(interrupt::irq~N as u64, 0x08);
         });
         IDT[44] = IdtEntry::new(xhci_irq_stub as u64, 0x08);
+        IDT[128] = IdtEntry::new_user_callable(syscall_stub as u64, 0x08);
 
         let descriptor = IdtDescriptor {
             limit: (core::mem::size_of::<IdtEntry>() * 256 - 1) as u16,

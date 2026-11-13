@@ -3,8 +3,8 @@
 //! cuma bentuk report dan cara menginterpretasikannya (delta posisi + bitmask
 //! tombol, bukan keycode).
 
+use super::xhci::{self, EndpointHandle, XHCI_INSTANCE};
 use crate::memory;
-use crate::usb::xhci::{self, EndpointHandle, XHCI_INSTANCE};
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicU32};
 use spin::Mutex;

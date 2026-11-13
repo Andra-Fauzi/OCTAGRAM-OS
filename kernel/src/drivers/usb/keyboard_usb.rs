@@ -2,8 +2,8 @@
 //! (lihat `xhci.rs`). Modul ini yang "tahu" konsep keyboard -- xhci.rs sendiri
 //! cuma menyediakan primitif transport (ring, control transfer, dst).
 
-use crate::memory;
-use crate::usb::xhci::{self, EndpointHandle, XHCI_INSTANCE};
+use super::xhci::{self, EndpointHandle, XHCI_INSTANCE};
+use crate::{drivers::keyboard, memory};
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicU32};
 use spin::Mutex;
@@ -45,6 +45,7 @@ struct KeyboardState {
     report_buf_virt: u64,
     report_buf_phys: u64,
     last_keycodes: [u8; 6],
+    caps_lock: bool,
 }
 
 static KBD_STATE: Mutex<Option<KeyboardState>> = Mutex::new(None);
@@ -86,6 +87,7 @@ pub unsafe fn init_keyboard(slot_id: u32, ep: EndpointHandle, interface_number: 
                 report_buf_virt: virt,
                 report_buf_phys: phys as u64,
                 last_keycodes: [0; 6],
+                caps_lock: false,
             });
         }
 
@@ -174,26 +176,53 @@ fn handle_report(report: &KeyboardReport) {
         None => return,
     };
 
-    for &kc in &report.keycodes {
-        if kc == 0 {
+    for &keycode in &report.keycodes {
+        if keycode == 0 || state.last_keycodes.contains(&keycode) {
             continue;
         }
-        if state.last_keycodes.contains(&kc) {
-            continue; // key masih ditahan dari report sebelumnya, jangan re-trigger
+        if keycode == 0x39 {
+            state.caps_lock = !state.caps_lock;
+            continue;
         }
-        if let Some(ch) = hid_keycode_to_ascii(kc, report.modifier) {
-            crate::print!("{}", ch);
+        match keycode {
+            0x4F => {
+                let _ = keyboard::push_event(keyboard::KeyEvent::Right);
+            }
+            0x50 => {
+                let _ = keyboard::push_event(keyboard::KeyEvent::Left);
+            }
+            0x51 => {
+                let _ = keyboard::push_event(keyboard::KeyEvent::Down);
+            }
+            0x52 => {
+                let _ = keyboard::push_event(keyboard::KeyEvent::Up);
+            }
+            _ => {
+                if let Some(character) =
+                    hid_keycode_to_ascii(keycode, report.modifier, state.caps_lock)
+                {
+                    let _ = keyboard::push_char(character);
+                }
+            }
         }
     }
     state.last_keycodes = report.keycodes;
 }
 
-fn hid_keycode_to_ascii(keycode: u8, modifier: u8) -> Option<char> {
+fn hid_keycode_to_ascii(keycode: u8, modifier: u8, caps_lock: bool) -> Option<char> {
     let shift = modifier & 0x22 != 0; // bit1=Left Shift, bit5=Right Shift
+    if modifier & 0x11 != 0 {
+        return match keycode {
+            0x14 => Some('\x11'),
+            0x16 => Some('\x13'),
+            0x07 => Some('\x04'),
+            _ => None,
+        };
+    }
     match keycode {
         0x04..=0x1D => {
             let base = b'a' + (keycode - 0x04);
-            let c = if shift {
+            let c = if shift ^ caps_lock {
                 base.to_ascii_uppercase()
             } else {
                 base
@@ -206,10 +235,43 @@ fn hid_keycode_to_ascii(keycode: u8, modifier: u8) -> Option<char> {
             let idx = (keycode - 0x1E) as usize;
             Some((if shift { shifted[idx] } else { normal[idx] }) as char)
         }
+        0x2D => Some(if shift { '_' } else { '-' }),
+        0x2E => Some(if shift { '+' } else { '=' }),
+        0x2F => Some(if shift { '{' } else { '[' }),
+        0x30 => Some(if shift { '}' } else { ']' }),
+        0x31 => Some(if shift { '|' } else { '\\' }),
+        0x32 => Some(if shift { '~' } else { '#' }),
+        0x33 => Some(if shift { ':' } else { ';' }),
+        0x34 => Some(if shift { '"' } else { '\'' }),
+        0x35 => Some(if shift { '~' } else { '`' }),
+        0x36 => Some(if shift { '<' } else { ',' }),
+        0x37 => Some(if shift { '>' } else { '.' }),
+        0x38 => Some(if shift { '?' } else { '/' }),
         0x2C => Some(' '),
         0x28 => Some('\n'),
         0x2A => Some('\u{8}'), // backspace
         0x2B => Some('\t'),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hid_keycode_to_ascii;
+
+    #[test]
+    fn maps_usb_slash_and_shifted_question_mark() {
+        assert_eq!(hid_keycode_to_ascii(0x38, 0, false), Some('/'));
+        assert_eq!(hid_keycode_to_ascii(0x38, 0x02, false), Some('?'));
+        assert_eq!(hid_keycode_to_ascii(0x14, 0x01, false), Some('\x11'));
+        assert_eq!(hid_keycode_to_ascii(0x16, 0x01, false), Some('\x13'));
+        assert_eq!(hid_keycode_to_ascii(0x07, 0x01, false), Some('\x04'));
+    }
+
+    #[test]
+    fn maps_usb_common_punctuation() {
+        assert_eq!(hid_keycode_to_ascii(0x36, 0, false), Some(','));
+        assert_eq!(hid_keycode_to_ascii(0x37, 0x02, false), Some('>'));
+        assert_eq!(hid_keycode_to_ascii(0x31, 0, false), Some('\\'));
     }
 }

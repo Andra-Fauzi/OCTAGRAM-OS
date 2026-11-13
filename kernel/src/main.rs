@@ -1,16 +1,10 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), no_main)]
 
 use core::arch::asm;
 
 use limine::BaseRevision;
-use limine::request::{FramebufferRequest, RequestsEndMarker, RequestsStartMarker};
-
-use crate::graphics::write_pixel;
-use crate::memory::{
-    stress_test_heap, test_frame_allocator, test_get_request_memory_map,
-    test_get_request_memory_map_usable, test_heap_allocator,
-};
+use limine::request::{RequestsEndMarker, RequestsStartMarker};
 
 /// Sets the base revision to the latest revision supported by the crate.
 /// See specification for further info.
@@ -20,10 +14,6 @@ use crate::memory::{
 #[unsafe(link_section = ".requests")]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
 
-#[used]
-#[unsafe(link_section = ".requests")]
-static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
-
 /// Define the stand and end markers for Limine requests.
 #[used]
 #[unsafe(link_section = ".requests_start_marker")]
@@ -32,18 +22,18 @@ static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 #[unsafe(link_section = ".requests_end_marker")]
 static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
-mod apic;
-mod gdt;
+mod arch;
+mod drivers;
+pub mod elf;
+pub mod fs;
 mod graphics;
-mod idt;
-mod interrupt;
-mod io;
 mod memory;
-mod pci;
 mod rsdp;
+mod shell;
+pub mod storage;
+pub mod task;
 mod terminal;
-mod usb;
-mod vfs;
+pub mod toolchain;
 
 extern crate alloc;
 
@@ -53,48 +43,56 @@ unsafe extern "C" fn kmain() -> ! {
     // removed by the linker.
     assert!(BASE_REVISION.is_supported());
 
-    if let Some(framebuffer_response) = FRAMEBUFFER_REQUEST.get_response() {
-        if let Some(framebuffer) = framebuffer_response.framebuffers().next() {
-            for i in 0..100_u64 {
-                // Calculate the pixel offset using the framebuffer information we obtained above.
-                // We skip `i` scanlines (pitch is provided in bytes) and add `i * 4` to skip `i` pixels forward.
-                let pixel_offset = i * framebuffer.pitch() + i * 4;
-
-                // Write 0xFFFFFFFF to the provided pixel offset to fill it white.
-                unsafe {
-                    framebuffer
-                        .addr()
-                        .add(pixel_offset as usize)
-                        .cast::<u32>()
-                        .write(0xFFFFFFFF)
-                };
-            }
+    if let Some(framebuffer) = graphics::Framebuffer::get() {
+        for i in 0..100_u64 {
+            let pixel_offset = i * framebuffer.pitch() + i * 4;
+            unsafe {
+                framebuffer
+                    .addr()
+                    .add(pixel_offset as usize)
+                    .cast::<u32>()
+                    .write(0xFFFFFFFF)
+            };
         }
     }
-    asm!("cli");
+    unsafe { asm!("cli") };
 
-    gdt::load_gdt();
+    unsafe { arch::x86_64::gdt::load_gdt() };
     println!("GDT LOADED");
-    idt::load_idt();
+    unsafe { arch::x86_64::idt::load_idt() };
     println!("IDT LOADED");
     println!("TES RSDP");
-    rsdp::test_rsdp();
-    apic::disable_pic();
-    apic::LAPIC.call_once(|| apic::init_lapic());
-    let ioapic = apic::init_ioapic();
+    unsafe { rsdp::test_rsdp() };
+    arch::x86_64::apic::disable_pic();
+    arch::x86_64::apic::LAPIC.call_once(|| unsafe { arch::x86_64::apic::init_lapic() });
+    unsafe { arch::x86_64::apic::init_ioapic() };
 
-    asm!("sti");
-    memory::test_get_request_memory_map_usable();
+    unsafe { asm!("sti") };
     memory::init();
-    pci::scan_pci_bus();
+    fs::init();
+    drivers::pci::scan_pci_bus();
+    unsafe { drivers::ahci::init() };
 
-    // Cari & setup semua USB host controller (xHCI: init, MSI-X, lalu
-    // enumerasi device HID di atasnya). Lihat `usb.rs`.
-    usb::init_usb_controllers();
+    // Cari & setup USB host controller (xHCI: init, MSI-X, enumerasi HID
+    // dan mass-storage). Lihat `drivers/usb`.
+    unsafe { drivers::usb::init_usb_controllers() };
 
+    let lapic = arch::x86_64::apic::LAPIC
+        .get()
+        .expect("LAPIC must be initialized before the scheduler timer");
+    unsafe {
+        lapic.start_periodic_timer(arch::x86_64::interrupt::TIMER_VECTOR, 1_000_000);
+    }
+
+    task::spawn(async {
+        println!("Cooperative task executor is ready");
+    });
+    let shell_handle = task::spawn(shell::run());
+    drivers::keyboard::set_input_waker(shell_handle);
     hcf();
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn rust_panic(_info: &core::panic::PanicInfo) -> ! {
     print!("\n{:#?}\n", _info);
@@ -103,22 +101,29 @@ fn rust_panic(_info: &core::panic::PanicInfo) -> ! {
 
 fn hcf() -> ! {
     loop {
-        unsafe {
-            #[cfg(target_arch = "x86_64")]
-            asm!("hlt");
-            #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
-            asm!("wfi");
-            #[cfg(target_arch = "loongarch64")]
-            asm!("idle 0");
-
-            // Dicek SETELAH bangun dari hlt -- di titik ini interrupt vector
-            // 44 (kalau itu yang membangunkan kita) sudah selesai diproses
-            // & EOI-nya sudah terkirim, jadi aman buat jalanin proses
-            // hotplug (yang butuh cli/sti + spin-wait command completion
-            // lewat interrupt vector 44 berikutnya). Lihat komentar di
-            // `usb::poll_hotplug` untuk alasan kenapa ini TIDAK boleh
-            // dipanggil langsung dari dalam ISR.
-            usb::poll_hotplug();
+        if !task::run_ready() {
+            unsafe {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    asm!("cli");
+                    if task::has_ready_tasks() {
+                        asm!("sti");
+                    } else {
+                        asm!("sti; hlt");
+                    }
+                }
+                #[cfg(any(target_arch = "aarch64", target_arch = "riscv64"))]
+                if !task::has_ready_tasks() {
+                    asm!("wfi");
+                }
+                #[cfg(target_arch = "loongarch64")]
+                if !task::has_ready_tasks() {
+                    asm!("idle 0");
+                }
+            }
         }
+
+        // Run hotplug work outside the ISR, after interrupt completion.
+        unsafe { drivers::usb::poll_hotplug() };
     }
 }

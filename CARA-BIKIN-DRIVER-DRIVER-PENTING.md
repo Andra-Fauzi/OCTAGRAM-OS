@@ -198,7 +198,8 @@ berbeda — bukan konsep yang benar-benar baru.
 3. **RTC** — opsional, gampang, kalau butuh wall-clock
 4. **ACPI table parsing (MADT/MCFG)** — supaya IOAPIC address & PCI config akses tidak hardcode
 5. **AHCI (storage)** — driver "besar" kedua setelah xHCI, pola sangat mirip
-6. **Filesystem (FAT32/ext2 read-only dulu)** — lapisan di atas storage driver
+6. **Filesystem (ext2 atau filesystem baru)** — FAT32 read/write dasar sudah
+   tersedia melalui VFS; filesystem lain dapat mengikuti pola tersebut.
 7. **Network (virtio-net)** — kalau butuh, biasanya prioritas lebih rendah untuk hobby OS
 
 ---

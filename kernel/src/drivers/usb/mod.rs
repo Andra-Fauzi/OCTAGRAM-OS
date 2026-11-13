@@ -1,13 +1,11 @@
-//! Enumerasi device USB, dispatch ke device-class driver HID, dan
-//! hotplug (connect/disconnect) berbasis diffing port state.
+//! Enumerasi device USB, dispatch ke driver HID/mass-storage, dan hotplug
+//! (connect/disconnect) berbasis diffing port state.
 //!
 //! Modul ini yang "tahu" alur enumerasi USB standar di atas transport
 //! xHCI generic (lihat `xhci.rs`): scan port yang connected, enable
 //! slot, address device, ambil descriptor, cari endpoint interrupt IN,
-//! lalu dispatch ke driver yang sesuai (`keyboard_usb` / `mouse_usb`)
-//! berdasarkan `bInterfaceProtocol`. Tidak ada satu pun device-class
-//! (keyboard, mouse, dst) yang di-hardcode di sini -- generic terhadap
-//! jumlah & jenis device HID yang tercolok.
+//! lalu dispatch ke driver yang sesuai berdasarkan class, subclass, dan
+//! protocol interface.
 //!
 //! # Hotplug
 //! `ACTIVE_PORTS` menyimpan port mana saja yang SUDAH punya slot xHCI.
@@ -34,10 +32,11 @@
 //! manggil `poll_hotplug()`.
 
 pub mod keyboard_usb;
+pub mod mass_storage;
 pub mod mouse_usb;
 pub mod xhci;
 
-use crate::pci;
+use super::pci;
 
 use crate::println;
 use core::sync::atomic::Ordering;
@@ -62,6 +61,7 @@ struct ActivePort {
     slot_id: u32,
     has_keyboard: bool,
     has_mouse: bool,
+    has_storage: bool,
 }
 
 /// Registry port yang lagi aktif (sudah enable_slot + address_device
@@ -105,7 +105,7 @@ pub unsafe fn init_usb_controllers() {
 /// Setup satu controller xHCI: enable & baca BAR0, setup MSI-X, init
 /// controller (DCBAA/Command Ring/Event Ring), scan port, lalu -- kalau
 /// interrupt-driven mode (MSI-X) aktif -- publish instance-nya dan mulai
-/// enumerasi device HID. Kalau MSI-X gagal, fallback ke polling manual
+/// enumerasi device. Kalau MSI-X gagal, fallback ke polling manual
 /// yang tidak pernah return (dipakai sebagai loop utama kernel).
 unsafe fn init_xhci_controller(ctrl: &pci::PciDevice) {
     unsafe {
@@ -126,6 +126,11 @@ unsafe fn init_xhci_controller(ctrl: &pci::PciDevice) {
 
         if msix_ok {
             xhci::XHCI_INSTANCE.call_once(|| spin::Mutex::new(xhci_dev));
+            core::arch::asm!("cli");
+            if let Some(instance) = xhci::XHCI_INSTANCE.get() {
+                instance.lock().poll_event_ring();
+            }
+            core::arch::asm!("sti");
             println!("Interrupt-driven mode aktif (MSI-X)");
 
             // Generic: enumerasi semua port + dispatch driver
@@ -254,6 +259,9 @@ unsafe fn shutdown_device(entry: &ActivePort) {
         if entry.has_mouse {
             mouse_usb::shutdown_mouse(entry.slot_id);
         }
+        if entry.has_storage {
+            mass_storage::shutdown(entry.slot_id);
+        }
 
         if let Err(e) = xhci::disable_slot(entry.slot_id) {
             println!("  disable_slot gagal: {}", e);
@@ -262,7 +270,7 @@ unsafe fn shutdown_device(entry: &ActivePort) {
 }
 
 /// Enumerasi & konfigurasi satu device baru di satu root port, lalu
-/// dispatch semua endpoint interrupt IN-nya ke driver HID yang sesuai.
+/// dispatch endpoint yang didukung ke driver device-class.
 /// Return `Some(ActivePort)` kalau slot berhasil dibuat (dicatat ke
 /// registry oleh caller) walaupun tidak ada satu pun endpoint HID yang
 /// akhirnya jalan (mis. device-nya bukan HID) -- ini supaya port itu
@@ -298,22 +306,23 @@ unsafe fn init_one_device(root_port: u8, speed: u8) -> Option<ActivePort> {
                 slot_id,
                 has_keyboard: false,
                 has_mouse: false,
+                has_storage: false,
             });
         }
 
-        let endpoints =
-            match xhci::get_configuration_descriptor_and_find_interrupt_endpoints(slot_id) {
-                Ok(eps) => eps,
-                Err(e) => {
-                    println!("  tidak ada endpoint interrupt IN: {}", e);
-                    return Some(ActivePort {
-                        root_port,
-                        slot_id,
-                        has_keyboard: false,
-                        has_mouse: false,
-                    });
-                }
-            };
+        let endpoints = match xhci::get_configuration_descriptor_endpoints(slot_id) {
+            Ok(eps) => eps,
+            Err(e) => {
+                println!("  tidak ada endpoint konfigurasi: {}", e);
+                return Some(ActivePort {
+                    root_port,
+                    slot_id,
+                    has_keyboard: false,
+                    has_mouse: false,
+                    has_storage: false,
+                });
+            }
+        };
 
         // SET_CONFIGURATION 1 -- wajib sebelum Configure Endpoint command
         if let Err(e) = xhci::control_transfer_no_data(slot_id, 0x00, 0x09, 1, 0) {
@@ -323,24 +332,27 @@ unsafe fn init_one_device(root_port: u8, speed: u8) -> Option<ActivePort> {
                 slot_id,
                 has_keyboard: false,
                 has_mouse: false,
+                has_storage: false,
             });
         }
 
         let mut has_keyboard = false;
         let mut has_mouse = false;
-        for ep_info in endpoints {
+        for &ep_info in &endpoints {
             match dispatch_endpoint(slot_id, root_port, ep_info) {
                 Some(DeviceKind::Keyboard) => has_keyboard = true,
                 Some(DeviceKind::Mouse) => has_mouse = true,
                 None => {}
             }
         }
+        let has_storage = init_mass_storage_interfaces(slot_id, root_port, &endpoints);
 
         Some(ActivePort {
             root_port,
             slot_id,
             has_keyboard,
             has_mouse,
+            has_storage,
         })
     }
 }
@@ -358,35 +370,122 @@ unsafe fn dispatch_endpoint(
     root_port: u8,
     ep_info: xhci::EndpointInfo,
 ) -> Option<DeviceKind> {
-    unsafe {
-        if ep_info.interface_class != 3 {
+    if ep_info.interface_class != 3
+        || ep_info.attributes & 0x3 != 0x3
+        || ep_info.address & 0x80 == 0
+    {
+        return None;
+    }
+
+    let handle = match unsafe { xhci::configure_endpoint(slot_id, root_port, ep_info) } {
+        Ok(handle) => handle,
+        Err(error) => {
+            println!("  configure_endpoint gagal: {}", error);
             return None;
         }
+    };
 
-        let handle = match xhci::configure_endpoint(slot_id, root_port, ep_info) {
-            Ok(h) => h,
-            Err(e) => {
-                println!("  configure_endpoint gagal: {}", e);
-                return None;
-            }
-        };
-
-        match ep_info.interface_protocol {
-            1 => {
+    match ep_info.interface_protocol {
+        1 => {
+            unsafe {
                 keyboard_usb::init_keyboard(slot_id, handle, ep_info.inteface_number);
-                Some(DeviceKind::Keyboard)
             }
-            2 => {
+            Some(DeviceKind::Keyboard)
+        }
+        2 => {
+            unsafe {
                 mouse_usb::init_mouse(slot_id, handle, ep_info.inteface_number);
-                Some(DeviceKind::Mouse)
             }
-            other => {
-                println!(
-                    "  HID interface protocol {:#04x} belum ada driver-nya, dilewati",
-                    other
-                );
-                None
-            }
+            Some(DeviceKind::Mouse)
+        }
+        other => {
+            println!(
+                "  HID interface protocol {:#04x} belum ada driver-nya, dilewati",
+                other
+            );
+            None
         }
     }
+}
+
+unsafe fn init_mass_storage_interfaces(
+    slot_id: u32,
+    root_port: u8,
+    endpoints: &[xhci::EndpointInfo],
+) -> bool {
+    let mut interfaces = alloc::vec::Vec::new();
+    for endpoint in endpoints {
+        if endpoint.interface_class == 0x08
+            && endpoint.interface_subclass == 0x06
+            && endpoint.interface_protocol == 0x50
+            && endpoint.attributes & 0x3 == 0x2
+            && !interfaces.contains(&endpoint.inteface_number)
+        {
+            interfaces.push(endpoint.inteface_number);
+        }
+    }
+
+    let mut active = false;
+    for interface in interfaces {
+        let bulk_in = endpoints.iter().copied().find(|endpoint| {
+            endpoint.inteface_number == interface
+                && endpoint.interface_class == 0x08
+                && endpoint.interface_subclass == 0x06
+                && endpoint.interface_protocol == 0x50
+                && endpoint.attributes & 0x3 == 0x2
+                && endpoint.address & 0x80 != 0
+        });
+        let bulk_out = endpoints.iter().copied().find(|endpoint| {
+            endpoint.inteface_number == interface
+                && endpoint.interface_class == 0x08
+                && endpoint.interface_subclass == 0x06
+                && endpoint.interface_protocol == 0x50
+                && endpoint.attributes & 0x3 == 0x2
+                && endpoint.address & 0x80 == 0
+        });
+        let (Some(bulk_in), Some(bulk_out)) = (bulk_in, bulk_out) else {
+            println!(
+                "  USB mass storage interface {} tidak punya pasangan bulk IN/OUT",
+                interface
+            );
+            continue;
+        };
+
+        let in_dci = endpoint_dci(bulk_in);
+        let out_dci = endpoint_dci(bulk_out);
+        let (first, second) = if in_dci < out_dci {
+            (bulk_in, bulk_out)
+        } else {
+            (bulk_out, bulk_in)
+        };
+        let first_handle = match unsafe { xhci::configure_endpoint(slot_id, root_port, first) } {
+            Ok(handle) => handle,
+            Err(error) => {
+                println!("  configure bulk endpoint gagal: {}", error);
+                continue;
+            }
+        };
+        let second_handle = match unsafe { xhci::configure_endpoint(slot_id, root_port, second) } {
+            Ok(handle) => handle,
+            Err(error) => {
+                println!("  configure bulk endpoint gagal: {}", error);
+                continue;
+            }
+        };
+        let (in_handle, out_handle) = if in_dci < out_dci {
+            (first_handle, second_handle)
+        } else {
+            (second_handle, first_handle)
+        };
+        match unsafe { mass_storage::init_storage(slot_id, in_handle, out_handle) } {
+            Ok(_) => active = true,
+            Err(error) => println!("  USB storage gagal diinisialisasi: {:?}", error),
+        }
+    }
+    active
+}
+
+fn endpoint_dci(endpoint: xhci::EndpointInfo) -> u32 {
+    let endpoint_number = (endpoint.address & 0x0F) as u32;
+    (endpoint_number * 2) + if endpoint.address & 0x80 != 0 { 1 } else { 0 }
 }

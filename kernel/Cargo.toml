@@ -1,10 +1,28 @@
 [package]
-name = "limine-rust-template"
+name = "octagram-kernel"
 version = "0.1.0"
 edition = "2024"
+description = "OCTAGRAM-OS kernel — bare-metal Rust kernel berbasis Limine bootloader"
+authors = ["OCTAGRAM-OS Contributors"]
 
 [dependencies]
 limine = "0.5"
 linked_list_allocator = "0.10"
 spin = "0.9"
 seq-macro = "0.3"
+
+[features]
+default = ["debug-output"]
+debug-output = []
+
+[profile.dev]
+opt-level = 0
+debug = true
+panic = "abort"
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = true
+panic = "abort"
+codegen-units = 1

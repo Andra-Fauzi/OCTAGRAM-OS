@@ -48,8 +48,14 @@ pub struct InterruptFrame {
 }
 
 use core::arch::naked_asm;
+use seq_macro::seq;
 
-use crate::{apic, usb::keyboard_usb, usb::mouse_usb};
+use crate::arch::x86_64::apic;
+use crate::drivers::keyboard;
+use crate::drivers::usb::keyboard_usb;
+use crate::drivers::usb::mouse_usb;
+
+pub const TIMER_VECTOR: u8 = 32;
 
 macro_rules! interrupt_stub {
     ($name:ident, $vector:expr, no_error_code) => {
@@ -97,7 +103,9 @@ unsafe extern "C" fn stub_common() -> ! {
         "push r15",
 
         "mov rdi, rsp",
+        "and rsp, -16",
         "call {handler}",
+        "mov rsp, rax",
 
         "pop r15",
         "pop r14",
@@ -123,11 +131,16 @@ unsafe extern "C" fn stub_common() -> ! {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) {
-    let frame = unsafe { &*frame };
-    match frame.vector {
+extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut InterruptFrame {
+    let frame = unsafe { &mut *frame };
+    let return_frame = match frame.vector {
+        32 => crate::elf::handle_timer(frame),
+        33 => {
+            keyboard::handle_ps2_irq();
+            frame as *mut InterruptFrame
+        }
         44 => {
-            if let Some(xhci_mutex) = crate::usb::xhci::XHCI_INSTANCE.get() {
+            if let Some(xhci_mutex) = crate::drivers::usb::xhci::XHCI_INSTANCE.get() {
                 let mut xhci = xhci_mutex.lock();
                 unsafe {
                     xhci.poll_event_ring();
@@ -137,7 +150,10 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) {
                 keyboard_usb::poll_keyboard();
                 mouse_usb::poll_mouse();
             }
+            frame as *mut InterruptFrame
         }
+        128 => crate::elf::handle_syscall(frame),
+        _ if frame.stack_frame.code_segment & 3 == 3 => crate::elf::terminate_user(frame, u64::MAX),
         _ => {
             crate::println!(
                 "Interrupt vector={} error_code={:#x} rip={:#x}",
@@ -147,17 +163,19 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) {
             );
             loop {}
         }
-    }
-    if frame.vector >= 32 {
+    };
+    if matches!(frame.vector, 32 | 33 | 44) {
         if let Some(lapic) = apic::LAPIC.get() {
             unsafe {
                 lapic.send_eoi();
             }
         }
     }
+    return_frame
 }
 
 interrupt_stub!(divide_error_stub, 0, no_error_code);
+interrupt_stub!(timer_irq_stub, 32, no_error_code);
 interrupt_stub!(debug_stub, 1, no_error_code);
 interrupt_stub!(nmi_stub, 2, no_error_code);
 interrupt_stub!(breakpoint_stub, 3, no_error_code);
@@ -165,7 +183,27 @@ interrupt_stub!(double_fault_stub, 8, has_error_code);
 interrupt_stub!(general_protection_fault_stub, 13, has_error_code);
 interrupt_stub!(page_fault_stub, 14, has_error_code);
 
-use seq_macro::seq;
+seq!(N in 4..8 {
+    interrupt_stub!(exception_stub~N, N, no_error_code);
+});
+interrupt_stub!(exception_stub9, 9, no_error_code);
+interrupt_stub!(exception_stub10, 10, has_error_code);
+interrupt_stub!(exception_stub11, 11, has_error_code);
+interrupt_stub!(exception_stub12, 12, has_error_code);
+seq!(N in 15..17 {
+    interrupt_stub!(exception_stub~N, N, no_error_code);
+});
+interrupt_stub!(exception_stub17, 17, has_error_code);
+seq!(N in 18..21 {
+    interrupt_stub!(exception_stub~N, N, no_error_code);
+});
+interrupt_stub!(exception_stub21, 21, has_error_code);
+seq!(N in 22..29 {
+    interrupt_stub!(exception_stub~N, N, no_error_code);
+});
+interrupt_stub!(exception_stub29, 29, has_error_code);
+interrupt_stub!(exception_stub30, 30, has_error_code);
+interrupt_stub!(exception_stub31, 31, no_error_code);
 
 // stub generic buat semua vector yang belum di-handle spesifik.
 // nama fungsinya: irq33, irq34, ..., irq254
@@ -174,3 +212,21 @@ seq!(N in 33..255 {
 });
 
 interrupt_stub!(xhci_irq_stub, 44, no_error_code);
+interrupt_stub!(syscall_stub, 128, no_error_code);
+
+#[cfg(test)]
+mod tests {
+    use super::{InterruptFrame, InterruptStackFrame};
+
+    #[test]
+    fn interrupt_frame_matches_the_assembly_save_layout() {
+        assert_eq!(core::mem::offset_of!(InterruptFrame, vector), 120);
+        assert_eq!(core::mem::offset_of!(InterruptFrame, stack_frame), 136);
+        assert_eq!(
+            core::mem::size_of::<InterruptFrame>(),
+            15 * core::mem::size_of::<u64>()
+                + 2 * core::mem::size_of::<u64>()
+                + core::mem::size_of::<InterruptStackFrame>()
+        );
+    }
+}

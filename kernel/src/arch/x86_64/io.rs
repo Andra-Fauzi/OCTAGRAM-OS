@@ -1,5 +1,3 @@
-use core::arch::asm;
-
 pub unsafe fn outb(port: u16, val: u8) {
     unsafe {
         core::arch::asm!("out dx, al", in("dx") port, in("al") val);

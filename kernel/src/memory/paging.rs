@@ -1,10 +1,13 @@
 // memory/paging.rs
-use crate::memory::{allocate_frame, physical_to_virtual};
+use crate::memory::{allocate_frame, free_frame, physical_to_virtual};
 use core::arch::asm;
 
 pub const PAGE_SIZE: u64 = 4096;
+pub const USER_ADDRESS_MIN: u64 = 0x1_0000;
+pub const USER_ADDRESS_MAX: u64 = 0x0000_8000_0000_0000;
 
 const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+const USER_PML4_ENTRIES: usize = 256;
 
 /// Bit-bit flag entry page table. Formatnya sama di semua level (PML4E, PDPTE, PDE, PTE).
 pub mod flags {
@@ -30,6 +33,124 @@ pub enum PagingError {
     OutOfFrames,
     /// HHDM offset dari Limine belum tersedia (harusnya nggak pernah terjadi setelah boot).
     HhdmUnavailable,
+    NxeUnavailable,
+    UserAddressOutOfRange,
+    NotUserAccessible,
+    NotWritable,
+    AddressOverflow,
+}
+
+/// A process page table with a private lower half and shared kernel mappings.
+pub struct AddressSpace {
+    root_frame: u64,
+    kernel_root_frame: u64,
+}
+
+impl AddressSpace {
+    /// Create a PML4 that copies kernel mappings and starts with no user mappings.
+    pub fn new() -> Result<Self, PagingError> {
+        let kernel_root_frame = unsafe { read_cr3() } & ADDR_MASK;
+        let root_frame = allocate_frame().ok_or(PagingError::OutOfFrames)? as u64;
+        let Some(kernel_root) = physical_to_virtual(kernel_root_frame as usize) else {
+            free_frame(root_frame as usize);
+            return Err(PagingError::HhdmUnavailable);
+        };
+        let Some(root) = physical_to_virtual(root_frame as usize) else {
+            free_frame(root_frame as usize);
+            return Err(PagingError::HhdmUnavailable);
+        };
+
+        unsafe {
+            let kernel_root = kernel_root as *const u64;
+            let root = root as *mut u64;
+            for index in 0..USER_PML4_ENTRIES {
+                root.add(index).write(0);
+            }
+            for index in USER_PML4_ENTRIES..512 {
+                root.add(index).write(kernel_root.add(index).read());
+            }
+        }
+
+        Ok(Self {
+            root_frame,
+            kernel_root_frame,
+        })
+    }
+
+    /// Switch to this address space. Kernel code and data remain mapped.
+    ///
+    /// # Safety
+    /// This space must have valid kernel mappings and the caller must restore
+    /// the kernel root before accessing user-only mappings from another task.
+    pub unsafe fn activate(&self) {
+        unsafe {
+            asm!(
+                "mov cr3, {}",
+                in(reg) self.root_frame,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+
+    /// Restore the kernel page table that was active when this space was built.
+    ///
+    /// # Safety
+    /// The kernel root must still be valid.
+    pub unsafe fn activate_kernel(&self) {
+        unsafe {
+            asm!(
+                "mov cr3, {}",
+                in(reg) self.kernel_root_frame,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+
+    /// Free all private user page tables and the PML4 root.
+    ///
+    /// User data pages must be unmapped and freed by the owner first.
+    pub fn destroy(self) -> Result<(), PagingError> {
+        unsafe { self.activate() };
+        let Some(root) = physical_to_virtual(self.root_frame as usize) else {
+            unsafe { self.activate_kernel() };
+            free_frame(self.root_frame as usize);
+            return Err(PagingError::HhdmUnavailable);
+        };
+        let root = root as *mut u64;
+        let mut first_error = None;
+        for index in 0..USER_PML4_ENTRIES {
+            let entry = unsafe { root.add(index).read() };
+            if entry & flags::PRESENT == 0 {
+                continue;
+            }
+            unsafe {
+                root.add(index).write(0);
+            }
+            if let Err(error) = free_page_table(entry & ADDR_MASK, 3)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        unsafe { self.activate_kernel() };
+        free_frame(self.root_frame as usize);
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+fn free_page_table(frame: u64, level: usize) -> Result<(), PagingError> {
+    let table =
+        physical_to_virtual(frame as usize).ok_or(PagingError::HhdmUnavailable)? as *mut u64;
+    if level > 1 {
+        for index in 0..512 {
+            let entry = unsafe { table.add(index).read() };
+            if entry & flags::PRESENT != 0 && entry & flags::HUGE_PAGE == 0 {
+                free_page_table(entry & ADDR_MASK, level - 1)?;
+            }
+        }
+    }
+    free_frame(frame as usize);
+    Ok(())
 }
 
 fn table_indices(virt: u64) -> (usize, usize, usize, usize) {
@@ -56,7 +177,10 @@ fn pml4_virt() -> Result<*mut u64, PagingError> {
 
 /// Ambil table di level berikutnya. Kalau belum present, alokasikan frame baru
 /// (lewat frame allocator kita) dan zero-kan otomatis.
-unsafe fn next_table_or_create(entry: &mut u64) -> Result<*mut u64, PagingError> {
+unsafe fn next_table_or_create(
+    entry: &mut u64,
+    user_accessible: bool,
+) -> Result<*mut u64, PagingError> {
     unsafe {
         if *entry & flags::HUGE_PAGE != 0 {
             return Err(PagingError::HugePageInPath);
@@ -66,9 +190,31 @@ unsafe fn next_table_or_create(entry: &mut u64) -> Result<*mut u64, PagingError>
             // allocate_frame() sudah menzero-kan isi frame, jadi table barunya kosong.
             *entry = frame | flags::PRESENT | flags::WRITABLE;
         }
+        if user_accessible {
+            *entry |= flags::USER | flags::WRITABLE;
+        }
         let phys = *entry & ADDR_MASK;
         let virt = physical_to_virtual(phys as usize).ok_or(PagingError::HhdmUnavailable)?;
         Ok(virt as *mut u64)
+    }
+}
+
+fn user_mapping_flags(virt: u64, write_access: bool) -> Result<u64, PagingError> {
+    let (pml4_idx, pdpt_idx, pd_idx, pt_idx) = table_indices(virt);
+    unsafe {
+        let pml4_entry = *pml4_virt()?.add(pml4_idx);
+        let pdpt_entry = *next_table_existing(pml4_entry)?.add(pdpt_idx);
+        let pd_entry = *next_table_existing(pdpt_entry)?.add(pd_idx);
+        let pte = *next_table_existing(pd_entry)?.add(pt_idx);
+        for entry in [pml4_entry, pdpt_entry, pd_entry, pte] {
+            if entry & flags::USER == 0 {
+                return Err(PagingError::NotUserAccessible);
+            }
+            if write_access && entry & flags::WRITABLE == 0 {
+                return Err(PagingError::NotWritable);
+            }
+        }
+        Ok(pte)
     }
 }
 
@@ -86,6 +232,34 @@ fn next_table_existing(entry: u64) -> Result<*mut u64, PagingError> {
     Ok(virt as *mut u64)
 }
 
+/// Translate a mapped virtual address using the active x86_64 page tables.
+pub fn translate_address(virt_addr: u64) -> Result<u64, PagingError> {
+    let (pml4_idx, pdpt_idx, pd_idx, pt_idx) = table_indices(virt_addr);
+    unsafe {
+        let pml4_entry = pml4_virt()?.add(pml4_idx).read_volatile();
+        let pdpt = next_table_existing(pml4_entry)?;
+        let pdpt_entry = pdpt.add(pdpt_idx).read_volatile();
+        if pdpt_entry & flags::HUGE_PAGE != 0 {
+            let base = pdpt_entry & 0x000F_FFFF_C000_0000;
+            return Ok(base | (virt_addr & ((1 << 30) - 1)));
+        }
+
+        let pd = next_table_existing(pdpt_entry)?;
+        let pd_entry = pd.add(pd_idx).read_volatile();
+        if pd_entry & flags::HUGE_PAGE != 0 {
+            let base = pd_entry & 0x000F_FFFF_FFE0_0000;
+            return Ok(base | (virt_addr & ((1 << 21) - 1)));
+        }
+
+        let pt = next_table_existing(pd_entry)?;
+        let pt_entry = pt.add(pt_idx).read_volatile();
+        if pt_entry & flags::PRESENT == 0 {
+            return Err(PagingError::NotMapped);
+        }
+        Ok((pt_entry & ADDR_MASK) | (virt_addr & (PAGE_SIZE - 1)))
+    }
+}
+
 /// Petakan satu halaman 4KB: virtual -> fisik, dengan flag tambahan (WRITABLE, NO_CACHE, dst).
 /// PRESENT selalu otomatis ditambahkan. Gagal kalau virt_addr sudah punya mapping.
 pub unsafe fn map_page(
@@ -98,11 +272,15 @@ pub unsafe fn map_page(
         let phys = phys_addr & !(PAGE_SIZE - 1);
 
         let (pml4_idx, pdpt_idx, pd_idx, pt_idx) = table_indices(virt);
+        let user_accessible = extra_flags & flags::USER != 0;
+        if user_accessible && !(USER_ADDRESS_MIN..USER_ADDRESS_MAX).contains(&virt) {
+            return Err(PagingError::UserAddressOutOfRange);
+        }
 
         let pml4 = pml4_virt()?;
-        let pdpt = next_table_or_create(&mut *pml4.add(pml4_idx))?;
-        let pd = next_table_or_create(&mut *pdpt.add(pdpt_idx))?;
-        let pt = next_table_or_create(&mut *pd.add(pd_idx))?;
+        let pdpt = next_table_or_create(&mut *pml4.add(pml4_idx), user_accessible)?;
+        let pd = next_table_or_create(&mut *pdpt.add(pdpt_idx), user_accessible)?;
+        let pt = next_table_or_create(&mut *pd.add(pd_idx), user_accessible)?;
 
         let pte = &mut *pt.add(pt_idx);
         if *pte & flags::PRESENT != 0 {
@@ -113,6 +291,60 @@ pub unsafe fn map_page(
         asm!("invlpg [{}]", in(reg) virt);
         Ok(())
     }
+}
+
+/// Enable x86 execute-disable page permissions.
+pub unsafe fn enable_nxe() -> Result<(), PagingError> {
+    let max_extended_leaf = core::arch::x86_64::__cpuid(0x8000_0000).eax;
+    if max_extended_leaf < 0x8000_0001 {
+        return Err(PagingError::NxeUnavailable);
+    }
+    let features = core::arch::x86_64::__cpuid(0x8000_0001);
+    if features.edx & (1 << 20) == 0 {
+        return Err(PagingError::NxeUnavailable);
+    }
+
+    unsafe {
+        let msr = 0xC000_0080u32;
+        let low: u32;
+        let high: u32;
+        asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high);
+        let efer = ((high as u64) << 32) | low as u64 | (1 << 11);
+        asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") efer as u32,
+            in("edx") (efer >> 32) as u32
+        );
+    }
+    Ok(())
+}
+
+/// Ensure every page in a user buffer has the requested access.
+pub fn validate_user_range(
+    address: u64,
+    length: usize,
+    write_access: bool,
+) -> Result<(), PagingError> {
+    if length == 0 {
+        return Ok(());
+    }
+    let length = u64::try_from(length).map_err(|_| PagingError::AddressOverflow)?;
+    let end = address
+        .checked_add(length)
+        .ok_or(PagingError::AddressOverflow)?;
+    if address < USER_ADDRESS_MIN || end > USER_ADDRESS_MAX {
+        return Err(PagingError::UserAddressOutOfRange);
+    }
+
+    let mut page = address & !(PAGE_SIZE - 1);
+    while page < end {
+        user_mapping_flags(page, write_access)?;
+        page = page
+            .checked_add(PAGE_SIZE)
+            .ok_or(PagingError::AddressOverflow)?;
+    }
+    Ok(())
 }
 
 /// Petakan region contiguous sepanjang `size` byte, dibulatkan ke atas per halaman 4KB.

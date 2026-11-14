@@ -6,6 +6,7 @@
 #define S_IFMT  0170000
 #define S_IFCHR 0020000
 #define S_IFDIR 0040000
+#define S_IFLNK 0120000
 #define S_IFREG 0100000
 
 #define S_IRUSR 0400
@@ -28,10 +29,17 @@ struct stat {
 
 #define S_ISCHR(mode) (((mode) & S_IFMT) == S_IFCHR)
 #define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)
+#define S_ISLNK(mode) (((mode) & S_IFMT) == S_IFLNK)
 #define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
 
 int chmod(const char *path, mode_t mode);
 int mkdir(const char *path, mode_t mode);
 int stat(const char *path, struct stat *result);
+int lstat(const char *path, struct stat *result);
+int fstat(int fd, struct stat *result);
+int fstatat(int dirfd, const char *path, struct stat *result, int flags);
+int fchmod(int fd, mode_t mode);
+int mkdirat(int dirfd, const char *path, mode_t mode);
+mode_t umask(mode_t mask);
 
 #endif

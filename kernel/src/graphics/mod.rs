@@ -102,13 +102,3 @@ impl Framebuffer {
         }
     }
 }
-
-/// Compatibility helper: tulis rectangle pixel dengan API lama.
-/// Dipertahankan sementara untuk transisi; gunakan [`Framebuffer::fill_rect`] langsung.
-#[deprecated(note = "Gunakan Framebuffer::get().fill_rect() langsung")]
-pub fn write_pixel(from: (u64, u64), to: (u64, u64), color: (u32, u32, u32)) {
-    if let Some(fb) = Framebuffer::get() {
-        let c = Color::rgb(color.0 as u8, color.1 as u8, color.2 as u8);
-        fb.fill_rect(from.0, from.1, to.0, to.1, c);
-    }
-}

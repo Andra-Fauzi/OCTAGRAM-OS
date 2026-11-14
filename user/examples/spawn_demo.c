@@ -1,35 +1,33 @@
-#include "octagram.h"
+#include <spawn.h>
+#include <stdio.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 int main(int argc, char **argv)
 {
-    static const char usage[] = "usage: spawn_demo <child-elf>\n";
-    static const char spawn_error[] = "spawn_demo: spawn failed\n";
-    static const char wait_error[] = "spawn_demo: waitpid failed\n";
-    static const char child_error[] = "spawn_demo: child failed\n";
-    static const char success[] = "spawn_demo: child exited successfully\n";
-
     if (argc != 2) {
-        oct_write(OCT_STDERR, usage, sizeof(usage) - 1);
+        puts("usage: spawn_demo <child-elf>");
         return 2;
     }
 
-    const char *child_argv[] = {argv[1], 0};
-    int64_t child_pid = oct_spawn(argv[1], child_argv, 1);
-    if (child_pid < 0) {
-        oct_write(OCT_STDERR, spawn_error, sizeof(spawn_error) - 1);
+    char *child_argv[] = {argv[1], NULL};
+    pid_t child_pid;
+    int error = posix_spawn(&child_pid, argv[1], NULL, NULL, child_argv, environ);
+    if (error != 0) {
+        printf("spawn_demo: spawn failed: %d\n", error);
         return 3;
     }
 
-    uint64_t status = 0;
-    if (oct_waitpid(OCT_WAIT_ANY, &status) != child_pid) {
-        oct_write(OCT_STDERR, wait_error, sizeof(wait_error) - 1);
+    int status = 0;
+    if (waitpid(child_pid, &status, 0) != child_pid) {
+        puts("spawn_demo: waitpid failed");
         return 4;
     }
-    if (status != 0) {
-        oct_write(OCT_STDERR, child_error, sizeof(child_error) - 1);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        puts("spawn_demo: child failed");
         return 5;
     }
 
-    oct_write(OCT_STDOUT, success, sizeof(success) - 1);
+    puts("spawn_demo: child exited successfully");
     return 0;
 }

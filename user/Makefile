@@ -9,19 +9,12 @@ HOSTLD ?= ld
 
 CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
 	-fno-stack-protector -fno-pie -fno-pic -mno-red-zone -mcmodel=small \
-	-mno-mmx -msse2 -mfpmath=387 \
+	-mno-mmx -msse2 -mfpmath=387 -DOCTAGRAM_TLS_ERRNO \
 	-Iinclude
 LDFLAGS := -m elf_x86_64 -static -nostdlib -T linker.ld
-PROGRAMS := hello file_demo runtime_demo tty_demo argv_demo graphics_demo spawn_demo pipe_demo env_demo posix_demo stdio_demo posix_spawn_demo scanf_demo
+PROGRAMS := hello file_demo runtime_demo tty_demo argv_demo spawn_demo pipe_demo env_demo posix_demo stdio_demo posix_spawn_demo file_api_demo path_api_demo at_api_demo execve_demo fork_demo time_demo mmap_demo scanf_demo tls_demo thread_demo
 BINARIES := $(addprefix build/,$(addsuffix .elf,$(PROGRAMS)))
 HEADERS := $(wildcard include/*.h include/sys/*.h)
-CHIBICC_SOURCES := codegen hashmap main parse preprocess strings tokenize type unicode
-CHIBICC_OBJECTS := $(addprefix build/chibicc_,$(addsuffix .o,$(CHIBICC_SOURCES)))
-CHIBICC_HEADERS := $(wildcard third_party/chibicc/*.h)
-CHIBICC_ELF := build/chibicc.elf
-CHIBICC_CFLAGS := $(CFLAGS) -DOCTAGRAM -mfpmath=387 -ffunction-sections \
-	-fdata-sections -Wno-switch -Wno-unused-function -Wno-unused-variable \
-	-Wno-sign-compare -Wno-missing-field-initializers -Ithird_party/chibicc
 TCC_SOURCES := tcc libtcc tccpp tccgen tccdbg tccelf tccasm tccrun \
 	x86_64-gen x86_64-link i386-asm
 TCC_OBJECTS := $(addprefix build/tcc_,$(addsuffix .o,$(TCC_SOURCES)))
@@ -29,6 +22,8 @@ TCC_HEADERS := $(wildcard third_party/tinycc/*.h third_party/tinycc/*.c)
 TCC_ELF := build/tcc.elf
 TCC_CFLAGS := $(CFLAGS) -w -DONE_SOURCE=0 -DCONFIG_TCC_STATIC \
 	-DTARGETOS_OCTAGRAM -Ithird_party/tinycc -Ithird_party/tinycc/include
+PIC_CFLAGS := $(filter-out -fno-pic -fno-pie -DOCTAGRAM_TLS_ERRNO,$(CFLAGS)) -fPIC
+RUNTIME_PIC_CFLAGS := $(PIC_CFLAGS) -DOCTAGRAM_SHARED
 TCC_SETJMP := build/setjmp.o
 TCC_SUPPORT_SOURCES := libtcc1 stdatomic builtin va_list dsohandle
 TCC_SUPPORT_ASSEMBLY := atomic alloca alloca-bt
@@ -39,13 +34,18 @@ TCC_SUPPORT_CFLAGS := $(CFLAGS) -fPIC -fno-omit-frame-pointer \
 	-Ithird_party/tinycc
 TCC_LIBTCC1 := build/libtcc1.a
 TCC_LIBC := build/libc.a
+LDSO_ELF := build/ld-octagram.elf
+DYNAMIC_DEMO := build/dynamic_demo.elf
+DYNAMIC_LIBRARY := build/libdyn_demo.so
+SHARED_LIBC := build/liboctagram.so
+LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 
-.PHONY: all clean rust chibicc scanf-test
-all: $(BINARIES) $(CHIBICC_ELF) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
-
-chibicc: $(CHIBICC_ELF)
+.PHONY: all clean rust scanf-test dynamic
+all: $(BINARIES) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
+
+dynamic: $(LDSO_ELF) $(SHARED_LIBC) $(DYNAMIC_LIBRARY) $(DYNAMIC_DEMO)
 
 scanf-test: build/scanf_runtime_test
 	./build/scanf_runtime_test
@@ -59,14 +59,17 @@ build:
 build/crt0.o: crt0.S | build
 	$(AS) --64 -o $@ $<
 
+build/crt0.pic.o: crt0.S | build
+	$(AS) --64 -o $@ $<
+
 build/setjmp.o: setjmp.S | build
 	$(AS) --64 -o $@ $<
 
 build/runtime.o: runtime.c $(HEADERS) | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-build/chibicc_%.o: third_party/chibicc/%.c $(CHIBICC_HEADERS) $(HEADERS) | build
-	$(CC) $(CHIBICC_CFLAGS) -c -o $@ $<
+build/runtime.pic.o: runtime.c $(HEADERS) | build
+	$(CC) $(RUNTIME_PIC_CFLAGS) -c -o $@ $<
 
 build/tcc_%.o: third_party/tinycc/%.c $(TCC_HEADERS) $(HEADERS) | build
 	$(CC) $(TCC_CFLAGS) -c -o $@ $<
@@ -79,6 +82,40 @@ build/tcc_support_%.o: third_party/tinycc/lib/%.S | build
 
 build/%.o: examples/%.c $(HEADERS) | build
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+build/ldso_start.o: ldso/start.S | build
+	$(AS) --64 -o $@ $<
+
+build/ldso_transfer.o: ldso/transfer.S | build
+	$(AS) --64 -o $@ $<
+
+build/ldso_loader.o: ldso/loader.c $(HEADERS) | build
+	$(CC) $(CFLAGS) -fno-pic -fno-pie -c -o $@ $<
+
+$(LDSO_ELF): $(LDSO_OBJECTS) ldso/linker.ld
+	$(LD) -m elf_x86_64 -static -nostdlib -T ldso/linker.ld -o $@ $(LDSO_OBJECTS)
+
+$(SHARED_LIBC): build/runtime.pic.o
+	$(LD) -m elf_x86_64 -shared --hash-style=gnu -soname liboctagram.so \
+		-o $@ $<
+
+build/dynlib.o: examples/dynlib.c $(HEADERS) | build
+	$(CC) $(PIC_CFLAGS) -c -o $@ $<
+
+$(DYNAMIC_LIBRARY): build/dynlib.o
+	$(LD) -m elf_x86_64 -shared --hash-style=gnu -soname libdyn_demo.so -o $@ $<
+
+build/dynamic_demo.o: examples/dynamic_demo.c $(HEADERS) | build
+	$(CC) $(PIC_CFLAGS) -c -o $@ $<
+
+build/tls_demo.o: examples/tls_demo.c $(HEADERS) | build
+	$(CC) $(CFLAGS) -ftls-model=local-exec -c -o $@ $<
+
+$(DYNAMIC_DEMO): build/dynamic_demo.o build/crt0.pic.o $(SHARED_LIBC) $(DYNAMIC_LIBRARY)
+	$(LD) -m elf_x86_64 -pie --hash-style=gnu -z now \
+		-dynamic-linker /lib/ld-octagram.so -e _start \
+		-o $@ build/crt0.pic.o build/dynamic_demo.o \
+		-Lbuild -loctagram -ldyn_demo
 
 build/%.elf: build/%.o build/crt0.o build/runtime.o linker.ld
 	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o $<
@@ -107,9 +144,6 @@ $(TCC_LIBTCC1): $(TCC_SUPPORT_OBJECTS)
 
 $(TCC_LIBC): build/runtime.o $(TCC_SETJMP)
 	$(AR) rcs $@ $^
-
-$(CHIBICC_ELF): $(CHIBICC_OBJECTS) build/crt0.o build/runtime.o linker.ld
-	$(LD) $(LDFLAGS) --gc-sections -o $@ build/crt0.o build/runtime.o $(CHIBICC_OBJECTS)
 
 clean:
 	rm -rf build

@@ -7,7 +7,7 @@ pub const KERNEL_DATA_SELECTOR: u16 = 0x10;
 pub const USER_DATA_SELECTOR: u16 = 0x1B;
 pub const USER_CODE_SELECTOR: u16 = 0x23;
 const TSS_SELECTOR: u16 = 0x28;
-const USER_KERNEL_STACK_SIZE: usize = 16 * 1024;
+const USER_KERNEL_STACK_SIZE: usize = 64 * 1024;
 
 #[repr(C, packed)]
 struct GdtDescriptor {

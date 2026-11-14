@@ -2,6 +2,7 @@
 
 pub mod acpi;
 pub mod ahci;
+pub mod device_model;
 pub mod keyboard;
 pub mod pci;
 pub mod rtc;
@@ -23,10 +24,22 @@ pub(crate) unsafe fn initialize() {
         Ok(()) => crate::println!("[acpi] shutdown support ready"),
         Err(error) => crate::println!("[acpi] shutdown support unavailable: {error:?}"),
     }
+    if let Err(error) = unsafe { device_model::register_driver(&ahci::AHCI_DRIVER) } {
+        crate::println!("driver ahci registration failed: {error}");
+    }
+    unsafe { usb::register_class_drivers() };
+
     let pci_devices = pci::scan_pci_bus();
-    unsafe {
-        ahci::init(&pci_devices);
-        usb::init_usb_controllers(&pci_devices);
+    for device in pci_devices {
+        let result =
+            unsafe { device_model::register_device(device_model::DeviceInfo::Pci(device)) };
+        if let Err(error) = result {
+            crate::println!("PCI device registration failed: {error}");
+        }
+    }
+
+    if let Err(error) = unsafe { device_model::register_driver(&usb::XHCI_DRIVER) } {
+        crate::println!("driver xhci registration failed: {error}");
     }
 }
 

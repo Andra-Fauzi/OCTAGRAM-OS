@@ -1,20 +1,22 @@
 //! Loader for static ELF64 x86_64 programs and the minimal OCTAGRAM syscall ABI.
 
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::arch::x86_64::{
     fpu::{self, State as FpuState},
     gdt,
     interrupt::{self, InterruptFrame, InterruptStackFrame},
+    thread_pointer,
 };
 use crate::fs::{self, DirectoryEntry, FsError, NodeType};
 use crate::memory::{
     allocate_frame, free_frame, paging,
     paging::{PAGE_SIZE, PagingError},
+    physical_to_virtual,
 };
 
 const ELF_HEADER_SIZE: usize = 64;
@@ -37,7 +39,11 @@ const MAX_OPEN_FILES: usize = 16;
 const MAX_SCHEDULED_PROCESSES: usize = 16;
 const PIPE_CAPACITY: usize = 4096;
 const WAIT_ANY_PID: u64 = u64::MAX;
-const PROCESS_KERNEL_STACK_SIZE: usize = 16 * 1024;
+const WAIT_NOHANG: u64 = 1;
+const PROCESS_KERNEL_STACK_SIZE: usize = 64 * 1024;
+const ELF_ET_EXEC: u16 = 2;
+const ELF_ET_DYN: u16 = 3;
+const PIE_LOAD_BIAS: u64 = 0x4000_0000;
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
 const PT_INTERP: u32 = 3;
@@ -53,29 +59,67 @@ const SYSCALL_STAT: u64 = 6;
 const SYSCALL_MKDIR: u64 = 7;
 const SYSCALL_UNLINK: u64 = 8;
 const SYSCALL_FTRUNCATE: u64 = 9;
-const SYSCALL_BRK: u64 = 10;
 const SYSCALL_GETPID: u64 = 11;
 const SYSCALL_ISATTY: u64 = 12;
 const SYSCALL_CHDIR: u64 = 13;
 const SYSCALL_GETCWD: u64 = 14;
-const SYSCALL_PUTPIXEL: u64 = 15;
 const SYSCALL_MMAP: u64 = 16;
 const SYSCALL_MUNMAP: u64 = 17;
-const SYSCALL_MMAP_FILE: u64 = 18;
-const SYSCALL_SPAWN: u64 = 19;
 const SYSCALL_WAITPID: u64 = 20;
 const SYSCALL_PIPE: u64 = 21;
 const SYSCALL_DUP2: u64 = 22;
-const SYSCALL_SETENVIRON: u64 = 23;
-const SYSCALL_SPAWN_ENV: u64 = 24;
 const SYSCALL_CHMOD: u64 = 25;
-const SYSCALL_PRINTF: u64 = 26;
 const SYSCALL_OPENDIR: u64 = 27;
 const SYSCALL_READDIR: u64 = 28;
+const SYSCALL_FSTAT: u64 = 29;
+const SYSCALL_ACCESS: u64 = 30;
+const SYSCALL_RENAME: u64 = 31;
+const SYSCALL_UMASK: u64 = 32;
+const SYSCALL_DUP: u64 = 33;
+const SYSCALL_FCNTL: u64 = 34;
+const SYSCALL_RMDIR: u64 = 35;
+const SYSCALL_SYMLINK: u64 = 36;
+const SYSCALL_READLINK: u64 = 37;
+const SYSCALL_LSTAT: u64 = 38;
+const SYSCALL_FCHMOD: u64 = 39;
+const SYSCALL_OPENAT: u64 = 40;
+const SYSCALL_FSTATAT: u64 = 41;
+const SYSCALL_MKDIRAT: u64 = 42;
+const SYSCALL_UNLINKAT: u64 = 43;
+const SYSCALL_RENAMEAT: u64 = 44;
+const SYSCALL_READLINKAT: u64 = 45;
+const SYSCALL_SYMLINKAT: u64 = 46;
+const SYSCALL_EXECVE: u64 = 47;
+const SYSCALL_FORK: u64 = 48;
+const SYSCALL_CLOCK_GETTIME: u64 = 50;
+const SYSCALL_MSYNC: u64 = 51;
+const SYSCALL_MPROTECT: u64 = 52;
+const SYSCALL_MINCORE: u64 = 53;
+const SYSCALL_MLOCK: u64 = 54;
+const SYSCALL_MUNLOCK: u64 = 55;
+const SYSCALL_MLOCKALL: u64 = 56;
+const SYSCALL_MUNLOCKALL: u64 = 57;
+const SYSCALL_POSIX_MADVISE: u64 = 58;
+const SYSCALL_SET_THREAD_POINTER: u64 = 59;
+const SYSCALL_GET_THREAD_POINTER: u64 = 60;
+const SYSCALL_THREAD_CREATE: u64 = 61;
+const SYSCALL_THREAD_EXIT: u64 = 62;
+const SYSCALL_THREAD_JOIN: u64 = 63;
+const SYSCALL_THREAD_SELF: u64 = 64;
+const AT_FDCWD: i64 = -100;
+const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
+const AT_REMOVEDIR: u64 = 0x200;
 
 const PROT_READ: u64 = 1;
 const PROT_WRITE: u64 = 2;
 const PROT_EXEC: u64 = 4;
+const MAP_SHARED: u64 = 1;
+const MAP_PRIVATE: u64 = 2;
+const MAP_FIXED: u64 = 0x10;
+const MAP_ANONYMOUS: u64 = 0x20;
+const MS_ASYNC: u64 = 1;
+const MS_INVALIDATE: u64 = 2;
+const MS_SYNC: u64 = 4;
 
 const O_RDONLY: u64 = 0;
 const O_WRONLY: u64 = 1;
@@ -84,6 +128,12 @@ const O_ACCESS_MASK: u64 = 3;
 const O_CREAT: u64 = 1 << 8;
 const O_TRUNC: u64 = 1 << 9;
 const O_APPEND: u64 = 1 << 10;
+const FD_CLOEXEC: u32 = 1;
+const F_DUPFD: u64 = 0;
+const F_GETFD: u64 = 1;
+const F_SETFD: u64 = 2;
+const F_GETFL: u64 = 3;
+const F_SETFL: u64 = 4;
 
 const EINTR: i32 = 4;
 const E2BIG: i32 = 7;
@@ -98,11 +148,12 @@ const ENOENT: i32 = 2;
 const EEXIST: i32 = 17;
 const ENOTDIR: i32 = 20;
 const EISDIR: i32 = 21;
-const ENODEV: i32 = 19;
 const EINVAL: i32 = 22;
 const ESPIPE: i32 = 29;
 const ERANGE: i32 = 34;
 const EACCES: i32 = 13;
+const EBUSY: i32 = 16;
+const ENODEV: i32 = 19;
 const EMFILE: i32 = 24;
 const ENOTTY: i32 = 25;
 const ENOSPC: i32 = 28;
@@ -114,7 +165,9 @@ const ELOOP: i32 = 40;
 const EILSEQ: i32 = 84;
 const EPIPE: i32 = 32;
 const EDEADLK: i32 = 35;
+const ESRCH: i32 = 3;
 const EOVERFLOW: i32 = 75;
+const ENOTSUP: i32 = 95;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElfError {
@@ -138,6 +191,142 @@ pub enum ElfError {
     Paging(PagingError),
 }
 
+fn syscall_fstat(fd: u64, stat_address: u64) -> Result<u64, i32> {
+    paging::validate_user_range(stat_address, core::mem::size_of::<UserStat>(), true)
+        .map_err(|_| EFAULT)?;
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let path = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        match process.descriptors.get(fd).and_then(Option::as_ref) {
+            Some(UserDescriptor::File(file)) => file.lock().path.clone(),
+            Some(UserDescriptor::Directory(directory)) => directory.lock().path.clone(),
+            Some(UserDescriptor::Pipe(_)) => return Err(ENOTSUP),
+            Some(
+                UserDescriptor::ConsoleInput
+                | UserDescriptor::ConsoleOutput
+                | UserDescriptor::ConsoleError,
+            ) => {
+                return Err(ENOTSUP);
+            }
+            None => return Err(EBADF),
+        }
+    };
+    let metadata = fs::with_vfs(|vfs| vfs.metadata(&path))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    let stat = UserStat {
+        size: metadata.len as u64,
+        mode: stat_mode(&path, metadata.node_type, metadata.permissions),
+        reserved: 0,
+    };
+    unsafe {
+        core::ptr::write_unaligned(stat_address as *mut UserStat, stat);
+    }
+    Ok(0)
+}
+
+fn syscall_access(path_address: u64, mode: u64) -> Result<u64, i32> {
+    const ACCESS_MASK: u64 = 0b111;
+    if mode & !ACCESS_MASK != 0 {
+        return Err(EINVAL);
+    }
+    let path = resolve_process_path(&copy_user_path(path_address)?)?;
+    let metadata = fs::with_vfs(|vfs| vfs.metadata(&path))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    let requested = (mode as u16) << 6;
+    if metadata.permissions & requested != requested {
+        return Err(EACCES);
+    }
+    Ok(0)
+}
+
+fn syscall_rename(source_address: u64, target_address: u64) -> Result<u64, i32> {
+    let source = resolve_process_path(&copy_user_path(source_address)?)?;
+    let target = resolve_process_path(&copy_user_path(target_address)?)?;
+    syscall_rename_paths(source, target)
+}
+
+fn syscall_renameat(
+    source_dirfd: u64,
+    source_address: u64,
+    target_dirfd: u64,
+    target_address: u64,
+) -> Result<u64, i32> {
+    let source = resolve_at_path(source_dirfd, &copy_user_path(source_address)?)?;
+    let target = resolve_at_path(target_dirfd, &copy_user_path(target_address)?)?;
+    syscall_rename_paths(source, target)
+}
+
+fn syscall_rename_paths(source: String, target: String) -> Result<u64, i32> {
+    fs::with_vfs(|vfs| vfs.rename(&source, &target))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    rewrite_shared_mapping_paths(&source, &target);
+
+    let mut scheduler = USER_SCHEDULER.lock();
+    let mut process = USER_PROCESS.lock();
+    rewrite_descriptor_paths(&mut process.descriptors, &source, &target);
+    rewrite_process_path(&mut process.cwd, &source, &target);
+    for scheduled in &mut scheduler.processes {
+        rewrite_descriptor_paths(&mut scheduled.state.descriptors, &source, &target);
+        rewrite_process_path(&mut scheduled.state.cwd, &source, &target);
+    }
+    Ok(0)
+}
+
+fn rewrite_process_path(path: &mut String, source: &str, target: &str) {
+    let source_prefix = alloc::format!("{source}/");
+    if path == source {
+        *path = String::from(target);
+    } else if let Some(suffix) = path.strip_prefix(&source_prefix) {
+        *path = alloc::format!("{target}/{suffix}");
+    }
+}
+
+fn rewrite_descriptor_paths(
+    descriptors: &mut [Option<UserDescriptor>],
+    source: &str,
+    target: &str,
+) {
+    let source_prefix = alloc::format!("{source}/");
+    for descriptor in descriptors.iter_mut().filter_map(Option::as_mut) {
+        match descriptor {
+            UserDescriptor::File(file) => {
+                let mut file = file.lock();
+                if file.path == source {
+                    file.path = String::from(target);
+                } else if let Some(suffix) = file.path.strip_prefix(&source_prefix) {
+                    file.path = alloc::format!("{target}/{suffix}");
+                }
+            }
+            UserDescriptor::Directory(directory) => {
+                let mut directory = directory.lock();
+                if directory.path == source {
+                    directory.path = String::from(target);
+                } else if let Some(suffix) = directory.path.strip_prefix(&source_prefix) {
+                    directory.path = alloc::format!("{target}/{suffix}");
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn syscall_umask(mask: u64) -> Result<u64, i32> {
+    let mask = (mask & 0o777) as u16;
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let previous = process.file_creation_mask;
+    process.file_creation_mask = mask;
+    Ok(previous as u64)
+}
+
 impl From<FsError> for ElfError {
     fn from(error: FsError) -> Self {
         Self::FileSystem(error)
@@ -159,17 +348,31 @@ struct LoadSegment {
     flags: u32,
 }
 
+struct ParsedElf {
+    elf_type: u16,
+    entry: u64,
+    program_headers: u64,
+    program_header_size: u64,
+    program_header_count: u64,
+    segments: Vec<LoadSegment>,
+    interpreter: Option<String>,
+}
+
 pub struct LoadedElf {
     entry: u64,
     user_stack: u64,
-    heap_limit: u64,
-    mmap_cursor: u64,
     environment: Vec<String>,
-    mapped_pages: Vec<u64>,
+    memory: Arc<UserMemory>,
+}
+
+struct UserMemory {
+    mmap_cursor: Mutex<u64>,
+    mapped_pages: Mutex<Vec<u64>>,
+    mmap_pages: Mutex<Vec<MappingPage>>,
+    lock_future_mappings: AtomicBool,
     address_space: paging::AddressSpace,
 }
 
-#[derive(Clone)]
 struct OpenFile {
     path: String,
     offset: usize,
@@ -178,7 +381,30 @@ struct OpenFile {
     append: bool,
 }
 
+#[derive(Clone)]
+struct MappingPage {
+    address: u64,
+    shared_backing: Option<Arc<SharedMmapPage>>,
+    locked: bool,
+    can_write: bool,
+    anonymous: bool,
+}
+
+struct SharedMmapPage {
+    physical: u64,
+    path: Mutex<Option<String>>,
+    file_offset: u64,
+    file_length: AtomicU64,
+}
+
+impl Drop for SharedMmapPage {
+    fn drop(&mut self) {
+        free_frame(self.physical as usize);
+    }
+}
+
 struct DirectoryStream {
+    path: String,
     entries: Vec<DirectoryEntry>,
     next_entry: usize,
 }
@@ -278,7 +504,7 @@ enum UserDescriptor {
     ConsoleInput,
     ConsoleOutput,
     ConsoleError,
-    File(OpenFile),
+    File(Arc<Mutex<OpenFile>>),
     Directory(Arc<Mutex<DirectoryStream>>),
     Pipe(PipeEnd),
 }
@@ -286,6 +512,7 @@ enum UserDescriptor {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProcessWait {
     Child(u64),
+    Thread(u64),
     PipeReadable(u64),
     PipeWritable(u64),
 }
@@ -295,15 +522,12 @@ struct UserProcess {
     pid: u64,
     terminal: usize,
     descriptors: Vec<Option<UserDescriptor>>,
+    descriptor_flags: Vec<u32>,
     cwd: String,
     environment: Vec<String>,
-    program_break: u64,
-    heap_mapped_end: u64,
-    heap_limit: u64,
-    mmap_cursor: u64,
-    heap_pages: Vec<u64>,
-    mmap_pages: Vec<u64>,
+    file_creation_mask: u16,
     fpu_state: FpuState,
+    thread_pointer: u64,
 }
 
 impl UserProcess {
@@ -313,15 +537,12 @@ impl UserProcess {
             pid: 0,
             terminal: 0,
             descriptors: Vec::new(),
+            descriptor_flags: Vec::new(),
             cwd: String::new(),
             environment: Vec::new(),
-            program_break: HEAP_START,
-            heap_mapped_end: HEAP_INITIAL_END,
-            heap_limit: HEAP_INITIAL_END,
-            mmap_cursor: MMAP_START,
-            heap_pages: Vec::new(),
-            mmap_pages: Vec::new(),
+            file_creation_mask: 0o022,
             fpu_state: FpuState::new(),
+            thread_pointer: 0,
         }
     }
 }
@@ -352,6 +573,9 @@ struct ScheduledProcess {
     frame_pointer: usize,
     exit_status: Option<u64>,
     parent_pid: Option<u64>,
+    is_thread: bool,
+    tid: u64,
+    thread_mapping: Option<(u64, u64)>,
     waiting_for: Option<ProcessWait>,
     wait_status_pointer: u64,
     reaped: bool,
@@ -359,18 +583,22 @@ struct ScheduledProcess {
 
 struct UserScheduler {
     processes: Vec<ScheduledProcess>,
+    retired_kernel_stacks: Vec<ProcessKernelStack>,
     current: usize,
     active: bool,
     next_pid: u64,
+    next_tid: u64,
 }
 
 impl UserScheduler {
     const fn new() -> Self {
         Self {
             processes: Vec::new(),
+            retired_kernel_stacks: Vec::new(),
             current: 0,
             active: false,
             next_pid: 1,
+            next_tid: 1,
         }
     }
 }
@@ -385,9 +613,9 @@ impl Drop for RestoreUserAddressSpace {
             .iter()
             .find(|process| process.pid == self.0)
         {
-            unsafe { process.image.address_space.activate() };
+            unsafe { process.image.memory.address_space.activate() };
         } else {
-            panic!("spawn parent disappeared before syscall returned");
+            panic!("process disappeared before syscall address-space restore");
         }
     }
 }
@@ -400,9 +628,16 @@ struct UserStat {
     reserved: u32,
 }
 
+#[repr(C)]
+struct UserTimespec {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
 static USER_PROCESS: Mutex<UserProcess> = Mutex::new(UserProcess::new());
 static USER_SCHEDULER: Mutex<UserScheduler> = Mutex::new(UserScheduler::new());
 static NEXT_PIPE_ID: AtomicU64 = AtomicU64::new(1);
+static SHARED_MMAP_PAGES: Mutex<Vec<Weak<SharedMmapPage>>> = Mutex::new(Vec::new());
 
 impl LoadedElf {
     /// Run one trusted program until it exits or faults, then release its pages.
@@ -431,25 +666,54 @@ impl LoadedElf {
 
     /// Release the mappings without running the program.
     pub fn unload(self) -> Result<(), ElfError> {
-        self.unload_with_extra_pages(&mut Vec::new(), &mut Vec::new())
-    }
-
-    fn unload_with_extra_pages(
-        mut self,
-        heap_pages: &mut Vec<u64>,
-        mmap_pages: &mut Vec<u64>,
-    ) -> Result<(), ElfError> {
-        unsafe { self.address_space.activate() };
-        let page_cleanup = release_pages(&mut self.mapped_pages);
-        let heap_cleanup = release_pages(heap_pages);
-        let mmap_cleanup = release_pages(mmap_pages);
-        let table_cleanup = self.address_space.destroy();
+        let Ok(memory) = Arc::try_unwrap(self.memory) else {
+            return Ok(());
+        };
+        unsafe { memory.address_space.activate() };
+        let mut mapped_pages = memory.mapped_pages.into_inner();
+        let mut mmap_pages = memory.mmap_pages.into_inner();
+        let page_cleanup = release_pages(&mut mapped_pages);
+        let mapping_flush = flush_shared_mapping_pages(&mmap_pages);
+        let mmap_cleanup = release_mmap_pages(&mut mmap_pages);
+        let table_cleanup = memory.address_space.destroy();
         page_cleanup?;
-        heap_cleanup?;
+        mapping_flush.map_err(ElfError::FileSystem)?;
         mmap_cleanup?;
         table_cleanup?;
         Ok(())
     }
+
+    fn fork_clone(&self, user_pages: &[u64], shared_pages: &[u64]) -> Result<Self, ElfError> {
+        let mapped_pages = try_clone_pages(&self.memory.mapped_pages.lock())?;
+        let mmap_pages = try_clone_mapping_pages(&self.memory.mmap_pages.lock())?;
+        let mmap_cursor = *self.memory.mmap_cursor.lock();
+        let lock_future_mappings = self.memory.lock_future_mappings.load(Ordering::Acquire);
+        Ok(Self {
+            entry: self.entry,
+            user_stack: self.user_stack,
+            environment: try_clone_strings(&self.environment)?,
+            memory: Arc::new(UserMemory {
+                mmap_cursor: Mutex::new(mmap_cursor),
+                mapped_pages: Mutex::new(mapped_pages),
+                mmap_pages: Mutex::new(mmap_pages),
+                lock_future_mappings: AtomicBool::new(lock_future_mappings),
+                address_space: self
+                    .memory
+                    .address_space
+                    .fork_clone(user_pages, shared_pages)?,
+            }),
+        })
+    }
+
+    fn share_for_thread(&self) -> Result<Self, ElfError> {
+        Ok(Self {
+            entry: self.entry,
+            user_stack: self.user_stack,
+            environment: try_clone_strings(&self.environment)?,
+            memory: Arc::clone(&self.memory),
+        })
+    }
+
 }
 
 pub fn load(bytes: &[u8]) -> Result<LoadedElf, ElfError> {
@@ -466,7 +730,27 @@ pub fn load_with_args_and_environment(
     environment: &[String],
 ) -> Result<LoadedElf, ElfError> {
     let process_environment = try_clone_strings(environment)?;
-    let (entry, segments) = parse(bytes)?;
+    let mut executable = parse(bytes)?;
+    if executable.elf_type == ELF_ET_DYN {
+        if executable.interpreter.is_none() {
+            return Err(ElfError::DynamicLinkingUnsupported);
+        }
+        apply_load_bias(&mut executable, PIE_LOAD_BIAS)?;
+    }
+    let interpreter = if let Some(path) = executable.interpreter.as_deref() {
+        let interpreter_bytes = read_executable_file(path)?;
+        let parsed = parse(&interpreter_bytes)?;
+        if parsed.elf_type != ELF_ET_EXEC || parsed.interpreter.is_some() {
+            return Err(ElfError::DynamicLinkingUnsupported);
+        }
+        Some((interpreter_bytes, parsed))
+    } else {
+        None
+    };
+    if executable.interpreter.is_some() && executable.program_headers == 0 {
+        return Err(ElfError::InvalidHeader);
+    }
+
     let heap_end = HEAP_INITIAL_END;
     let stack_start = STACK_TOP
         .checked_sub(STACK_PAGES * PAGE_SIZE)
@@ -478,7 +762,25 @@ pub fn load_with_args_and_environment(
     let mut total_pages = STACK_PAGES + HEAP_PAGES;
     let mut heap_limit = MMAP_START;
     let mut mmap_cursor = MMAP_START;
-    for (index, segment) in segments.iter().enumerate() {
+    let mut all_segments = Vec::new();
+    all_segments
+        .try_reserve_exact(
+            executable
+                .segments
+                .len()
+                .checked_add(
+                    interpreter
+                        .as_ref()
+                        .map_or(0, |(_, parsed)| parsed.segments.len()),
+                )
+                .ok_or(ElfError::TooLarge)?,
+        )
+        .map_err(|_| ElfError::OutOfMemory)?;
+    all_segments.extend_from_slice(&executable.segments);
+    if let Some((_, parsed)) = &interpreter {
+        all_segments.extend_from_slice(&parsed.segments);
+    }
+    for (index, segment) in all_segments.iter().enumerate() {
         let start = page_start(segment.virtual_address);
         let end = page_end(segment.virtual_address, segment.memory_size)?;
         mmap_cursor = mmap_cursor.max(end);
@@ -491,7 +793,7 @@ pub fn load_with_args_and_environment(
         total_pages = total_pages
             .checked_add((end - start) / PAGE_SIZE)
             .ok_or(ElfError::TooLarge)?;
-        for other in segments.iter().take(index) {
+        for other in all_segments.iter().take(index) {
             let other_start = page_start(other.virtual_address);
             let other_end = page_end(other.virtual_address, other.memory_size)?;
             if start < other_end && other_start < end {
@@ -499,13 +801,25 @@ pub fn load_with_args_and_environment(
             }
         }
     }
-    if !segments.iter().any(|segment| {
+    if !executable.segments.iter().any(|segment| {
         segment.flags & PF_X != 0
-            && entry >= segment.virtual_address
-            && entry < segment.virtual_address + segment.memory_size
+            && executable.entry >= segment.virtual_address
+            && executable.entry < segment.virtual_address + segment.memory_size
     }) {
         return Err(ElfError::InvalidEntryPoint);
     }
+    let entry = if let Some((_, parsed)) = &interpreter {
+        if !parsed.segments.iter().any(|segment| {
+            segment.flags & PF_X != 0
+                && parsed.entry >= segment.virtual_address
+                && parsed.entry < segment.virtual_address + segment.memory_size
+        }) {
+            return Err(ElfError::InvalidEntryPoint);
+        }
+        parsed.entry
+    } else {
+        executable.entry
+    };
 
     unsafe { paging::enable_nxe()? };
 
@@ -522,25 +836,9 @@ pub fn load_with_args_and_environment(
     }
 
     let load_result = (|| {
-        for segment in &segments {
-            let start = page_start(segment.virtual_address);
-            let end = page_end(segment.virtual_address, segment.memory_size)?;
-            let mut page = start;
-            while page < end {
-                let mut flags = paging::flags::USER;
-                if segment.flags & PF_W != 0 {
-                    flags |= paging::flags::WRITABLE;
-                }
-                if segment.flags & PF_X == 0 {
-                    flags |= paging::flags::NO_EXECUTE;
-                }
-                map_zeroed_page(page, flags, &mut mapped_pages)?;
-                page += PAGE_SIZE;
-            }
-            if segment.file_size != 0 {
-                let source = &bytes[segment.file_offset..segment.file_offset + segment.file_size];
-                copy_to_user_pages(segment.virtual_address, source)?;
-            }
+        map_elf_segments(&executable.segments, bytes, &mut mapped_pages)?;
+        if let Some((interpreter_bytes, parsed)) = &interpreter {
+            map_elf_segments(&parsed.segments, interpreter_bytes, &mut mapped_pages)?;
         }
 
         for page_index in 0..STACK_PAGES {
@@ -558,8 +856,32 @@ pub fn load_with_args_and_environment(
             )?;
         }
 
-        let (user_stack, initial_stack) =
-            build_initial_stack(stack_start, STACK_PAGES * PAGE_SIZE, arguments, environment)?;
+        let interpreter_base = interpreter
+            .as_ref()
+            .and_then(|(_, parsed)| {
+                parsed
+                    .segments
+                    .iter()
+                    .map(|segment| page_start(segment.virtual_address))
+                    .min()
+            })
+            .unwrap_or(0);
+        let auxv = [
+            (3, executable.program_headers),
+            (4, executable.program_header_size),
+            (5, executable.program_header_count),
+            (6, PAGE_SIZE),
+            (7, interpreter_base),
+            (9, executable.entry),
+            (0, 0),
+        ];
+        let (user_stack, initial_stack) = build_initial_stack(
+            stack_start,
+            STACK_PAGES * PAGE_SIZE,
+            arguments,
+            environment,
+            &auxv,
+        )?;
         copy_to_user_pages(user_stack, &initial_stack)?;
         Ok::<u64, ElfError>(user_stack)
     })();
@@ -570,11 +892,14 @@ pub fn load_with_args_and_environment(
             Ok(LoadedElf {
                 entry,
                 user_stack,
-                heap_limit,
-                mmap_cursor,
                 environment: process_environment,
-                mapped_pages,
-                address_space,
+                memory: Arc::new(UserMemory {
+                    mmap_cursor: Mutex::new(mmap_cursor),
+                    mapped_pages: Mutex::new(mapped_pages),
+                    mmap_pages: Mutex::new(Vec::new()),
+                    lock_future_mappings: AtomicBool::new(false),
+                    address_space,
+                }),
             })
         }
         Err(error) => {
@@ -585,6 +910,69 @@ pub fn load_with_args_and_environment(
             Err(error)
         }
     }
+}
+
+fn map_elf_segments(
+    segments: &[LoadSegment],
+    bytes: &[u8],
+    mapped_pages: &mut Vec<u64>,
+) -> Result<(), ElfError> {
+    for segment in segments {
+        let start = page_start(segment.virtual_address);
+        let end = page_end(segment.virtual_address, segment.memory_size)?;
+        let mut page = start;
+        while page < end {
+            let mut flags = paging::flags::USER;
+            if segment.flags & PF_W != 0 {
+                flags |= paging::flags::WRITABLE;
+            }
+            if segment.flags & PF_X == 0 {
+                flags |= paging::flags::NO_EXECUTE;
+            }
+            map_zeroed_page(page, flags, mapped_pages)?;
+            page += PAGE_SIZE;
+        }
+        if segment.file_size != 0 {
+            let file_end = segment
+                .file_offset
+                .checked_add(segment.file_size)
+                .ok_or(ElfError::OutOfBounds)?;
+            let source = bytes
+                .get(segment.file_offset..file_end)
+                .ok_or(ElfError::OutOfBounds)?;
+            copy_to_user_pages(segment.virtual_address, source)?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_load_bias(parsed: &mut ParsedElf, load_bias: u64) -> Result<(), ElfError> {
+    parsed.entry = parsed
+        .entry
+        .checked_add(load_bias)
+        .ok_or(ElfError::AddressRange)?;
+    if parsed.program_headers != 0 {
+        parsed.program_headers = parsed
+            .program_headers
+            .checked_add(load_bias)
+            .ok_or(ElfError::AddressRange)?;
+    }
+    for segment in &mut parsed.segments {
+        segment.virtual_address = segment
+            .virtual_address
+            .checked_add(load_bias)
+            .ok_or(ElfError::AddressRange)?;
+        let end = segment
+            .virtual_address
+            .checked_add(segment.memory_size)
+            .ok_or(ElfError::AddressRange)?;
+        if segment.virtual_address < paging::USER_ADDRESS_MIN
+            || end > paging::USER_ADDRESS_MAX
+        {
+            return Err(ElfError::AddressRange);
+        }
+    }
+    Ok(())
 }
 
 /// Load and synchronously run an ELF file from the mounted VFS.
@@ -719,14 +1107,7 @@ fn run_loaded_processes(
             Ok(environment) => environment,
             Err(error) => return fail_after_unload(images, error),
         };
-        match new_user_process(
-            image.heap_limit,
-            image.mmap_cursor,
-            cwd,
-            pid,
-            terminal,
-            process_environment,
-        ) {
+        match new_user_process(cwd, pid, terminal, process_environment) {
             Ok(state) => states.push(state),
             Err(error) => return fail_after_unload(images, error),
         }
@@ -767,6 +1148,9 @@ fn run_loaded_processes(
             frame_pointer,
             exit_status: None,
             parent_pid: None,
+            is_thread: false,
+            tid: index as u64 + 1,
+            thread_mapping: None,
             waiting_for: None,
             wait_status_pointer: 0,
             reaped: false,
@@ -779,11 +1163,12 @@ fn run_loaded_processes(
         scheduler.current = 0;
         scheduler.active = true;
         scheduler.next_pid = next_pid;
+        scheduler.next_tid = next_pid;
         let mut active_process = USER_PROCESS.lock();
         core::mem::swap(&mut *active_process, &mut scheduler.processes[0].state);
         let first = &scheduler.processes[0].image;
         unsafe {
-            first.address_space.activate();
+            first.memory.address_space.activate();
         }
     }
 
@@ -792,14 +1177,16 @@ fn run_loaded_processes(
         let first = &scheduler.processes[0].image;
         (first.entry, first.user_stack)
     };
+    thread_pointer::write(0);
     restore_current_user_fpu();
     let _last_status = unsafe { gdt::enter_user_mode(entry, user_stack) };
+    thread_pointer::write(0);
     restore_current_user_fpu();
 
     let mut scheduler = USER_SCHEDULER.lock();
     if let Some(first) = scheduler.processes.first() {
         unsafe {
-            first.image.address_space.activate_kernel();
+            first.image.memory.address_space.activate_kernel();
         }
     }
     let all_exited = scheduler
@@ -814,7 +1201,7 @@ fn run_loaded_processes(
     let status_reserve_failed = statuses.try_reserve_exact(processes.len()).is_err();
     let mut missing_status = false;
     let mut cleanup_error = None;
-    for mut process in processes {
+    for process in processes {
         if let Some(status) = process.exit_status {
             if !status_reserve_failed {
                 statuses.push(status);
@@ -822,11 +1209,7 @@ fn run_loaded_processes(
         } else {
             missing_status = true;
         }
-        if let Err(error) = process
-            .image
-            .unload_with_extra_pages(&mut process.state.heap_pages, &mut process.state.mmap_pages)
-            && cleanup_error.is_none()
-        {
+        if let Err(error) = process.image.unload() && cleanup_error.is_none() {
             cleanup_error = Some(error);
         }
     }
@@ -893,11 +1276,25 @@ fn initialize_user_frame(image: &LoadedElf, stack_top: u64) -> usize {
     frame_pointer
 }
 
+fn initialize_fork_frame(frame: &InterruptFrame, stack_top: u64) -> usize {
+    let frame_pointer = (stack_top as usize - core::mem::size_of::<InterruptFrame>()) & !0xF;
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            frame as *const InterruptFrame,
+            frame_pointer as *mut InterruptFrame,
+            1,
+        );
+        (*(frame_pointer as *mut InterruptFrame)).rax = 0;
+    }
+    frame_pointer
+}
+
 fn build_initial_stack(
     stack_start: u64,
     stack_size: u64,
     arguments: &[String],
     environment: &[String],
+    auxiliary_vector: &[(u64, u64)],
 ) -> Result<(u64, Vec<u8>), ElfError> {
     if arguments.len() > MAX_ARGUMENTS || environment.len() > MAX_ENVIRONMENT_VARIABLES {
         return Err(ElfError::ArgumentsTooLarge);
@@ -995,6 +1392,7 @@ fn build_initial_stack(
         .checked_add(environment.len())
         .ok_or(ElfError::ArgumentsTooLarge)?
         .checked_add(3)
+        .and_then(|words| words.checked_add(auxiliary_vector.len().checked_mul(2)?))
         .ok_or(ElfError::ArgumentsTooLarge)?;
     let table_bytes = table_words
         .checked_mul(core::mem::size_of::<u64>())
@@ -1030,6 +1428,15 @@ fn build_initial_stack(
         cursor + 8 * (arguments.len() + environment.len() + 2),
         0,
     );
+    let auxiliary_start = arguments.len() + environment.len() + 3;
+    for (index, (tag, value)) in auxiliary_vector.iter().enumerate() {
+        write_word(&mut stack, cursor + 8 * (auxiliary_start + index * 2), *tag);
+        write_word(
+            &mut stack,
+            cursor + 8 * (auxiliary_start + index * 2 + 1),
+            *value,
+        );
+    }
     let mut initial_stack = Vec::new();
     initial_stack
         .try_reserve_exact(stack_size - cursor)
@@ -1039,8 +1446,11 @@ fn build_initial_stack(
 }
 
 pub fn handle_syscall(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    USER_SCHEDULER.lock().retired_kernel_stacks.clear();
+    save_current_thread_pointer();
     save_current_user_fpu();
     let next_frame = handle_syscall_inner(frame);
+    restore_current_thread_pointer();
     restore_current_user_fpu();
     next_frame
 }
@@ -1050,15 +1460,15 @@ fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     match frame.rax {
         SYSCALL_EXIT => terminate_user_inner(frame, frame.rdi),
         SYSCALL_WAITPID => syscall_waitpid(frame),
-        SYSCALL_PRINTF => {
-            frame.rax = match syscall_printf(frame) {
-                Ok(value) => value,
-                Err(errno) => (-(errno as i64)) as u64,
-            };
-            frame_pointer
-        }
+        SYSCALL_EXECVE => syscall_execve(frame),
+        SYSCALL_FORK => syscall_fork(frame),
+        SYSCALL_THREAD_CREATE => syscall_thread_create(frame),
+        SYSCALL_THREAD_EXIT => syscall_thread_exit(frame),
+        SYSCALL_THREAD_JOIN => syscall_thread_join(frame),
         number => {
-            let result = dispatch_syscall(number, frame.rdi, frame.rsi, frame.rdx, frame.r10);
+            let result = dispatch_syscall(
+                number, frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9,
+            );
             if result == Err(EAGAIN) {
                 let pipe_wait = match number {
                     SYSCALL_READ => pipe_wait_target(frame.rdi, true),
@@ -1081,10 +1491,12 @@ fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
 pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let from_user = frame.stack_frame.code_segment & 3 == 3;
     if from_user {
+        save_current_thread_pointer();
         save_current_user_fpu();
     }
     let next_frame = handle_timer_inner(frame);
     if from_user {
+        restore_current_thread_pointer();
         restore_current_user_fpu();
     }
     next_frame
@@ -1126,12 +1538,42 @@ fn handle_timer_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let next_frame = next_process.frame_pointer as *mut InterruptFrame;
     unsafe {
         gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-        next_process.image.address_space.activate();
+        next_process.image.memory.address_space.activate();
     }
     next_frame
 }
 
-fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> Result<u64, i32> {
+fn syscall_set_thread_pointer(value: u64) -> Result<u64, i32> {
+    if !thread_pointer::is_valid_user_thread_pointer(value) {
+        return Err(EINVAL);
+    }
+
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    process.thread_pointer = value;
+    thread_pointer::write(value);
+    Ok(0)
+}
+
+fn syscall_get_thread_pointer() -> Result<u64, i32> {
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    Ok(process.thread_pointer)
+}
+
+fn dispatch_syscall(
+    number: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
+) -> Result<u64, i32> {
     match number {
         SYSCALL_WRITE => syscall_write(arg1, arg2, arg3),
         SYSCALL_READ => syscall_read(arg1, arg2, arg3),
@@ -1139,10 +1581,9 @@ fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> 
         SYSCALL_CLOSE => syscall_close(arg1),
         SYSCALL_LSEEK => syscall_lseek(arg1, arg2 as i64, arg3),
         SYSCALL_STAT => syscall_stat(arg1, arg2),
-        SYSCALL_MKDIR => syscall_mkdir(arg1),
+        SYSCALL_MKDIR => syscall_mkdir(arg1, arg2),
         SYSCALL_UNLINK => syscall_unlink(arg1),
         SYSCALL_FTRUNCATE => syscall_ftruncate(arg1, arg2),
-        SYSCALL_BRK => syscall_brk(arg1),
         SYSCALL_CHDIR => syscall_chdir(arg1),
         SYSCALL_GETCWD => syscall_getcwd(arg1, arg2),
         SYSCALL_CHMOD => syscall_chmod(arg1, arg2),
@@ -1154,17 +1595,50 @@ fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> 
                 Err(EINTR)
             }
         }
-        SYSCALL_PUTPIXEL => syscall_putpixel(arg1, arg2, arg3),
-        SYSCALL_MMAP => syscall_mmap(arg1, arg2, arg3),
+        SYSCALL_MMAP => syscall_mmap(arg1, arg2, arg3, arg4, arg5, arg6),
         SYSCALL_MUNMAP => syscall_munmap(arg1, arg2),
-        SYSCALL_MMAP_FILE => syscall_mmap_file(arg1, arg2, arg3),
-        SYSCALL_SPAWN => syscall_spawn(arg1, arg2, arg3),
-        SYSCALL_SPAWN_ENV => syscall_spawn_with_environment(arg1, arg2, arg3, arg4),
         SYSCALL_PIPE => syscall_pipe(arg1),
         SYSCALL_DUP2 => syscall_dup2(arg1, arg2),
-        SYSCALL_SETENVIRON => syscall_set_environ(arg1),
         SYSCALL_OPENDIR => syscall_opendir(arg1),
         SYSCALL_READDIR => syscall_readdir(arg1, arg2),
+        SYSCALL_FSTAT => syscall_fstat(arg1, arg2),
+        SYSCALL_ACCESS => syscall_access(arg1, arg2),
+        SYSCALL_RENAME => syscall_rename(arg1, arg2),
+        SYSCALL_UMASK => syscall_umask(arg1),
+        SYSCALL_DUP => syscall_dup(arg1),
+        SYSCALL_FCNTL => syscall_fcntl(arg1, arg2, arg3),
+        SYSCALL_RMDIR => syscall_rmdir(arg1),
+        SYSCALL_SYMLINK => syscall_symlink(arg1, arg2),
+        SYSCALL_READLINK => syscall_readlink(arg1, arg2, arg3),
+        SYSCALL_LSTAT => syscall_lstat(arg1, arg2),
+        SYSCALL_FCHMOD => syscall_fchmod(arg1, arg2),
+        SYSCALL_OPENAT => syscall_openat(arg1, arg2, arg3, arg4),
+        SYSCALL_FSTATAT => syscall_fstatat(arg1, arg2, arg3, arg4),
+        SYSCALL_MKDIRAT => syscall_mkdirat(arg1, arg2, arg3),
+        SYSCALL_UNLINKAT => syscall_unlinkat(arg1, arg2, arg3),
+        SYSCALL_RENAMEAT => syscall_renameat(arg1, arg2, arg3, arg4),
+        SYSCALL_READLINKAT => syscall_readlinkat(arg1, arg2, arg3, arg4),
+        SYSCALL_SYMLINKAT => syscall_symlinkat(arg1, arg2, arg3),
+        SYSCALL_CLOCK_GETTIME => syscall_clock_gettime(arg1, arg2),
+        SYSCALL_MSYNC => syscall_msync(arg1, arg2, arg3),
+        SYSCALL_MPROTECT => syscall_mprotect(arg1, arg2, arg3),
+        SYSCALL_MINCORE => syscall_mincore(arg1, arg2, arg3),
+        SYSCALL_MLOCK => syscall_mlock(arg1, arg2),
+        SYSCALL_MUNLOCK => syscall_munlock(arg1, arg2),
+        SYSCALL_MLOCKALL => syscall_mlockall(arg1),
+        SYSCALL_MUNLOCKALL => syscall_munlockall(),
+        SYSCALL_POSIX_MADVISE => syscall_posix_madvise(arg1, arg2, arg3),
+        SYSCALL_SET_THREAD_POINTER => syscall_set_thread_pointer(arg1),
+        SYSCALL_GET_THREAD_POINTER => syscall_get_thread_pointer(),
+        SYSCALL_THREAD_SELF => {
+            let scheduler = USER_SCHEDULER.lock();
+            scheduler
+                .processes
+                .get(scheduler.current)
+                .filter(|_| scheduler.active)
+                .map(|process| process.tid)
+                .ok_or(EINTR)
+        }
         SYSCALL_ISATTY => {
             let fd = usize::try_from(arg1).map_err(|_| EBADF)?;
             let process = USER_PROCESS.lock();
@@ -1177,7 +1651,7 @@ fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> 
                     | UserDescriptor::ConsoleOutput
                     | UserDescriptor::ConsoleError,
                 ) => Ok(1),
-                Some(UserDescriptor::File(file)) if fs::is_tty_path(&file.path) => Ok(1),
+                Some(UserDescriptor::File(file)) if fs::is_tty_path(&file.lock().path) => Ok(1),
                 Some(UserDescriptor::File(_)) => Err(ENOTTY),
                 Some(UserDescriptor::Directory(_)) => Err(ENOTTY),
                 Some(UserDescriptor::Pipe(_)) => Err(ENOTTY),
@@ -1188,48 +1662,372 @@ fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> 
     }
 }
 
-fn syscall_spawn(path_address: u64, argv_address: u64, argc: u64) -> Result<u64, i32> {
-    syscall_spawn_with_environment(path_address, argv_address, argc, 0)
+fn current_user_memory() -> Result<Arc<UserMemory>, i32> {
+    let scheduler = USER_SCHEDULER.lock();
+    scheduler
+        .processes
+        .get(scheduler.current)
+        .filter(|_| scheduler.active)
+        .map(|process| Arc::clone(&process.image.memory))
+        .ok_or(EINTR)
 }
 
-fn syscall_spawn_with_environment(
-    path_address: u64,
-    argv_address: u64,
-    argc: u64,
-    environment_address: u64,
-) -> Result<u64, i32> {
-    let path = resolve_process_path(&copy_user_path(path_address)?)?;
-    let arguments = copy_user_arguments(argv_address, argc)?;
-    let provided_environment = if environment_address == 0 {
-        None
-    } else {
-        Some(copy_user_environment(environment_address)?)
+fn syscall_execve(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    match execve_current(frame.rdi, frame.rsi, frame.rdx) {
+        Ok(next_frame) => next_frame,
+        Err(errno) => {
+            frame.rax = (-(errno as i64)) as u64;
+            frame_pointer
+        }
+    }
+}
+
+fn syscall_fork(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    match fork_current(frame) {
+        Ok(pid) => {
+            frame.rax = pid;
+            frame_pointer
+        }
+        Err(errno) => {
+            frame.rax = (-(errno as i64)) as u64;
+            frame_pointer
+        }
+    }
+}
+
+fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let entry = frame.rdi;
+    let argument = frame.rsi;
+    let stack_top = frame.rdx;
+    let thread_pointer = frame.r10;
+    let mapping_base = frame.r8;
+    let mapping_length = frame.r9;
+    if paging::validate_user_executable(entry).is_err()
+        || !thread_pointer::is_valid_user_thread_pointer(thread_pointer)
+        || stack_top < 8
+        || paging::validate_user_range(stack_top - 8, 8, true).is_err()
+        || mapping_base % PAGE_SIZE != 0
+        || mapping_length == 0
+        || mapping_length % PAGE_SIZE != 0
+        || validate_mapping_range(mapping_base, mapping_length).is_err()
+        || usize::try_from(mapping_length).ok().is_none_or(|length| {
+            paging::validate_user_range(mapping_base, length, true).is_err()
+        })
+        || stack_top <= mapping_base
+        || stack_top > mapping_base.saturating_add(mapping_length)
+        || (thread_pointer != 0
+            && (thread_pointer < mapping_base
+                || thread_pointer > mapping_base.saturating_add(mapping_length)))
+    {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    }
+
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    if !scheduler.active || current >= scheduler.processes.len() {
+        frame.rax = (-(EINTR as i64)) as u64;
+        return frame_pointer;
+    }
+    if scheduler.processes.len() >= MAX_SCHEDULED_PROCESSES {
+        frame.rax = (-(ENOMEM as i64)) as u64;
+        return frame_pointer;
+    }
+    if scheduler.processes.try_reserve(1).is_err() {
+        frame.rax = (-(ENOMEM as i64)) as u64;
+        return frame_pointer;
+    }
+
+    let pid = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            frame.rax = (-(EINTR as i64)) as u64;
+            return frame_pointer;
+        }
+        process.pid
     };
-    let (cwd, terminal, parent_pid, inherited_descriptors, environment) = {
+    let memory = Arc::clone(&scheduler.processes[current].image.memory);
+    {
+        let mappings = memory.mmap_pages.lock();
+        let end = mapping_base + mapping_length;
+        let mut page = mapping_base;
+        while page < end {
+            if !mappings
+                .iter()
+                .any(|mapping| mapping.address == page && mapping.anonymous)
+            {
+                frame.rax = (-(EINVAL as i64)) as u64;
+                return frame_pointer;
+            }
+            page += PAGE_SIZE;
+        }
+    }
+    let tid = scheduler.next_tid;
+    let Some(next_tid) = tid.checked_add(1) else {
+        frame.rax = (-(ENOMEM as i64)) as u64;
+        return frame_pointer;
+    };
+    let image = match scheduler.processes[current].image.share_for_thread() {
+        Ok(image) => image,
+        Err(error) => {
+            frame.rax = (-(errno_from_elf(error) as i64)) as u64;
+            return frame_pointer;
+        }
+    };
+    let mut state = match fork_clone_process_state(&USER_PROCESS.lock(), pid) {
+        Ok(state) => state,
+        Err(error) => {
+            frame.rax = (-(error as i64)) as u64;
+            return frame_pointer;
+        }
+    };
+    state.fpu_state = FpuState::new();
+    state.thread_pointer = thread_pointer;
+    let kernel_stack = match ProcessKernelStack::new() {
+        Ok(stack) => stack,
+        Err(error) => {
+            frame.rax = (-(errno_from_elf(error) as i64)) as u64;
+            return frame_pointer;
+        }
+    };
+    let kernel_stack_top = kernel_stack.top();
+    let thread_frame = match initialize_thread_frame(
+        entry,
+        argument,
+        stack_top,
+        kernel_stack_top,
+    ) {
+        Ok(frame) => frame,
+        Err(error) => {
+            frame.rax = (-(error as i64)) as u64;
+            return frame_pointer;
+        }
+    };
+
+    scheduler.next_tid = next_tid;
+    scheduler.processes.push(ScheduledProcess {
+        image,
+        state,
+        pid,
+        _kernel_stack: Some(kernel_stack),
+        kernel_stack_top,
+        frame_pointer: thread_frame,
+        exit_status: None,
+        parent_pid: None,
+        is_thread: true,
+        tid,
+        thread_mapping: Some((mapping_base, mapping_length)),
+        waiting_for: None,
+        wait_status_pointer: 0,
+        reaped: false,
+    });
+    frame.rax = tid;
+    frame_pointer
+}
+
+fn initialize_thread_frame(
+    entry: u64,
+    argument: u64,
+    stack_top: u64,
+    kernel_stack_top: u64,
+) -> Result<usize, i32> {
+    let user_stack = stack_top.checked_sub(8).ok_or(EFAULT)?;
+    paging::validate_user_range(user_stack, 8, true).map_err(|_| EFAULT)?;
+    unsafe { (user_stack as *mut u64).write_unaligned(0) };
+    let frame_pointer =
+        (kernel_stack_top as usize - core::mem::size_of::<InterruptFrame>()) & !0xF;
+    let frame = InterruptFrame {
+        r15: 0,
+        r14: 0,
+        r13: 0,
+        r12: 0,
+        r11: 0,
+        r10: 0,
+        r9: 0,
+        r8: 0,
+        rbp: 0,
+        rdi: argument,
+        rsi: 0,
+        rdx: 0,
+        rcx: 0,
+        rbx: 0,
+        rax: 0,
+        vector: u64::from(interrupt::TIMER_VECTOR),
+        error_code: 0,
+        stack_frame: InterruptStackFrame {
+            instruction_pointer: entry,
+            code_segment: u64::from(gdt::USER_CODE_SELECTOR),
+            cpu_flags: 0x202,
+            stack_pointer: user_stack,
+            stack_segment: u64::from(gdt::USER_DATA_SELECTOR),
+        },
+    };
+    unsafe { (frame_pointer as *mut InterruptFrame).write(frame) };
+    Ok(frame_pointer)
+}
+
+fn syscall_thread_join(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let target_tid = frame.rdi;
+    let result_pointer = frame.rsi;
+    if target_tid == 0
+        || (result_pointer != 0
+            && paging::validate_user_range(result_pointer, 8, true).is_err())
+    {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    }
+
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    let pid = {
+        let process = USER_PROCESS.lock();
+        if !scheduler.active || !process.active || current >= scheduler.processes.len() {
+            frame.rax = (-(EINTR as i64)) as u64;
+            return frame_pointer;
+        }
+        process.pid
+    };
+    if scheduler.processes[current].tid == target_tid {
+        frame.rax = (-(EDEADLK as i64)) as u64;
+        return frame_pointer;
+    }
+    let Some(target) = scheduler.processes.iter().position(|process| {
+        process.is_thread && process.pid == pid && process.tid == target_tid && !process.reaped
+    }) else {
+        frame.rax = (-(ESRCH as i64)) as u64;
+        return frame_pointer;
+    };
+    if let Some(status) = scheduler.processes[target].exit_status {
+        if result_pointer != 0
+            && let Err(error) = write_user_u64(result_pointer, status)
+        {
+            frame.rax = (-(error as i64)) as u64;
+            return frame_pointer;
+        }
+        scheduler.processes[target].reaped = true;
+        frame.rax = 0;
+        return frame_pointer;
+    }
+
+    scheduler.processes[current].frame_pointer = frame_pointer as usize;
+    scheduler.processes[current].waiting_for = Some(ProcessWait::Thread(target_tid));
+    scheduler.processes[current].wait_status_pointer = result_pointer;
+    let mut active_process = USER_PROCESS.lock();
+    core::mem::swap(
+        &mut *active_process,
+        &mut scheduler.processes[current].state,
+    );
+    let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
+        is_process_runnable(&scheduler.processes[index])
+    }) else {
+        core::mem::swap(
+            &mut *active_process,
+            &mut scheduler.processes[current].state,
+        );
+        scheduler.processes[current].waiting_for = None;
+        scheduler.processes[current].wait_status_pointer = 0;
+        frame.rax = (-(EDEADLK as i64)) as u64;
+        return frame_pointer;
+    };
+    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
+    scheduler.current = next;
+    let next_process = &scheduler.processes[next];
+    let next_frame = next_process.frame_pointer as *mut InterruptFrame;
+    unsafe {
+        gdt::set_ring0_stack_top(next_process.kernel_stack_top);
+        next_process.image.memory.address_space.activate();
+    }
+    next_frame
+}
+
+fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    if !scheduler.active
+        || current >= scheduler.processes.len()
+        || !scheduler.processes[current].is_thread
+    {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    }
+
+    let tid = scheduler.processes[current].tid;
+    let memory = Arc::clone(&scheduler.processes[current].image.memory);
+    if let Some((base, length)) = scheduler.processes[current].thread_mapping.take()
+        && let Err(error) = unmap_mapping_range(&mut memory.mmap_pages.lock(), base, length)
+    {
+        crate::println!("thread {tid}: failed to release thread mapping: errno={error}");
+    }
+    scheduler.processes[current].exit_status = Some(frame.rdi);
+    let mut active_process = USER_PROCESS.lock();
+    core::mem::swap(
+        &mut *active_process,
+        &mut scheduler.processes[current].state,
+    );
+    scheduler.processes[current].state.active = false;
+
+    for waiter in &mut scheduler.processes {
+        if waiter.waiting_for != Some(ProcessWait::Thread(tid)) {
+            continue;
+        }
+        let result_pointer = waiter.wait_status_pointer;
+        waiter.waiting_for = None;
+        waiter.wait_status_pointer = 0;
+        let waiter_frame = waiter.frame_pointer as *mut InterruptFrame;
+        unsafe {
+            (*waiter_frame).rax = if result_pointer == 0 {
+                0
+            } else {
+                match write_user_u64(result_pointer, frame.rdi) {
+                    Ok(()) => 0,
+                    Err(error) => (-(error as i64)) as u64,
+                }
+            };
+        }
+        scheduler.processes[current].reaped = true;
+        break;
+    }
+
+    if let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
+        is_process_runnable(&scheduler.processes[index])
+    }) {
+        core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
+        scheduler.current = next;
+        let next_process = &scheduler.processes[next];
+        let next_frame = next_process.frame_pointer as *mut InterruptFrame;
+        unsafe {
+            gdt::set_ring0_stack_top(next_process.kernel_stack_top);
+            next_process.image.memory.address_space.activate();
+        }
+        return next_frame;
+    }
+
+    scheduler.active = false;
+    drop(active_process);
+    drop(scheduler);
+    gdt::record_user_exit(frame.rdi);
+    frame.stack_frame.instruction_pointer = gdt::user_exit_address();
+    frame.stack_frame.code_segment = gdt::KERNEL_CODE_SELECTOR as u64;
+    frame.stack_frame.stack_pointer = gdt::user_kernel_stack_top();
+    frame.stack_frame.stack_segment = gdt::KERNEL_DATA_SELECTOR as u64;
+    frame_pointer
+}
+
+fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
+    let parent_pid = {
         let process = USER_PROCESS.lock();
         if !process.active {
             return Err(EINTR);
         }
-        let environment = match provided_environment {
-            Some(environment) => environment,
-            None => try_clone_strings(&process.environment).map_err(|_| ENOMEM)?,
-        };
-        let mut descriptors = Vec::new();
-        descriptors
-            .try_reserve_exact(process.descriptors.len())
-            .map_err(|_| ENOMEM)?;
-        descriptors.extend(process.descriptors.iter().cloned());
-        (
-            process.cwd.clone(),
-            process.terminal,
-            process.pid,
-            descriptors,
-            environment,
-        )
+        process.pid
     };
     let _restore_address_space = RestoreUserAddressSpace(parent_pid);
-
-    let pid = {
+    let (child_pid, next_pid) = {
         let mut scheduler = USER_SCHEDULER.lock();
         if !scheduler.active
             || scheduler
@@ -1245,80 +2043,239 @@ fn syscall_spawn_with_environment(
         }
         scheduler.processes.try_reserve(1).map_err(|_| ENOMEM)?;
         let pid = scheduler.next_pid;
-        scheduler.next_pid = pid.checked_add(1).ok_or(ENOMEM)?;
-        pid
+        let next_pid = pid.checked_add(1).ok_or(ENOMEM)?;
+        (pid, next_pid)
     };
 
-    let bytes = read_executable_file(&path).map_err(errno_from_elf)?;
-    {
+    let mut child_state = {
+        let process = USER_PROCESS.lock();
+        fork_clone_process_state(&process, child_pid)?
+    };
+    let child_image = {
         let scheduler = USER_SCHEDULER.lock();
         let parent = scheduler
             .processes
             .iter()
             .find(|process| process.pid == parent_pid)
             .ok_or(EINTR)?;
-        unsafe { parent.image.address_space.activate_kernel() };
-    }
-    let image =
-        load_with_args_and_environment(&bytes, &arguments, &environment).map_err(errno_from_elf)?;
-    let mut state = match new_user_process(
-        image.heap_limit,
-        image.mmap_cursor,
-        &cwd,
-        pid,
-        terminal,
-        environment,
-    ) {
-        Ok(state) => state,
-        Err(error) => {
-            return Err(cleanup_failed_spawn(image, errno_from_elf(error)));
-        }
+        let mut user_pages = Vec::new();
+        let mapped_pages = parent.image.memory.mapped_pages.lock();
+        let mmap_pages = parent.image.memory.mmap_pages.lock();
+        let page_count = mapped_pages.len().checked_add(mmap_pages.len()).ok_or(ENOMEM)?;
+        user_pages
+            .try_reserve_exact(page_count)
+            .map_err(|_| ENOMEM)?;
+        user_pages.extend_from_slice(&mapped_pages);
+        user_pages.extend(mmap_pages.iter().map(|page| page.address));
+        let shared_pages: Vec<u64> = mmap_pages
+            .iter()
+            .filter(|page| page.shared_backing.is_some())
+            .map(|page| page.address)
+            .collect();
+        drop(mmap_pages);
+        drop(mapped_pages);
+        parent
+            .image
+            .fork_clone(&user_pages, &shared_pages)
+            .map_err(errno_from_elf)?
     };
-    state.descriptors = inherited_descriptors;
     let kernel_stack = match ProcessKernelStack::new() {
         Ok(stack) => stack,
         Err(error) => {
-            return Err(cleanup_failed_spawn(image, errno_from_elf(error)));
+            return Err(cleanup_failed_fork(
+                child_image,
+                child_state,
+                errno_from_elf(error),
+            ));
         }
     };
     let kernel_stack_top = kernel_stack.top();
-    let frame_pointer = initialize_user_frame(&image, kernel_stack_top);
+    let child_frame = initialize_fork_frame(frame, kernel_stack_top);
+    child_state.pid = child_pid;
+
     let mut scheduler = USER_SCHEDULER.lock();
-    if !scheduler.active || scheduler.processes.len() >= MAX_SCHEDULED_PROCESSES {
+    let current = scheduler.current;
+    if !scheduler.active
+        || scheduler
+            .processes
+            .get(current)
+            .is_none_or(|process| process.pid != parent_pid)
+    {
         drop(scheduler);
-        return Err(cleanup_failed_spawn(image, ENOMEM));
+        return Err(cleanup_failed_fork(child_image, child_state, EINTR));
     }
+    {
+        let process = USER_PROCESS.lock();
+        if !process.active || process.pid != parent_pid {
+            drop(process);
+            drop(scheduler);
+            return Err(cleanup_failed_fork(child_image, child_state, EINTR));
+        }
+    }
+    scheduler.next_pid = next_pid;
     scheduler.processes.push(ScheduledProcess {
-        image,
-        state,
-        pid,
+        image: child_image,
+        state: child_state,
+        pid: child_pid,
         _kernel_stack: Some(kernel_stack),
         kernel_stack_top,
-        frame_pointer,
+        frame_pointer: child_frame,
         exit_status: None,
         parent_pid: Some(parent_pid),
+        is_thread: false,
+        tid: child_pid,
+        thread_mapping: None,
         waiting_for: None,
         wait_status_pointer: 0,
         reaped: false,
     });
-    Ok(pid)
+    Ok(child_pid)
 }
 
-fn syscall_set_environ(address: u64) -> Result<u64, i32> {
-    let environment = copy_user_environment(address)?;
-    let mut process = USER_PROCESS.lock();
-    if !process.active {
-        return Err(EINTR);
-    }
-    process.environment = environment;
-    Ok(0)
-}
+fn execve_current(
+    path_address: u64,
+    arguments_address: u64,
+    environment_address: u64,
+) -> Result<*mut InterruptFrame, i32> {
+    let path = resolve_process_path(&copy_user_path(path_address)?)?;
+    let arguments = copy_user_argument_vector(arguments_address)?;
+    let environment = copy_user_environment(environment_address)
+        .map_err(|error| if error == ENAMETOOLONG { E2BIG } else { error })?;
+    let (cwd, terminal, pid, creation_mask, descriptors, descriptor_flags) = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        if process.descriptors.len() != process.descriptor_flags.len() {
+            return Err(EIO);
+        }
+        let mut descriptors = Vec::new();
+        descriptors
+            .try_reserve_exact(process.descriptors.len())
+            .map_err(|_| ENOMEM)?;
+        descriptors.extend(
+            process
+                .descriptors
+                .iter()
+                .zip(&process.descriptor_flags)
+                .map(|(descriptor, flags)| {
+                    if flags & FD_CLOEXEC != 0 {
+                        None
+                    } else {
+                        descriptor.clone()
+                    }
+                }),
+        );
+        let mut descriptor_flags = Vec::new();
+        descriptor_flags
+            .try_reserve_exact(descriptors.len())
+            .map_err(|_| ENOMEM)?;
+        descriptor_flags.resize(descriptors.len(), 0);
+        (
+            process.cwd.clone(),
+            process.terminal,
+            process.pid,
+            process.file_creation_mask,
+            descriptors,
+            descriptor_flags,
+        )
+    };
 
-fn cleanup_failed_spawn(image: LoadedElf, original_error: i32) -> i32 {
-    match image.unload() {
-        Ok(()) => original_error,
-        Err(_) => EIO,
+    let _restore_address_space = RestoreUserAddressSpace(pid);
+    if USER_SCHEDULER.lock().processes.iter().any(|process| {
+        process.pid == pid && process.is_thread && process.exit_status.is_none()
+    }) {
+        return Err(EBUSY);
     }
+    let bytes = read_executable_file(&path).map_err(errno_from_elf)?;
+    {
+        let scheduler = USER_SCHEDULER.lock();
+        if !scheduler.active
+            || scheduler
+                .processes
+                .get(scheduler.current)
+                .is_none_or(|process| process.pid != pid)
+        {
+            return Err(EINTR);
+        }
+        unsafe {
+            scheduler.processes[scheduler.current]
+                .image
+                .memory
+                .address_space
+                .activate_kernel();
+        }
+    }
+    let image =
+        load_with_args_and_environment(&bytes, &arguments, &environment).map_err(errno_from_elf)?;
+    let mut state = match new_user_process(&cwd, pid, terminal, environment) {
+        Ok(state) => state,
+        Err(error) => {
+            return Err(cleanup_failed_exec(image, errno_from_elf(error)));
+        }
+    };
+    state.descriptors = descriptors;
+    state.descriptor_flags = descriptor_flags;
+    state.file_creation_mask = creation_mask;
+
+    let kernel_stack = match ProcessKernelStack::new() {
+        Ok(stack) => stack,
+        Err(error) => {
+            return Err(cleanup_failed_exec(image, errno_from_elf(error)));
+        }
+    };
+    let kernel_stack_top = kernel_stack.top();
+    let frame_pointer = initialize_user_frame(&image, kernel_stack_top);
+    let old_image = {
+        let mut scheduler = USER_SCHEDULER.lock();
+        let current = scheduler.current;
+        if !scheduler.active
+            || scheduler
+                .processes
+                .get(current)
+                .is_none_or(|process| process.pid != pid)
+        {
+            drop(scheduler);
+            return Err(cleanup_failed_exec(image, EINTR));
+        }
+        if scheduler.processes[current]._kernel_stack.is_some()
+            && scheduler.retired_kernel_stacks.try_reserve(1).is_err()
+        {
+            drop(scheduler);
+            return Err(cleanup_failed_exec(image, ENOMEM));
+        }
+
+        let mut active_process = USER_PROCESS.lock();
+        if !active_process.active || active_process.pid != pid {
+            drop(active_process);
+            drop(scheduler);
+            return Err(cleanup_failed_exec(image, EINTR));
+        }
+
+        let (old_image, old_kernel_stack) = {
+            let scheduled = &mut scheduler.processes[current];
+            let old_image = core::mem::replace(&mut scheduled.image, image);
+            let old_kernel_stack =
+                core::mem::replace(&mut scheduled._kernel_stack, Some(kernel_stack));
+            scheduled.state = UserProcess::new();
+            scheduled.kernel_stack_top = kernel_stack_top;
+            scheduled.frame_pointer = frame_pointer;
+            scheduled.waiting_for = None;
+            scheduled.wait_status_pointer = 0;
+            (old_image, old_kernel_stack)
+        };
+        if let Some(old_kernel_stack) = old_kernel_stack {
+            scheduler.retired_kernel_stacks.push(old_kernel_stack);
+        }
+        *active_process = state;
+        old_image
+    };
+
+    unsafe { gdt::set_ring0_stack_top(kernel_stack_top) };
+    if let Err(error) = old_image.unload() {
+        crate::println!("execve: failed to release old process image: {error:?}");
+    }
+    Ok(frame_pointer as *mut InterruptFrame)
 }
 
 fn reap_completed_processes(scheduler: &mut UserScheduler) -> Result<(), i32> {
@@ -1330,14 +2287,11 @@ fn reap_completed_processes(scheduler: &mut UserScheduler) -> Result<(), i32> {
             continue;
         }
 
-        let mut process = scheduler.processes.remove(index);
+        let process = scheduler.processes.remove(index);
         if index < scheduler.current {
             scheduler.current -= 1;
         }
-        process
-            .image
-            .unload_with_extra_pages(&mut process.state.heap_pages, &mut process.state.mmap_pages)
-            .map_err(|_| EIO)?;
+        process.image.unload().map_err(|_| EIO)?;
     }
     Ok(())
 }
@@ -1347,7 +2301,8 @@ fn errno_from_elf(error: ElfError) -> i32 {
         ElfError::FileSystem(error) => errno_from_fs(error),
         ElfError::OutOfMemory | ElfError::Paging(PagingError::OutOfFrames) => ENOMEM,
         ElfError::PermissionDenied => EACCES,
-        ElfError::InvalidArguments | ElfError::ArgumentsTooLarge => EINVAL,
+        ElfError::InvalidArguments => EINVAL,
+        ElfError::ArgumentsTooLarge => E2BIG,
         ElfError::ProcessAlreadyRunning => EINTR,
         _ => ENOEXEC,
     }
@@ -1357,7 +2312,8 @@ fn syscall_waitpid(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
     let wait_target = frame.rdi;
     let status_pointer = frame.rsi;
-    if wait_target == 0 {
+    let options = frame.rdx;
+    if wait_target == 0 || options & !WAIT_NOHANG != 0 {
         frame.rax = (-(EINVAL as i64)) as u64;
         return frame_pointer;
     }
@@ -1379,7 +2335,8 @@ fn syscall_waitpid(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         process.pid
     };
     let Some(child) = scheduler.processes.iter().position(|process| {
-        process.parent_pid == Some(parent_pid)
+        !process.is_thread
+            && process.parent_pid == Some(parent_pid)
             && !process.reaped
             && wait_target_matches(wait_target, process.pid)
     }) else {
@@ -1397,6 +2354,11 @@ fn syscall_waitpid(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         }
         scheduler.processes[child].reaped = true;
         frame.rax = child_pid;
+        return frame_pointer;
+    }
+
+    if options & WAIT_NOHANG != 0 {
+        frame.rax = 0;
         return frame_pointer;
     }
 
@@ -1426,7 +2388,7 @@ fn syscall_waitpid(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let next_frame = next_process.frame_pointer as *mut InterruptFrame;
     unsafe {
         gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-        next_process.image.address_space.activate();
+        next_process.image.memory.address_space.activate();
     }
     next_frame
 }
@@ -1503,7 +2465,7 @@ fn block_current_on_pipe(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut 
     let next_frame = next_process.frame_pointer as *mut InterruptFrame;
     unsafe {
         gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-        next_process.image.address_space.activate();
+        next_process.image.memory.address_space.activate();
     }
     next_frame
 }
@@ -1532,8 +2494,6 @@ fn wake_pipe_waiters_in_scheduler(
 }
 
 fn new_user_process(
-    heap_limit: u64,
-    mmap_cursor: u64,
     cwd: &str,
     pid: u64,
     terminal: usize,
@@ -1554,6 +2514,11 @@ fn new_user_process(
         Some(UserDescriptor::ConsoleOutput),
         Some(UserDescriptor::ConsoleError),
     ]);
+    let mut descriptor_flags = Vec::new();
+    descriptor_flags
+        .try_reserve_exact(3)
+        .map_err(|_| ElfError::OutOfMemory)?;
+    descriptor_flags.resize(3, 0);
     let mut process_cwd = String::new();
     process_cwd
         .try_reserve(cwd.len())
@@ -1564,15 +2529,46 @@ fn new_user_process(
         pid,
         terminal,
         descriptors,
+        descriptor_flags,
         cwd: process_cwd,
         environment,
-        program_break: HEAP_START,
-        heap_mapped_end: HEAP_INITIAL_END,
-        heap_limit,
-        mmap_cursor,
-        heap_pages: Vec::new(),
-        mmap_pages: Vec::new(),
+        file_creation_mask: 0o022,
         fpu_state: FpuState::new(),
+        thread_pointer: 0,
+    })
+}
+
+fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProcess, i32> {
+    if !parent.active {
+        return Err(EINTR);
+    }
+    if parent.descriptors.len() != parent.descriptor_flags.len() {
+        return Err(EIO);
+    }
+    let mut descriptors = Vec::new();
+    descriptors
+        .try_reserve_exact(parent.descriptors.len())
+        .map_err(|_| ENOMEM)?;
+    descriptors.extend(parent.descriptors.iter().cloned());
+    let mut descriptor_flags = Vec::new();
+    descriptor_flags
+        .try_reserve_exact(parent.descriptor_flags.len())
+        .map_err(|_| ENOMEM)?;
+    descriptor_flags.extend_from_slice(&parent.descriptor_flags);
+    let mut cwd = String::new();
+    cwd.try_reserve(parent.cwd.len()).map_err(|_| ENOMEM)?;
+    cwd.push_str(&parent.cwd);
+    Ok(UserProcess {
+        active: true,
+        pid,
+        terminal: parent.terminal,
+        descriptors,
+        descriptor_flags,
+        cwd,
+        environment: try_clone_strings(&parent.environment).map_err(|_| ENOMEM)?,
+        file_creation_mask: parent.file_creation_mask,
+        fpu_state: parent.fpu_state,
+        thread_pointer: parent.thread_pointer,
     })
 }
 
@@ -1594,6 +2590,22 @@ fn restore_current_user_fpu() {
     }
 }
 
+fn save_current_thread_pointer() {
+    let mut process = USER_PROCESS.lock();
+    if process.active {
+        process.thread_pointer = thread_pointer::read();
+    }
+}
+
+fn restore_current_thread_pointer() {
+    let process = USER_PROCESS.lock();
+    thread_pointer::write(if process.active {
+        process.thread_pointer
+    } else {
+        0
+    });
+}
+
 fn try_clone_strings(values: &[String]) -> Result<Vec<String>, ElfError> {
     let mut cloned = Vec::new();
     cloned
@@ -1607,6 +2619,39 @@ fn try_clone_strings(values: &[String]) -> Result<Vec<String>, ElfError> {
         cloned.push(copy);
     }
     Ok(cloned)
+}
+
+fn try_clone_pages(pages: &[u64]) -> Result<Vec<u64>, ElfError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(pages.len())
+        .map_err(|_| ElfError::OutOfMemory)?;
+    cloned.extend_from_slice(pages);
+    Ok(cloned)
+}
+
+fn try_clone_mapping_pages(pages: &[MappingPage]) -> Result<Vec<MappingPage>, ElfError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(pages.len())
+        .map_err(|_| ElfError::OutOfMemory)?;
+    cloned.extend(pages.iter().cloned());
+    Ok(cloned)
+}
+
+fn cleanup_failed_fork(image: LoadedElf, state: UserProcess, original_error: i32) -> i32 {
+    drop(state);
+    match image.unload() {
+        Ok(()) => original_error,
+        Err(_) => EIO,
+    }
+}
+
+fn cleanup_failed_exec(image: LoadedElf, original_error: i32) -> i32 {
+    match image.unload() {
+        Ok(()) => original_error,
+        Err(_) => EIO,
+    }
 }
 
 pub(crate) fn valid_environment_key(key: &str) -> bool {
@@ -1664,10 +2709,12 @@ fn reserve_descriptor_slot(descriptors: &mut Vec<Option<UserDescriptor>>) -> Res
 
 fn install_pipe_descriptors(
     descriptors: &mut Vec<Option<UserDescriptor>>,
+    descriptor_flags: &mut Vec<u32>,
     read_end: PipeEnd,
     write_end: PipeEnd,
 ) -> Result<(usize, usize), i32> {
     let read_fd = reserve_descriptor_slot(descriptors)?;
+    descriptor_flags.resize(descriptors.len(), 0);
     descriptors[read_fd] = Some(UserDescriptor::Pipe(read_end));
     let write_fd = match reserve_descriptor_slot(descriptors) {
         Ok(fd) => fd,
@@ -1679,6 +2726,7 @@ fn install_pipe_descriptors(
             return Err(error);
         }
     };
+    descriptor_flags.resize(descriptors.len(), 0);
     descriptors[write_fd] = Some(UserDescriptor::Pipe(write_end));
     Ok((read_fd, write_fd))
 }
@@ -1722,6 +2770,7 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
             Ok(bytes.len() as u64)
         }
         UserDescriptor::File(file) => {
+            let mut file = file.lock();
             if !file.writable {
                 return Err(EBADF);
             }
@@ -1741,6 +2790,7 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
             let count = fs::with_vfs(|vfs| vfs.write(&file.path, offset, bytes))
                 .map_err(errno_from_fs)?
                 .map_err(errno_from_fs)?;
+            update_shared_mapping_pages(&file.path, offset, &bytes[..count]);
             file.offset = offset.checked_add(count).ok_or(EINVAL)?;
             Ok(count as u64)
         }
@@ -1762,42 +2812,7 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
     result
 }
 
-fn syscall_printf(frame: &InterruptFrame) -> Result<u64, i32> {
-    let format = copy_user_string(frame.rdi, MAX_SYSCALL_IO)?;
-    let output = format_printf(
-        &format,
-        |index| printf_argument(frame, index),
-        |address, limit| copy_user_string(address, limit),
-    )?;
-    syscall_write_bytes(1, &output)
-}
-
-fn printf_argument(frame: &InterruptFrame, index: usize) -> Result<u64, i32> {
-    match index {
-        0 => Ok(frame.rsi),
-        1 => Ok(frame.rdx),
-        2 => Ok(frame.rcx),
-        3 => Ok(frame.r8),
-        4 => Ok(frame.r9),
-        _ => {
-            let stack_index = index - 5;
-            let offset = stack_index
-                .checked_mul(core::mem::size_of::<u64>())
-                .and_then(|offset| offset.checked_add(core::mem::size_of::<u64>()))
-                .and_then(|offset| u64::try_from(offset).ok())
-                .ok_or(EFAULT)?;
-            let address = frame
-                .stack_frame
-                .stack_pointer
-                .checked_add(offset)
-                .ok_or(EFAULT)?;
-            paging::validate_user_range(address, core::mem::size_of::<u64>(), false)
-                .map_err(|_| EFAULT)?;
-            Ok(unsafe { (address as *const u64).read_unaligned() })
-        }
-    }
-}
-
+#[cfg(test)]
 fn format_printf(
     format: &str,
     mut argument: impl FnMut(usize) -> Result<u64, i32>,
@@ -1991,6 +3006,7 @@ fn format_printf(
     Ok(output)
 }
 
+#[cfg(test)]
 fn parse_printf_number(input: &[u8], cursor: &mut usize) -> Result<Option<usize>, i32> {
     let start = *cursor;
     let mut value = 0usize;
@@ -2006,6 +3022,7 @@ fn parse_printf_number(input: &[u8], cursor: &mut usize) -> Result<Option<usize>
     Ok((*cursor > start).then_some(value))
 }
 
+#[cfg(test)]
 fn append_printf_integer(
     output: &mut Vec<u8>,
     mut value: u64,
@@ -2094,6 +3111,7 @@ fn append_printf_integer(
     Ok(())
 }
 
+#[cfg(test)]
 fn append_printf_bytes(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), i32> {
     let new_length = output
         .len()
@@ -2106,6 +3124,7 @@ fn append_printf_bytes(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), i32> {
     Ok(())
 }
 
+#[cfg(test)]
 fn append_printf_repeat(output: &mut Vec<u8>, byte: u8, count: usize) -> Result<(), i32> {
     let new_length = output
         .len()
@@ -2144,6 +3163,7 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
             .map(|count| count as u64)
             .map_err(errno_from_fs),
         UserDescriptor::File(file) => {
+            let mut file = file.lock();
             if !file.readable {
                 return Err(EBADF);
             }
@@ -2151,6 +3171,7 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
                 .map_err(errno_from_fs)?
                 .map_err(errno_from_fs)?;
             if !fs::is_tty_path(&file.path) {
+                overlay_shared_mapping_pages(&file.path, file.offset, &mut output[..count]);
                 file.offset = file.offset.checked_add(count).ok_or(EINVAL)?;
             }
             Ok(count as u64)
@@ -2175,6 +3196,16 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
 }
 
 fn syscall_open(address: u64, flags: u64, mode: u64) -> Result<u64, i32> {
+    let path = resolve_process_path(&copy_user_path(address)?)?;
+    syscall_open_path(path, flags, mode)
+}
+
+fn syscall_openat(dirfd: u64, path_address: u64, flags: u64, mode: u64) -> Result<u64, i32> {
+    let path = resolve_at_path(dirfd, &copy_user_path(path_address)?)?;
+    syscall_open_path(path, flags, mode)
+}
+
+fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32> {
     const ALLOWED_FLAGS: u64 = O_ACCESS_MASK | O_CREAT | O_TRUNC | O_APPEND;
     if flags & !ALLOWED_FLAGS != 0 || flags & O_ACCESS_MASK == 3 {
         return Err(EINVAL);
@@ -2184,7 +3215,11 @@ fn syscall_open(address: u64, flags: u64, mode: u64) -> Result<u64, i32> {
         if mode & !0o777 != 0 {
             return Err(EINVAL);
         }
-        mode
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        mode & !process.file_creation_mask
     } else {
         0o644
     };
@@ -2193,7 +3228,6 @@ fn syscall_open(address: u64, flags: u64, mode: u64) -> Result<u64, i32> {
     if flags & O_TRUNC != 0 && !writable || flags & O_APPEND != 0 && !writable {
         return Err(EINVAL);
     }
-    let mut path = resolve_process_path(&copy_user_path(address)?)?;
     let process_terminal = USER_PROCESS.lock().terminal;
     if matches!(
         path.as_str(),
@@ -2227,14 +3261,21 @@ fn syscall_open(address: u64, flags: u64, mode: u64) -> Result<u64, i32> {
             process.descriptors.len() - 1
         }
     };
+    {
+        let mut process = USER_PROCESS.lock();
+        let descriptor_count = process.descriptors.len();
+        process.descriptor_flags.resize(descriptor_count, 0);
+    }
     let size = match fs::with_vfs(|vfs| {
         let mut created = false;
         let metadata = match vfs.metadata(&path) {
             Ok(metadata) => metadata,
             Err(FsError::NotFound) if flags & O_CREAT != 0 => {
                 vfs.create_file(&path)?;
-                vfs.set_permissions(&path, mode)?;
                 created = true;
+                if mode != 0o644 {
+                    vfs.set_permissions(&path, mode)?;
+                }
                 vfs.metadata(&path)?
             }
             Err(error) => return Err(error),
@@ -2266,13 +3307,13 @@ fn syscall_open(address: u64, flags: u64, mode: u64) -> Result<u64, i32> {
     };
 
     let mut process = USER_PROCESS.lock();
-    process.descriptors[fd] = Some(UserDescriptor::File(OpenFile {
+    process.descriptors[fd] = Some(UserDescriptor::File(Arc::new(Mutex::new(OpenFile {
         path,
         offset: if flags & O_APPEND != 0 { size } else { 0 },
         readable,
         writable,
         append: flags & O_APPEND != 0,
-    }));
+    }))));
     Ok(fd as u64)
 }
 
@@ -2285,7 +3326,12 @@ fn syscall_pipe(address: u64) -> Result<u64, i32> {
         if !process.active {
             return Err(EINTR);
         }
-        install_pipe_descriptors(&mut process.descriptors, read_end, write_end)?
+        let UserProcess {
+            descriptors,
+            descriptor_flags,
+            ..
+        } = &mut *process;
+        install_pipe_descriptors(descriptors, descriptor_flags, read_end, write_end)?
     };
     unsafe {
         (address as *mut [i32; 2]).write_unaligned([read_fd as i32, write_fd as i32]);
@@ -2339,6 +3385,9 @@ fn syscall_dup2(source_fd: u64, target_fd: u64) -> Result<u64, i32> {
                 .map_err(|_| ENOMEM)?;
             process.descriptors.resize_with(target_fd + 1, || None);
         }
+        let descriptor_count = process.descriptors.len();
+        process.descriptor_flags.resize(descriptor_count, 0);
+        process.descriptor_flags[target_fd] = 0;
         process.descriptors[target_fd] = Some(duplicate);
         replaced_pipe_id
     };
@@ -2346,6 +3395,109 @@ fn syscall_dup2(source_fd: u64, target_fd: u64) -> Result<u64, i32> {
         wake_pipe_waiters(pipe_id, true, true);
     }
     Ok(target_fd as u64)
+}
+
+fn syscall_dup(source_fd: u64) -> Result<u64, i32> {
+    let source_fd = usize::try_from(source_fd).map_err(|_| EBADF)?;
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let duplicate = process
+        .descriptors
+        .get(source_fd)
+        .and_then(Option::as_ref)
+        .ok_or(EBADF)?
+        .clone();
+    let target_fd = reserve_descriptor_slot(&mut process.descriptors)?;
+    let descriptor_count = process.descriptors.len();
+    process.descriptor_flags.resize(descriptor_count, 0);
+    process.descriptors[target_fd] = Some(duplicate);
+    process.descriptor_flags[target_fd] = 0;
+    Ok(target_fd as u64)
+}
+
+fn syscall_fcntl(fd: u64, command: u64, argument: u64) -> Result<u64, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let descriptor = process
+        .descriptors
+        .get(fd)
+        .and_then(Option::as_ref)
+        .ok_or(EBADF)?;
+    match command {
+        F_DUPFD => {
+            let minimum = usize::try_from(argument).map_err(|_| EINVAL)?;
+            if minimum >= MAX_OPEN_FILES {
+                return Err(EINVAL);
+            }
+            let duplicate = descriptor.clone();
+            let target = (minimum..MAX_OPEN_FILES)
+                .find(|index| process.descriptors.get(*index).is_none_or(Option::is_none))
+                .ok_or(EMFILE)?;
+            if target >= process.descriptors.len() {
+                let additional = target + 1 - process.descriptors.len();
+                process
+                    .descriptors
+                    .try_reserve(additional)
+                    .map_err(|_| ENOMEM)?;
+                process.descriptors.resize_with(target + 1, || None);
+            }
+            let descriptor_count = process.descriptors.len();
+            process.descriptor_flags.resize(descriptor_count, 0);
+            process.descriptors[target] = Some(duplicate);
+            process.descriptor_flags[target] = 0;
+            Ok(target as u64)
+        }
+        F_GETFD => Ok(process.descriptor_flags.get(fd).copied().unwrap_or(0) as u64),
+        F_SETFD => {
+            let flags = u32::try_from(argument).map_err(|_| EINVAL)?;
+            if flags & !FD_CLOEXEC != 0 {
+                return Err(EINVAL);
+            }
+            if fd >= process.descriptor_flags.len() {
+                let descriptor_count = process.descriptors.len();
+                process.descriptor_flags.resize(descriptor_count, 0);
+            }
+            process.descriptor_flags[fd] = flags;
+            Ok(0)
+        }
+        F_GETFL => match descriptor {
+            UserDescriptor::File(file) => {
+                let file = file.lock();
+                Ok((if !file.readable {
+                    O_WRONLY
+                } else if file.writable {
+                    O_RDWR
+                } else {
+                    O_RDONLY
+                } | if file.append { O_APPEND } else { 0 }) as u64)
+            }
+            UserDescriptor::Pipe(endpoint) => Ok(if endpoint.writable {
+                O_WRONLY
+            } else {
+                O_RDONLY
+            }),
+            _ => Ok(O_RDONLY),
+        },
+        F_SETFL => {
+            if argument & !O_APPEND != 0 {
+                return Err(EINVAL);
+            }
+            match descriptor {
+                UserDescriptor::File(file) => {
+                    let mut file = file.lock();
+                    file.append = argument & O_APPEND != 0;
+                    Ok(0)
+                }
+                _ => Err(EINVAL),
+            }
+        }
+        _ => Err(EINVAL),
+    }
 }
 
 fn syscall_close(fd: u64) -> Result<u64, i32> {
@@ -2363,6 +3515,9 @@ fn syscall_close(fd: u64) -> Result<u64, i32> {
         _ => None,
     });
     *descriptor = None;
+    if let Some(flags) = process.descriptor_flags.get_mut(fd) {
+        *flags = 0;
+    }
     drop(process);
     if let Some(pipe_id) = pipe_id {
         wake_pipe_waiters(pipe_id, true, true);
@@ -2372,15 +3527,16 @@ fn syscall_close(fd: u64) -> Result<u64, i32> {
 
 fn syscall_lseek(fd: u64, offset: i64, whence: u64) -> Result<u64, i32> {
     let fd = usize::try_from(fd).map_err(|_| EBADF)?;
-    let mut process = USER_PROCESS.lock();
+    let process = USER_PROCESS.lock();
     if !process.active {
         return Err(EINTR);
     }
-    let file = match process.descriptors.get_mut(fd).and_then(Option::as_mut) {
-        Some(UserDescriptor::File(file)) => file,
+    let file = match process.descriptors.get(fd).and_then(Option::as_ref) {
+        Some(UserDescriptor::File(file)) => Arc::clone(file),
         Some(UserDescriptor::Pipe(_) | UserDescriptor::Directory(_)) => return Err(ESPIPE),
         _ => return Err(EBADF),
     };
+    let mut file = file.lock();
     if fs::is_tty_path(&file.path) {
         return Err(ESPIPE);
     }
@@ -2410,8 +3566,11 @@ fn syscall_opendir(address: u64) -> Result<u64, i32> {
         return Err(EINTR);
     }
     let fd = reserve_descriptor_slot(&mut process.descriptors)?;
+    let descriptor_count = process.descriptors.len();
+    process.descriptor_flags.resize(descriptor_count, 0);
     process.descriptors[fd] = Some(UserDescriptor::Directory(Arc::new(Mutex::new(
         DirectoryStream {
+            path,
             entries,
             next_entry: 0,
         },
@@ -2469,12 +3628,51 @@ fn user_dirent(index: usize, entry: &DirectoryEntry) -> Result<UserDirent, i32> 
 }
 
 fn syscall_stat(path_address: u64, stat_address: u64) -> Result<u64, i32> {
+    syscall_stat_inner(path_address, stat_address, true)
+}
+
+fn syscall_lstat(path_address: u64, stat_address: u64) -> Result<u64, i32> {
+    syscall_stat_inner(path_address, stat_address, false)
+}
+
+fn syscall_stat_inner(
+    path_address: u64,
+    stat_address: u64,
+    follow_final_symlink: bool,
+) -> Result<u64, i32> {
+    let path = resolve_process_path(&copy_user_path(path_address)?)?;
+    syscall_stat_path(path, stat_address, follow_final_symlink)
+}
+
+fn syscall_fstatat(
+    dirfd: u64,
+    path_address: u64,
+    stat_address: u64,
+    flags: u64,
+) -> Result<u64, i32> {
+    if flags & !AT_SYMLINK_NOFOLLOW != 0 {
+        return Err(EINVAL);
+    }
+    let path = resolve_at_path(dirfd, &copy_user_path(path_address)?)?;
+    syscall_stat_path(path, stat_address, flags & AT_SYMLINK_NOFOLLOW == 0)
+}
+
+fn syscall_stat_path(
+    path: String,
+    stat_address: u64,
+    follow_final_symlink: bool,
+) -> Result<u64, i32> {
     paging::validate_user_range(stat_address, core::mem::size_of::<UserStat>(), true)
         .map_err(|_| EFAULT)?;
-    let path = resolve_process_path(&copy_user_path(path_address)?)?;
-    let metadata = fs::with_vfs(|vfs| vfs.metadata(&path))
-        .map_err(errno_from_fs)?
-        .map_err(errno_from_fs)?;
+    let metadata = fs::with_vfs(|vfs| {
+        if follow_final_symlink {
+            vfs.metadata(&path)
+        } else {
+            vfs.symlink_metadata(&path)
+        }
+    })
+    .map_err(errno_from_fs)?
+    .map_err(errno_from_fs)?;
     let stat = UserStat {
         size: metadata.len as u64,
         mode: stat_mode(&path, metadata.node_type, metadata.permissions),
@@ -2486,287 +3684,551 @@ fn syscall_stat(path_address: u64, stat_address: u64) -> Result<u64, i32> {
     Ok(0)
 }
 
-fn syscall_mkdir(path_address: u64) -> Result<u64, i32> {
+fn syscall_mkdir(path_address: u64, mode: u64) -> Result<u64, i32> {
     let path = resolve_process_path(&copy_user_path(path_address)?)?;
-    fs::with_vfs(|vfs| vfs.create_dir(&path))
-        .map_err(errno_from_fs)?
-        .map_err(errno_from_fs)?;
+    syscall_mkdir_path(path, mode)
+}
+
+fn syscall_mkdirat(dirfd: u64, path_address: u64, mode: u64) -> Result<u64, i32> {
+    let path = resolve_at_path(dirfd, &copy_user_path(path_address)?)?;
+    syscall_mkdir_path(path, mode)
+}
+
+fn syscall_mkdir_path(path: String, mode: u64) -> Result<u64, i32> {
+    let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
+    if mode & !0o777 != 0 {
+        return Err(EINVAL);
+    }
+    let mode = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        mode & !process.file_creation_mask
+    };
+    fs::with_vfs(|vfs| {
+        vfs.create_dir(&path)?;
+        if mode != 0o755 {
+            vfs.set_permissions(&path, mode)?;
+        }
+        Ok(())
+    })
+    .map_err(errno_from_fs)?
+    .map_err(errno_from_fs)?;
     Ok(0)
 }
 
 fn syscall_unlink(path_address: u64) -> Result<u64, i32> {
     let path = resolve_process_path(&copy_user_path(path_address)?)?;
-    fs::with_vfs(|vfs| vfs.remove(&path))
+    fs::with_vfs(|vfs| vfs.remove_file(&path))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    forget_shared_mapping_path(&path);
+    Ok(0)
+}
+
+fn syscall_rmdir(path_address: u64) -> Result<u64, i32> {
+    let path = resolve_process_path(&copy_user_path(path_address)?)?;
+    fs::with_vfs(|vfs| vfs.remove_dir(&path))
         .map_err(errno_from_fs)?
         .map_err(errno_from_fs)?;
     Ok(0)
 }
 
+fn syscall_unlinkat(dirfd: u64, path_address: u64, flags: u64) -> Result<u64, i32> {
+    if flags & !AT_REMOVEDIR != 0 {
+        return Err(EINVAL);
+    }
+    let path = resolve_at_path(dirfd, &copy_user_path(path_address)?)?;
+    fs::with_vfs(|vfs| {
+        if flags & AT_REMOVEDIR != 0 {
+            vfs.remove_dir(&path)
+        } else {
+            vfs.remove_file(&path)
+        }
+    })
+    .map_err(errno_from_fs)?
+    .map_err(errno_from_fs)?;
+    if flags & AT_REMOVEDIR == 0 {
+        forget_shared_mapping_path(&path);
+    }
+    Ok(0)
+}
+
+fn syscall_symlink(target_address: u64, link_address: u64) -> Result<u64, i32> {
+    let target = copy_user_path(target_address)?;
+    let link_path = resolve_process_path(&copy_user_path(link_address)?)?;
+    syscall_symlink_path(target, link_path)
+}
+
+fn syscall_symlinkat(target_address: u64, dirfd: u64, link_address: u64) -> Result<u64, i32> {
+    let target = copy_user_path(target_address)?;
+    let link_path = resolve_at_path(dirfd, &copy_user_path(link_address)?)?;
+    syscall_symlink_path(target, link_path)
+}
+
+fn syscall_symlink_path(target: String, link_path: String) -> Result<u64, i32> {
+    fs::with_vfs(|vfs| vfs.symlink(&target, &link_path))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    Ok(0)
+}
+
+fn syscall_readlink(path_address: u64, buffer_address: u64, size: u64) -> Result<u64, i32> {
+    let path = resolve_process_path(&copy_user_path(path_address)?)?;
+    syscall_readlink_path(path, buffer_address, size)
+}
+
+fn syscall_readlinkat(
+    dirfd: u64,
+    path_address: u64,
+    buffer_address: u64,
+    size: u64,
+) -> Result<u64, i32> {
+    let path = resolve_at_path(dirfd, &copy_user_path(path_address)?)?;
+    syscall_readlink_path(path, buffer_address, size)
+}
+
+fn syscall_readlink_path(path: String, buffer_address: u64, size: u64) -> Result<u64, i32> {
+    let size = usize::try_from(size).map_err(|_| EINVAL)?;
+    let target = fs::with_vfs(|vfs| vfs.read_link(&path))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    let bytes = target.as_bytes();
+    let count = bytes.len().min(size);
+    if count > 0 {
+        paging::validate_user_range(buffer_address, count, true).map_err(|_| EFAULT)?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer_address as *mut u8, count);
+        }
+    }
+    u64::try_from(count).map_err(|_| EOVERFLOW)
+}
+
 fn syscall_ftruncate(fd: u64, length: u64) -> Result<u64, i32> {
     let fd = usize::try_from(fd).map_err(|_| EBADF)?;
     let length = usize::try_from(length).map_err(|_| EINVAL)?;
-    let mut process = USER_PROCESS.lock();
+    let process = USER_PROCESS.lock();
     if !process.active {
         return Err(EINTR);
     }
-    let file = match process.descriptors.get_mut(fd).and_then(Option::as_mut) {
-        Some(UserDescriptor::File(file)) if file.writable => file,
+    let file = match process.descriptors.get(fd).and_then(Option::as_ref) {
+        Some(UserDescriptor::File(file)) if file.lock().writable => Arc::clone(file),
         _ => return Err(EBADF),
     };
+    let mut file = file.lock();
     fs::with_vfs(|vfs| vfs.truncate(&file.path, length))
         .map_err(errno_from_fs)?
         .map_err(errno_from_fs)?;
+    truncate_shared_mapping_pages(&file.path, length);
     if file.offset > length {
         file.offset = length;
     }
     Ok(0)
 }
 
-fn syscall_brk(address: u64) -> Result<u64, i32> {
-    let mut process = USER_PROCESS.lock();
-    if !process.active {
-        return Err(EINTR);
-    }
-    if address == 0 {
-        return Ok(process.program_break);
-    }
-    let target_mapped_end = heap_mapping_end(address, process.heap_limit)?;
-
-    if target_mapped_end > process.heap_mapped_end {
-        let additional_pages =
-            usize::try_from((target_mapped_end - process.heap_mapped_end) / PAGE_SIZE)
-                .map_err(|_| ENOMEM)?;
-        process
-            .heap_pages
-            .try_reserve_exact(additional_pages)
-            .map_err(|_| ENOMEM)?;
-        let initial_page_count = process.heap_pages.len();
-        let mut page = process.heap_mapped_end;
-        while page < target_mapped_end {
-            if let Err(error) = map_zeroed_page(
-                page,
-                paging::flags::USER | paging::flags::WRITABLE | paging::flags::NO_EXECUTE,
-                &mut process.heap_pages,
-            ) {
-                let cleanup =
-                    release_tracked_pages_from(&mut process.heap_pages, initial_page_count);
-                return Err(if cleanup.is_err() {
-                    EIO
-                } else {
-                    match error {
-                        ElfError::OutOfMemory => ENOMEM,
-                        ElfError::Paging(error) => paging_errno(error),
-                        _ => EIO,
-                    }
-                });
-            }
-            page += PAGE_SIZE;
-        }
-        process.heap_mapped_end = target_mapped_end;
-    } else if target_mapped_end < process.heap_mapped_end {
-        while process.heap_mapped_end > target_mapped_end {
-            let page = process.heap_mapped_end - PAGE_SIZE;
-            if process.heap_pages.last().copied() != Some(page) {
-                return Err(EIO);
-            }
-            let physical = unsafe { paging::unmap_page(page) }.map_err(|_| EIO)?;
-            free_frame(physical as usize);
-            process.heap_pages.pop();
-            process.heap_mapped_end = page;
-        }
-    }
-
-    process.program_break = address;
-    Ok(address)
-}
-
-fn heap_mapping_end(address: u64, heap_limit: u64) -> Result<u64, i32> {
-    if !(HEAP_START..=heap_limit).contains(&address) {
-        return Err(ENOMEM);
-    }
-    let mapped_end = address.checked_add(PAGE_SIZE - 1).ok_or(ENOMEM)? & !(PAGE_SIZE - 1);
-    let mapped_end = mapped_end.max(HEAP_INITIAL_END);
-    if mapped_end > heap_limit {
-        return Err(ENOMEM);
-    }
-    Ok(mapped_end)
-}
-
-fn syscall_mmap(address: u64, length: u64, protection: u64) -> Result<u64, i32> {
+fn syscall_mmap(
+    address: u64,
+    length: u64,
+    protection: u64,
+    map_flags: u64,
+    descriptor: u64,
+    offset: u64,
+) -> Result<u64, i32> {
     let (mapped_size, page_count) = mapping_size(length)?;
     let page_flags = mapping_flags(protection)?;
-    let mut process = USER_PROCESS.lock();
-    if !process.active {
-        return Err(EINTR);
+    let supported_flags = MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS;
+    let map_type = map_flags & (MAP_SHARED | MAP_PRIVATE);
+    if map_flags & !supported_flags != 0
+        || (map_type != MAP_SHARED && map_type != MAP_PRIVATE)
+        || offset % PAGE_SIZE != 0
+    {
+        return Err(EINVAL);
     }
 
-    let start = if address == 0 {
-        let end = process.mmap_cursor.checked_add(mapped_size).ok_or(ENOMEM)?;
-        if process.mmap_cursor < paging::USER_ADDRESS_MIN || end > MMAP_END {
-            return Err(ENOMEM);
-        }
-        process.mmap_cursor
-    } else {
-        if address % PAGE_SIZE != 0 {
+    let shared = map_flags & MAP_SHARED != 0;
+    let anonymous = map_flags & MAP_ANONYMOUS != 0;
+    let (file_path, file_length, can_write) = if anonymous {
+        if descriptor as i64 != -1 || offset != 0 {
             return Err(EINVAL);
         }
-        validate_mapping_range(address, mapped_size)?;
-        address
+        (None, 0, true)
+    } else {
+        let fd = usize::try_from(descriptor).map_err(|_| EBADF)?;
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        let file = match process.descriptors.get(fd).and_then(Option::as_ref) {
+            Some(UserDescriptor::File(file)) => Arc::clone(file),
+            _ => return Err(EBADF),
+        };
+        let file = file.lock();
+        if !file.readable || (shared && protection & PROT_WRITE != 0 && !file.writable) {
+            return Err(EACCES);
+        }
+        let path = file.path.clone();
+        let can_write = !shared || file.writable;
+        drop(file);
+        drop(process);
+        let metadata = fs::with_vfs(|vfs| vfs.metadata(&path))
+            .map_err(errno_from_fs)?
+            .map_err(errno_from_fs)?;
+        if metadata.node_type != NodeType::File {
+            return Err(ENODEV);
+        }
+        (Some(path), metadata.len as u64, can_write)
+    };
+    if !anonymous {
+        offset.checked_add(mapped_size).ok_or(EINVAL)?;
+    }
+
+    let memory = current_user_memory()?;
+    if !USER_PROCESS.lock().active {
+        return Err(EINTR);
+    }
+    let mut mappings = memory.mmap_pages.lock();
+    let mut mmap_cursor = memory.mmap_cursor.lock();
+    let fixed = map_flags & MAP_FIXED != 0;
+    let hint = if address == 0 {
+        None
+    } else {
+        Some(address & !(PAGE_SIZE - 1))
+    };
+    if fixed && (address == 0 || address % PAGE_SIZE != 0) {
+        return Err(EINVAL);
+    }
+
+    let start = if let Some(hint) = hint.filter(|_| fixed) {
+        validate_mapping_range(hint, mapped_size)?;
+        replace_fixed_mapping_range(&mut mappings, hint, mapped_size)?;
+        hint
+    } else if let Some(hint) = hint.filter(|hint| {
+        validate_mapping_range(*hint, mapped_size).is_ok()
+            && mapping_range_is_free(*hint, mapped_size)
+    }) {
+        hint
+    } else {
+        find_free_mapping_range(*mmap_cursor, mapped_size)?
     };
     let end = start.checked_add(mapped_size).ok_or(ENOMEM)?;
-    process
-        .mmap_pages
-        .try_reserve_exact(page_count)
-        .map_err(|_| ENOMEM)?;
-    let initial_page_count = process.mmap_pages.len();
+    mappings.try_reserve(page_count).map_err(|_| ENOMEM)?;
+    let initial_page_count = mappings.len();
 
     for index in 0..page_count {
-        let page = start
-            .checked_add(
-                u64::try_from(index)
-                    .map_err(|_| ENOMEM)?
-                    .checked_mul(PAGE_SIZE)
-                    .ok_or(ENOMEM)?,
-            )
+        let page_address = start
+            .checked_add((index as u64).checked_mul(PAGE_SIZE).ok_or(ENOMEM)?)
             .ok_or(ENOMEM)?;
-        let Some(physical) = allocate_frame() else {
-            let cleanup = release_tracked_pages_from(&mut process.mmap_pages, initial_page_count);
-            return Err(if cleanup.is_err() { EIO } else { ENOMEM });
+        let file_offset = offset
+            .checked_add((index as u64).checked_mul(PAGE_SIZE).ok_or(EINVAL)?)
+            .ok_or(EINVAL)?;
+        let backing = if shared {
+            match shared_mapping_page(file_path.as_deref(), file_offset, file_length) {
+                Ok(backing) => Some(backing),
+                Err(error) => {
+                    let cleanup =
+                        release_mmap_pages_from(&mut mappings, initial_page_count);
+                    return Err(if cleanup.is_err() { EIO } else { error });
+                }
+            }
+        } else {
+            None
         };
-        let physical = physical as u64;
-        if let Err(error) = unsafe { paging::map_page(page, physical, page_flags) } {
-            free_frame(physical as usize);
-            let cleanup = release_tracked_pages_from(&mut process.mmap_pages, initial_page_count);
+        let physical = if let Some(backing) = &backing {
+            backing.physical
+        } else {
+            match allocate_mapping_frame(file_path.as_deref().map(|path| (path, file_offset))) {
+                Ok((physical, _)) => physical,
+                Err(error) => {
+                    let cleanup =
+                        release_mmap_pages_from(&mut mappings, initial_page_count);
+                    return Err(if cleanup.is_err() { EIO } else { error });
+                }
+            }
+        };
+        if let Err(error) = unsafe { paging::map_page(page_address, physical, page_flags) } {
+            if backing.is_none() {
+                free_frame(physical as usize);
+            }
+            let cleanup = release_mmap_pages_from(&mut mappings, initial_page_count);
             return Err(if cleanup.is_err() {
                 EIO
             } else {
                 paging_errno(error)
             });
         }
-        process.mmap_pages.push(page);
+        let locked = memory.lock_future_mappings.load(Ordering::Acquire);
+        mappings.push(MappingPage {
+            address: page_address,
+            shared_backing: backing,
+            locked,
+            can_write,
+            anonymous,
+        });
     }
 
-    process.mmap_pages.sort_unstable();
-    process.mmap_cursor = process.mmap_cursor.max(end);
+    mappings.sort_unstable_by_key(|page| page.address);
+    *mmap_cursor = (*mmap_cursor).max(end);
     Ok(start)
-}
-
-fn syscall_mmap_file(fd: u64, offset: u64, length: u64) -> Result<u64, i32> {
-    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
-    let path = {
-        let process = USER_PROCESS.lock();
-        if !process.active {
-            return Err(EINTR);
-        }
-        let file = match process.descriptors.get(fd).and_then(Option::as_ref) {
-            Some(UserDescriptor::File(file)) if file.readable => file,
-            _ => return Err(EBADF),
-        };
-        let mut path = String::new();
-        path.try_reserve_exact(file.path.len())
-            .map_err(|_| ENOMEM)?;
-        path.push_str(&file.path);
-        path
-    };
-
-    mapping_size(length)?;
-    let metadata = fs::with_vfs(|vfs| vfs.metadata(&path))
-        .map_err(errno_from_fs)?
-        .map_err(errno_from_fs)?;
-    if metadata.node_type != NodeType::File {
-        return Err(EINVAL);
-    }
-    let file_size = u64::try_from(metadata.len).map_err(|_| EINVAL)?;
-    validate_file_mapping_range(offset, length, file_size)?;
-    let file_offset = usize::try_from(offset).map_err(|_| EINVAL)?;
-    let file_length = usize::try_from(length).map_err(|_| EINVAL)?;
-    file_offset.checked_add(file_length).ok_or(EINVAL)?;
-
-    let address = syscall_mmap(0, length, PROT_READ)?;
-    let mut copied = 0usize;
-    let mut page_buffer = [0; PAGE_SIZE as usize];
-    while copied < file_length {
-        let chunk = (file_length - copied).min(PAGE_SIZE as usize);
-        let read_offset = file_offset + copied;
-        let read = match fs::with_vfs(|vfs| vfs.read(&path, read_offset, &mut page_buffer[..chunk]))
-        {
-            Ok(Ok(read)) => read,
-            Ok(Err(error)) | Err(error) => {
-                return discard_mapping(address, length, errno_from_fs(error));
-            }
-        };
-        if read != chunk {
-            return discard_mapping(address, length, EIO);
-        }
-        let destination = match address.checked_add(copied as u64) {
-            Some(destination) => destination,
-            None => return discard_mapping(address, length, EIO),
-        };
-        if copy_to_user_pages(destination, &page_buffer[..chunk]).is_err() {
-            return discard_mapping(address, length, EIO);
-        }
-        copied += chunk;
-    }
-    Ok(address)
-}
-
-fn discard_mapping(address: u64, length: u64, error: i32) -> Result<u64, i32> {
-    if syscall_munmap(address, length).is_err() {
-        Err(EIO)
-    } else {
-        Err(error)
-    }
 }
 
 fn syscall_munmap(address: u64, length: u64) -> Result<u64, i32> {
     if address == 0 || address % PAGE_SIZE != 0 {
         return Err(EINVAL);
     }
-    let (mapped_size, page_count) = mapping_size(length)?;
+    let (mapped_size, _) = mapping_size(length)?;
     validate_mapping_range(address, mapped_size)?;
-    let mut process = USER_PROCESS.lock();
+    if !USER_PROCESS.lock().active {
+        return Err(EINTR);
+    }
+    let memory = current_user_memory()?;
+    unmap_mapping_range(&mut memory.mmap_pages.lock(), address, mapped_size)?;
+    Ok(0)
+}
+
+fn syscall_mprotect(address: u64, length: u64, protection: u64) -> Result<u64, i32> {
+    if address % PAGE_SIZE != 0 {
+        return Err(EINVAL);
+    }
+    let (mapped_size, page_count) = mapping_size(length)?;
+    validate_user_mapping_range(address, mapped_size)?;
+    let flags = mapping_flags(protection)?;
+    let process = USER_PROCESS.lock();
     if !process.active {
         return Err(EINTR);
     }
-
+    let memory = current_user_memory()?;
+    let mappings = memory.mmap_pages.lock();
     for index in 0..page_count {
-        let page = address
-            .checked_add(
-                u64::try_from(index)
-                    .map_err(|_| EINVAL)?
-                    .checked_mul(PAGE_SIZE)
-                    .ok_or(EINVAL)?,
-            )
-            .ok_or(EINVAL)?;
-        if process.mmap_pages.binary_search(&page).is_err() {
-            return Err(EINVAL);
+        let page = address + index as u64 * PAGE_SIZE;
+        if paging::translate_address(page).is_err() {
+            return Err(ENOMEM);
+        }
+        if protection & PROT_WRITE != 0
+            && mappings
+                .iter()
+                .find(|mapped| mapped.address == page)
+                .is_some_and(|mapped| !mapped.can_write)
+        {
+            return Err(EACCES);
         }
     }
-    let first_page = process
-        .mmap_pages
-        .binary_search(&address)
-        .map_err(|_| EINVAL)?;
+    drop(process);
     for index in 0..page_count {
-        let page = address
-            .checked_add(
-                u64::try_from(index)
-                    .map_err(|_| EINVAL)?
-                    .checked_mul(PAGE_SIZE)
-                    .ok_or(EINVAL)?,
-            )
-            .ok_or(EINVAL)?;
-        let physical = match unsafe { paging::unmap_page(page) } {
-            Ok(physical) => physical,
-            Err(_) => {
-                process.mmap_pages.retain(|mapped| *mapped != 0);
-                return Err(EIO);
-            }
-        };
-        free_frame(physical as usize);
-        process.mmap_pages[first_page + index] = 0;
+        let page = address + index as u64 * PAGE_SIZE;
+        unsafe { paging::set_page_flags(page, flags) }.map_err(paging_errno)?;
     }
-    process.mmap_pages.retain(|mapped| *mapped != 0);
     Ok(0)
+}
+
+fn syscall_msync(address: u64, length: u64, flags: u64) -> Result<u64, i32> {
+    if address % PAGE_SIZE != 0
+        || flags & !(MS_ASYNC | MS_SYNC | MS_INVALIDATE) != 0
+        || flags & (MS_ASYNC | MS_SYNC) == 0
+        || flags & (MS_ASYNC | MS_SYNC) == (MS_ASYNC | MS_SYNC)
+    {
+        return Err(EINVAL);
+    }
+    let (mapped_size, page_count) = mapping_size(length)?;
+    validate_user_mapping_range(address, mapped_size)?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let memory = current_user_memory()?;
+    let mappings = memory.mmap_pages.lock();
+    for index in 0..page_count {
+        let page_address = address + index as u64 * PAGE_SIZE;
+        let page = mappings
+            .iter()
+            .find(|page| page.address == page_address)
+            .ok_or(ENOMEM)?;
+        if let Some(backing) = &page.shared_backing {
+            flush_shared_mapping_page(backing).map_err(errno_from_fs)?;
+        }
+    }
+    Ok(0)
+}
+
+fn syscall_mincore(address: u64, length: u64, vector_address: u64) -> Result<u64, i32> {
+    if address % PAGE_SIZE != 0 {
+        return Err(EINVAL);
+    }
+    let (mapped_size, page_count) = mapping_size(length)?;
+    validate_user_mapping_range(address, mapped_size)?;
+    paging::validate_user_range(vector_address, page_count, true).map_err(|_| EFAULT)?;
+    for index in 0..page_count {
+        if paging::translate_address(address + index as u64 * PAGE_SIZE).is_err() {
+            return Err(ENOMEM);
+        }
+    }
+    let vector = unsafe { core::slice::from_raw_parts_mut(vector_address as *mut u8, page_count) };
+    vector.fill(1);
+    Ok(0)
+}
+
+fn syscall_mlock(address: u64, length: u64) -> Result<u64, i32> {
+    set_mapping_lock(address, length, true)
+}
+
+fn syscall_munlock(address: u64, length: u64) -> Result<u64, i32> {
+    set_mapping_lock(address, length, false)
+}
+
+fn set_mapping_lock(address: u64, length: u64, locked: bool) -> Result<u64, i32> {
+    if address % PAGE_SIZE != 0 {
+        return Err(EINVAL);
+    }
+    let (mapped_size, page_count) = mapping_size(length)?;
+    validate_user_mapping_range(address, mapped_size)?;
+    for index in 0..page_count {
+        if paging::translate_address(address + index as u64 * PAGE_SIZE).is_err() {
+            return Err(ENOMEM);
+        }
+    }
+    let memory = current_user_memory()?;
+    if !USER_PROCESS.lock().active {
+        return Err(EINTR);
+    }
+    for page in &mut *memory.mmap_pages.lock() {
+        if page.address >= address && page.address < address + mapped_size {
+            page.locked = locked;
+        }
+    }
+    Ok(0)
+}
+
+fn syscall_mlockall(flags: u64) -> Result<u64, i32> {
+    const MCL_CURRENT: u64 = 1;
+    const MCL_FUTURE: u64 = 2;
+    if flags == 0 || flags & !(MCL_CURRENT | MCL_FUTURE) != 0 {
+        return Err(EINVAL);
+    }
+    let memory = current_user_memory()?;
+    if !USER_PROCESS.lock().active {
+        return Err(EINTR);
+    }
+    let mut mappings = memory.mmap_pages.lock();
+    if flags & MCL_CURRENT != 0 {
+        for page in &mut *mappings {
+            page.locked = true;
+        }
+    }
+    if flags & MCL_FUTURE != 0 {
+        memory.lock_future_mappings.store(true, Ordering::Release);
+    }
+    Ok(0)
+}
+
+fn syscall_munlockall() -> Result<u64, i32> {
+    let memory = current_user_memory()?;
+    if !USER_PROCESS.lock().active {
+        return Err(EINTR);
+    }
+    for page in &mut *memory.mmap_pages.lock() {
+        page.locked = false;
+    }
+    memory.lock_future_mappings.store(false, Ordering::Release);
+    Ok(0)
+}
+
+fn syscall_posix_madvise(address: u64, length: u64, advice: u64) -> Result<u64, i32> {
+    if advice > 4 || address % PAGE_SIZE != 0 {
+        return Err(EINVAL);
+    }
+    if length == 0 {
+        return Ok(0);
+    }
+    let (mapped_size, page_count) = mapping_size(length)?;
+    validate_user_mapping_range(address, mapped_size)?;
+    for index in 0..page_count {
+        if paging::translate_address(address + index as u64 * PAGE_SIZE).is_err() {
+            return Err(ENOMEM);
+        }
+    }
+    Ok(0)
+}
+
+fn unmap_mapping_range(pages: &mut Vec<MappingPage>, address: u64, length: u64) -> Result<(), i32> {
+    let end = address.checked_add(length).ok_or(EINVAL)?;
+    for page in pages
+        .iter()
+        .filter(|page| page.address >= address && page.address < end)
+    {
+        if let Some(backing) = &page.shared_backing {
+            flush_shared_mapping_page(backing).map_err(errno_from_fs)?;
+        }
+    }
+    let mut index = 0;
+    while index < pages.len() {
+        if pages[index].address < address || pages[index].address >= end {
+            index += 1;
+            continue;
+        }
+        let physical = unsafe { paging::unmap_page(pages[index].address) }.map_err(|_| EIO)?;
+        let page = pages.remove(index);
+        if page.shared_backing.is_none() {
+            free_frame(physical as usize);
+        }
+    }
+    Ok(())
+}
+
+fn replace_fixed_mapping_range(
+    pages: &mut Vec<MappingPage>,
+    address: u64,
+    length: u64,
+) -> Result<(), i32> {
+    let end = address.checked_add(length).ok_or(EINVAL)?;
+    let mut page_address = address;
+    while page_address < end {
+        if paging::translate_address(page_address).is_ok()
+            && !pages.iter().any(|page| page.address == page_address)
+        {
+            return Err(ENOMEM);
+        }
+        page_address = page_address.checked_add(PAGE_SIZE).ok_or(EINVAL)?;
+    }
+    unmap_mapping_range(pages, address, length)
+}
+
+fn mapping_range_is_free(address: u64, length: u64) -> bool {
+    let end = address.saturating_add(length);
+    let mut page = address;
+    while page < end {
+        if paging::translate_address(page).is_ok() {
+            return false;
+        }
+        page = match page.checked_add(PAGE_SIZE) {
+            Some(page) => page,
+            None => return false,
+        };
+    }
+    true
+}
+
+fn find_free_mapping_range(cursor: u64, length: u64) -> Result<u64, i32> {
+    let mut address = cursor.max(MMAP_START);
+    while address
+        .checked_add(length)
+        .is_some_and(|end| end <= MMAP_END)
+    {
+        if mapping_range_is_free(address, length) {
+            return Ok(address);
+        }
+        address = address.checked_add(PAGE_SIZE).ok_or(ENOMEM)?;
+    }
+    address = MMAP_START;
+    while address
+        .checked_add(length)
+        .is_some_and(|end| end <= cursor.min(MMAP_END))
+    {
+        if mapping_range_is_free(address, length) {
+            return Ok(address);
+        }
+        address = address.checked_add(PAGE_SIZE).ok_or(ENOMEM)?;
+    }
+    Err(ENOMEM)
 }
 
 fn mapping_size(length: u64) -> Result<(u64, usize), i32> {
@@ -2778,25 +4240,14 @@ fn mapping_size(length: u64) -> Result<(u64, usize), i32> {
     Ok((mapped_size, page_count))
 }
 
-fn validate_file_mapping_range(offset: u64, length: u64, file_size: u64) -> Result<(), i32> {
-    if length == 0 || offset % PAGE_SIZE != 0 {
-        return Err(EINVAL);
-    }
-    let end = offset.checked_add(length).ok_or(EINVAL)?;
-    if end > file_size {
-        return Err(EINVAL);
-    }
-    Ok(())
-}
-
 fn mapping_flags(protection: u64) -> Result<u64, i32> {
-    if protection & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0
-        || protection & PROT_READ == 0
-        || protection & (PROT_WRITE | PROT_EXEC) == (PROT_WRITE | PROT_EXEC)
-    {
+    if protection & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0 {
         return Err(EINVAL);
     }
-    let mut flags = paging::flags::USER;
+    let mut flags = 0;
+    if protection != 0 {
+        flags |= paging::flags::USER;
+    }
     if protection & PROT_WRITE != 0 {
         flags |= paging::flags::WRITABLE;
     }
@@ -2814,14 +4265,266 @@ fn validate_mapping_range(address: u64, length: u64) -> Result<(), i32> {
     Ok(())
 }
 
-fn release_tracked_pages_from(mapped_pages: &mut Vec<u64>, first_page: usize) -> Result<(), i32> {
-    while mapped_pages.len() > first_page {
-        let page = *mapped_pages.last().ok_or(EIO)?;
-        let physical = unsafe { paging::unmap_page(page) }.map_err(|_| EIO)?;
-        mapped_pages.pop();
-        free_frame(physical as usize);
+fn validate_user_mapping_range(address: u64, length: u64) -> Result<(), i32> {
+    let end = address.checked_add(length).ok_or(EINVAL)?;
+    if address < paging::USER_ADDRESS_MIN || end > paging::USER_ADDRESS_MAX {
+        return Err(EINVAL);
     }
     Ok(())
+}
+
+fn release_mmap_pages(mapped_pages: &mut Vec<MappingPage>) -> Result<(), PagingError> {
+    let pages = core::mem::take(mapped_pages);
+    let mut first_error = None;
+    for page in pages {
+        match unsafe { paging::unmap_page(page.address) } {
+            Ok(physical) if page.shared_backing.is_none() => free_frame(physical as usize),
+            Ok(_) => {}
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn release_mmap_pages_from(
+    mapped_pages: &mut Vec<MappingPage>,
+    first_page: usize,
+) -> Result<(), i32> {
+    while mapped_pages.len() > first_page {
+        let address = mapped_pages.last().ok_or(EIO)?.address;
+        let physical = unsafe { paging::unmap_page(address) }.map_err(|_| EIO)?;
+        let page = mapped_pages.pop().ok_or(EIO)?;
+        debug_assert_eq!(page.address, address);
+        if page.shared_backing.is_none() {
+            free_frame(physical as usize);
+        }
+    }
+    Ok(())
+}
+
+fn allocate_mapping_frame(file: Option<(&str, u64)>) -> Result<(u64, usize), i32> {
+    let physical = allocate_frame().ok_or(ENOMEM)? as u64;
+    let Some(virtual_address) = physical_to_virtual(physical as usize) else {
+        free_frame(physical as usize);
+        return Err(ENOMEM);
+    };
+    unsafe {
+        core::ptr::write_bytes(virtual_address as *mut u8, 0, PAGE_SIZE as usize);
+    }
+    if let Some((path, offset)) = file {
+        let buffer = unsafe {
+            core::slice::from_raw_parts_mut(virtual_address as *mut u8, PAGE_SIZE as usize)
+        };
+        let file_offset = match usize::try_from(offset) {
+            Ok(offset) => offset,
+            Err(_) => {
+                free_frame(physical as usize);
+                return Err(EINVAL);
+            }
+        };
+        let read_result = fs::with_vfs(|vfs| vfs.read(path, file_offset, buffer));
+        match read_result {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                free_frame(physical as usize);
+                return Err(errno_from_fs(error));
+            }
+            Err(error) => {
+                free_frame(physical as usize);
+                return Err(errno_from_fs(error));
+            }
+        }
+    }
+    Ok((physical, virtual_address))
+}
+
+fn shared_mapping_page(
+    path: Option<&str>,
+    file_offset: u64,
+    file_length: u64,
+) -> Result<Arc<SharedMmapPage>, i32> {
+    if let Some(path) = path {
+        let mut pages = SHARED_MMAP_PAGES.lock();
+        pages.retain(|page| page.strong_count() > 0);
+        if let Some(page) = pages.iter().filter_map(Weak::upgrade).find(|page| {
+            page.path.lock().as_deref() == Some(path) && page.file_offset == file_offset
+        }) {
+            page.file_length.fetch_max(file_length, Ordering::Relaxed);
+            return Ok(page);
+        }
+    }
+
+    let file = path.map(|path| (path, file_offset));
+    let (physical, _) = allocate_mapping_frame(file)?;
+    let page = Arc::new(SharedMmapPage {
+        physical,
+        path: Mutex::new(path.map(String::from)),
+        file_offset,
+        file_length: AtomicU64::new(file_length),
+    });
+    if path.is_some() {
+        SHARED_MMAP_PAGES.lock().push(Arc::downgrade(&page));
+    }
+    Ok(page)
+}
+
+fn flush_shared_mapping_page(page: &SharedMmapPage) -> Result<(), FsError> {
+    let Some(path) = page.path.lock().clone() else {
+        return Ok(());
+    };
+    let file_length = fs::with_vfs(|vfs| vfs.metadata(&path).map(|metadata| metadata.len))?? as u64;
+    let end = page
+        .file_offset
+        .saturating_add(PAGE_SIZE)
+        .min(page.file_length.load(Ordering::Relaxed))
+        .min(file_length);
+    if end <= page.file_offset {
+        return Ok(());
+    }
+    let Some(virtual_address) = physical_to_virtual(page.physical as usize) else {
+        return Err(FsError::IoError);
+    };
+    let size = usize::try_from(end - page.file_offset).map_err(|_| FsError::IoError)?;
+    let bytes = unsafe { core::slice::from_raw_parts(virtual_address as *const u8, size) };
+    let written = fs::with_vfs(|vfs| vfs.write(&path, page.file_offset as usize, bytes))??;
+    if written == size {
+        Ok(())
+    } else {
+        Err(FsError::IoError)
+    }
+}
+
+fn flush_shared_mapping_pages(pages: &[MappingPage]) -> Result<(), FsError> {
+    for page in pages {
+        if let Some(backing) = &page.shared_backing {
+            flush_shared_mapping_page(backing)?;
+        }
+    }
+    Ok(())
+}
+
+fn shared_mapping_pages_snapshot() -> Vec<Arc<SharedMmapPage>> {
+    let mut pages = SHARED_MMAP_PAGES.lock();
+    let mut snapshot = Vec::new();
+    pages.retain(|page| {
+        if let Some(page) = page.upgrade() {
+            snapshot.push(page);
+            true
+        } else {
+            false
+        }
+    });
+    snapshot
+}
+
+fn overlay_shared_mapping_pages(path: &str, offset: usize, buffer: &mut [u8]) {
+    let end = offset.saturating_add(buffer.len());
+    for page in shared_mapping_pages_snapshot() {
+        if page.path.lock().as_deref() != Some(path) {
+            continue;
+        }
+        let page_start = page.file_offset as usize;
+        let page_end = page_start.saturating_add(PAGE_SIZE as usize);
+        let overlap_start = offset.max(page_start);
+        let overlap_end = end.min(page_end);
+        if overlap_start >= overlap_end {
+            continue;
+        }
+        let Some(physical_address) = physical_to_virtual(page.physical as usize) else {
+            continue;
+        };
+        let source_offset = overlap_start - page_start;
+        let destination_offset = overlap_start - offset;
+        let count = overlap_end - overlap_start;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (physical_address as *const u8).add(source_offset),
+                buffer.as_mut_ptr().add(destination_offset),
+                count,
+            );
+        }
+    }
+}
+
+fn update_shared_mapping_pages(path: &str, offset: usize, bytes: &[u8]) {
+    let end = offset.saturating_add(bytes.len());
+    for page in shared_mapping_pages_snapshot() {
+        if page.path.lock().as_deref() != Some(path) {
+            continue;
+        }
+        let page_start = page.file_offset as usize;
+        let page_end = page_start.saturating_add(PAGE_SIZE as usize);
+        let overlap_start = offset.max(page_start);
+        let overlap_end = end.min(page_end);
+        if overlap_start >= overlap_end {
+            continue;
+        }
+        let Some(physical_address) = physical_to_virtual(page.physical as usize) else {
+            continue;
+        };
+        let source_offset = overlap_start - offset;
+        let destination_offset = overlap_start - page_start;
+        let count = overlap_end - overlap_start;
+        page.file_length.fetch_max(end as u64, Ordering::Relaxed);
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr().add(source_offset),
+                (physical_address as *mut u8).add(destination_offset),
+                count,
+            );
+        }
+    }
+}
+
+fn rewrite_shared_mapping_paths(source: &str, target: &str) {
+    let source_prefix = alloc::format!("{source}/");
+    for page in shared_mapping_pages_snapshot() {
+        let mut path = page.path.lock();
+        if path.as_deref() == Some(source) {
+            *path = Some(String::from(target));
+        } else if let Some(suffix) = path
+            .as_deref()
+            .and_then(|path| path.strip_prefix(&source_prefix))
+        {
+            *path = Some(alloc::format!("{target}/{suffix}"));
+        }
+    }
+}
+
+fn forget_shared_mapping_path(path: &str) {
+    for page in shared_mapping_pages_snapshot() {
+        let mut mapped_path = page.path.lock();
+        if mapped_path.as_deref() == Some(path) {
+            *mapped_path = None;
+        }
+    }
+}
+
+fn truncate_shared_mapping_pages(path: &str, length: usize) {
+    let length = length as u64;
+    for page in shared_mapping_pages_snapshot() {
+        if page.path.lock().as_deref() != Some(path) {
+            continue;
+        }
+        page.file_length.store(length, Ordering::Relaxed);
+        let page_start = page.file_offset;
+        let page_end = page_start.saturating_add(PAGE_SIZE);
+        if length >= page_end {
+            continue;
+        }
+        let Some(virtual_address) = physical_to_virtual(page.physical as usize) else {
+            continue;
+        };
+        let clear_from = length.saturating_sub(page_start).min(PAGE_SIZE) as usize;
+        unsafe {
+            core::ptr::write_bytes(
+                (virtual_address as *mut u8).add(clear_from),
+                0,
+                PAGE_SIZE as usize - clear_from,
+            );
+        }
+    }
 }
 
 fn paging_errno(error: PagingError) -> i32 {
@@ -2860,6 +4563,35 @@ fn syscall_chmod(path_address: u64, mode: u64) -> Result<u64, i32> {
     Ok(0)
 }
 
+fn syscall_fchmod(fd: u64, mode: u64) -> Result<u64, i32> {
+    let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
+    if mode & !0o777 != 0 {
+        return Err(EINVAL);
+    }
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let path = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        match process.descriptors.get(fd).and_then(Option::as_ref) {
+            Some(UserDescriptor::File(file)) => file.lock().path.clone(),
+            Some(UserDescriptor::Directory(directory)) => directory.lock().path.clone(),
+            Some(UserDescriptor::Pipe(_)) => return Err(ENOTSUP),
+            Some(
+                UserDescriptor::ConsoleInput
+                | UserDescriptor::ConsoleOutput
+                | UserDescriptor::ConsoleError,
+            ) => return Err(ENOTSUP),
+            None => return Err(EBADF),
+        }
+    };
+    fs::with_vfs(|vfs| vfs.set_permissions(&path, mode))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    Ok(0)
+}
+
 fn syscall_getcwd(address: u64, size: u64) -> Result<u64, i32> {
     let size = usize::try_from(size).map_err(|_| EINVAL)?;
     if size == 0 {
@@ -2884,18 +4616,18 @@ fn syscall_getcwd(address: u64, size: u64) -> Result<u64, i32> {
     Ok(needed as u64)
 }
 
-fn syscall_putpixel(x: u64, y: u64, color: u64) -> Result<u64, i32> {
-    let framebuffer = crate::graphics::Framebuffer::get().ok_or(ENODEV)?;
-    let color = validate_pixel(x, y, color, framebuffer.width(), framebuffer.height())?;
-    framebuffer.write_pixel(x, y, crate::graphics::Color(color));
-    Ok(0)
-}
-
-fn validate_pixel(x: u64, y: u64, color: u64, width: u64, height: u64) -> Result<u32, i32> {
-    if color > 0x00FF_FFFF || x >= width || y >= height {
+fn syscall_clock_gettime(clock_id: u64, address: u64) -> Result<u64, i32> {
+    if clock_id != 0 {
         return Err(EINVAL);
     }
-    Ok(color as u32)
+    paging::validate_user_range(address, core::mem::size_of::<UserTimespec>(), true)
+        .map_err(|_| EFAULT)?;
+    let time = UserTimespec {
+        seconds: crate::drivers::rtc::unix_seconds().map_err(|_| EIO)?,
+        nanoseconds: 0,
+    };
+    unsafe { (address as *mut UserTimespec).write_unaligned(time) };
+    Ok(0)
 }
 
 fn resolve_process_path(path: &str) -> Result<String, i32> {
@@ -2905,6 +4637,30 @@ fn resolve_process_path(path: &str) -> Result<String, i32> {
             return Err(EINTR);
         }
         process.cwd.clone()
+    };
+    resolve_user_path(&cwd, path).map_err(errno_from_fs)
+}
+
+fn resolve_at_path(dirfd: u64, path: &str) -> Result<String, i32> {
+    if path.starts_with('/') {
+        return resolve_process_path(path);
+    }
+
+    let cwd = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        if dirfd as i64 == AT_FDCWD {
+            process.cwd.clone()
+        } else {
+            let fd = usize::try_from(dirfd).map_err(|_| EBADF)?;
+            match process.descriptors.get(fd).and_then(Option::as_ref) {
+                Some(UserDescriptor::Directory(directory)) => directory.lock().path.clone(),
+                Some(_) => return Err(ENOTDIR),
+                None => return Err(EBADF),
+            }
+        }
     };
     resolve_user_path(&cwd, path).map_err(errno_from_fs)
 }
@@ -2936,38 +4692,38 @@ fn copy_user_path(address: u64) -> Result<String, i32> {
     copy_user_string(address, MAX_USER_PATH)
 }
 
-fn copy_user_arguments(address: u64, count: u64) -> Result<Vec<String>, i32> {
-    let count = usize::try_from(count).map_err(|_| EINVAL)?;
-    if count > MAX_ARGUMENTS {
-        return Err(EINVAL);
-    }
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-    let pointer_bytes = count
-        .checked_mul(core::mem::size_of::<u64>())
-        .ok_or(EINVAL)?;
+fn copy_user_argument_vector(address: u64) -> Result<Vec<String>, i32> {
     if address == 0 {
         return Err(EFAULT);
     }
-    paging::validate_user_range(address, pointer_bytes, false).map_err(|_| EFAULT)?;
-
     let mut arguments = Vec::new();
-    arguments.try_reserve_exact(count).map_err(|_| ENOMEM)?;
+    arguments
+        .try_reserve_exact(MAX_ARGUMENTS)
+        .map_err(|_| ENOMEM)?;
     let mut total_bytes = 0usize;
-    for index in 0..count {
+    for index in 0..=MAX_ARGUMENTS {
         let pointer_address = address
             .checked_add((index * core::mem::size_of::<u64>()) as u64)
             .ok_or(EFAULT)?;
+        paging::validate_user_range(pointer_address, core::mem::size_of::<u64>(), false)
+            .map_err(|_| EFAULT)?;
         let argument_address = unsafe { (pointer_address as *const u64).read_unaligned() };
-        let argument = copy_user_string(argument_address, MAX_ARGUMENT_BYTES)?;
+        if argument_address == 0 {
+            return Ok(arguments);
+        }
+        if index == MAX_ARGUMENTS {
+            return Err(E2BIG);
+        }
+
+        let argument = copy_user_string(argument_address, MAX_ARGUMENT_BYTES)
+            .map_err(|error| if error == ENAMETOOLONG { E2BIG } else { error })?;
         total_bytes = total_bytes
-            .checked_add(argument.len().checked_add(1).ok_or(EINVAL)?)
+            .checked_add(argument.len().checked_add(1).ok_or(E2BIG)?)
             .filter(|length| *length <= MAX_ARGUMENT_BYTES)
-            .ok_or(EINVAL)?;
+            .ok_or(E2BIG)?;
         arguments.push(argument);
     }
-    Ok(arguments)
+    Err(E2BIG)
 }
 
 fn copy_user_environment(address: u64) -> Result<Vec<String>, i32> {
@@ -3037,11 +4793,13 @@ fn errno_from_fs(error: FsError) -> i32 {
         FsError::NotDirectory => ENOTDIR,
         FsError::IsDirectory => EISDIR,
         FsError::InvalidPath => EINVAL,
+        FsError::NotSymlink => EINVAL,
         FsError::PermissionDenied => EACCES,
         FsError::InvalidData => EILSEQ,
         FsError::NoSpace => ENOSPC,
         FsError::ReadOnly => EROFS,
         FsError::DirectoryNotEmpty => ENOTEMPTY,
+        FsError::Busy => EBUSY,
         FsError::SymlinkLoop => ELOOP,
         FsError::Unsupported => ENOSYS,
         _ => EIO,
@@ -3100,6 +4858,18 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
         if current < scheduler.processes.len() {
             let child_pid = scheduler.processes[current].pid;
             let parent_pid = scheduler.processes[current].parent_pid;
+            for (index, process) in scheduler.processes.iter_mut().enumerate() {
+                if index != current
+                    && process.pid == child_pid
+                    && process.exit_status.is_none()
+                {
+                    process.exit_status = Some(status);
+                    process.reaped = true;
+                    process.waiting_for = None;
+                    process.wait_status_pointer = 0;
+                    process.state.active = false;
+                }
+            }
             scheduler.processes[current].exit_status = Some(status);
             let mut active_process = USER_PROCESS.lock();
             core::mem::swap(
@@ -3137,7 +4907,7 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
                 let parent_frame = parent_process.frame_pointer as *mut InterruptFrame;
                 unsafe {
                     gdt::set_ring0_stack_top(parent_process.kernel_stack_top);
-                    parent_process.image.address_space.activate();
+                    parent_process.image.memory.address_space.activate();
                     (*parent_frame).rax = if status_pointer == 0 {
                         child_pid
                     } else {
@@ -3169,7 +4939,7 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
                 let next_frame = next_process.frame_pointer as *mut InterruptFrame;
                 unsafe {
                     gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-                    next_process.image.address_space.activate();
+                    next_process.image.memory.address_space.activate();
                 }
                 return next_frame;
             }
@@ -3243,14 +5013,15 @@ fn release_pages(mapped_pages: &mut Vec<u64>) -> Result<(), ElfError> {
     first_error.map_or(Ok(()), |error| Err(ElfError::Paging(error)))
 }
 
-fn parse(bytes: &[u8]) -> Result<(u64, Vec<LoadSegment>), ElfError> {
+fn parse(bytes: &[u8]) -> Result<ParsedElf, ElfError> {
     if bytes.len() < ELF_HEADER_SIZE {
         return Err(ElfError::InvalidHeader);
     }
     if bytes.get(..4) != Some(b"\x7FELF") || bytes[4] != 2 || bytes[5] != 1 || bytes[6] != 1 {
         return Err(ElfError::UnsupportedFormat);
     }
-    if read_u16(bytes, 16)? != 2
+    let elf_type = read_u16(bytes, 16)?;
+    if (elf_type != ELF_ET_EXEC && elf_type != ELF_ET_DYN)
         || read_u16(bytes, 18)? != 62
         || read_u32(bytes, 20)? != 1
         || read_u16(bytes, 52)? != ELF_HEADER_SIZE as u16
@@ -3283,10 +5054,42 @@ fn parse(bytes: &[u8]) -> Result<(u64, Vec<LoadSegment>), ElfError> {
     segments
         .try_reserve_exact(ph_count)
         .map_err(|_| ElfError::OutOfMemory)?;
+    let mut interpreter = None;
     for index in 0..ph_count {
         let offset = ph_offset + index * ph_entry_size;
         match read_u32(bytes, offset)? {
-            PT_DYNAMIC | PT_INTERP => return Err(ElfError::DynamicLinkingUnsupported),
+            PT_DYNAMIC => {}
+            PT_INTERP => {
+                if interpreter.is_some() {
+                    return Err(ElfError::InvalidSegment);
+                }
+                let path_offset = usize::try_from(read_u64(bytes, offset + 8)?)
+                    .map_err(|_| ElfError::OutOfBounds)?;
+                let path_size = usize::try_from(read_u64(bytes, offset + 32)?)
+                    .map_err(|_| ElfError::OutOfBounds)?;
+                let path_end = path_offset
+                    .checked_add(path_size)
+                    .ok_or(ElfError::OutOfBounds)?;
+                let path_bytes = bytes
+                    .get(path_offset..path_end)
+                    .ok_or(ElfError::OutOfBounds)?;
+                if path_size < 2
+                    || path_size > MAX_USER_PATH
+                    || path_bytes.last() != Some(&0)
+                    || path_bytes[..path_size - 1].contains(&0)
+                    || path_bytes.first() != Some(&b'/')
+                {
+                    return Err(ElfError::InvalidSegment);
+                }
+                let path = core::str::from_utf8(&path_bytes[..path_size - 1])
+                    .map_err(|_| ElfError::InvalidSegment)?;
+                let mut owned_path = String::new();
+                owned_path
+                    .try_reserve_exact(path.len())
+                    .map_err(|_| ElfError::OutOfMemory)?;
+                owned_path.push_str(path);
+                interpreter = Some(owned_path);
+            }
             PT_LOAD => {
                 let flags = read_u32(bytes, offset + 4)?;
                 let file_offset = usize::try_from(read_u64(bytes, offset + 8)?)
@@ -3320,7 +5123,7 @@ fn parse(bytes: &[u8]) -> Result<(u64, Vec<LoadSegment>), ElfError> {
                 let memory_end = virtual_address
                     .checked_add(memory_size)
                     .ok_or(ElfError::AddressRange)?;
-                if virtual_address < paging::USER_ADDRESS_MIN
+                if (elf_type == ELF_ET_EXEC && virtual_address < paging::USER_ADDRESS_MIN)
                     || memory_end > paging::USER_ADDRESS_MAX
                 {
                     return Err(ElfError::AddressRange);
@@ -3339,7 +5142,38 @@ fn parse(bytes: &[u8]) -> Result<(u64, Vec<LoadSegment>), ElfError> {
     if segments.is_empty() {
         return Err(ElfError::InvalidSegment);
     }
-    Ok((entry, segments))
+    let program_header_file_end = ph_offset
+        .checked_add(ph_bytes)
+        .ok_or(ElfError::OutOfBounds)?;
+    let program_headers = segments
+        .iter()
+        .find_map(|segment| {
+            let segment_file_end = segment.file_offset.checked_add(segment.file_size)?;
+            (segment.file_offset <= ph_offset && program_header_file_end <= segment_file_end)
+                .then(|| {
+                    segment
+                        .virtual_address
+                        .checked_add((ph_offset - segment.file_offset) as u64)
+                })
+                .flatten()
+        })
+        .unwrap_or(0);
+    if !segments.iter().any(|segment| {
+        segment.flags & PF_X != 0
+            && entry >= segment.virtual_address
+            && entry < segment.virtual_address.saturating_add(segment.memory_size)
+    }) {
+        return Err(ElfError::InvalidEntryPoint);
+    }
+    Ok(ParsedElf {
+        elf_type,
+        entry,
+        program_headers,
+        program_header_size: ph_entry_size as u64,
+        program_header_count: ph_count as u64,
+        segments,
+        interpreter,
+    })
 }
 
 fn page_start(address: u64) -> u64 {
@@ -3386,13 +5220,13 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, ElfError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOMEM, ENOSYS, EPIPE, ElfError,
-        HEAP_INITIAL_END, HEAP_START, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY, PROT_EXEC,
-        PROT_READ, PROT_WRITE, Pipe, SYSCALL_BRK, SYSCALL_MMAP, SYSCALL_MMAP_FILE, SYSCALL_MUNMAP,
-        UserDescriptor, UserDirent, WAIT_ANY_PID, build_initial_stack, create_pipe,
-        dispatch_syscall, errno_from_fs, heap_mapping_end, install_pipe_descriptors, mapping_flags,
-        mapping_size, next_runnable, parse, resolve_user_path, stat_mode, user_dirent,
-        validate_file_mapping_range, validate_mapping_range, validate_pixel, wait_target_matches,
+        EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPIPE, ElfError,
+        MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
+        PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, SYSCALL_MMAP, SYSCALL_MUNMAP, UserDescriptor,
+        UserDirent, WAIT_ANY_PID, build_initial_stack, create_pipe, dispatch_syscall,
+        apply_load_bias, errno_from_fs, install_pipe_descriptors, mapping_flags, mapping_size,
+        next_runnable, paging, parse, resolve_user_path, stat_mode, user_dirent,
+        validate_mapping_range, wait_target_matches,
     };
     use crate::fs::{DirectoryEntry, FsError, Metadata};
 
@@ -3500,31 +5334,64 @@ mod tests {
 
     #[test]
     fn parses_static_executable_segment() {
-        let (entry, segments) = parse(&sample_elf()).unwrap();
-        assert_eq!(entry, 0x400000);
-        assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0].file_size, 1);
+        let parsed = parse(&sample_elf()).unwrap();
+        assert_eq!(parsed.entry, 0x400000);
+        assert_eq!(parsed.segments.len(), 1);
+        assert_eq!(parsed.segments[0].file_size, 1);
+    }
+
+    #[test]
+    fn applies_a_load_bias_to_a_position_independent_executable() {
+        let mut bytes = sample_elf();
+        put_u16(&mut bytes, 16, 3);
+        put_u64(&mut bytes, 24, 0x10);
+        put_u64(&mut bytes, 80, 0);
+        let mut parsed = parse(&bytes).unwrap();
+        apply_load_bias(&mut parsed, super::PIE_LOAD_BIAS).unwrap();
+        assert_eq!(parsed.entry, super::PIE_LOAD_BIAS + 0x10);
+        assert_eq!(parsed.segments[0].virtual_address, super::PIE_LOAD_BIAS);
     }
 
     #[test]
     fn rejects_writable_executable_segments() {
         let mut bytes = sample_elf();
         put_u32(&mut bytes, 68, 7);
-        assert_eq!(parse(&bytes), Err(ElfError::WritableExecutableSegment));
+        assert!(matches!(
+            parse(&bytes),
+            Err(ElfError::WritableExecutableSegment)
+        ));
     }
 
     #[test]
     fn rejects_truncated_segment_data() {
         let mut bytes = sample_elf();
         put_u64(&mut bytes, 96, 2);
-        assert_eq!(parse(&bytes), Err(ElfError::OutOfBounds));
+        assert!(matches!(parse(&bytes), Err(ElfError::OutOfBounds)));
     }
 
     #[test]
-    fn rejects_dynamic_program_headers() {
+    fn accepts_dynamic_segment_without_an_interpreter() {
         let mut bytes = sample_elf();
-        put_u32(&mut bytes, 64, 2);
-        assert_eq!(parse(&bytes), Err(ElfError::DynamicLinkingUnsupported));
+        put_u16(&mut bytes, 56, 2);
+        put_u32(&mut bytes, 120, 2);
+        assert!(parse(&bytes).is_ok());
+    }
+
+    #[test]
+    fn reads_the_dynamic_interpreter_path() {
+        let mut bytes = sample_elf();
+        let interpreter = b"/lib/ld-octagram.so\0";
+        bytes.resize(0x1000 + interpreter.len(), 0);
+        put_u16(&mut bytes, 56, 2);
+        put_u32(&mut bytes, 120, 3);
+        put_u64(&mut bytes, 128, 0x1000);
+        put_u64(&mut bytes, 152, interpreter.len() as u64);
+        put_u64(&mut bytes, 160, interpreter.len() as u64);
+        bytes[0x1000..].copy_from_slice(interpreter);
+        assert_eq!(
+            parse(&bytes).unwrap().interpreter.as_deref(),
+            Some("/lib/ld-octagram.so")
+        );
     }
 
     #[test]
@@ -3533,15 +5400,20 @@ mod tests {
         assert_eq!(errno_from_fs(FsError::AlreadyExists), EEXIST);
         assert_eq!(errno_from_fs(FsError::PermissionDenied), EACCES);
         assert_eq!(errno_from_fs(FsError::InvalidData), EILSEQ);
-        assert_eq!(dispatch_syscall(u64::MAX, 0, 0, 0, 0), Err(ENOSYS));
+        assert_eq!(dispatch_syscall(u64::MAX, 0, 0, 0, 0, 0, 0), Err(ENOSYS));
     }
 
     #[test]
-    fn validates_pixel_color_and_framebuffer_bounds() {
-        assert_eq!(validate_pixel(2, 3, 0x123456, 8, 8), Ok(0x123456));
-        assert_eq!(validate_pixel(8, 3, 0, 8, 8), Err(EINVAL));
-        assert_eq!(validate_pixel(2, 8, 0, 8, 8), Err(EINVAL));
-        assert_eq!(validate_pixel(2, 3, 0x1_000000, 8, 8), Err(EINVAL));
+    fn retired_non_posix_syscalls_are_unavailable() {
+        for number in [10, 15, 18, 19, 23, 24, 26, 49] {
+            assert_eq!(dispatch_syscall(number, 0, 0, 0, 0, 0, 0), Err(ENOSYS));
+        }
+    }
+
+    #[test]
+    fn clock_gettime_accepts_realtime_and_rejects_unknown_clocks() {
+        assert_eq!(dispatch_syscall(50, 1, 1, 0, 0, 0, 0), Err(EINVAL));
+        assert_eq!(dispatch_syscall(50, 0, 0, 0, 0, 0, 0), Err(super::EFAULT));
     }
 
     #[test]
@@ -3554,58 +5426,82 @@ mod tests {
         assert!(mapping_flags(PROT_READ).is_ok());
         assert!(mapping_flags(PROT_READ | PROT_WRITE).is_ok());
         assert!(mapping_flags(PROT_READ | PROT_EXEC).is_ok());
-        assert_eq!(mapping_flags(0), Err(EINVAL));
-        assert_eq!(
-            mapping_flags(PROT_READ | PROT_WRITE | PROT_EXEC),
-            Err(EINVAL)
-        );
-        assert_eq!(mapping_flags(PROT_WRITE), Err(EINVAL));
+        assert!(mapping_flags(PROT_WRITE).is_ok());
+        assert!(mapping_flags(PROT_READ | PROT_WRITE | PROT_EXEC).is_ok());
+        assert_eq!(mapping_flags(0), Ok(paging::flags::NO_EXECUTE));
     }
 
     #[test]
     fn mmap_syscalls_require_an_active_user_process() {
         assert_eq!(
-            dispatch_syscall(SYSCALL_MMAP, 0, 4096, PROT_READ, 0),
+            dispatch_syscall(
+                SYSCALL_MMAP,
+                0,
+                4096,
+                PROT_READ,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                u64::MAX,
+                0,
+            ),
             Err(EINTR)
         );
         assert_eq!(
-            dispatch_syscall(SYSCALL_MUNMAP, MMAP_START, 4096, 0, 0),
-            Err(EINTR)
-        );
-        assert_eq!(
-            dispatch_syscall(SYSCALL_MMAP_FILE, 3, 0, 4096, 0),
-            Err(EINTR)
-        );
-        assert_eq!(
-            dispatch_syscall(SYSCALL_BRK, HEAP_START + 1, 0, 0, 0),
+            dispatch_syscall(SYSCALL_MUNMAP, MMAP_START, 4096, 0, 0, 0, 0),
             Err(EINTR)
         );
     }
 
     #[test]
-    fn validates_read_only_file_mapping_bounds() {
-        assert_eq!(validate_file_mapping_range(4096, 4096, 8192), Ok(()));
-        assert_eq!(validate_file_mapping_range(1, 4096, 8192), Err(EINVAL));
-        assert_eq!(validate_file_mapping_range(0, 0, 8192), Err(EINVAL));
-        assert_eq!(validate_file_mapping_range(4096, 4097, 8192), Err(EINVAL));
+    fn mmap_rejects_invalid_mapping_types_and_offsets() {
         assert_eq!(
-            validate_file_mapping_range(u64::MAX - 4095, 8192, u64::MAX),
+            dispatch_syscall(SYSCALL_MMAP, 0, 4096, PROT_READ, 0, u64::MAX, 0),
+            Err(EINVAL)
+        );
+        assert_eq!(
+            dispatch_syscall(
+                SYSCALL_MMAP,
+                0,
+                4096,
+                PROT_READ,
+                MAP_SHARED | MAP_PRIVATE,
+                u64::MAX,
+                0,
+            ),
+            Err(EINVAL)
+        );
+        assert_eq!(
+            dispatch_syscall(
+                SYSCALL_MMAP,
+                0,
+                4096,
+                PROT_READ,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                u64::MAX,
+                1,
+            ),
             Err(EINVAL)
         );
     }
 
     #[test]
-    fn computes_heap_mapping_growth_and_enforces_heap_limit() {
+    fn mapping_family_rejects_invalid_flags_before_accessing_pages() {
         assert_eq!(
-            heap_mapping_end(HEAP_START, MMAP_START),
-            Ok(HEAP_INITIAL_END)
+            dispatch_syscall(51, MMAP_START, 4096, 0, 0, 0, 0),
+            Err(EINVAL)
         );
         assert_eq!(
-            heap_mapping_end(HEAP_INITIAL_END + 1, MMAP_START),
-            Ok(HEAP_INITIAL_END + 4096)
+            dispatch_syscall(52, MMAP_START, 4096, 8, 0, 0, 0),
+            Err(EINVAL)
         );
-        assert_eq!(heap_mapping_end(MMAP_START, MMAP_START), Ok(MMAP_START));
-        assert_eq!(heap_mapping_end(MMAP_START + 1, MMAP_START), Err(ENOMEM));
+        assert_eq!(
+            dispatch_syscall(53, MMAP_START + 1, 4096, 0, 0, 0, 0),
+            Err(EINVAL)
+        );
+        assert_eq!(dispatch_syscall(56, 0, 0, 0, 0, 0, 0), Err(EINVAL));
+        assert_eq!(
+            dispatch_syscall(58, MMAP_START, 4096, 5, 0, 0, 0),
+            Err(EINVAL)
+        );
     }
 
     #[test]
@@ -3642,7 +5538,8 @@ mod tests {
     #[test]
     fn builds_an_aligned_initial_stack_with_argv_and_empty_envp() {
         let arguments = alloc::vec![String::from("program"), String::from("two words")];
-        let (stack_pointer, stack) = build_initial_stack(0x7000, 4096, &arguments, &[]).unwrap();
+        let (stack_pointer, stack) =
+            build_initial_stack(0x7000, 4096, &arguments, &[], &[(0, 0)]).unwrap();
         let word =
             |offset: usize| u64::from_le_bytes(stack[offset..offset + 8].try_into().unwrap());
         assert_eq!(stack_pointer % 16, 0);
@@ -3654,6 +5551,8 @@ mod tests {
         assert_eq!(&stack[second..second + 10], b"two words\0");
         assert_eq!(word(24), 0);
         assert_eq!(word(32), 0);
+        assert_eq!(word(40), 0);
+        assert_eq!(word(48), 0);
     }
 
     #[test]
@@ -3661,7 +5560,7 @@ mod tests {
         let arguments = alloc::vec![String::from("program")];
         let environment = alloc::vec![String::from("PATH=/bin:/usr/bin"), String::from("HOME=/"),];
         let (stack_pointer, stack) =
-            build_initial_stack(0x7000, 4096, &arguments, &environment).unwrap();
+            build_initial_stack(0x7000, 4096, &arguments, &environment, &[(0, 0)]).unwrap();
         let word =
             |offset: usize| u64::from_le_bytes(stack[offset..offset + 8].try_into().unwrap());
         assert_eq!(word(0), 1);
@@ -3672,6 +5571,8 @@ mod tests {
         assert_eq!(&stack[path..path + 19], b"PATH=/bin:/usr/bin\0");
         assert_eq!(&stack[home..home + 7], b"HOME=/\0");
         assert_eq!(word(40), 0);
+        assert_eq!(word(48), 0);
+        assert_eq!(word(56), 0);
     }
 
     #[test]
@@ -3679,7 +5580,7 @@ mod tests {
         let arguments = alloc::vec![String::from("program")];
         let invalid = alloc::vec![String::from("=value")];
         assert_eq!(
-            build_initial_stack(0x7000, 4096, &arguments, &invalid),
+            build_initial_stack(0x7000, 4096, &arguments, &invalid, &[(0, 0)]),
             Err(ElfError::InvalidArguments)
         );
     }
@@ -3757,6 +5658,7 @@ mod tests {
     #[test]
     fn pipe_endpoints_receive_distinct_descriptor_slots() {
         let mut descriptors = Vec::new();
+        let mut descriptor_flags = Vec::new();
         descriptors.extend([
             Some(UserDescriptor::ConsoleInput),
             Some(UserDescriptor::ConsoleOutput),
@@ -3765,9 +5667,10 @@ mod tests {
         let (read_end, write_end) = create_pipe().unwrap();
 
         assert_eq!(
-            install_pipe_descriptors(&mut descriptors, read_end, write_end),
+            install_pipe_descriptors(&mut descriptors, &mut descriptor_flags, read_end, write_end,),
             Ok((3, 4))
         );
+        assert_eq!(descriptor_flags, [0; 5]);
         assert!(descriptors[3].as_ref().is_some_and(|descriptor| matches!(
             descriptor,
             UserDescriptor::Pipe(endpoint) if endpoint.readable && !endpoint.writable
@@ -3782,13 +5685,13 @@ mod tests {
     fn rejects_arguments_with_nul_or_exceeding_limits() {
         let nul_argument = alloc::vec![String::from("bad\0argument")];
         assert_eq!(
-            build_initial_stack(0x7000, 4096, &nul_argument, &[]),
+            build_initial_stack(0x7000, 4096, &nul_argument, &[], &[(0, 0)]),
             Err(ElfError::InvalidArguments)
         );
 
         let too_many = alloc::vec![String::from("arg"); 65];
         assert_eq!(
-            build_initial_stack(0x7000, 4096, &too_many, &[]),
+            build_initial_stack(0x7000, 4096, &too_many, &[], &[(0, 0)]),
             Err(ElfError::ArgumentsTooLarge)
         );
     }

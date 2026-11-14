@@ -20,18 +20,61 @@ int main(void)
 ```
 
 Bangun dengan `make -C user`, lalu periksa hasilnya memakai `readelf -h -l`.
-Program harus berupa static `ET_EXEC`, little-endian ELF64 x86_64. Gunakan
-`-ffreestanding`, `-fno-pie`, `-fno-stack-protector`, dan `-mno-red-zone`.
-Kernel menginisialisasi FPU dan menyimpan state FPU/SIMD per proses; build C
-mengaktifkan SSE2 dan x87 serta menonaktifkan MMX. Linker script menetapkan
-alamat virtual dan menghasilkan segmen RX serta RW yang terpisah. Loader
-menolak dynamic linking dan segmen W+X.
+Format executable adalah ELF64 little-endian x86_64. Program statis memakai
+`ET_EXEC` dan `user/linker.ld`; program dinamis menyertakan `PT_INTERP` yang
+menunjuk ke `/lib/ld-octagram.so` dan dapat memakai PIE (`ET_DYN`). Gunakan
+`-ffreestanding`, `-fno-stack-protector`, dan `-mno-red-zone` untuk objek
+utama. Kernel menginisialisasi FPU dan menyimpan state FPU/SIMD per proses;
+build C mengaktifkan SSE2 dan x87 serta menonaktifkan MMX. Segmen W+X ditolak.
+
+### Dynamic linking awal
+
+`make -C user dynamic` membangun loader user-space, shared libc OCTAGRAM,
+`libdyn_demo.so`, dan `dynamic_demo.elf`. Setelah boot image, jalankan
+`run /bin/dynamic-demo` untuk menguji `PT_INTERP`, pemetaan `DT_NEEDED`,
+resolusi simbol, serta relocation.
+Jalankan `run /bin/thread-demo` untuk menguji thread preemptive dan TLS.
+Shared library dicari di `/lib`; executable dan library dapat memakai SysV
+atau GNU ELF hash. Loader menangani relocation x86_64 `RELATIVE`, `GLOB_DAT`,
+`JUMP_SLOT`, `64`, `PC32`, `32`, dan `32S`. PIE saat ini memakai load bias
+tetap; ASLR belum tersedia.
+
+Untuk membuat shared object gunakan objek PIC dan GNU hash, lalu tautkan
+executable PIE dengan interpreter OCTAGRAM:
+
+```sh
+gcc $CFLAGS -fPIE -c app.c -o build/app.o
+gcc $CFLAGS -fPIC -c libexample.c -o build/libexample.o
+ld -shared --hash-style=gnu -soname libexample.so \
+  -o build/libexample.so build/libexample.o
+ld --hash-style=gnu -pie -z now -dynamic-linker /lib/ld-octagram.so \
+  -e _start -o build/app.elf build/crt0.o build/runtime.o \
+  build/app.o -Lbuild -lexample
+```
+
+Salin `libexample.so` ke `/lib` pada image OS sebelum menjalankan `app.elf`.
+
+Shared libc mengekspor subset runtime yang sudah tersedia, bukan libc POSIX
+`pthread` penuh. Program statis x86_64 dapat memakai TLS model local-exec;
+runtime membuat salinan `PT_TLS` per thread dan kernel menyimpan `FS.base`
+secara terpisah saat preemption. Subset `pthread` menyediakan create, join,
+self, exit, dan mutex spin; thread memakai address space bersama dan jumlah
+task terjadwal dibatasi 16. Atribut thread selain default belum didukung.
+Descriptor, cwd, dan environment disalin saat thread dibuat, sehingga perubahan
+tabel descriptor tidak terlihat otomatis oleh thread lain. TLS pada shared
+object dan TLS relocation pada dynamic loader belum didukung. Ini fondasi,
+bukan `ld.so` Linux penuh: symbol versioning, lazy
+binding, constructor/destructor, `COPY` relocation, dan pencarian library di
+luar `/lib` belum didukung. Binary tetap harus menggunakan syscall dan runtime
+OCTAGRAM, bukan Linux ABI atau glibc.
+Pada build statis, `errno` dan allocator free-list memakai TLS per thread;
+`liboctagram.so` saat ini masih memakai `errno` global.
 
 ## Menyesuaikan aplikasi
 
 1. Gunakan subset runtime C yang tersedia: `stdio` dasar, wrapper file POSIX
-   (`open`, `read`, `write`, `stat`, `mkdir`, dan lainnya), dan syscall
-   OCTAGRAM. Port hanya subset tambahan yang benar-benar dibutuhkan.
+   (`open`, `read`, `write`, `stat`, `mkdir`, memory mapping, dan lainnya), dan
+   syscall OCTAGRAM. Port hanya subset tambahan yang benar-benar dibutuhkan.
 2. Hindari syscall Linux langsung; nomor syscall dan register Linux tidak
    digunakan OS ini.
 3. Path relatif dimulai dari direktori shell saat program dijalankan (default
@@ -40,13 +83,19 @@ menolak dynamic linking dan segmen W+X.
    namespace VFS dan mount yang sama.
 4. Aplikasi harus menangani hasil negatif `-errno`; descriptor file dimulai
    dari 3, stdin/stdout/stderr adalah 0/1/2.
-5. Allocator libc memakai `oct_brk`; `free` memakai ulang blok yang dibebaskan,
-   tetapi belum menggabungkan blok bersebelahan atau mengembalikan heap ke OS.
-   `oct_mmap`/`oct_munmap` tersedia untuk pemetaan anonim dengan ABI khusus
-   OCTAGRAM, bukan kontrak POSIX/Linux.
-6. `spawn`/`waitpid` dan subset `posix_spawn` tersedia, tetapi belum ada
-   `fork`, `execve`, signals, sockets, user threads, atau dynamic loader.
-   Hilangkan dependensi fitur tersebut atau port library yang lebih kecil.
+5. Allocator libc memakai `mmap(MAP_PRIVATE | MAP_ANONYMOUS)` dan mengulang
+   penggunaan blok yang dibebaskan; ia belum menggabungkan blok bersebelahan
+   atau mengembalikan heap ke OS.
+6. API proses POSIX `fork`, `execve`, `waitpid`, dan subset `posix_spawn`
+   tersedia. `fork` memakai eager copy; subset thread tersedia melalui
+   `<pthread.h>`. Signals dan sockets belum tersedia. Dynamic executable
+   dengan `PT_INTERP` dapat memakai loader terbatas yang dijelaskan di atas.
+7. `clock_gettime(CLOCK_REALTIME)` dan `time()` membaca RTC dengan resolusi
+   satu detik. Zona waktu dan `CLOCK_MONOTONIC` belum tersedia.
+8. `<sys/mman.h>` menyediakan pemetaan anonim/file-backed, `MAP_SHARED`/
+   `MAP_PRIVATE`, dan API pengelolaan pemetaan POSIX. Batas ruang alamat dan
+   operasi yang tidak didukung dijelaskan di
+   [`docs/syscall-abi.md`](syscall-abi.md).
 
 `user/runtime.c` menyediakan operasi memory/string dasar dan allocator
 `malloc`/`calloc`/`realloc` dengan reuse blok lewat `free`. `stdio` belum

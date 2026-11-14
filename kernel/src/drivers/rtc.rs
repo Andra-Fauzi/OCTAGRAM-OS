@@ -68,6 +68,29 @@ pub fn read() -> Result<DateTime, RtcError> {
     Err(RtcError::UpdateTimeout)
 }
 
+pub fn unix_seconds() -> Result<i64, RtcError> {
+    read().map(unix_seconds_from_datetime)
+}
+
+fn unix_seconds_from_datetime(time: DateTime) -> i64 {
+    let mut days = 0i64;
+    for year in 1970..time.year {
+        days += if year % 400 == 0 || year % 4 == 0 && year % 100 != 0 {
+            366
+        } else {
+            365
+        };
+    }
+    for month in 1..time.month {
+        days += i64::from(days_in_month(time.year, month));
+    }
+    days += i64::from(time.day) - 1;
+    days * 86_400
+        + i64::from(time.hour) * 3_600
+        + i64::from(time.minute) * 60
+        + i64::from(time.second)
+}
+
 fn wait_for_update_end() -> Result<(), RtcError> {
     for _ in 0..MAX_READ_ATTEMPTS {
         if read_register(REG_STATUS_A) & UPDATE_IN_PROGRESS == 0 {
@@ -155,7 +178,7 @@ fn days_in_month(year: u16, month: u8) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{DateTime, RawDateTime, RtcError, decode};
+    use super::{DateTime, RawDateTime, RtcError, decode, unix_seconds_from_datetime};
 
     #[test]
     fn decodes_bcd_rtc_time_and_leap_day() {
@@ -256,6 +279,32 @@ mod tests {
                 0,
             ),
             Err(RtcError::InvalidDate)
+        );
+    }
+
+    #[test]
+    fn converts_rtc_dates_to_unix_seconds_across_leap_days() {
+        assert_eq!(
+            unix_seconds_from_datetime(DateTime {
+                year: 1970,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                second: 0,
+            }),
+            0
+        );
+        assert_eq!(
+            unix_seconds_from_datetime(DateTime {
+                year: 2000,
+                month: 2,
+                day: 29,
+                hour: 0,
+                minute: 0,
+                second: 0,
+            }),
+            951_782_400
         );
     }
 }

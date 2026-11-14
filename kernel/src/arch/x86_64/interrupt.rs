@@ -153,7 +153,34 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
             frame as *mut InterruptFrame
         }
         128 => crate::elf::handle_syscall(frame),
-        _ if frame.stack_frame.code_segment & 3 == 3 => crate::elf::terminate_user(frame, u64::MAX),
+        _ if frame.stack_frame.code_segment & 3 == 3 => {
+            if frame.vector == 14 {
+                let fault_address: u64;
+                unsafe {
+                    core::arch::asm!(
+                        "mov {}, cr2",
+                        out(reg) fault_address,
+                        options(nomem, nostack, preserves_flags)
+                    );
+                }
+                crate::println!(
+                    "User page fault error_code={:#x} rip={:#x} address={:#x} fs_base={:#x}",
+                    frame.error_code,
+                    frame.stack_frame.instruction_pointer,
+                    fault_address,
+                    crate::arch::x86_64::thread_pointer::read()
+                );
+            } else {
+                crate::println!(
+                    "User exception vector={} error_code={:#x} rip={:#x} fs_base={:#x}",
+                    frame.vector,
+                    frame.error_code,
+                    frame.stack_frame.instruction_pointer,
+                    crate::arch::x86_64::thread_pointer::read()
+                );
+            }
+            crate::elf::terminate_user(frame, u64::MAX)
+        }
         _ => {
             crate::println!(
                 "Interrupt vector={} error_code={:#x} rip={:#x}",

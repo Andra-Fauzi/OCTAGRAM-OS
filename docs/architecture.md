@@ -34,17 +34,16 @@ program dan page table privat dibebaskan setelah program selesai atau image
 di-unload. Timer hanya mengganti proses saat interrupt berasal dari ring 3;
 interrupt ketika kernel sedang menjalankan syscall tidak melakukan preemption
 agar tidak memutus operasi kernel yang memegang lock. Karena itu syscall TTY
-yang menunggu keyboard dapat menahan proses lain sampai input tiba. Ini belum
-mencakup blocking/wakeup scheduler, `fork`, `exec`, `wait`, atau SMP.
+yang menunggu keyboard dapat menahan proses lain sampai input tiba. `fork`
+menyalin halaman user secara eager; copy-on-write dan SMP belum tersedia.
 
 ## Memory dan alamat ELF
 
 Loader menerima little-endian ELF64 `ET_EXEC`, memeriksa program headers,
 menolak dynamic/interpreter dan segmen writable+executable, lalu menyalin
 segmen ke alamat virtual yang diminta. Program mendapat stack 8 halaman dan
-heap awal 1 MiB pada alamat `0x10000000`; syscall `brk` memetakan halaman
-tambahan saat heap tumbuh hingga segmen ELF berikutnya atau 4 GiB. Syscall
-`mmap`/`munmap` menyediakan pemetaan anonim tambahan, dibatasi oleh alamat
+heap image awal 1 MiB pada alamat `0x10000000`. Runtime memakai pemetaan
+anonim tambahan melalui `mmap`/`munmap`, dibatasi oleh alamat
 virtual dan frame fisik yang tersedia, bukan kuota halaman tetap. Pemetaan user
 berada di page table privat tiap image, sedangkan pemetaan kernel dibagikan.
 
@@ -60,8 +59,8 @@ Program memiliki descriptor dan direktori kerja sendiri (diwarisi dari shell),
 tetapi berbagi namespace VFS dan mount global. Descriptor 0/1/2 terhubung ke
 TTY shell asal program. Input TTY memakai mode baris dengan echo, Backspace,
 Enter, dan Ctrl-D; tiap virtual terminal memiliki buffer teks dan antrean input
-sendiri. Pembacaan input menunggu interrupt keyboard. Syscall `putpixel`
-menyediakan gambar framebuffer dasar. Ini belum menyediakan pseudo-terminal,
+sendiri. Pembacaan input menunggu interrupt keyboard. Userland tidak memiliki
+syscall untuk menggambar langsung ke framebuffer. Ini belum menyediakan pseudo-terminal,
 terminal control job, window system, atau filesystem terisolasi per proses.
 
 ## Modul penting

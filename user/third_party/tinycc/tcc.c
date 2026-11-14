@@ -279,6 +279,10 @@ static unsigned getclock_ms(void)
 {
 #ifdef _WIN32
     return GetTickCount();
+#elif defined(TARGETOS_OCTAGRAM)
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return ts.tv_sec*1000 + ts.tv_nsec/1000000;
 #else
     struct timeval tv;
     gettimeofday(&tv, NULL);

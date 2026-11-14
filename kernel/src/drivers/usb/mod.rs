@@ -12,5 +12,9 @@ pub mod mass_storage;
 pub mod mouse_usb;
 pub mod xhci;
 
-pub use controller::init_usb_controllers;
+pub(crate) use controller::XHCI_DRIVER;
 pub use device::poll_hotplug;
+
+pub(crate) unsafe fn register_class_drivers() {
+    unsafe { device::register_class_drivers() };
+}

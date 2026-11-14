@@ -1,6 +1,7 @@
 use core::arch::asm;
 
 #[repr(C, align(16))]
+#[derive(Clone, Copy)]
 pub struct State {
     registers: [u8; 512],
 }

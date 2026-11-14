@@ -6,10 +6,18 @@ _start:
     mov (%rsp), %rdi
     lea 8(%rsp), %rsi
     lea 16(%rsp,%rdi,8), %rdx
-    mov %rdx, environ(%rip)
+    mov environ@GOTPCREL(%rip), %rax
+    mov %rdx, (%rax)
     and $-16, %rsp
+    call __oct_tls_initialize
+    test %eax, %eax
+    jnz .Lstartup_failure
     call main
     mov %rax, %rdi
+    xor %rax, %rax
+    int $0x80
+.Lstartup_failure:
+    mov $127, %rdi
     xor %rax, %rax
     int $0x80
 1:

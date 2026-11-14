@@ -31,8 +31,17 @@ endif
 # Default target.
 .PHONY: all
 all:
-	$(MAKE) -C ../user/rust gcc
-	$(MAKE) -C ../user chibicc tcc
+	$(MAKE) -C ../user/rust make
+	$(MAKE) -C ../user tcc
+	$(MAKE) -C ../user build/file_api_demo.elf
+	$(MAKE) -C ../user build/path_api_demo.elf
+	$(MAKE) -C ../user build/at_api_demo.elf
+	$(MAKE) -C ../user build/execve_demo.elf
+	$(MAKE) -C ../user build/fork_demo.elf
+	$(MAKE) -C ../user build/time_demo.elf
+	$(MAKE) -C ../user build/mmap_demo.elf
+	$(MAKE) -C ../user build/thread_demo.elf
+	$(MAKE) -C ../user dynamic
 	RUSTFLAGS="-C relocation-model=static" cargo build --target $(RUST_TARGET) --profile $(RUST_PROFILE)
 	cp target/$(RUST_TARGET)/$(RUST_PROFILE_SUBDIR)/octagram-kernel $(OUTPUT)
 

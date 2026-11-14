@@ -41,7 +41,9 @@
 
 #ifndef _WIN32
 # include <unistd.h>
-# include <sys/time.h>
+# ifndef TARGETOS_OCTAGRAM
+#  include <sys/time.h>
+# endif
 # ifndef CONFIG_TCC_STATIC
 #  include <dlfcn.h>
 # endif

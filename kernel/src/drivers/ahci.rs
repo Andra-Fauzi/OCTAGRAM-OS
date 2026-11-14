@@ -3,8 +3,10 @@ use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::ptr;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
+use crate::drivers::device_model::{DeviceDriver, DeviceInfo, DriverError, DriverState};
 use crate::drivers::pci::{self, PciDevice};
 use crate::memory;
 use crate::storage::block::{self, BlockDevice, BlockDeviceRef, BlockError, SECTOR_SIZE};
@@ -12,6 +14,32 @@ use crate::storage::block::{self, BlockDevice, BlockDeviceRef, BlockError, SECTO
 const PCI_CLASS_MASS_STORAGE: u8 = 0x01;
 const PCI_SUBCLASS_SATA: u8 = 0x06;
 const PCI_PROG_IF_AHCI: u8 = 0x01;
+static NEXT_DEVICE_ID: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) struct AhciDriver;
+pub(crate) static AHCI_DRIVER: AhciDriver = AhciDriver;
+
+impl DeviceDriver for AhciDriver {
+    fn name(&self) -> &'static str {
+        "ahci"
+    }
+
+    fn matches(&self, device: &DeviceInfo) -> bool {
+        matches!(device, DeviceInfo::Pci(device)
+            if device.matches_class(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, PCI_PROG_IF_AHCI))
+    }
+
+    unsafe fn probe(&self, device: &DeviceInfo) -> Result<DriverState, DriverError> {
+        let DeviceInfo::Pci(controller) = device else {
+            return Err(DriverError::Unsupported);
+        };
+        unsafe { init_controller(controller) }
+            .map_err(|_| DriverError::ProbeFailed("AHCI controller initialization failed"))?;
+        Ok(Arc::new(()))
+    }
+
+    unsafe fn remove(&self, _device: &DeviceInfo, _state: DriverState) {}
+}
 
 const HBA_SIZE: u64 = 0x2000;
 const HBA_GHC: usize = 0x04;
@@ -253,31 +281,7 @@ impl BlockDevice for AhciDevice {
     }
 }
 
-pub unsafe fn init(pci_devices: &[PciDevice]) {
-    let mut next_device_id = 0;
-    for controller in find_ahci_controllers(pci_devices) {
-        if let Err(error) = unsafe { init_controller(&controller, &mut next_device_id) } {
-            crate::println!(
-                "AHCI {:02x}:{:02x}.{} gagal diinisialisasi: {:?}",
-                controller.bus,
-                controller.device,
-                controller.function,
-                error
-            );
-        }
-    }
-}
-
-fn find_ahci_controllers(devices: &[PciDevice]) -> impl Iterator<Item = &PciDevice> {
-    devices.iter().filter(|device| {
-        device.matches_class(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, PCI_PROG_IF_AHCI)
-    })
-}
-
-unsafe fn init_controller(
-    controller: &PciDevice,
-    next_device_id: &mut usize,
-) -> Result<(), BlockError> {
+unsafe fn init_controller(controller: &PciDevice) -> Result<(), BlockError> {
     unsafe {
         pci::enable_device(controller);
         let bar = pci::get_bar(controller, 5);
@@ -318,8 +322,7 @@ unsafe fn init_controller(
 
             match PortState::initialize(port_regs) {
                 Ok(state) => {
-                    let name = format!("sata{}", *next_device_id);
-                    *next_device_id += 1;
+                    let name = format!("sata{}", NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed));
                     found_disk = true;
                     let device: BlockDeviceRef = Arc::new(AhciDevice {
                         name: name.clone(),
@@ -393,9 +396,8 @@ unsafe fn write_reg(base: usize, offset: usize, value: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PCI_CLASS_MASS_STORAGE, PCI_PROG_IF_AHCI, PCI_SUBCLASS_SATA, find_ahci_controllers,
-    };
+    use super::{AHCI_DRIVER, PCI_CLASS_MASS_STORAGE, PCI_PROG_IF_AHCI, PCI_SUBCLASS_SATA};
+    use crate::drivers::device_model::{DeviceDriver, DeviceInfo};
     use crate::drivers::pci::PciDevice;
 
     fn device(class: u8, subclass: u8, prog_if: u8) -> PciDevice {
@@ -413,13 +415,15 @@ mod tests {
     }
 
     #[test]
-    fn finds_only_ahci_controllers() {
-        let devices = [
+    fn matches_only_ahci_controllers() {
+        let ahci = [
             device(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, PCI_PROG_IF_AHCI),
             device(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, 0x02),
             device(PCI_CLASS_MASS_STORAGE, 0x04, PCI_PROG_IF_AHCI),
         ];
 
-        assert_eq!(find_ahci_controllers(&devices).count(), 1);
+        assert!(AHCI_DRIVER.matches(&DeviceInfo::Pci(ahci[0])));
+        assert!(!AHCI_DRIVER.matches(&DeviceInfo::Pci(ahci[1])));
+        assert!(!AHCI_DRIVER.matches(&DeviceInfo::Pci(ahci[2])));
     }
 }

@@ -15,13 +15,24 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
 
-const GCC_ELF: &[u8] = include_bytes!("../../../user/rust/build/gcc.elf");
-const CHIBICC_ELF: &[u8] = include_bytes!("../../../user/build/chibicc.elf");
+const MAKE_ELF: &[u8] = include_bytes!("../../../user/rust/build/make.elf");
 const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
+const FILE_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/file_api_demo.elf");
+const PATH_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/path_api_demo.elf");
+const AT_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/at_api_demo.elf");
+const EXECVE_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/execve_demo.elf");
+const FORK_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/fork_demo.elf");
+const TIME_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/time_demo.elf");
+const MMAP_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/mmap_demo.elf");
+const TLS_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/tls_demo.elf");
+const THREAD_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/thread_demo.elf");
+const LDSO_ELF: &[u8] = include_bytes!("../../../user/build/ld-octagram.elf");
+const DYNAMIC_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/dynamic_demo.elf");
+const DYNAMIC_DEMO_LIB: &[u8] = include_bytes!("../../../user/build/libdyn_demo.so");
+const SHARED_LIBC: &[u8] = include_bytes!("../../../user/build/liboctagram.so");
 const TCC_CRT1: &[u8] = include_bytes!("../../../user/build/crt0.o");
 const TCC_LIBC: &[u8] = include_bytes!("../../../user/build/libc.a");
 const TCC_LIBTCC1: &[u8] = include_bytes!("../../../user/build/libtcc1.a");
-const CHIBICC_SMOKE_SOURCE: &[u8] = include_bytes!("../../../user/examples/chibicc_smoke.c");
 const TCC_SMOKE_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_smoke.c");
 const USER_HEADERS: &[(&str, &[u8])] = &[
     (
@@ -77,34 +88,6 @@ const USER_HEADERS: &[(&str, &[u8])] = &[
         include_bytes!("../../../user/third_party/tinycc/include/varargs.h"),
     ),
     (
-        "/include/chibicc/float.h",
-        include_bytes!("../../../user/third_party/chibicc/include/float.h"),
-    ),
-    (
-        "/include/chibicc/stdalign.h",
-        include_bytes!("../../../user/third_party/chibicc/include/stdalign.h"),
-    ),
-    (
-        "/include/chibicc/stdarg.h",
-        include_bytes!("../../../user/third_party/chibicc/include/stdarg.h"),
-    ),
-    (
-        "/include/chibicc/stdatomic.h",
-        include_bytes!("../../../user/third_party/chibicc/include/stdatomic.h"),
-    ),
-    (
-        "/include/chibicc/stdbool.h",
-        include_bytes!("../../../user/third_party/chibicc/include/stdbool.h"),
-    ),
-    (
-        "/include/chibicc/stddef.h",
-        include_bytes!("../../../user/third_party/chibicc/include/stddef.h"),
-    ),
-    (
-        "/include/chibicc/stdnoreturn.h",
-        include_bytes!("../../../user/third_party/chibicc/include/stdnoreturn.h"),
-    ),
-    (
         "/include/fcntl.h",
         include_bytes!("../../../user/include/fcntl.h"),
     ),
@@ -133,6 +116,10 @@ const USER_HEADERS: &[(&str, &[u8])] = &[
         include_bytes!("../../../user/include/stdio.h"),
     ),
     (
+        "/include/pthread.h",
+        include_bytes!("../../../user/include/pthread.h"),
+    ),
+    (
         "/include/stdlib.h",
         include_bytes!("../../../user/include/stdlib.h"),
     ),
@@ -143,6 +130,10 @@ const USER_HEADERS: &[(&str, &[u8])] = &[
     (
         "/include/unistd.h",
         include_bytes!("../../../user/include/unistd.h"),
+    ),
+    (
+        "/include/sys/mman.h",
+        include_bytes!("../../../user/include/sys/mman.h"),
     ),
     (
         "/include/sys/stat.h",
@@ -156,6 +147,10 @@ const USER_HEADERS: &[(&str, &[u8])] = &[
         "/include/sys/wait.h",
         include_bytes!("../../../user/include/sys/wait.h"),
     ),
+    (
+        "/include/time.h",
+        include_bytes!("../../../user/include/time.h"),
+    ),
 ];
 
 /// Filesystem operation failures.
@@ -164,6 +159,7 @@ pub enum FsError {
     InvalidPath,
     NotFound,
     SymlinkLoop,
+    NotSymlink,
     AlreadyExists,
     NotDirectory,
     IsDirectory,
@@ -224,6 +220,9 @@ pub trait FileSystem: Send {
         Err(FsError::Unsupported)
     }
     fn remove(&mut self, path: &str) -> Result<(), FsError>;
+    fn rename(&mut self, _source: &str, _target: &str) -> Result<(), FsError> {
+        Err(FsError::Unsupported)
+    }
     fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>, FsError>;
 }
 
@@ -304,6 +303,12 @@ impl Vfs {
         self.mounts[mount].filesystem.metadata(&relative_path)
     }
 
+    pub fn symlink_metadata(&self, path: &str) -> Result<Metadata, FsError> {
+        let path = self.resolve_symlinks(path, false)?;
+        let (mount, relative_path) = self.resolve(&path)?;
+        self.mounts[mount].filesystem.metadata(&relative_path)
+    }
+
     /// Read up to `buffer.len()` bytes beginning at `offset`; returns zero at EOF.
     pub fn read(&self, path: &str, offset: usize, buffer: &mut [u8]) -> Result<usize, FsError> {
         let path = self.resolve_symlinks(path, true)?;
@@ -369,13 +374,50 @@ impl Vfs {
     pub fn read_link(&self, path: &str) -> Result<String, FsError> {
         let path = self.resolve_symlinks(path, false)?;
         let (mount, relative_path) = self.resolve(&path)?;
-        self.mounts[mount].filesystem.read_link(&relative_path)
+        let filesystem = &self.mounts[mount].filesystem;
+        if filesystem.metadata(&relative_path)?.node_type != NodeType::Symlink {
+            return Err(FsError::NotSymlink);
+        }
+        filesystem.read_link(&relative_path)
     }
 
     pub fn remove(&mut self, path: &str) -> Result<(), FsError> {
         let path = self.resolve_symlinks(path, false)?;
         let (mount, relative_path) = self.resolve(&path)?;
         self.mounts[mount].filesystem.remove(&relative_path)
+    }
+
+    pub fn remove_file(&mut self, path: &str) -> Result<(), FsError> {
+        let path = self.resolve_symlinks(path, false)?;
+        let (mount, relative_path) = self.resolve(&path)?;
+        let filesystem = &mut self.mounts[mount].filesystem;
+        if filesystem.metadata(&relative_path)?.node_type == NodeType::Directory {
+            return Err(FsError::IsDirectory);
+        }
+        filesystem.remove(&relative_path)
+    }
+
+    pub fn remove_dir(&mut self, path: &str) -> Result<(), FsError> {
+        let path = self.resolve_symlinks(path, false)?;
+        let (mount, relative_path) = self.resolve(&path)?;
+        let filesystem = &mut self.mounts[mount].filesystem;
+        if filesystem.metadata(&relative_path)?.node_type != NodeType::Directory {
+            return Err(FsError::NotDirectory);
+        }
+        filesystem.remove(&relative_path)
+    }
+
+    pub fn rename(&mut self, source: &str, target: &str) -> Result<(), FsError> {
+        let source = self.resolve_symlinks(source, false)?;
+        let target = self.resolve_symlinks(target, false)?;
+        let (source_mount, source_path) = self.resolve(&source)?;
+        let (target_mount, target_path) = self.resolve(&target)?;
+        if source_mount != target_mount {
+            return Err(FsError::Unsupported);
+        }
+        self.mounts[source_mount]
+            .filesystem
+            .rename(&source_path, &target_path)
     }
 
     pub fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>, FsError> {
@@ -520,10 +562,12 @@ pub fn init() {
             .expect("creating the initial /lib directory must succeed");
         root.create_dir("/lib/tcc")
             .expect("creating the initial /lib/tcc directory must succeed");
+        root.create_dir("/share")
+            .expect("creating the initial /share directory must succeed");
+        root.create_dir("/share/octagram")
+            .expect("creating the initial /share/octagram directory must succeed");
         root.create_dir("/include")
             .expect("creating the initial /include directory must succeed");
-        root.create_dir("/include/chibicc")
-            .expect("creating the initial /include/chibicc directory must succeed");
         root.create_dir("/include/sys")
             .expect("creating the initial /include/sys directory must succeed");
         root.create_dir("/tmp")
@@ -532,14 +576,37 @@ pub fn init() {
             .expect("mounting the initial root filesystem must succeed");
         vfs.mount("/dev", DevFs::new())
             .expect("mounting the device filesystem must succeed");
-        seed_file(&mut vfs, "/bin/gcc", GCC_ELF, 0o755);
-        seed_file(&mut vfs, "/bin/chibicc", CHIBICC_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/make", MAKE_ELF, 0o755);
         seed_file(&mut vfs, "/bin/tcc", TCC_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/file-api-demo", FILE_API_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/path-api-demo", PATH_API_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/at-api-demo", AT_API_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/execve-demo", EXECVE_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/fork-demo", FORK_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/time-demo", TIME_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/mmap-demo", MMAP_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/tls-demo", TLS_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/thread-demo", THREAD_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/dynamic-demo", DYNAMIC_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/lib/ld-octagram.so", LDSO_ELF, 0o755);
+        seed_file(&mut vfs, "/lib/liboctagram.so", SHARED_LIBC, 0o755);
+        seed_file(&mut vfs, "/lib/libdyn_demo.so", DYNAMIC_DEMO_LIB, 0o755);
         seed_file(&mut vfs, "/lib/tcc/crt1.o", TCC_CRT1, 0o644);
         seed_file(&mut vfs, "/lib/tcc/libc.a", TCC_LIBC, 0o644);
         seed_file(&mut vfs, "/lib/tcc/libtcc1.a", TCC_LIBTCC1, 0o644);
-        seed_file(&mut vfs, "/tmp/test.c", CHIBICC_SMOKE_SOURCE, 0o644);
         seed_file(&mut vfs, "/tmp/tcc.c", TCC_SMOKE_SOURCE, 0o644);
+        seed_file(
+            &mut vfs,
+            "/share/octagram/Makefile",
+            include_bytes!("../../../user/examples/selfhost/Makefile"),
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
+            "/share/octagram/hello.c",
+            include_bytes!("../../../user/examples/selfhost/hello.c"),
+            0o644,
+        );
         for (path, contents) in USER_HEADERS {
             seed_file(&mut vfs, path, contents, 0o644);
         }
@@ -572,27 +639,77 @@ mod tests {
     use super::{DevFs, DirectoryEntry, FileSystem, FsError, NodeType, RamFs, Vfs, normalize_path};
 
     #[test]
-    fn initial_vfs_contains_executable_compilers_and_standard_headers() {
+    fn initial_vfs_contains_make_and_tcc_toolchain() {
         super::init();
         super::with_vfs(|vfs| {
-            let gcc = vfs.metadata("/bin/gcc").unwrap();
-            assert_eq!(gcc.permissions, 0o755);
-            assert!(gcc.len > 0);
+            let make = vfs.metadata("/bin/make").unwrap();
+            assert_eq!(make.permissions, 0o755);
+            assert!(make.len > 0);
             let mut magic = [0; 4];
-            assert_eq!(vfs.read("/bin/gcc", 0, &mut magic), Ok(4));
+            assert_eq!(vfs.read("/bin/make", 0, &mut magic), Ok(4));
             assert_eq!(&magic, b"\x7FELF");
 
-            let chibicc = vfs.metadata("/bin/chibicc").unwrap();
-            assert_eq!(chibicc.permissions, 0o755);
-            assert!(chibicc.len > 0);
-            assert_eq!(vfs.read("/bin/chibicc", 0, &mut magic), Ok(4));
-            assert_eq!(&magic, b"\x7FELF");
+            for path in ["/bin/gcc", "/bin/rustc", "/bin/chibicc"] {
+                assert_eq!(vfs.metadata(path), Err(FsError::NotFound));
+            }
 
             let tcc = vfs.metadata("/bin/tcc").unwrap();
             assert_eq!(tcc.permissions, 0o755);
             assert!(tcc.len > 0);
             assert_eq!(vfs.read("/bin/tcc", 0, &mut magic), Ok(4));
             assert_eq!(&magic, b"\x7FELF");
+
+            let file_api_demo = vfs.metadata("/bin/file-api-demo").unwrap();
+            assert_eq!(file_api_demo.permissions, 0o755);
+            assert_eq!(vfs.read("/bin/file-api-demo", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let path_api_demo = vfs.metadata("/bin/path-api-demo").unwrap();
+            assert_eq!(path_api_demo.permissions, 0o755);
+            assert_eq!(vfs.read("/bin/path-api-demo", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let at_api_demo = vfs.metadata("/bin/at-api-demo").unwrap();
+            assert_eq!(at_api_demo.permissions, 0o755);
+            assert_eq!(vfs.read("/bin/at-api-demo", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let execve_demo = vfs.metadata("/bin/execve-demo").unwrap();
+            assert_eq!(execve_demo.permissions, 0o755);
+            assert_eq!(vfs.read("/bin/execve-demo", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let fork_demo = vfs.metadata("/bin/fork-demo").unwrap();
+            assert_eq!(fork_demo.permissions, 0o755);
+            assert_eq!(vfs.read("/bin/fork-demo", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let time_demo = vfs.metadata("/bin/time-demo").unwrap();
+            assert_eq!(time_demo.permissions, 0o755);
+            assert_eq!(vfs.read("/bin/time-demo", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let mmap_demo = vfs.metadata("/bin/mmap-demo").unwrap();
+            assert_eq!(mmap_demo.permissions, 0o755);
+            assert_eq!(vfs.read("/bin/mmap-demo", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let tls_demo = vfs.metadata("/bin/tls-demo").unwrap();
+            assert_eq!(tls_demo.permissions, 0o755);
+            assert_eq!(vfs.read("/bin/tls-demo", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let dynamic_demo = vfs.metadata("/bin/dynamic-demo").unwrap();
+            assert_eq!(dynamic_demo.permissions, 0o755);
+            assert_eq!(vfs.read("/bin/dynamic-demo", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+            let loader = vfs.metadata("/lib/ld-octagram.so").unwrap();
+            assert_eq!(loader.permissions, 0o755);
+            assert_eq!(vfs.read("/lib/ld-octagram.so", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+            let shared_library = vfs.metadata("/lib/libdyn_demo.so").unwrap();
+            assert!(shared_library.len > 0);
+            assert!(vfs.metadata("/lib/liboctagram.so").unwrap().len > 0);
 
             assert!(vfs.metadata("/lib/tcc/crt1.o").unwrap().len > 0);
             assert_eq!(vfs.read("/lib/tcc/crt1.o", 0, &mut magic), Ok(4));
@@ -604,16 +721,6 @@ mod tests {
                 assert_eq!(&archive_magic, b"!<arch>\n");
             }
 
-            let smoke_source = include_bytes!("../../../user/examples/chibicc_smoke.c");
-            let smoke_metadata = vfs.metadata("/tmp/test.c").unwrap();
-            assert_eq!(smoke_metadata.len, smoke_source.len());
-            let mut smoke_contents = alloc::vec![0; smoke_metadata.len];
-            assert_eq!(
-                vfs.read("/tmp/test.c", 0, &mut smoke_contents),
-                Ok(smoke_source.len())
-            );
-            assert_eq!(&smoke_contents, smoke_source);
-
             let tcc_source = include_bytes!("../../../user/examples/tcc_smoke.c");
             let tcc_metadata = vfs.metadata("/tmp/tcc.c").unwrap();
             assert_eq!(tcc_metadata.len, tcc_source.len());
@@ -623,6 +730,23 @@ mod tests {
                 Ok(tcc_source.len())
             );
             assert_eq!(&tcc_contents, tcc_source);
+
+            for (path, expected) in [
+                (
+                    "/share/octagram/Makefile",
+                    include_bytes!("../../../user/examples/selfhost/Makefile").as_slice(),
+                ),
+                (
+                    "/share/octagram/hello.c",
+                    include_bytes!("../../../user/examples/selfhost/hello.c").as_slice(),
+                ),
+            ] {
+                let metadata = vfs.metadata(path).unwrap();
+                assert_eq!(metadata.len, expected.len());
+                let mut contents = alloc::vec![0; metadata.len];
+                assert_eq!(vfs.read(path, 0, &mut contents), Ok(expected.len()));
+                assert_eq!(contents, expected);
+            }
 
             let header = include_bytes!("../../../user/include/stdio.h");
             let metadata = vfs.metadata("/include/stdio.h").unwrap();
@@ -636,10 +760,10 @@ mod tests {
             assert_eq!(&contents, header);
 
             assert!(vfs.metadata("/include/stdlib.h").is_ok());
+            assert!(vfs.metadata("/include/sys/mman.h").is_ok());
             assert!(vfs.metadata("/include/sys/stat.h").is_ok());
             assert!(vfs.metadata("/include/assert.h").is_ok());
             assert!(vfs.metadata("/include/ctype.h").is_ok());
-            assert!(vfs.metadata("/include/chibicc/stdarg.h").is_ok());
             assert!(vfs.metadata("/include/setjmp.h").is_ok());
             assert!(vfs.metadata("/include/tccdefs.h").is_ok());
         })
@@ -778,6 +902,42 @@ mod tests {
     }
 
     #[test]
+    fn symlink_metadata_reports_link_while_metadata_follows_it() {
+        let mut root = RamFs::new();
+        root.create_file("/target").unwrap();
+        let mut vfs = Vfs::new();
+        vfs.mount("/", root).unwrap();
+        vfs.symlink("/target", "/link").unwrap();
+
+        assert_eq!(vfs.metadata("/link").unwrap().node_type, NodeType::File);
+        assert_eq!(
+            vfs.symlink_metadata("/link").unwrap().node_type,
+            NodeType::Symlink
+        );
+    }
+
+    #[test]
+    fn remove_file_and_directory_enforce_node_types_and_do_not_follow_final_links() {
+        let mut root = RamFs::new();
+        root.create_dir("/dir").unwrap();
+        root.create_file("/dir/file").unwrap();
+        let mut vfs = Vfs::new();
+        vfs.mount("/", root).unwrap();
+        vfs.symlink("/dir/file", "/file-link").unwrap();
+
+        assert_eq!(vfs.remove_file("/dir"), Err(FsError::IsDirectory));
+        assert_eq!(vfs.remove_dir("/dir/file"), Err(FsError::NotDirectory));
+        assert_eq!(vfs.remove_dir("/dir"), Err(FsError::DirectoryNotEmpty));
+        assert_eq!(vfs.read_link("/dir/file"), Err(FsError::NotSymlink));
+
+        vfs.remove_file("/file-link").unwrap();
+        assert_eq!(vfs.metadata("/dir/file").unwrap().node_type, NodeType::File);
+        vfs.remove_file("/dir/file").unwrap();
+        vfs.remove_dir("/dir").unwrap();
+        assert_eq!(vfs.metadata("/dir"), Err(FsError::NotFound));
+    }
+
+    #[test]
     fn permissions_follow_symlinks_and_control_executable_mode() {
         let mut root = RamFs::new();
         root.create_file("/program").unwrap();
@@ -793,6 +953,26 @@ mod tests {
         assert_eq!(
             vfs.set_permissions("/program", 0o1777),
             Err(FsError::InvalidData)
+        );
+    }
+
+    #[test]
+    fn rename_routes_through_mount_and_rejects_cross_mount_moves() {
+        let mut root = RamFs::new();
+        root.create_dir("/mnt").unwrap();
+        root.create_file("/source").unwrap();
+        root.write("/source", 0, b"data").unwrap();
+        let mut mounted = RamFs::new();
+        mounted.create_file("/target").unwrap();
+        let mut vfs = Vfs::new();
+        vfs.mount("/", root).unwrap();
+        vfs.mount("/mnt", mounted).unwrap();
+
+        assert_eq!(vfs.rename("/source", "/renamed"), Ok(()));
+        assert_eq!(vfs.metadata("/source"), Err(FsError::NotFound));
+        assert_eq!(
+            vfs.rename("/renamed", "/mnt/target"),
+            Err(FsError::Unsupported)
         );
     }
 }

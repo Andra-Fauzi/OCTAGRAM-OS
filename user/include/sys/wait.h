@@ -3,6 +3,7 @@
 
 #include <sys/types.h>
 
+#define WNOHANG 1
 #define WIFEXITED(status) (((status) & 0x7f) == 0)
 #define WEXITSTATUS(status) (((status) >> 8) & 0xff)
 

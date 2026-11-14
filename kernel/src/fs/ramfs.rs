@@ -221,6 +221,65 @@ impl FileSystem for RamFs {
         Ok(())
     }
 
+    fn rename(&mut self, source: &str, target: &str) -> Result<(), FsError> {
+        let source = normalize_path(source)?;
+        let target = normalize_path(target)?;
+        if source == "/" || target == "/" {
+            return Err(FsError::Busy);
+        }
+        if source == target {
+            return self
+                .nodes
+                .contains_key(&source)
+                .then_some(())
+                .ok_or(FsError::NotFound);
+        }
+        let source_node = self.nodes.get(&source).ok_or(FsError::NotFound)?;
+        self.ensure_parent_directory(&target)?;
+
+        let source_is_directory = matches!(source_node, Node::Directory { .. });
+        if source_is_directory && target.starts_with(&alloc::format!("{source}/")) {
+            return Err(FsError::InvalidPath);
+        }
+        if let Some(target_node) = self.nodes.get(&target) {
+            let target_is_directory = matches!(target_node, Node::Directory { .. });
+            if source_is_directory != target_is_directory {
+                return Err(if target_is_directory {
+                    FsError::IsDirectory
+                } else {
+                    FsError::NotDirectory
+                });
+            }
+            if target_is_directory {
+                let target_prefix = alloc::format!("{target}/");
+                if self
+                    .nodes
+                    .keys()
+                    .any(|path| path.starts_with(&target_prefix))
+                {
+                    return Err(FsError::DirectoryNotEmpty);
+                }
+            }
+        }
+
+        let source_prefix = alloc::format!("{source}/");
+        let mut moved = Vec::new();
+        for path in self.nodes.keys() {
+            if path == &source || path.starts_with(&source_prefix) {
+                moved.push((path.clone(), path.replacen(&source, &target, 1)));
+            }
+        }
+        if self.nodes.contains_key(&target) {
+            self.nodes.remove(&target);
+        }
+        for (old_path, new_path) in moved {
+            if let Some(node) = self.nodes.remove(&old_path) {
+                self.nodes.insert(new_path, node);
+            }
+        }
+        Ok(())
+    }
+
     fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>, FsError> {
         let path = normalize_path(path)?;
         match self.nodes.get(&path).ok_or(FsError::NotFound)? {
@@ -265,5 +324,45 @@ mod tests {
         let mut bytes = [0; 16];
         let count = fs.read("/note", 0, &mut bytes).unwrap();
         assert_eq!(&bytes[..count], b"short");
+    }
+
+    #[test]
+    fn rename_moves_files_and_directory_subtrees_and_replaces_files() {
+        let mut fs = RamFs::new();
+        fs.create_dir("/old").unwrap();
+        fs.create_file("/old/note").unwrap();
+        fs.write("/old/note", 0, b"data").unwrap();
+        fs.create_file("/existing").unwrap();
+
+        fs.rename("/old", "/new").unwrap();
+        let mut data = [0; 4];
+        assert_eq!(fs.read("/new/note", 0, &mut data), Ok(4));
+        assert_eq!(&data, b"data");
+        fs.rename("/new/note", "/existing").unwrap();
+
+        assert_eq!(fs.metadata("/old"), Err(FsError::NotFound));
+        assert_eq!(fs.metadata("/new/note"), Err(FsError::NotFound));
+        data.fill(0);
+        assert_eq!(fs.read("/existing", 0, &mut data), Ok(4));
+        assert_eq!(&data, b"data");
+    }
+
+    #[test]
+    fn rename_rejects_directory_cycles_and_nonempty_directory_replacement() {
+        let mut fs = RamFs::new();
+        fs.create_dir("/parent").unwrap();
+        fs.create_dir("/parent/child").unwrap();
+        fs.create_file("/parent/child/file").unwrap();
+        fs.create_dir("/destination").unwrap();
+        fs.create_file("/destination/file").unwrap();
+
+        assert_eq!(
+            fs.rename("/parent", "/parent/child/moved"),
+            Err(FsError::InvalidPath)
+        );
+        assert_eq!(
+            fs.rename("/parent/child", "/destination"),
+            Err(FsError::DirectoryNotEmpty)
+        );
     }
 }

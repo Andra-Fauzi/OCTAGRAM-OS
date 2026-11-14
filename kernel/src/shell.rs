@@ -2,7 +2,6 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::drivers::keyboard;
 use crate::fs::{FsError, Metadata, NodeType, Vfs};
@@ -11,7 +10,6 @@ use crate::storage::{block, ext2::Ext2, fat32::Fat32};
 const MAX_COMMAND_LENGTH: usize = 256;
 const MAX_FILE_OPERATION: usize = 8192;
 const MAX_TOOLCHAIN_FILE: usize = 1024 * 1024;
-static CHIBICC_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_PROGRAM_PATH: &[&str] = &["/bin", "/usr/bin", "/usr/local/bin"];
 
 pub async fn run(terminal: usize) {
@@ -111,12 +109,13 @@ async fn execute(
         "date" => show_date(),
         "shutdown" => shutdown(),
         "devices" => list_block_devices(),
+        "lsdev" => list_kernel_devices(),
+        "drivers" => list_kernel_drivers(),
         "mount" => mount_device(current_dir, arguments),
         "umount" => unmount_device(current_dir, arguments),
         "as" => run_toolchain_command("as", current_dir, arguments),
         "ld" => run_toolchain_command("ld", current_dir, arguments),
         "cc" => run_toolchain_command("cc", current_dir, arguments),
-        "chibicc" => run_chibicc(current_dir, arguments, environment, terminal),
         "run" => run_program(current_dir, arguments, environment, terminal),
         "runp" => run_parallel_programs(current_dir, arguments, environment, terminal),
         _ => run_external_program(
@@ -155,14 +154,14 @@ fn print_help() {
     crate::println!("  date                   show date and time from the RTC");
     crate::println!("  shutdown               power off using ACPI");
     crate::println!("  devices                list detected storage devices");
+    crate::println!("  lsdev                  list bus devices and bound drivers");
+    crate::println!("  drivers                list registered kernel drivers");
     crate::println!("  mount <device> <path> [fat32|ext2]  mount a filesystem read-write");
     crate::println!("  umount <path>          unmount a filesystem");
     crate::println!("  as <input.s> -o <out.o> assemble supported x86_64 source");
     crate::println!("  ld <input.o> -o <out.elf> link a native toolchain object");
     crate::println!("  cc <input.c> -o <out.elf> compile the kernel C subset");
-    crate::println!("  gcc <input.c> [-o <out.elf>] run the userland mini compiler");
     crate::println!("  tcc <input.c> [-o <out.elf>] compile C with TinyCC");
-    crate::println!("  chibicc <input.c> [-o <out>] compile a C file to a static ELF");
     crate::println!("  echo <text>            print text");
     crate::println!("  run <path>             run a static x86_64 ELF");
     crate::println!("  runp <elf> <elf>...    run multiple ELFs with timer preemption");
@@ -850,6 +849,50 @@ fn list_block_devices() {
     }
 }
 
+fn list_kernel_devices() {
+    let devices = crate::drivers::device_model::devices();
+    if devices.is_empty() {
+        crate::println!("no bus devices registered");
+        return;
+    }
+    for device in devices {
+        let driver = device.driver_name.unwrap_or("unbound");
+        match device.key {
+            crate::drivers::device_model::DeviceKey::Pci {
+                bus,
+                device,
+                function,
+            } => crate::println!(
+                "pci {:02x}:{:02x}.{}  driver={}",
+                bus,
+                device,
+                function,
+                driver
+            ),
+            crate::drivers::device_model::DeviceKey::UsbInterface {
+                slot_id,
+                interface_number,
+            } => crate::println!(
+                "usb slot={} interface={}  driver={}",
+                slot_id,
+                interface_number,
+                driver
+            ),
+        }
+    }
+}
+
+fn list_kernel_drivers() {
+    let drivers = crate::drivers::device_model::drivers();
+    if drivers.is_empty() {
+        crate::println!("no kernel drivers registered");
+        return;
+    }
+    for driver in drivers {
+        crate::println!("{driver}");
+    }
+}
+
 fn mount_device(current_dir: &str, arguments: &str) {
     let mut parts = arguments.split_whitespace();
     let (Some(device_name), Some(mountpoint)) = (parts.next(), parts.next()) else {
@@ -946,242 +989,6 @@ fn run_toolchain_command(command: &str, current_dir: &str, arguments: &str) {
     match write_toolchain_file(&output, &output_bytes, matches!(command, "ld" | "cc")) {
         Ok(()) => crate::println!("{command}: wrote {} bytes to {output}", output_bytes.len()),
         Err(error) => print_fs_error(command, &output, error),
-    }
-}
-
-fn run_chibicc(current_dir: &str, arguments: &str, environment: &[String], terminal: usize) {
-    let words = match split_shell_words(arguments) {
-        Ok(words) if !words.is_empty() => words,
-        _ => {
-            crate::println!("usage: chibicc <input.c> [-o <output>] [-c|-S|-E]");
-            return;
-        }
-    };
-
-    if words
-        .iter()
-        .any(|word| matches!(word.as_str(), "-S" | "-E"))
-    {
-        let mut argv = Vec::with_capacity(words.len() + 1);
-        argv.push(String::from("chibicc"));
-        argv.extend(words);
-        let result = crate::elf::run_file_from_with_args_and_environment_on_terminal(
-            "/bin/chibicc",
-            current_dir,
-            &argv,
-            environment,
-            terminal,
-        );
-        crate::terminal::set_output_terminal(terminal);
-        match result {
-            Ok(0) => {}
-            Ok(status) => crate::println!("chibicc: exited with status {status}"),
-            Err(error) => crate::println!("chibicc: {error:?}"),
-        }
-        return;
-    }
-
-    let mut source = None;
-    let mut output = None;
-    let mut compile_only = false;
-    let mut explicit_c_language = false;
-    let mut forward = Vec::with_capacity(words.len() + 3);
-    let mut index = 0;
-    while index < words.len() {
-        let word = &words[index];
-        if word == "-o" {
-            index += 1;
-            let Some(path) = words.get(index) else {
-                crate::println!("chibicc: missing argument after -o");
-                return;
-            };
-            output = Some(path.as_str());
-        } else if let Some(path) = word.strip_prefix("-o").filter(|path| !path.is_empty()) {
-            output = Some(path);
-        } else if word == "-c" {
-            compile_only = true;
-        } else if word == "-x" {
-            index += 1;
-            let Some(language) = words.get(index) else {
-                crate::println!("chibicc: missing language after -x");
-                return;
-            };
-            explicit_c_language = language == "c";
-            if !explicit_c_language {
-                crate::println!("chibicc: only C source is supported for compilation");
-                return;
-            }
-            forward.push(word.clone());
-            forward.push(language.clone());
-        } else if word.starts_with("-l")
-            || word.starts_with("-L")
-            || word.starts_with("-Wl,")
-            || matches!(word.as_str(), "-Xlinker" | "-shared" | "-static")
-        {
-            crate::println!("chibicc: external libraries and linker flags are not supported");
-            return;
-        } else if chibicc_option_takes_argument(word) {
-            index += 1;
-            let Some(value) = words.get(index) else {
-                crate::println!("chibicc: missing argument after {word}");
-                return;
-            };
-            forward.push(word.clone());
-            forward.push(value.clone());
-        } else if word.starts_with("-l")
-            || word.starts_with("-Wl,")
-            || matches!(word.as_str(), "-shared" | "-static")
-        {
-            crate::println!("chibicc: external libraries and linker flags are not supported");
-            return;
-        } else if word.starts_with('-') {
-            forward.push(word.clone());
-        } else if source.replace(word.as_str()).is_some() {
-            crate::println!("chibicc: this compiler path accepts one C source file");
-            return;
-        }
-        index += 1;
-    }
-
-    let Some(source) = source else {
-        crate::println!("chibicc: no C source file");
-        return;
-    };
-    if !explicit_c_language && !source.ends_with(".c") {
-        crate::println!("chibicc: expected a .c source file");
-        return;
-    }
-
-    let output_name = match output {
-        Some(output) => String::from(output),
-        None if compile_only => {
-            let filename = source.rsplit('/').next().unwrap_or(source);
-            let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
-            alloc::format!("{stem}.o")
-        }
-        None => String::from("a.out"),
-    };
-    let Some(output_path) = resolve_path(current_dir, &output_name) else {
-        crate::println!("chibicc: invalid output path");
-        return;
-    };
-    let sequence = CHIBICC_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let Some(assembly_path) = resolve_path(
-        current_dir,
-        &alloc::format!(".chibicc-compile-{sequence}.s"),
-    ) else {
-        crate::println!("chibicc: cannot create temporary path");
-        return;
-    };
-
-    let mut compiler_argv = Vec::with_capacity(forward.len() + 5);
-    compiler_argv.push(String::from("chibicc"));
-    compiler_argv.extend(forward);
-    compiler_argv.push(String::from("-S"));
-    compiler_argv.push(String::from("-o"));
-    compiler_argv.push(assembly_path.clone());
-    compiler_argv.push(String::from(source));
-
-    let compile_result = crate::elf::run_file_from_with_args_and_environment_on_terminal(
-        "/bin/chibicc",
-        current_dir,
-        &compiler_argv,
-        environment,
-        terminal,
-    );
-    crate::terminal::set_output_terminal(terminal);
-    match compile_result {
-        Ok(0) => {}
-        Ok(status) => {
-            crate::println!("chibicc: front end exited with status {status}");
-            remove_chibicc_temporary(&assembly_path);
-            return;
-        }
-        Err(error) => {
-            crate::println!("chibicc: {error:?}");
-            remove_chibicc_temporary(&assembly_path);
-            return;
-        }
-    }
-
-    let assembly = match read_toolchain_file(&assembly_path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            print_fs_error("chibicc", &assembly_path, error);
-            remove_chibicc_temporary(&assembly_path);
-            return;
-        }
-    };
-    let assembly = append_chibicc_builtin_stubs(&assembly);
-    let object = match crate::toolchain::assemble(&assembly) {
-        Ok(object) => object,
-        Err(error) => {
-            crate::println!("chibicc: assembler failed: {error:?}");
-            remove_chibicc_temporary(&assembly_path);
-            return;
-        }
-    };
-    let output_bytes = if compile_only {
-        object
-    } else {
-        match crate::toolchain::link(&object) {
-            Ok(executable) => executable,
-            Err(error) => {
-                crate::println!("chibicc: linker failed: {error:?}");
-                remove_chibicc_temporary(&assembly_path);
-                return;
-            }
-        }
-    };
-    remove_chibicc_temporary(&assembly_path);
-    match write_toolchain_file(&output_path, &output_bytes, !compile_only) {
-        Ok(()) => crate::println!(
-            "chibicc: wrote {} bytes to {output_path}",
-            output_bytes.len()
-        ),
-        Err(error) => print_fs_error("chibicc", &output_path, error),
-    }
-}
-
-fn append_chibicc_builtin_stubs(assembly: &[u8]) -> Vec<u8> {
-    let calls_printf = assembly
-        .windows(b"call printf".len())
-        .any(|window| window == b"call printf");
-    let defines_printf = assembly
-        .windows(b"printf:\n".len())
-        .any(|window| window == b"printf:\n");
-    if !calls_printf || defines_printf {
-        return Vec::from(assembly);
-    }
-
-    let mut output = Vec::with_capacity(assembly.len() + 96);
-    output.extend_from_slice(assembly);
-    output.extend_from_slice(
-        b"\n.text\n.globl printf\n.type printf, @function\nprintf:\nmov $26, %rax\nint $0x80\nret\n",
-    );
-    output
-}
-
-fn chibicc_option_takes_argument(option: &str) -> bool {
-    matches!(
-        option,
-        "-I" | "-idirafter"
-            | "-include"
-            | "-x"
-            | "-D"
-            | "-U"
-            | "-MF"
-            | "-MT"
-            | "-MQ"
-            | "-Xlinker"
-            | "-L"
-    )
-}
-
-fn remove_chibicc_temporary(path: &str) {
-    match with_vfs(|vfs| vfs.remove(path)) {
-        Ok(()) | Err(FsError::NotFound) => {}
-        Err(error) => crate::println!("chibicc: cannot remove temporary {path}: {error:?}"),
     }
 }
 

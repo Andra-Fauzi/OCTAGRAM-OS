@@ -1,5 +1,6 @@
 // memory/paging.rs
 use crate::memory::{allocate_frame, free_frame, physical_to_virtual};
+use alloc::vec::Vec;
 use core::arch::asm;
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -50,6 +51,10 @@ impl AddressSpace {
     /// Create a PML4 that copies kernel mappings and starts with no user mappings.
     pub fn new() -> Result<Self, PagingError> {
         let kernel_root_frame = unsafe { read_cr3() } & ADDR_MASK;
+        Self::new_with_kernel_root(kernel_root_frame)
+    }
+
+    fn new_with_kernel_root(kernel_root_frame: u64) -> Result<Self, PagingError> {
         let root_frame = allocate_frame().ok_or(PagingError::OutOfFrames)? as u64;
         let Some(kernel_root) = physical_to_virtual(kernel_root_frame as usize) else {
             free_frame(root_frame as usize);
@@ -75,6 +80,102 @@ impl AddressSpace {
             root_frame,
             kernel_root_frame,
         })
+    }
+
+    /// Create an independent copy of the listed user pages and their mappings.
+    ///
+    /// The caller must list every user page owned by this address space.
+    pub fn fork_clone(
+        &self,
+        user_pages: &[u64],
+        shared_pages: &[u64],
+    ) -> Result<Self, PagingError> {
+        let mut mappings = Vec::new();
+        mappings
+            .try_reserve_exact(user_pages.len())
+            .map_err(|_| PagingError::OutOfFrames)?;
+        let mappings_result = (|| {
+            unsafe { self.activate() };
+            for &address in user_pages {
+                let virtual_address = address & !(PAGE_SIZE - 1);
+                let entry = unsafe { mapping_entry(virtual_address)? };
+                mappings.push((
+                    virtual_address,
+                    entry & ADDR_MASK,
+                    entry & !(ADDR_MASK | flags::PRESENT),
+                    shared_pages.contains(&virtual_address),
+                ));
+            }
+            Ok::<_, PagingError>(())
+        })();
+        unsafe { self.activate_kernel() };
+        mappings_result?;
+
+        let child = Self::new_with_kernel_root(self.kernel_root_frame)?;
+        let mut mapped_pages = Vec::new();
+        if mapped_pages.try_reserve_exact(mappings.len()).is_err() {
+            child.destroy()?;
+            return Err(PagingError::OutOfFrames);
+        }
+
+        let clone_result = (|| {
+            unsafe { child.activate() };
+            for (virtual_address, source_frame, mapping_flags, shared) in mappings {
+                let destination_frame = if shared {
+                    source_frame
+                } else {
+                    allocate_frame().ok_or(PagingError::OutOfFrames)? as u64
+                };
+                if !shared {
+                    let Some(source) = physical_to_virtual(source_frame as usize) else {
+                        free_frame(destination_frame as usize);
+                        return Err(PagingError::HhdmUnavailable);
+                    };
+                    let Some(destination) = physical_to_virtual(destination_frame as usize) else {
+                        free_frame(destination_frame as usize);
+                        return Err(PagingError::HhdmUnavailable);
+                    };
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            source as *const u8,
+                            destination as *mut u8,
+                            PAGE_SIZE as usize,
+                        );
+                    }
+                }
+                if let Err(error) =
+                    unsafe { map_page(virtual_address, destination_frame, mapping_flags) }
+                {
+                    if !shared {
+                        free_frame(destination_frame as usize);
+                    }
+                    return Err(error);
+                }
+                mapped_pages.push((virtual_address, !shared));
+            }
+            Ok::<_, PagingError>(())
+        })();
+        unsafe { child.activate_kernel() };
+
+        if let Err(error) = clone_result {
+            unsafe { child.activate() };
+            let mut cleanup_error = None;
+            for (virtual_address, owned) in mapped_pages {
+                match unsafe { unmap_page(virtual_address) } {
+                    Ok(frame) if owned => free_frame(frame as usize),
+                    Ok(_) => {}
+                    Err(error) if cleanup_error.is_none() => cleanup_error = Some(error),
+                    Err(_) => {}
+                }
+            }
+            unsafe { child.activate_kernel() };
+            let destroy_result = child.destroy();
+            return Err(cleanup_error
+                .or_else(|| destroy_result.err())
+                .unwrap_or(error));
+        }
+
+        Ok(child)
     }
 
     /// Switch to this address space. Kernel code and data remain mapped.
@@ -218,6 +319,22 @@ fn user_mapping_flags(virt: u64, write_access: bool) -> Result<u64, PagingError>
     }
 }
 
+unsafe fn mapping_entry(virt: u64) -> Result<u64, PagingError> {
+    let (pml4_idx, pdpt_idx, pd_idx, pt_idx) = table_indices(virt);
+    unsafe {
+        let pml4_entry = pml4_virt()?.add(pml4_idx).read_volatile();
+        let pdpt_entry = next_table_existing(pml4_entry)?
+            .add(pdpt_idx)
+            .read_volatile();
+        let pd_entry = next_table_existing(pdpt_entry)?.add(pd_idx).read_volatile();
+        let pte = next_table_existing(pd_entry)?.add(pt_idx).read_volatile();
+        if pte & flags::PRESENT == 0 {
+            return Err(PagingError::NotMapped);
+        }
+        Ok(pte)
+    }
+}
+
 /// Sama seperti di atas, tapi TIDAK membuat table baru — dipakai untuk unmap/translate
 /// di mana kita cuma mau membaca struktur yang sudah ada.
 fn next_table_existing(entry: u64) -> Result<*mut u64, PagingError> {
@@ -272,7 +389,8 @@ pub unsafe fn map_page(
         let phys = phys_addr & !(PAGE_SIZE - 1);
 
         let (pml4_idx, pdpt_idx, pd_idx, pt_idx) = table_indices(virt);
-        let user_accessible = extra_flags & flags::USER != 0;
+        let user_accessible =
+            extra_flags & flags::USER != 0 || (USER_ADDRESS_MIN..USER_ADDRESS_MAX).contains(&virt);
         if user_accessible && !(USER_ADDRESS_MIN..USER_ADDRESS_MAX).contains(&virt) {
             return Err(PagingError::UserAddressOutOfRange);
         }
@@ -288,6 +406,29 @@ pub unsafe fn map_page(
         }
 
         *pte = phys | flags::PRESENT | extra_flags;
+        asm!("invlpg [{}]", in(reg) virt);
+        Ok(())
+    }
+}
+
+/// Update permissions on an existing user mapping without changing its frame.
+///
+/// # Safety
+/// The caller must be operating on the address space that owns `virt_addr`.
+pub unsafe fn set_page_flags(virt_addr: u64, extra_flags: u64) -> Result<(), PagingError> {
+    unsafe {
+        let virt = virt_addr & !(PAGE_SIZE - 1);
+        let (pml4_idx, pdpt_idx, pd_idx, pt_idx) = table_indices(virt);
+        let pml4 = pml4_virt()?;
+        let pdpt = next_table_existing(*pml4.add(pml4_idx))?;
+        let pd = next_table_existing(*pdpt.add(pdpt_idx))?;
+        let pt = next_table_existing(*pd.add(pd_idx))?;
+        let pte = &mut *pt.add(pt_idx);
+        if *pte & flags::PRESENT == 0 {
+            return Err(PagingError::NotMapped);
+        }
+        let physical = *pte & ADDR_MASK;
+        *pte = physical | flags::PRESENT | extra_flags;
         asm!("invlpg [{}]", in(reg) virt);
         Ok(())
     }
@@ -343,6 +484,18 @@ pub fn validate_user_range(
         page = page
             .checked_add(PAGE_SIZE)
             .ok_or(PagingError::AddressOverflow)?;
+    }
+    Ok(())
+}
+
+/// Ensure an address is mapped for user execution and is not marked NX.
+pub fn validate_user_executable(address: u64) -> Result<(), PagingError> {
+    if !(USER_ADDRESS_MIN..USER_ADDRESS_MAX).contains(&address) {
+        return Err(PagingError::UserAddressOutOfRange);
+    }
+    let entry = user_mapping_flags(address, false)?;
+    if entry & flags::NO_EXECUTE != 0 {
+        return Err(PagingError::NotUserAccessible);
     }
     Ok(())
 }

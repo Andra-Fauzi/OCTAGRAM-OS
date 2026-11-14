@@ -23,6 +23,8 @@ int fflush(FILE *stream);
 FILE *fdopen(int fd, const char *mode);
 FILE *fopen(const char *path, const char *mode);
 FILE *freopen(const char *path, const char *mode, FILE *stream);
+int rename(const char *source, const char *target);
+int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath);
 int fseek(FILE *stream, long offset, int whence);
 long ftell(FILE *stream);
 void rewind(FILE *stream);

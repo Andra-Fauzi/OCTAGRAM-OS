@@ -1,25 +1,33 @@
 //! Device enumeration, class dispatch, and USB hotplug lifecycle.
 
 use super::{keyboard_usb, mass_storage, mouse_usb, xhci};
+use crate::drivers::device_model::{
+    self, DeviceDriver, DeviceInfo, DeviceKey, DriverError, DriverState, UsbInterfaceInfo,
+};
 use crate::println;
+use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 use spin::Mutex;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DeviceKind {
-    Keyboard,
-    Mouse,
-}
 
 struct ActivePort {
     root_port: u8,
     slot_id: u32,
-    has_keyboard: bool,
-    has_mouse: bool,
-    has_storage: bool,
+    interfaces: alloc::vec::Vec<u8>,
 }
 
 static ACTIVE_PORTS: Mutex<alloc::vec::Vec<ActivePort>> = Mutex::new(alloc::vec::Vec::new());
+
+pub(super) unsafe fn register_class_drivers() {
+    for driver in [
+        &HID_KEYBOARD_DRIVER as &dyn DeviceDriver,
+        &HID_MOUSE_DRIVER,
+        &MASS_STORAGE_DRIVER,
+    ] {
+        if let Err(error) = unsafe { device_model::register_driver(driver) } {
+            println!("driver {} registration failed: {error}", driver.name());
+        }
+    }
+}
 
 /// Process pending port changes outside the xHCI interrupt handler.
 ///
@@ -112,14 +120,14 @@ unsafe fn shutdown_device(device: &ActivePort) {
             device.root_port, device.slot_id
         );
 
-        if device.has_keyboard {
-            keyboard_usb::shutdown_keyboard(device.slot_id);
-        }
-        if device.has_mouse {
-            mouse_usb::shutdown_mouse(device.slot_id);
-        }
-        if device.has_storage {
-            mass_storage::shutdown(device.slot_id);
+        for &interface_number in &device.interfaces {
+            let key = DeviceKey::UsbInterface {
+                slot_id: device.slot_id,
+                interface_number,
+            };
+            if let Err(error) = device_model::remove_device(key) {
+                println!("  USB interface cleanup failed: {error}");
+            }
         }
         if let Err(error) = xhci::disable_slot(device.slot_id) {
             println!("  disable_slot gagal: {}", error);
@@ -147,75 +155,96 @@ unsafe fn init_one_device(root_port: u8, speed: u8) -> Option<ActivePort> {
         }
         if let Err(error) = xhci::get_device_descriptor(slot_id) {
             println!("  get_device_descriptor gagal: {}", error);
-            return Some(active_port(root_port, slot_id, false, false, false));
+            return Some(active_port(root_port, slot_id, alloc::vec::Vec::new()));
         }
 
         let endpoints = match xhci::get_configuration_descriptor_endpoints(slot_id) {
             Ok(endpoints) => endpoints,
             Err(error) => {
                 println!("  tidak ada endpoint konfigurasi: {}", error);
-                return Some(active_port(root_port, slot_id, false, false, false));
+                return Some(active_port(root_port, slot_id, alloc::vec::Vec::new()));
             }
         };
         if let Err(error) = xhci::control_transfer_no_data(slot_id, 0x00, 0x09, 1, 0) {
             println!("  SET_CONFIGURATION gagal: {}", error);
-            return Some(active_port(root_port, slot_id, false, false, false));
+            return Some(active_port(root_port, slot_id, alloc::vec::Vec::new()));
         }
 
-        let mut has_keyboard = false;
-        let mut has_mouse = false;
-        for endpoint in &endpoints {
-            match unsafe { dispatch_endpoint(slot_id, root_port, *endpoint) } {
-                Some(DeviceKind::Keyboard) => has_keyboard = true,
-                Some(DeviceKind::Mouse) => has_mouse = true,
-                None => {}
+        let interfaces = group_interfaces(slot_id, root_port, &endpoints);
+        let mut interface_numbers = alloc::vec::Vec::new();
+        for interface in interfaces {
+            let interface_number = interface.number;
+            match device_model::register_device(DeviceInfo::UsbInterface(interface)) {
+                Ok(()) => interface_numbers.push(interface_number),
+                Err(error) => {
+                    println!(
+                        "  USB interface {} registration failed: {error}",
+                        interface_number
+                    );
+                }
             }
         }
-        let has_storage = init_mass_storage_interfaces(slot_id, root_port, &endpoints);
 
-        Some(active_port(
-            root_port,
-            slot_id,
-            has_keyboard,
-            has_mouse,
-            has_storage,
-        ))
+        Some(active_port(root_port, slot_id, interface_numbers))
     }
 }
 
-fn active_port(
-    root_port: u8,
-    slot_id: u32,
-    has_keyboard: bool,
-    has_mouse: bool,
-    has_storage: bool,
-) -> ActivePort {
+fn active_port(root_port: u8, slot_id: u32, interfaces: alloc::vec::Vec<u8>) -> ActivePort {
     ActivePort {
         root_port,
         slot_id,
-        has_keyboard,
-        has_mouse,
-        has_storage,
+        interfaces,
     }
+}
+
+fn group_interfaces(
+    slot_id: u32,
+    root_port: u8,
+    endpoints: &[xhci::EndpointInfo],
+) -> alloc::vec::Vec<UsbInterfaceInfo> {
+    let mut interfaces: alloc::vec::Vec<UsbInterfaceInfo> = alloc::vec::Vec::new();
+    for endpoint in endpoints.iter().copied() {
+        if let Some(interface) = interfaces.iter_mut().find(|interface| {
+            interface.number == endpoint.inteface_number
+                && interface.class == endpoint.interface_class
+                && interface.subclass == endpoint.interface_subclass
+                && interface.protocol == endpoint.interface_protocol
+        }) {
+            interface.endpoints.push(endpoint);
+        } else {
+            interfaces.push(UsbInterfaceInfo {
+                slot_id,
+                root_port,
+                number: endpoint.inteface_number,
+                class: endpoint.interface_class,
+                subclass: endpoint.interface_subclass,
+                protocol: endpoint.interface_protocol,
+                endpoints: alloc::vec![endpoint],
+            });
+        }
+    }
+    interfaces
 }
 
 unsafe fn dispatch_endpoint(
     slot_id: u32,
     root_port: u8,
     endpoint: xhci::EndpointInfo,
-) -> Option<DeviceKind> {
+) -> Result<(), DriverError> {
     if endpoint.interface_class != 3
         || endpoint.attributes & 0x3 != 0x3
         || endpoint.address & 0x80 == 0
     {
-        return None;
+        return Err(DriverError::Unsupported);
     }
 
     let handle = match unsafe { xhci::configure_endpoint(slot_id, root_port, endpoint) } {
         Ok(handle) => handle,
         Err(error) => {
             println!("  configure_endpoint gagal: {}", error);
-            return None;
+            return Err(DriverError::ProbeFailed(
+                "HID endpoint configuration failed",
+            ));
         }
     };
 
@@ -224,20 +253,20 @@ unsafe fn dispatch_endpoint(
             unsafe {
                 keyboard_usb::init_keyboard(slot_id, handle, endpoint.inteface_number);
             }
-            Some(DeviceKind::Keyboard)
+            Ok(())
         }
         2 => {
             unsafe {
                 mouse_usb::init_mouse(slot_id, handle, endpoint.inteface_number);
             }
-            Some(DeviceKind::Mouse)
+            Ok(())
         }
         protocol => {
             println!(
                 "  HID interface protocol {:#04x} belum ada driver-nya, dilewati",
                 protocol
             );
-            None
+            Err(DriverError::Unsupported)
         }
     }
 }
@@ -325,4 +354,133 @@ fn find_mass_storage_endpoint(
 fn endpoint_dci(endpoint: xhci::EndpointInfo) -> u32 {
     let endpoint_number = (endpoint.address & 0x0F) as u32;
     endpoint_number * 2 + u32::from(endpoint.address & 0x80 != 0)
+}
+
+struct HidKeyboardDriver;
+struct HidMouseDriver;
+struct MassStorageDriver;
+
+static HID_KEYBOARD_DRIVER: HidKeyboardDriver = HidKeyboardDriver;
+static HID_MOUSE_DRIVER: HidMouseDriver = HidMouseDriver;
+static MASS_STORAGE_DRIVER: MassStorageDriver = MassStorageDriver;
+
+fn usb_interface(device: &DeviceInfo) -> Option<&UsbInterfaceInfo> {
+    match device {
+        DeviceInfo::UsbInterface(interface) => Some(interface),
+        DeviceInfo::Pci(_) => None,
+    }
+}
+
+fn hid_interrupt_in(interface: &UsbInterfaceInfo, protocol: u8) -> Option<xhci::EndpointInfo> {
+    interface.endpoints.iter().copied().find(|endpoint| {
+        endpoint.interface_class == 0x03
+            && endpoint.interface_protocol == protocol
+            && endpoint.attributes & 0x3 == 0x3
+            && endpoint.address & 0x80 != 0
+    })
+}
+
+impl DeviceDriver for HidKeyboardDriver {
+    fn name(&self) -> &'static str {
+        "usb-hid-keyboard"
+    }
+
+    fn matches(&self, device: &DeviceInfo) -> bool {
+        usb_interface(device).is_some_and(|interface| {
+            interface.class == 0x03 && hid_interrupt_in(interface, 1).is_some()
+        })
+    }
+
+    unsafe fn probe(&self, device: &DeviceInfo) -> Result<DriverState, DriverError> {
+        let Some(interface) = usb_interface(device) else {
+            return Err(DriverError::Unsupported);
+        };
+        let Some(endpoint) = hid_interrupt_in(interface, 1) else {
+            return Err(DriverError::Unsupported);
+        };
+        unsafe {
+            dispatch_endpoint(interface.slot_id, interface.root_port, endpoint)?;
+        }
+        Ok(Arc::new(()))
+    }
+
+    unsafe fn remove(&self, device: &DeviceInfo, _state: DriverState) {
+        if let Some(interface) = usb_interface(device) {
+            unsafe { keyboard_usb::shutdown_keyboard(interface.slot_id) };
+        }
+    }
+}
+
+impl DeviceDriver for HidMouseDriver {
+    fn name(&self) -> &'static str {
+        "usb-hid-mouse"
+    }
+
+    fn matches(&self, device: &DeviceInfo) -> bool {
+        usb_interface(device).is_some_and(|interface| {
+            interface.class == 0x03 && hid_interrupt_in(interface, 2).is_some()
+        })
+    }
+
+    unsafe fn probe(&self, device: &DeviceInfo) -> Result<DriverState, DriverError> {
+        let Some(interface) = usb_interface(device) else {
+            return Err(DriverError::Unsupported);
+        };
+        let Some(endpoint) = hid_interrupt_in(interface, 2) else {
+            return Err(DriverError::Unsupported);
+        };
+        unsafe {
+            dispatch_endpoint(interface.slot_id, interface.root_port, endpoint)?;
+        }
+        Ok(Arc::new(()))
+    }
+
+    unsafe fn remove(&self, device: &DeviceInfo, _state: DriverState) {
+        if let Some(interface) = usb_interface(device) {
+            unsafe { mouse_usb::shutdown_mouse(interface.slot_id) };
+        }
+    }
+}
+
+impl DeviceDriver for MassStorageDriver {
+    fn name(&self) -> &'static str {
+        "usb-mass-storage-bot"
+    }
+
+    fn matches(&self, device: &DeviceInfo) -> bool {
+        usb_interface(device).is_some_and(|interface| {
+            interface.class == 0x08
+                && interface.subclass == 0x06
+                && interface.protocol == 0x50
+                && find_mass_storage_endpoint(&interface.endpoints, interface.number, true)
+                    .is_some()
+                && find_mass_storage_endpoint(&interface.endpoints, interface.number, false)
+                    .is_some()
+        })
+    }
+
+    unsafe fn probe(&self, device: &DeviceInfo) -> Result<DriverState, DriverError> {
+        let Some(interface) = usb_interface(device) else {
+            return Err(DriverError::Unsupported);
+        };
+        if unsafe {
+            init_mass_storage_interfaces(
+                interface.slot_id,
+                interface.root_port,
+                &interface.endpoints,
+            )
+        } {
+            Ok(Arc::new(()))
+        } else {
+            Err(DriverError::ProbeFailed(
+                "USB Mass Storage BOT initialization failed",
+            ))
+        }
+    }
+
+    unsafe fn remove(&self, device: &DeviceInfo, _state: DriverState) {
+        if let Some(interface) = usb_interface(device) {
+            mass_storage::shutdown(interface.slot_id);
+        }
+    }
 }

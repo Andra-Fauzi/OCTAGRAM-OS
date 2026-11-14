@@ -49,8 +49,8 @@ through Ctrl+Alt+F4; each console has its own shell, text screen, and keyboard
 input. The shells accept input from USB HID keyboards and the legacy PS/2
 keyboard IRQ. They include `help`, `clear`, `pwd`, `path`, `cd`, `ls`, `cat`, `head`, `tail`,
 `wc`, `grep`, `touch`, `mkdir`, `rm`, `stat`, `cp`, `ln`, `chmod`, `edit`,
-`date`, `shutdown`, `devices`, `mount`, `umount`, `as`, `ld`, `cc`, `gcc`,
-`tcc`, `chibicc`, `echo`, `run`, and `runp`; other programs can be started by
+`date`, `shutdown`, `devices`, `mount`, `umount`, `as`, `ld`, `cc`, `tcc`,
+`echo`, `run`, and `runp`; other programs can be started by
 name through `PATH`. `head`/`tail` show up to ten lines by default, `wc` counts
 newlines, words, and bytes, and `grep` searches literal text (optionally with
 `-n` line numbers). These text commands accept UTF-8 files up to the shell's
@@ -106,8 +106,9 @@ the VFS API.
 The OCTAGRAM ABI is intentionally small and is not Linux-compatible:
 
 - `int 0x80`, `RAX = 0`: exit, with status in `RDI`.
-- `RAX = 1..18`: file and console I/O, memory mapping, and other basic
-process services. Arguments use `RDI`, `RSI`, and `RDX`;
+- Syscall numbers for file, process, and memory services use the register
+  arguments documented in the ABI table; retired numbers return `ENOSYS`.
+  Arguments use `RDI`, `RSI`, and `RDX`;
   failures return negative errno values. See [docs/syscall-abi.md](docs/syscall-abi.md)
   for the complete table and data layouts.
 
@@ -116,9 +117,9 @@ mappings. `runp` starts multiple ELFs under round-robin preemption; the shell
 waits until every process exits or faults. A process that never exits can
 therefore hold up the caller indefinitely.
 `user/include/octagram.h` and `user/runtime.c` provide a small freestanding
-runtime, not a full libc. The `oct_putpixel` syscall and `graphics_demo.c`
-example provide basic bounds-checked framebuffer drawing. The graphic pixels
-share the display with terminal text and can be overwritten by later output.
+runtime, not a full libc. POSIX process creation is exposed through
+`fork`/`execve` and the runtime's `posix_spawn`; no OCTAGRAM-specific spawn or
+framebuffer-pixel syscall is exposed to user programs.
 Build static user ELFs on the development host using
 `make -C user`. The OS shell also has a native minimal `as`, `ld`, and `cc`
 subset for simple programs; these are not GNU toolchain ports. See

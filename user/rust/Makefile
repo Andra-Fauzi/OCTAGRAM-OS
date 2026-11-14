@@ -2,13 +2,13 @@ CARGO ?= cargo
 AS ?= as
 
 RUST_HELLO := build/rust_hello.elf
-RUST_GCC := build/gcc.elf
+RUST_MAKE := build/make.elf
 RUST_TARGET := x86_64-unknown-none
 
-.PHONY: all clean gcc
-all: $(RUST_HELLO) $(RUST_GCC)
+.PHONY: all clean make
+all: $(RUST_HELLO) $(RUST_MAKE)
 
-gcc: $(RUST_GCC)
+make: $(RUST_MAKE)
 
 build:
 	mkdir -p $@
@@ -22,11 +22,11 @@ $(RUST_HELLO): Cargo.toml rust-toolchain.toml .cargo/config.toml \
 	$(CARGO) build --offline --release --bin rust_hello
 	cp target/$(RUST_TARGET)/release/rust_hello $@
 
-$(RUST_GCC): Cargo.toml rust-toolchain.toml .cargo/config.toml \
-		linker.ld build/crt0.o gcc/Cargo.toml gcc/src/main.rs gcc/src/fs.rs \
-		runtime/Cargo.toml runtime/src/lib.rs ../../kernel/src/toolchain.rs
-	$(CARGO) build --offline --release --bin gcc
-	cp target/$(RUST_TARGET)/release/gcc $@
+$(RUST_MAKE): Cargo.toml rust-toolchain.toml .cargo/config.toml \
+		linker.ld build/crt0.o make/Cargo.toml make/src/main.rs \
+		runtime/Cargo.toml runtime/src/lib.rs
+	$(CARGO) build --offline --release --bin make
+	cp target/$(RUST_TARGET)/release/make $@
 
 clean:
 	rm -rf build target

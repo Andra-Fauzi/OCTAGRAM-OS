@@ -10,7 +10,19 @@
 #define O_CREAT OCT_O_CREAT
 #define O_TRUNC OCT_O_TRUNC
 #define O_APPEND OCT_O_APPEND
+#define AT_FDCWD OCT_AT_FDCWD
+#define AT_SYMLINK_NOFOLLOW OCT_AT_SYMLINK_NOFOLLOW
+#define AT_REMOVEDIR OCT_AT_REMOVEDIR
+
+#define F_DUPFD 0
+#define F_GETFD 1
+#define F_SETFD 2
+#define F_GETFL 3
+#define F_SETFL 4
+#define FD_CLOEXEC 1
 
 int open(const char *path, int flags, ...);
+int openat(int dirfd, const char *path, int flags, ...);
+int fcntl(int fd, int command, ...);
 
 #endif

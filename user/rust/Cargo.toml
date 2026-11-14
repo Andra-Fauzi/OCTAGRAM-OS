@@ -1,5 +1,5 @@
 [workspace]
-members = ["hello", "gcc", "runtime"]
+members = ["hello", "make", "runtime"]
 resolver = "2"
 
 [profile.dev]

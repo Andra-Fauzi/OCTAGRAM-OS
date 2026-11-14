@@ -6,7 +6,7 @@ Gunakan Rust nightly sesuai `kernel/rust-toolchain.toml`:
 
 ```sh
 cargo +nightly fmt --manifest-path kernel/Cargo.toml --check
-make -C user/rust gcc
+make -C user/rust make
 cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
 make -C kernel KARCH=x86_64
 ```
@@ -22,7 +22,9 @@ Log kernel juga dikirim ke COM1; tampilkan di host saat boot QEMU dengan
 
 Toolchain host tetap tersedia untuk membangun program C yang lebih besar
 menggunakan GCC, GNU assembler (`as`), GNU linker (`ld`), dan GNU Make. Output
-berupa ELF64 x86_64 statis dengan ABI OCTAGRAM, bukan executable Linux.
+berupa ELF64 x86_64 dengan ABI OCTAGRAM, bukan executable Linux. Program statis
+tetap didukung; dynamic linking awal mendukung executable PIE dengan
+interpreter `/lib/ld-octagram.so` dan shared library di `/lib`.
 
 Pada Debian/Ubuntu, paket umumnya:
 
@@ -37,12 +39,32 @@ make -C user
 file user/build/hello.elf user/build/file_demo.elf user/build/tty_demo.elf
 file user/build/argv_demo.elf
 readelf -h -l user/build/hello.elf
+make -C user dynamic
+readelf -h -l -d user/build/dynamic_demo.elf
 ```
 
 Makefile memisahkan kompilasi C (`gcc`), perakitan startup (`as`), dan link
 statis (`ld`). `CROSS_COMPILE` dapat diberi prefix toolchain x86_64 khusus,
 misalnya `make -C user CROSS_COMPILE=x86_64-elf-`. Bisa juga override `CC`,
 `AS`, atau `LD` dari command line.
+
+Target `dynamic` membangun `/lib/ld-octagram.so`, shared libc OCTAGRAM,
+shared library contoh, dan executable dinamis. Jalankan `/bin/dynamic-demo`
+setelah boot untuk menguji loader dan pemanggilan libc bersama. Batas format
+ELF dan relocation yang tersedia dicatat di
+[`docs/porting-apps.md`](porting-apps.md).
+
+Program statis `tls-demo` menunjukkan TLS model local-exec dan dapat dijalankan
+dengan `run /bin/tls-demo`. `thread-demo` menguji `pthread_create`, join, mutex,
+shared memory, dan salinan TLS per thread:
+
+```text
+run /bin/thread-demo
+```
+
+`<pthread.h>` menyediakan subset `pthread` dengan scheduler preemptive.
+Thread berbagi address space; atribut thread hanya mendukung default dan
+`pthread_mutex` memakai spin lock.
 
 ## Program Rust `no_std`
 
@@ -56,13 +78,37 @@ file user/rust/build/rust_hello.elf
 
 Build membutuhkan Rust nightly dan `ld.lld`. Runtime pada
 [`user/rust/runtime`](../user/rust/runtime/src/lib.rs) menyediakan syscall
-OCTAGRAM, allocator bump di atas `brk`, dan API untuk pemetaan memori. Contoh
+OCTAGRAM, allocator berbasis pemetaan anonim, dan API untuk pemetaan memori. Contoh
 [`rust_hello`](../user/rust/hello/src/main.rs) memakai `alloc::Vec` untuk
 meminta heap lebih dari 1 MiB. Salin ELF ke volume yang bisa di-mount, lalu
 jalankan dengan `run /mnt/rust_hello.elf`.
 
 Ini target `no_std` khusus OCTAGRAM, bukan Rust `std`/Linux ABI. Compiler masih
 berjalan di host; `rustc` dan Cargo belum berjalan di dalam OS.
+
+## Membangun aplikasi C dari dalam OCTAGRAM
+
+Shell menyediakan `/bin/make` dan `/bin/tcc`.
+Contoh proyek tersedia di `/share/octagram`:
+
+```sh
+make -C /share/octagram
+run /share/octagram/hello.elf
+```
+
+`make` mendukung target eksplisit, dependensi, variabel `NAME = value`,
+assignment `NAME += value`, opsi `-f`, `-C`, `-B`, dan automatic variables
+`$@`, `$<`, `$^`. Dependensi dibangun berurutan dan resep dijalankan satu
+program per baris; shell operator, implicit rules, timestamp, dan build
+incremental belum didukung, jadi target selalu dibangun ulang. Gunakan
+`make` memakai TCC secara default. Header OCTAGRAM tersedia di `/include`, dan
+runtime TCC di `/lib/tcc`.
+
+Ini memungkinkan pengembangan serta build aplikasi C langsung di OS, bukan
+build kernel Rust secara native. Kernel masih perlu dibangun dari host dengan
+Rust nightly, Cargo, Limine, dan tool build yang dijelaskan di atas. Filesystem
+root awal berbasis RAM; simpan pekerjaan penting pada volume persisten yang
+di-mount agar tidak hilang setelah reboot.
 
 Runtime minimum menyediakan fungsi memory/string dasar seperti `memcpy`,
 `memset`, `memchr`, `strncat`, `strspn`, `strcspn`, `strtok`, dan `strtok_r`,
@@ -71,18 +117,26 @@ Runtime minimum menyediakan fungsi memory/string dasar seperti `memcpy`,
 Allocator belum menggabungkan blok bersebelahan atau mengembalikan heap ke OS.
 Wrapper POSIX dasar melalui `<fcntl.h>`, `<sys/stat.h>`, `<unistd.h>`,
 `<dirent.h>`, dan `<errno.h>`:
-`open`, `read`, `write`, `lseek`, `close`, `pipe`, `dup2`, `chdir`, `getcwd`,
-`getpid`, `isatty`, `unlink`, `mkdir`, `stat`, `ftruncate`, serta direktori
-`opendir`/`readdir`/`closedir`. `struct stat`
-menyediakan `st_mode` dan `st_size`; `mkdir` menerapkan permission yang diminta,
-tetapi `umask` belum tersedia. Perubahan permission bergantung pada dukungan
+`open`, `openat`, `read`, `write`, `lseek`, `close`, `pipe`, `dup`, `dup2`,
+`fcntl`, `chdir`, `getcwd`, `getpid`, `isatty`, `unlink`, `unlinkat`, `rmdir`,
+`symlink`, `symlinkat`, `readlink`, `readlinkat`, `rename`, `renameat`, `mkdir`,
+`mkdirat`, `stat`, `lstat`, `fstat`, `fstatat`, `access`, `chmod`, `fchmod`,
+`umask`, dan `ftruncate`, serta direktori `opendir`/`readdir`/`closedir`/
+`dirfd`. `struct stat` menyediakan
+`st_mode` dan `st_size`; `mkdir` serta `open` dengan `O_CREAT` menerapkan
+permission setelah `umask`. Perubahan permission bergantung pada dukungan
 filesystem; FAT32 belum menyediakan `chmod`. `posix_spawn`/`posix_spawnp`
-serta `waitpid` tersedia untuk menjalankan dan menunggu ELF anak. Kesalahan
-wrapper syscall dikembalikan sebagai `-1` dan mengisi global `errno`; fungsi
+serta `waitpid` tersedia untuk menjalankan dan menunggu ELF anak. Pada build statis,
+kesalahan wrapper syscall dikembalikan sebagai `-1` dan mengisi `errno` TLS
+per-thread; shared libc masih memakai `errno` global. Fungsi
 `posix_spawn` mengembalikan nomor error langsung. File actions dan attributes
-`posix_spawn` harus `NULL`; opsi `waitpid` selain 0 belum didukung. Flag open
-dan batas syscall mengikuti ABI OCTAGRAM. Belum ada `fork`, `execve`, atau
-dukungan proses `fork`/`execve` atau pemulihan heap ke OS.
+`posix_spawn` harus `NULL`; `waitpid` mendukung `WNOHANG`, sedangkan opsi lain
+belum didukung. `unlink` menghapus file/symlink, sedangkan `rmdir` menghapus
+direktori kosong. `readlink` tidak menambahkan NUL ke buffer. Flag open dan
+batas syscall mengikuti ABI OCTAGRAM. `fork` menyalin memori user dengan eager
+copy dan `execve` mengganti image proses saat ini; heap belum dikembalikan ke OS.
+Waktu dasar tersedia melalui `clock_gettime`, `time`, `gmtime`, dan `localtime`.
+RTC memiliki resolusi satu detik dan dianggap UTC; zona waktu belum didukung.
 
 Header `<stdio.h>` menyediakan operasi stream dasar (`fopen`, `fdopen`,
 `fclose`, `fread`, `fwrite`, `fgets`, `fputs`, `fseek`, dan standard streams),
@@ -99,35 +153,6 @@ Jalankan `make -C user scanf-test` untuk menguji parser input string runtime
 tanpa boot OS. Contoh `scanf_demo` membaca token dan angka dari stdin.
 
 ## Toolchain native di dalam OCTAGRAM
-
-Build kernel juga membangun ELF userland `/bin/gcc`, yang memakai compiler C
-subset OCTAGRAM. Kernel menanam executable tersebut dan header di `/include`
-ke RAMFS saat boot. Shell tetap menyediakan `cc` sebagai compiler bawaan kernel;
-`gcc` sekarang dicari dan dijalankan sebagai program ELF melalui `PATH`.
-Compiler membaca dan menulis file di VFS, jadi source bisa berada di RAMFS atau
-volume FAT32 yang sudah di-mount.
-
-Build kernel juga membangun ELF userland `/bin/chibicc`, port front-end
-chibicc. Di shell, `-E` dan `-S` dijalankan langsung oleh front-end; mode
-kompilasi biasa meneruskan assembly-nya ke assembler dan linker internal untuk
-menghasilkan ELF statis:
-
-```text
-chibicc /tmp/test.c -o /tmp/smoke.elf
-run /tmp/smoke.elf
-chibicc -c /tmp/test.c -o /tmp/test.o
-ld /tmp/test.o -o /tmp/from-object.elf
-run /tmp/from-object.elf
-```
-
-Image menyertakan `/tmp/test.c` sebagai smoke test. Program itu mencetak
-`berapa umurnya` dan `umurnya 24`, lalu keluar dengan status 0. Tanpa `-o`,
-hasil link ditulis ke `a.out` di direktori saat ini. Jalur ini menerima satu
-file C dan tidak mendukung linking library eksternal. `-c` menghasilkan object
-internal OCTAGRAM, bukan object ELF relocatable standar. Header standar yang
-disediakan port ini berada di `/include`, sedangkan header internal chibicc
-berada di `/include/chibicc`. `/bin/gcc` tetap compiler subset terpisah;
-chibicc belum menggantikannya.
 
 Kernel juga menanam TinyCC sebagai `/bin/tcc`, beserta `crt1.o`, `libc.a`,
 `libtcc1.a`, dan header C di `/include`. TCC menghasilkan ELF64 statis OCTAGRAM
@@ -146,31 +171,24 @@ subset OCTAGRAM, bukan libc POSIX penuh.
 
 Ini belum merupakan toolchain C11 lengkap: assembler hanya memahami subset
 instruksi x86_64, linker hanya menerima satu object, dan belum ada runtime C
-umum atau dukungan relocation umum. Untuk jalur shell, panggilan `printf`
-langsung ditautkan ke stub kernel dengan formatter terbatas; fungsi eksternal
-lain, linking libc, dan fitur stdio lainnya belum tersedia. Section data belum
+umum atau dukungan relocation umum. Untuk jalur shell, panggilan `puts` dan
+`printf` dengan literal diterjemahkan langsung menjadi syscall `write`; fungsi
+eksternal lain, linking libc, dan fitur stdio lainnya belum tersedia. Section data belum
 dipisahkan dari kode pada output ELF; program yang memakai global writable atau
 inline assembly belum didukung. Gunakan toolchain host di atas untuk program
 yang memerlukan fitur tersebut.
 
-Fondasi syscall `mmap`/`munmap` belum menyediakan `rustc`, Cargo, Rust `core`,
-atau runtime hosted; compiler Rust penuh yang berjalan di OCTAGRAM belum tersedia.
+Fondasi syscall `mmap`/`munmap` belum menyediakan Cargo, Rust `core`, atau
+runtime hosted di OCTAGRAM. Kernel Rust tetap dibangun dari host.
 
 ```text
 as /mnt/hello.s -o /mnt/hello.o
 ld /mnt/hello.o -o /mnt/hello.elf
-gcc /mnt/hello.c -o /mnt/hello.elf
-chibicc -E /mnt/hello.c
-chibicc -S /mnt/hello.c -o /mnt/hello.s
-chibicc /mnt/hello.c -o /mnt/hello.elf
+cc /mnt/hello.c -o /mnt/hello.elf
 run /mnt/hello.elf
 ```
 
-`gcc` menerima satu file input, `-o` opsional (default `a.out`), serta
-`--help`, `--version`, `-std=c11`, dan beberapa opsi umum yang diabaikan.
-`gcc` menghasilkan ELF yang dapat dijalankan, dengan permission executable.
-
-Compiler subset `cc` dan `/bin/gcc` hanya menerima satu fungsi `int main(void)`,
+Compiler subset `cc` hanya menerima satu fungsi `int main(void)`,
 panggilan `oct_write(OCT_STDOUT, "teks", panjang)` dengan string literal atau
 macro string dan panjang literal atau macro bilangan bulat, serta `puts("teks")`
 dan `printf("teks")` tanpa format specifier. Header standar seperti `<stdio.h>`,
@@ -213,7 +231,7 @@ int main(void) {
 }
 ```
 
-`cc` dan `/bin/gcc` mencari header kutip relatif terhadap source, lalu di
+`cc` mencari header kutip relatif terhadap source, lalu di
 subfolder `include` source dan `/include`. Header kurung sudut dicari di
 subfolder `include`, `/include`, lalu folder source. Header standar yang
 disediakan dianggap header bawaan; deklarasi C di header diabaikan. Preprocessor
@@ -253,8 +271,9 @@ ls /mnt
 run /mnt/hello.elf
 ```
 
-Program dapat menjalankan ELF anak dan menunggu status keluarnya melalui
-syscall `spawn`/`waitpid`. Contoh `spawn_demo` menjalankan ELF yang diberikan:
+Program membuat dan menunggu ELF anak melalui API POSIX `posix_spawn`/
+`waitpid`, yang dibangun di atas `fork` dan `execve`. Contoh `spawn_demo`
+menjalankan ELF yang diberikan:
 
 ```text
 run /mnt/spawn_demo.elf /mnt/hello.elf
@@ -289,6 +308,34 @@ run /mnt/stdio_demo.elf
 run /mnt/posix_spawn_demo.elf
 ```
 
+`execve_demo` menguji pergantian image, pemuatan argv/environment, kegagalan
+tanpa merusak image lama, dan descriptor `FD_CLOEXEC`:
+
+```text
+run /mnt/execve_demo.elf
+```
+
+`fork_demo` menguji nilai balik parent/child, salinan memori privat, dan
+`waitpid`:
+
+```text
+run /mnt/fork_demo.elf
+```
+
+`time_demo` memeriksa `clock_gettime(CLOCK_REALTIME)` dan konversi kalender:
+
+```text
+run /mnt/time_demo.elf
+```
+
+`mmap_demo` menguji pemetaan anonim dan file-backed, `MAP_SHARED`/
+`MAP_PRIVATE`, `MAP_FIXED`, `msync`, `mprotect`, `mincore`, serta operasi
+locking dan advice POSIX:
+
+```text
+run /bin/mmap-demo
+```
+
 Nama perangkat bergantung hasil `devices`. Perintah `run` menjalankan ELF dan
 kembali ke shell setelah syscall `exit` atau user fault. Untuk menjalankan
 beberapa ELF CPU-bound secara bersamaan, gunakan:
@@ -297,8 +344,8 @@ beberapa ELF CPU-bound secara bersamaan, gunakan:
 runp /mnt/worker-a.elf /mnt/worker-b.elf
 ```
 
-`runp` memakai round-robin timer preemption dan membatasi grup menjadi 16
-proses. Shell kembali setelah semua proses keluar atau fault.
+`runp` memakai round-robin timer preemption. Total proses dan thread user yang
+terjadwal dibatasi 16. Shell kembali setelah semua proses keluar atau fault.
 Shell mewariskan environment ke program dan proses anak. Variabel dapat diatur
 dengan `export NAME=value`; `PATH` bawaan adalah `/bin`, `/usr/bin`, dan
 `/usr/local/bin`. Atur direktori pencarian dengan `export PATH=...`, pisahkan
@@ -325,22 +372,23 @@ menjadi `/mnt/hello.txt` lalu build ulang.
 
 ## Format program yang didukung
 
-- x86_64, ELF64 little-endian, `ET_EXEC`.
-- Static; tidak ada interpreter, dynamic linker, full libc, atau relocations
-  runtime.
+- x86_64, ELF64 little-endian: static `ET_EXEC` dan PIE `ET_DYN` dengan
+  interpreter `/lib/ld-octagram.so`.
+- Dynamic loader mendukung subset relocation x86_64 dan pencarian shared
+  library di `/lib`; shared libc OCTAGRAM bukan libc POSIX penuh. TLS untuk
+  executable statis menggunakan model local-exec; TLS pada shared object belum
+  didukung.
 - Segmen tidak boleh writable sekaligus executable.
 - Entry point harus berada di segmen executable.
-- Stack 8 halaman dan heap awal 1 MiB; `brk` dapat menumbuhkan heap sampai batas
-  image. `mmap`/`munmap` menyediakan pemetaan anonim tambahan yang dibatasi
-  alamat virtual dan memori fisik yang tersedia.
+- Stack 8 halaman dan heap image awal 1 MiB. Runtime mengalokasikan tambahan
+  melalui pemetaan anonim internal yang dibatasi alamat virtual dan memori
+  fisik yang tersedia.
 - Startup meneruskan `argc`, `argv`, dan `envp` ke `main`; environment tersedia
   melalui argumen ketiga atau global `environ`.
 
 Contoh [tty_demo.c](../user/examples/tty_demo.c) membaca satu baris dari
 keyboard melalui `oct_read(OCT_STDIN, ...)`, lalu mencetaknya ke terminal.
-Contoh [graphics_demo.c](../user/examples/graphics_demo.c) menggambar gradien
-pixel melalui syscall `oct_putpixel`; area gambar berbagi framebuffer dengan
-teks terminal. Build bersama contoh lain dengan `make -C user`.
+Build bersama contoh lain dengan `make -C user`.
 
 Lihat [ABI syscall](syscall-abi.md) dan [panduan port aplikasi](porting-apps.md)
 untuk batasan aplikasi.

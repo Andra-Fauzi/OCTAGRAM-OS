@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "octagram-gcc"
+name = "octagram-make"
 version = "0.1.0"
 dependencies = [
  "octagram-runtime",

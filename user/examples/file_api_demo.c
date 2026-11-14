@@ -1,0 +1,86 @@
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+int main(void)
+{
+    const char *path = "/tmp/file-api-demo";
+    const char *renamed = "/tmp/file-api-demo-renamed";
+    mode_t previous_mask = umask(0077);
+    int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0666);
+    umask(previous_mask);
+    if (fd < 0) {
+        return 1;
+    }
+
+    struct stat status;
+    if (fstat(fd, &status) != 0) {
+        close(fd);
+        unlink(path);
+        return 2;
+    }
+    if (!S_ISREG(status.st_mode)) {
+        close(fd);
+        unlink(path);
+        return 20;
+    }
+    if ((status.st_mode & 0777) != 0600) {
+        close(fd);
+        unlink(path);
+        return 30 + (status.st_mode & 0777);
+    }
+    if (fchmod(fd, 0640) != 0 || fstat(fd, &status) != 0 ||
+        (status.st_mode & 0777) != 0640) {
+        close(fd);
+        unlink(path);
+        return 31;
+    }
+    if (fchmod(-1, 0600) != -1 || errno != EBADF ||
+        fchmod(fd, 01000) != -1 || errno != EINVAL) {
+        close(fd);
+        unlink(path);
+        return 32;
+    }
+    if (access(path, R_OK | W_OK) != 0) {
+        int error = errno;
+        close(fd);
+        unlink(path);
+        return 40 + error;
+    }
+    if (access(path, X_OK) == 0) {
+        close(fd);
+        unlink(path);
+        return 41;
+    }
+
+    int duplicate = dup(fd);
+    int fcntl_duplicate = fcntl(fd, F_DUPFD, 5);
+    if (duplicate < 0 || fcntl_duplicate < 0 ||
+        fcntl(duplicate, F_SETFD, FD_CLOEXEC) != 0 ||
+        fcntl(duplicate, F_GETFD) != FD_CLOEXEC ||
+        fcntl(fd, F_SETFL, O_APPEND) != 0 ||
+        (fcntl(fd, F_GETFL) & O_APPEND) == 0 ||
+        write(duplicate, "ok", 2) != 2 || lseek(fd, 0, SEEK_CUR) != 2) {
+        close(fd);
+        unlink(path);
+        return 3;
+    }
+
+    if (rename(path, renamed) != 0 || access(path, F_OK) == 0 ||
+        access(renamed, F_OK) != 0 || fstat(fd, &status) != 0 ||
+        status.st_size != 2) {
+        close(fd);
+        unlink(renamed);
+        return 4;
+    }
+
+    close(fcntl_duplicate);
+    close(duplicate);
+    close(fd);
+    if (unlink(renamed) != 0) {
+        return 5;
+    }
+    return puts("fstat/access/rename/umask/dup/fcntl passed") < 0 ? 6 : 0;
+}

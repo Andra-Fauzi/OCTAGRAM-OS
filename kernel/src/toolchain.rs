@@ -2529,7 +2529,7 @@ mod tests {
     }
 
     #[test]
-    fn assembler_accepts_chibicc_metadata_and_alignment_directives() {
+    fn assembler_accepts_metadata_and_alignment_directives() {
         let object = assemble(
             b".file 1 \"input.c\"\n.text\n.local .L..1\n.type _start, @function\n.byte 0x90\n.align 4\n.byte 0xCC\n.loc 1 4 0\n.p2align 3\n.global _start\n_start:\nret\n.size _start, .-_start\n",
         )
@@ -2547,7 +2547,7 @@ mod tests {
     }
 
     #[test]
-    fn assembles_and_links_a_minimal_chibicc_main_function() {
+    fn assembles_and_links_a_minimal_main_function() {
         let object = assemble(
             b".file 1 \"smoke.c\"\n.local .L..1\n.data\n.type .L..1, @object\n.size .L..1, 5\n.align 1\n.L..1:\n.byte 109\n.byte 97\n.byte 105\n.byte 110\n.byte 0\n.globl main\n.text\n.type main, @function\nmain:\npush %rbp\nmov %rsp, %rbp\nsub $16, %rsp\nmov %rsp, -8(%rbp)\n.loc 1 2\nmov $42, %rax\njmp .L.return.main\nmov $0, %rax\n.L.return.main:\nmov %rbp, %rsp\npop %rbp\nret\n.size main, .-main\n",
         )
@@ -2574,7 +2574,7 @@ mod tests {
     }
 
     #[test]
-    fn assembles_chibicc_local_integer_initialization_and_load() {
+    fn assembles_local_integer_initialization_and_load() {
         let object = assemble(
             b".globl main\n.text\n.type main, @function\nmain:\npush %rbp\nmov %rsp, %rbp\nsub $16, %rsp\nmov %rsp, -16(%rbp)\nmov $4, %rcx\nlea -4(%rbp), %rdi\nmov $0, %al\nrep stosb\nlea -4(%rbp), %rax\npush %rax\nmov $5, %rax\npop %rdi\nmov %eax, (%rdi)\nlea -4(%rbp), %rax\nmovsxd (%rax), %rax\njmp .L.return.main\nmov $0, %rax\n.L.return.main:\nmov %rbp, %rsp\npop %rbp\nret\n",
         )
@@ -2590,7 +2590,7 @@ mod tests {
     }
 
     #[test]
-    fn assembles_chibicc_integer_arithmetic_and_conditions() {
+    fn assembles_integer_arithmetic_and_conditions() {
         let object = assemble(
             b".global _start\n_start:\nadd %edi, %eax\ncmp %edi, %eax\nsetne %al\nmovzb %al, %rax\ncmp $0, %eax\nret\n",
         )

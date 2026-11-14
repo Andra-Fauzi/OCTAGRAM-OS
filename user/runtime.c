@@ -8,10 +8,11 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <spawn.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/time.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -50,16 +51,27 @@ FILE *stdout = &standard_output;
 FILE *stderr = &standard_error;
 
 char **environ;
+#if defined(OCTAGRAM_TLS_ERRNO) && !defined(OCTAGRAM_SHARED)
+__thread int errno;
+#else
 int errno;
+#endif
 
-static uintptr_t heap_next;
+extern unsigned char __oct_tls_start[] __attribute__((weak));
+extern const uintptr_t __oct_tls_filesz[] __attribute__((weak));
+extern const uintptr_t __oct_tls_size[] __attribute__((weak));
+extern const uintptr_t __oct_tls_align[] __attribute__((weak));
 
 typedef struct AllocationHeader {
     size_t size;
     struct AllocationHeader *next_free;
 } AllocationHeader;
 
+#if defined(OCTAGRAM_TLS_ERRNO) && !defined(OCTAGRAM_SHARED)
+static __thread AllocationHeader *free_list;
+#else
 static AllocationHeader *free_list;
+#endif
 
 static int64_t posix_result(int64_t result)
 {
@@ -68,6 +80,331 @@ static int64_t posix_result(int64_t result)
         return -1;
     }
     return result;
+}
+
+static int oct_tls_layout(uintptr_t *filesz, uintptr_t *size,
+                          uintptr_t *alignment, uintptr_t *aligned_size)
+{
+    *size = __oct_tls_size == NULL ? 0 : *__oct_tls_size;
+    *filesz = __oct_tls_filesz == NULL ? 0 : *__oct_tls_filesz;
+    *alignment = __oct_tls_align == NULL ? 0 : *__oct_tls_align;
+    if (*size == 0) {
+        *aligned_size = 0;
+        return 0;
+    }
+    if (__oct_tls_start == NULL || *filesz > *size
+        || *alignment == 0 || *alignment > 4096
+        || (*alignment & (*alignment - 1)) != 0
+        || *size > SIZE_MAX - (*alignment - 1)) {
+        return -1;
+    }
+    *aligned_size = (*size + *alignment - 1) & ~(*alignment - 1);
+    return 0;
+}
+
+static void oct_tls_copy(void *destination, uintptr_t filesz, uintptr_t size)
+{
+    if (filesz != 0) {
+        memcpy(destination, __oct_tls_start, filesz);
+    }
+    if (size > filesz) {
+        memset((unsigned char *)destination + filesz, 0, size - filesz);
+    }
+}
+
+static void oct_tls_initialize_tcb(void *thread_pointer)
+{
+    if (thread_pointer != NULL) {
+        *(uintptr_t *)thread_pointer = (uintptr_t)thread_pointer;
+    }
+}
+
+static void *oct_tls_allocate(void)
+{
+    uintptr_t filesz;
+    uintptr_t size;
+    uintptr_t alignment;
+    uintptr_t aligned_size;
+    if (oct_tls_layout(&filesz, &size, &alignment, &aligned_size) != 0
+        || aligned_size == 0) {
+        return NULL;
+    }
+
+    int64_t mapping = oct_syscall6(
+        16, 0, aligned_size, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, (uint64_t)-1, 0);
+    if (mapping < 0) {
+        return NULL;
+    }
+    void *base = (void *)(uintptr_t)mapping;
+    if ((uintptr_t)base % alignment != 0) {
+        oct_syscall2(17, (uint64_t)(uintptr_t)base, aligned_size);
+        return NULL;
+    }
+    oct_tls_copy(base, filesz, size);
+    void *thread_pointer = (unsigned char *)base + aligned_size;
+    oct_tls_initialize_tcb(thread_pointer);
+    return thread_pointer;
+}
+
+static uintptr_t oct_tls_aligned_size(void)
+{
+    uintptr_t filesz;
+    uintptr_t size;
+    uintptr_t alignment;
+    uintptr_t aligned_size;
+    if (oct_tls_layout(&filesz, &size, &alignment, &aligned_size) != 0) {
+        return 0;
+    }
+    (void)filesz;
+    (void)size;
+    (void)alignment;
+    return aligned_size;
+}
+
+static void oct_tls_release(void *thread_pointer)
+{
+    uintptr_t aligned_size = oct_tls_aligned_size();
+    if (thread_pointer != NULL && aligned_size != 0) {
+        oct_syscall2(17, (uint64_t)(uintptr_t)thread_pointer - aligned_size,
+                     aligned_size);
+    }
+}
+
+int __oct_tls_initialize(void)
+{
+    void *thread_pointer = oct_tls_allocate();
+    if (oct_tls_aligned_size() != 0 && thread_pointer == NULL) {
+        return -1;
+    }
+    int64_t result = oct_set_thread_pointer(thread_pointer);
+    if (result < 0) {
+        oct_tls_release(thread_pointer);
+        return (int)result;
+    }
+    return 0;
+}
+
+typedef struct ThreadStart {
+    void *(*function)(void *);
+    void *argument;
+} ThreadStart;
+
+#define OCT_PTHREAD_STACK_SIZE (64u * 1024u)
+
+static void oct_pthread_start(void *opaque) __attribute__((noreturn));
+
+static void oct_pthread_start(void *opaque)
+{
+    ThreadStart start = *(ThreadStart *)opaque;
+    free(opaque);
+    void *result = start.function(start.argument);
+    oct_thread_exit(result);
+    for (;;) {
+        __asm__ volatile ("pause");
+    }
+}
+
+int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
+                   void *(*start_routine)(void *), void *argument)
+{
+    if (thread == NULL || start_routine == NULL) {
+        return EINVAL;
+    }
+    if (attributes != NULL) {
+        return ENOTSUP;
+    }
+
+    uintptr_t tls_aligned_size = oct_tls_aligned_size();
+    if (tls_aligned_size > SIZE_MAX - OCT_PTHREAD_STACK_SIZE - 4095) {
+        return EINVAL;
+    }
+    size_t mapping_size = OCT_PTHREAD_STACK_SIZE + (size_t)tls_aligned_size;
+    mapping_size = (mapping_size + 4095) & ~(size_t)4095;
+    void *mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED) {
+        return errno;
+    }
+
+    void *thread_pointer = NULL;
+    if (tls_aligned_size != 0) {
+        uintptr_t filesz;
+        uintptr_t tls_size;
+        uintptr_t alignment;
+        uintptr_t checked_size;
+        if (oct_tls_layout(&filesz, &tls_size, &alignment, &checked_size) != 0
+            || checked_size != tls_aligned_size) {
+            munmap(mapping, mapping_size);
+            return EINVAL;
+        }
+        void *tls_base = (unsigned char *)mapping + OCT_PTHREAD_STACK_SIZE;
+        oct_tls_copy(tls_base, filesz, tls_size);
+        thread_pointer = (unsigned char *)tls_base + tls_aligned_size;
+        oct_tls_initialize_tcb(thread_pointer);
+    }
+
+    ThreadStart *start = malloc(sizeof(*start));
+    if (start == NULL) {
+        munmap(mapping, mapping_size);
+        return errno;
+    }
+    start->function = start_routine;
+    start->argument = argument;
+    int64_t result = oct_thread_create(
+        oct_pthread_start, start,
+        (unsigned char *)mapping + OCT_PTHREAD_STACK_SIZE,
+        thread_pointer, mapping, mapping_size);
+    if (result < 0) {
+        free(start);
+        munmap(mapping, mapping_size);
+        return (int)-result;
+    }
+    *thread = (pthread_t)result;
+    return 0;
+}
+
+int pthread_join(pthread_t thread, void **result)
+{
+    int64_t status = oct_thread_join(thread, result);
+    return status < 0 ? (int)-status : 0;
+}
+
+pthread_t pthread_self(void)
+{
+    int64_t thread = oct_thread_self();
+    return thread < 0 ? 0 : (pthread_t)thread;
+}
+
+void pthread_exit(void *result)
+{
+    oct_thread_exit(result);
+    for (;;) {
+        __asm__ volatile ("pause");
+    }
+}
+
+int pthread_mutex_init(pthread_mutex_t *mutex, const void *attributes)
+{
+    if (mutex == NULL || attributes != NULL) {
+        return EINVAL;
+    }
+    mutex->state = 0;
+    return 0;
+}
+
+int pthread_mutex_destroy(pthread_mutex_t *mutex)
+{
+    if (mutex == NULL) {
+        return EINVAL;
+    }
+    return mutex->state == 0 ? 0 : EBUSY;
+}
+
+int pthread_mutex_lock(pthread_mutex_t *mutex)
+{
+    if (mutex == NULL) {
+        return EINVAL;
+    }
+    while (__sync_lock_test_and_set(&mutex->state, 1) != 0) {
+        __asm__ volatile ("pause");
+    }
+    return 0;
+}
+
+int pthread_mutex_trylock(pthread_mutex_t *mutex)
+{
+    if (mutex == NULL) {
+        return EINVAL;
+    }
+    return __sync_lock_test_and_set(&mutex->state, 1) == 0 ? 0 : EBUSY;
+}
+
+int pthread_mutex_unlock(pthread_mutex_t *mutex)
+{
+    if (mutex == NULL) {
+        return EINVAL;
+    }
+    if (__sync_lock_test_and_set(&mutex->state, 0) == 0) {
+        return EINVAL;
+    }
+    return 0;
+}
+
+void *mmap(void *address, size_t length, int protection, int flags,
+           int file_descriptor, off_t offset)
+{
+    if (offset < 0) {
+        errno = EINVAL;
+        return MAP_FAILED;
+    }
+    int64_t result = oct_syscall6(
+        16, (uint64_t)(uintptr_t)address, length, (uint64_t)(unsigned int)protection,
+        (uint64_t)(unsigned int)flags, (uint64_t)(int64_t)file_descriptor,
+        (uint64_t)offset);
+    if (result < 0) {
+        posix_result(result);
+        return MAP_FAILED;
+    }
+    return (void *)(uintptr_t)result;
+}
+
+int munmap(void *address, size_t length)
+{
+    return (int)posix_result(oct_syscall2(
+        17, (uint64_t)(uintptr_t)address, (uint64_t)length));
+}
+
+int mprotect(void *address, size_t length, int protection)
+{
+    return (int)posix_result(oct_syscall3(
+        52, (uint64_t)(uintptr_t)address, (uint64_t)length,
+        (uint64_t)(unsigned int)protection));
+}
+
+int msync(void *address, size_t length, int flags)
+{
+    return (int)posix_result(oct_syscall3(
+        51, (uint64_t)(uintptr_t)address, (uint64_t)length,
+        (uint64_t)(unsigned int)flags));
+}
+
+int mincore(void *address, size_t length, unsigned char *vector)
+{
+    return (int)posix_result(oct_syscall3(
+        53, (uint64_t)(uintptr_t)address, (uint64_t)length,
+        (uint64_t)(uintptr_t)vector));
+}
+
+int mlock(const void *address, size_t length)
+{
+    return (int)posix_result(oct_syscall2(
+        54, (uint64_t)(uintptr_t)address, (uint64_t)length));
+}
+
+int munlock(const void *address, size_t length)
+{
+    return (int)posix_result(oct_syscall2(
+        55, (uint64_t)(uintptr_t)address, (uint64_t)length));
+}
+
+int mlockall(int flags)
+{
+    return (int)posix_result(oct_syscall1(
+        56, (uint64_t)(unsigned int)flags));
+}
+
+int munlockall(void)
+{
+    return (int)posix_result(oct_syscall0(57));
+}
+
+int posix_madvise(void *address, size_t length, int advice)
+{
+    int64_t result = oct_syscall3(
+        58, (uint64_t)(uintptr_t)address, (uint64_t)length,
+        (uint64_t)(unsigned int)advice);
+    return result < 0 ? (int)-result : 0;
 }
 
 void *memcpy(void *destination, const void *source, size_t count)
@@ -642,9 +979,6 @@ static int current_environment_count(size_t *count)
 
 static int install_environment(char **environment)
 {
-    if (posix_result(oct_set_environ(environment)) < 0) {
-        return -1;
-    }
     environ = environment;
     return 0;
 }
@@ -768,6 +1102,19 @@ int open(const char *path, int flags, ...)
         path, (uint64_t)(unsigned int)flags, (uint32_t)mode));
 }
 
+int openat(int dirfd, const char *path, int flags, ...)
+{
+    mode_t mode = 0644;
+    if ((unsigned int)flags & O_CREAT) {
+        va_list arguments;
+        va_start(arguments, flags);
+        mode = (mode_t)va_arg(arguments, unsigned int);
+        va_end(arguments);
+    }
+    return (int)posix_result(oct_openat(
+        dirfd, path, (uint64_t)(unsigned int)flags, (uint32_t)mode));
+}
+
 int close(int fd)
 {
     return (int)posix_result(oct_close(fd));
@@ -816,6 +1163,15 @@ int closedir(DIR *directory)
     return 0;
 }
 
+int dirfd(DIR *directory)
+{
+    if (directory == NULL) {
+        errno = EBADF;
+        return -1;
+    }
+    return directory->fd;
+}
+
 ssize_t read(int fd, void *buffer, size_t count)
 {
     if (count > OCT_MAX_SYSCALL_IO) {
@@ -842,16 +1198,44 @@ int unlink(const char *path)
     return (int)posix_result(oct_unlink(path));
 }
 
+int unlinkat(int dirfd, const char *path, int flags)
+{
+    return (int)posix_result(oct_unlinkat(dirfd, path, flags));
+}
+
+int rmdir(const char *path)
+{
+    return (int)posix_result(oct_rmdir(path));
+}
+
+int symlink(const char *target, const char *link_path)
+{
+    return (int)posix_result(oct_symlink(target, link_path));
+}
+
+int symlinkat(const char *target, int dirfd, const char *link_path)
+{
+    return (int)posix_result(oct_symlinkat(target, dirfd, link_path));
+}
+
+ssize_t readlink(const char *path, char *buffer, size_t size)
+{
+    return (ssize_t)posix_result(oct_readlink(path, buffer, size));
+}
+
+ssize_t readlinkat(int dirfd, const char *path, char *buffer, size_t size)
+{
+    return (ssize_t)posix_result(oct_readlinkat(dirfd, path, buffer, size));
+}
+
 int mkdir(const char *path, mode_t mode)
 {
-    int result = (int)posix_result(oct_mkdir(path));
-    if (result < 0) {
-        return result;
-    }
-    if ((mode & 0777) == 0755) {
-        return 0;
-    }
-    return chmod(path, mode & 0777);
+    return (int)posix_result(oct_mkdir_mode(path, mode));
+}
+
+int mkdirat(int dirfd, const char *path, mode_t mode)
+{
+    return (int)posix_result(oct_mkdirat(dirfd, path, mode));
 }
 
 int stat(const char *path, struct stat *result)
@@ -873,9 +1257,95 @@ int stat(const char *path, struct stat *result)
     return 0;
 }
 
+int lstat(const char *path, struct stat *result)
+{
+    if (result == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    struct oct_stat metadata;
+    if (posix_result(oct_lstat_path(path, &metadata)) < 0) {
+        return -1;
+    }
+    if (metadata.size > INT64_MAX) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    result->st_size = (off_t)metadata.size;
+    result->st_mode = (mode_t)metadata.mode;
+    return 0;
+}
+
+int fstat(int fd, struct stat *result)
+{
+    if (result == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    struct oct_stat metadata;
+    if (posix_result(oct_fstat(fd, &metadata)) < 0) {
+        return -1;
+    }
+    if (metadata.size > INT64_MAX) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    result->st_size = (off_t)metadata.size;
+    result->st_mode = (mode_t)metadata.mode;
+    return 0;
+}
+
+int fstatat(int dirfd, const char *path, struct stat *result, int flags)
+{
+    if (result == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    struct oct_stat metadata;
+    if (posix_result(oct_fstatat(dirfd, path, &metadata, flags)) < 0) {
+        return -1;
+    }
+    if (metadata.size > INT64_MAX) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    result->st_size = (off_t)metadata.size;
+    result->st_mode = (mode_t)metadata.mode;
+    return 0;
+}
+
+int access(const char *path, int mode)
+{
+    if (mode & ~(R_OK | W_OK | X_OK)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (int)posix_result(oct_access(path, (uint64_t)(unsigned int)mode));
+}
+
+int rename(const char *source, const char *target)
+{
+    return (int)posix_result(oct_rename(source, target));
+}
+
+int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath)
+{
+    return (int)posix_result(oct_renameat(olddirfd, oldpath, newdirfd, newpath));
+}
+
+mode_t umask(mode_t mask)
+{
+    return (mode_t)posix_result(oct_umask(mask));
+}
+
 int chmod(const char *path, mode_t mode)
 {
     return (int)posix_result(oct_chmod(path, mode));
+}
+
+int fchmod(int fd, mode_t mode)
+{
+    return (int)posix_result(oct_fchmod(fd, mode));
 }
 
 int chdir(const char *path)
@@ -906,6 +1376,23 @@ int pipe(int descriptors[2])
 int dup2(int source_fd, int target_fd)
 {
     return (int)posix_result(oct_dup2(source_fd, target_fd));
+}
+
+int dup(int fd)
+{
+    return (int)posix_result(oct_dup(fd));
+}
+
+int fcntl(int fd, int command, ...)
+{
+    uint64_t argument = 0;
+    if (command == F_DUPFD || command == F_SETFD || command == F_SETFL) {
+        va_list arguments;
+        va_start(arguments, command);
+        argument = (uint64_t)(unsigned int)va_arg(arguments, int);
+        va_end(arguments);
+    }
+    return (int)posix_result(oct_fcntl(fd, command, argument));
 }
 
 int ftruncate(int fd, off_t length)
@@ -957,13 +1444,59 @@ static int posix_spawn_impl(pid_t *pid, const char *path,
         environment = environ != NULL ? environ : empty_environment;
     }
 
-    int64_t result = oct_spawn_env(path,
-                                   (const char *const *)arguments,
-                                   argument_count, environment);
-    if (result < 0) {
-        return (int)-result;
+    int descriptors[2];
+    if (pipe(descriptors) < 0) {
+        return errno;
     }
-    *pid = (pid_t)result;
+    if (fcntl(descriptors[0], F_SETFD, FD_CLOEXEC) < 0 ||
+        fcntl(descriptors[1], F_SETFD, FD_CLOEXEC) < 0) {
+        int error = errno;
+        close(descriptors[0]);
+        close(descriptors[1]);
+        return error;
+    }
+
+    pid_t child = fork();
+    if (child < 0) {
+        int error = errno;
+        close(descriptors[0]);
+        close(descriptors[1]);
+        return error;
+    }
+    if (child == 0) {
+        close(descriptors[0]);
+        execve(path, arguments, environment);
+        int error = errno;
+        (void)write(descriptors[1], &error, sizeof(error));
+        close(descriptors[1]);
+        exit(127);
+    }
+
+    close(descriptors[1]);
+    int child_error = 0;
+    size_t received = 0;
+    while (received < sizeof(child_error)) {
+        ssize_t count = read(descriptors[0],
+                             (unsigned char *)&child_error + received,
+                             sizeof(child_error) - received);
+        if (count < 0) {
+            int error = errno;
+            close(descriptors[0]);
+            (void)waitpid(child, NULL, 0);
+            return error;
+        }
+        if (count == 0) {
+            break;
+        }
+        received += (size_t)count;
+    }
+    close(descriptors[0]);
+    if (received != 0) {
+        (void)waitpid(child, NULL, 0);
+        return received == sizeof(child_error) ? child_error : EIO;
+    }
+
+    *pid = child;
     return 0;
 }
 
@@ -1048,18 +1581,21 @@ int posix_spawnp(pid_t *restrict pid, const char *restrict file,
 
 pid_t waitpid(pid_t pid, int *status, int options)
 {
-    if (options != 0 || (pid <= 0 && pid != -1)) {
+    if (options < 0 || (options & ~WNOHANG) != 0 ||
+        (pid <= 0 && pid != -1)) {
         errno = EINVAL;
         return -1;
     }
     uint64_t raw_status = 0;
     uint64_t target = pid == -1 ? OCT_WAIT_ANY : (uint64_t)pid;
-    int64_t result = oct_waitpid(target, status != NULL ? &raw_status : NULL);
+    int64_t result = oct_waitpid_options(target,
+                                         status != NULL ? &raw_status : NULL,
+                                         (uint64_t)options);
     if (result < 0) {
         errno = (int)-result;
         return -1;
     }
-    if (status != NULL) {
+    if (status != NULL && result > 0) {
         *status = (int)((raw_status & 0xff) << 8);
     }
     return (pid_t)result;
@@ -2517,6 +3053,7 @@ void *malloc(size_t size)
     }
     size = (size + 15) & ~(size_t)15;
 
+    for (;;) {
     AllocationHeader **free_link = &free_list;
     while (*free_link != NULL) {
         AllocationHeader *header = *free_link;
@@ -2533,41 +3070,31 @@ void *malloc(size_t size)
             }
             header->next_free = NULL;
             return header + 1;
-        }
+            }
         free_link = &header->next_free;
-    }
-
-    if (heap_next == 0) {
-        int64_t initial = oct_brk(0);
-        if (initial < 0) {
-            errno = ENOMEM;
-            return NULL;
         }
-        heap_next = (uintptr_t)initial;
-    }
-    if (heap_next > UINTPTR_MAX - 15) {
+
+    if (size > SIZE_MAX - sizeof(AllocationHeader)) {
         errno = ENOMEM;
         return NULL;
     }
-    uintptr_t start = (heap_next + 15) & ~(uintptr_t)15;
-    if (start > UINTPTR_MAX - sizeof(AllocationHeader)) {
+    size_t requested = size + sizeof(AllocationHeader);
+    size_t mapping_size = requested > 65536 ? requested : 65536;
+    if (mapping_size > SIZE_MAX - 4095) {
         errno = ENOMEM;
         return NULL;
     }
-    uintptr_t result = start + sizeof(AllocationHeader);
-    if (size > UINTPTR_MAX - result) {
-        errno = ENOMEM;
+    mapping_size = (mapping_size + 4095) & ~(size_t)4095;
+    void *mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED) {
         return NULL;
     }
-    uintptr_t end = result + size;
-    if (oct_brk(end) < 0) {
-        errno = ENOMEM;
-        return NULL;
+    AllocationHeader *header = mapping;
+    header->size = mapping_size - sizeof(*header);
+    header->next_free = free_list;
+    free_list = header;
     }
-    heap_next = end;
-    ((AllocationHeader *)start)->size = size;
-    ((AllocationHeader *)start)->next_free = NULL;
-    return (void *)result;
 }
 
 void *realloc(void *pointer, size_t size)
@@ -2685,37 +3212,98 @@ int remove(const char *path)
     return unlink(path);
 }
 
-int gettimeofday(struct timeval *time_value, void *timezone)
+int clock_gettime(clockid_t clock_id, struct timespec *time_value)
 {
-    (void)timezone;
-    time_value->tv_sec = 0;
-    time_value->tv_usec = 0;
-    return 0;
+    if (time_value == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    return (int)posix_result(oct_clock_gettime(clock_id, time_value));
 }
 
 time_t time(time_t *result)
 {
-    if (result != NULL) {
-        *result = 0;
+    struct timespec current;
+    if (clock_gettime(CLOCK_REALTIME, &current) != 0) {
+        return (time_t)-1;
     }
-    return 0;
+    if (result != NULL) {
+        *result = current.tv_sec;
+    }
+    return current.tv_sec;
+}
+
+static int is_leap_year(int64_t year)
+{
+    return year % 400 == 0 || (year % 4 == 0 && year % 100 != 0);
+}
+
+static int days_in_month(int64_t year, int month)
+{
+    static const int month_lengths[] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
+    return month == 1 && is_leap_year(year) ? 29 : month_lengths[month];
+}
+
+struct tm *gmtime(const time_t *time_value)
+{
+    static struct tm result;
+    if (time_value == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    int64_t days = *time_value / 86400;
+    int64_t day_seconds = *time_value % 86400;
+    if (day_seconds < 0) {
+        day_seconds += 86400;
+        --days;
+    }
+
+    int64_t shifted_days = days + 719468;
+    int64_t era = (shifted_days >= 0 ? shifted_days : shifted_days - 146096) / 146097;
+    unsigned int day_of_era = (unsigned int)(shifted_days - era * 146097);
+    unsigned int year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36524 -
+         day_of_era / 146096) / 365;
+    int64_t year = (int64_t)year_of_era + era * 400;
+    unsigned int day_of_year =
+        day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    unsigned int month_prime = (5 * day_of_year + 2) / 153;
+    unsigned int day =
+        day_of_year - (153 * month_prime + 2) / 5 + 1;
+    int month = (int)month_prime + (month_prime < 10 ? 3 : -9);
+    year += month <= 2;
+    if (year - 1900 < INT_MIN || year - 1900 > INT_MAX) {
+        errno = EOVERFLOW;
+        return NULL;
+    }
+
+    int year_day = (int)day - 1;
+    for (int previous_month = 0; previous_month < month - 1; ++previous_month) {
+        year_day += days_in_month(year, previous_month);
+    }
+    int week_day = (int)((days + 4) % 7);
+    if (week_day < 0) {
+        week_day += 7;
+    }
+
+    result.tm_sec = (int)(day_seconds % 60);
+    result.tm_min = (int)(day_seconds / 60 % 60);
+    result.tm_hour = (int)(day_seconds / 3600);
+    result.tm_mday = (int)day;
+    result.tm_mon = month - 1;
+    result.tm_year = (int)(year - 1900);
+    result.tm_wday = week_day;
+    result.tm_yday = year_day;
+    result.tm_isdst = 0;
+    return &result;
 }
 
 struct tm *localtime(const time_t *time_value)
 {
-    static struct tm epoch = {
-        .tm_sec = 0,
-        .tm_min = 0,
-        .tm_hour = 0,
-        .tm_mday = 1,
-        .tm_mon = 0,
-        .tm_year = 70,
-        .tm_wday = 4,
-        .tm_yday = 0,
-        .tm_isdst = 0
-    };
-    (void)time_value;
-    return &epoch;
+    return gmtime(time_value);
 }
 
 long double ldexpl(long double value, int exponent)
@@ -2743,21 +3331,22 @@ long sysconf(int name)
     return 4096;
 }
 
-int mprotect(void *address, size_t length, int protection)
-{
-    (void)address;
-    (void)length;
-    (void)protection;
-    errno = ENOSYS;
-    return -1;
-}
-
 int execvp(const char *file, char *const arguments[])
 {
     (void)file;
     (void)arguments;
     errno = ENOSYS;
     return -1;
+}
+
+int execve(const char *path, char *const arguments[], char *const environment[])
+{
+    return (int)posix_result(oct_execve(path, arguments, environment));
+}
+
+pid_t fork(void)
+{
+    return (pid_t)posix_result(oct_fork());
 }
 
 FILE *freopen(const char *path, const char *mode, FILE *stream)

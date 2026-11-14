@@ -1,7 +1,9 @@
-#include "octagram.h"
-
 #include <errno.h>
+#include <spawn.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static int equals(const char *left, const char *right)
 {
@@ -88,20 +90,18 @@ int main(int argc, char **argv, char **envp)
         return 9;
     }
 
-    const char *child_arguments[] = {argv[0], "child", 0};
-    int64_t child_pid = oct_spawn(argv[0], child_arguments, 2);
-    if (child_pid < 0) {
+    char *child_arguments[] = {argv[0], "child", NULL};
+    pid_t child_pid;
+    int error = posix_spawn(&child_pid, argv[0], NULL, NULL,
+                            child_arguments, environ);
+    if (error != 0) {
         return 10;
     }
-    uint64_t child_status = 0;
-    if (oct_waitpid((uint64_t)child_pid, &child_status) != child_pid ||
-        child_status != 0) {
+    int child_status = 0;
+    if (waitpid(child_pid, &child_status, 0) != child_pid ||
+        !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
         return 11;
     }
 
-    static const char message[] = "environment passed\n";
-    return oct_write(OCT_STDOUT, message, sizeof(message) - 1) ==
-                   (int64_t)(sizeof(message) - 1)
-               ? 0
-               : 12;
+    return puts("environment passed") < 0 ? 12 : 0;
 }

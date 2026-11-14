@@ -1,12 +1,17 @@
 #ifndef OCTAGRAM_ERRNO_H
 #define OCTAGRAM_ERRNO_H
 
+#ifdef OCTAGRAM_TLS_ERRNO
+extern __thread int errno;
+#else
 extern int errno;
+#endif
 
 #define EACCES 13
 #define EAGAIN 11
 #define EBADF 9
 #define E2BIG 7
+#define EBUSY 16
 #define ECHILD 10
 #define EDEADLK 35
 #define EEXIST 17

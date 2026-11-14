@@ -8,7 +8,8 @@ kontrak syscall, dan pola kontribusi subsystem.
 - [Arsitektur kernel](architecture.md): alur boot, modul utama, task, VFS,
   user mode, dan batas isolasi saat ini.
 - [Build kernel dan program user](building.md): dependency host, target build,
-  toolchain GCC/binutils, contoh program, TTY input, dan cara menjalankannya.
+  toolchain GCC/binutils dan Rust `no_std`, contoh program, TTY input, dan cara
+  menjalankannya.
 - [ABI syscall](syscall-abi.md): nomor syscall, register, nilai balik, error,
   descriptor, dan batas buffer.
 - [Membuat driver](writing-drivers.md): lokasi kode, inisialisasi PCI,

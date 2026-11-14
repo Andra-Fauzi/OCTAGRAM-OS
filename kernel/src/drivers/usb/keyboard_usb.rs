@@ -180,6 +180,13 @@ fn handle_report(report: &KeyboardReport) {
         if keycode == 0 || state.last_keycodes.contains(&keycode) {
             continue;
         }
+        if (0x3A..=0x3D).contains(&keycode)
+            && report.modifier & 0x11 != 0
+            && report.modifier & 0x44 != 0
+        {
+            keyboard::switch_terminal((keycode - 0x3A) as usize);
+            continue;
+        }
         if keycode == 0x39 {
             state.caps_lock = !state.caps_lock;
             continue;

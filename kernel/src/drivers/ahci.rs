@@ -9,6 +9,10 @@ use crate::drivers::pci::{self, PciDevice};
 use crate::memory;
 use crate::storage::block::{self, BlockDevice, BlockDeviceRef, BlockError, SECTOR_SIZE};
 
+const PCI_CLASS_MASS_STORAGE: u8 = 0x01;
+const PCI_SUBCLASS_SATA: u8 = 0x06;
+const PCI_PROG_IF_AHCI: u8 = 0x01;
+
 const HBA_SIZE: u64 = 0x2000;
 const HBA_GHC: usize = 0x04;
 const HBA_PI: usize = 0x0C;
@@ -249,9 +253,9 @@ impl BlockDevice for AhciDevice {
     }
 }
 
-pub unsafe fn init() {
+pub unsafe fn init(pci_devices: &[PciDevice]) {
     let mut next_device_id = 0;
-    for controller in pci::find_ahci_controllers() {
+    for controller in find_ahci_controllers(pci_devices) {
         if let Err(error) = unsafe { init_controller(&controller, &mut next_device_id) } {
             crate::println!(
                 "AHCI {:02x}:{:02x}.{} gagal diinisialisasi: {:?}",
@@ -262,6 +266,12 @@ pub unsafe fn init() {
             );
         }
     }
+}
+
+fn find_ahci_controllers(devices: &[PciDevice]) -> impl Iterator<Item = &PciDevice> {
+    devices.iter().filter(|device| {
+        device.matches_class(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, PCI_PROG_IF_AHCI)
+    })
 }
 
 unsafe fn init_controller(
@@ -379,4 +389,37 @@ unsafe fn read_reg(base: usize, offset: usize) -> u32 {
 
 unsafe fn write_reg(base: usize, offset: usize, value: u32) {
     unsafe { ptr::write_volatile((base + offset) as *mut u32, value) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PCI_CLASS_MASS_STORAGE, PCI_PROG_IF_AHCI, PCI_SUBCLASS_SATA, find_ahci_controllers,
+    };
+    use crate::drivers::pci::PciDevice;
+
+    fn device(class: u8, subclass: u8, prog_if: u8) -> PciDevice {
+        PciDevice {
+            bus: 0,
+            device: 1,
+            function: 0,
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            class,
+            subclass,
+            prog_if,
+            header_type: 0,
+        }
+    }
+
+    #[test]
+    fn finds_only_ahci_controllers() {
+        let devices = [
+            device(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, PCI_PROG_IF_AHCI),
+            device(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA, 0x02),
+            device(PCI_CLASS_MASS_STORAGE, 0x04, PCI_PROG_IF_AHCI),
+        ];
+
+        assert_eq!(find_ahci_controllers(&devices).count(), 1);
+    }
 }

@@ -7,13 +7,156 @@
 mod devfs;
 mod ramfs;
 
-pub(crate) use devfs::{DevFs, device_access, is_tty_path};
+pub(crate) use devfs::{DevFs, device_access, is_tty_path, read_tty};
 pub use ramfs::RamFs;
 
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
+
+const GCC_ELF: &[u8] = include_bytes!("../../../user/rust/build/gcc.elf");
+const CHIBICC_ELF: &[u8] = include_bytes!("../../../user/build/chibicc.elf");
+const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
+const TCC_CRT1: &[u8] = include_bytes!("../../../user/build/crt0.o");
+const TCC_LIBC: &[u8] = include_bytes!("../../../user/build/libc.a");
+const TCC_LIBTCC1: &[u8] = include_bytes!("../../../user/build/libtcc1.a");
+const CHIBICC_SMOKE_SOURCE: &[u8] = include_bytes!("../../../user/examples/chibicc_smoke.c");
+const TCC_SMOKE_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_smoke.c");
+const USER_HEADERS: &[(&str, &[u8])] = &[
+    (
+        "/include/assert.h",
+        include_bytes!("../../../user/include/assert.h"),
+    ),
+    (
+        "/include/ctype.h",
+        include_bytes!("../../../user/include/ctype.h"),
+    ),
+    (
+        "/include/dirent.h",
+        include_bytes!("../../../user/include/dirent.h"),
+    ),
+    (
+        "/include/errno.h",
+        include_bytes!("../../../user/include/errno.h"),
+    ),
+    (
+        "/include/float.h",
+        include_bytes!("../../../user/third_party/tinycc/include/float.h"),
+    ),
+    (
+        "/include/setjmp.h",
+        include_bytes!("../../../user/include/setjmp.h"),
+    ),
+    (
+        "/include/stdalign.h",
+        include_bytes!("../../../user/third_party/tinycc/include/stdalign.h"),
+    ),
+    (
+        "/include/stdatomic.h",
+        include_bytes!("../../../user/third_party/tinycc/include/stdatomic.h"),
+    ),
+    (
+        "/include/stdbool.h",
+        include_bytes!("../../../user/third_party/tinycc/include/stdbool.h"),
+    ),
+    (
+        "/include/stdnoreturn.h",
+        include_bytes!("../../../user/third_party/tinycc/include/stdnoreturn.h"),
+    ),
+    (
+        "/include/tccdefs.h",
+        include_bytes!("../../../user/third_party/tinycc/include/tccdefs.h"),
+    ),
+    (
+        "/include/tgmath.h",
+        include_bytes!("../../../user/third_party/tinycc/include/tgmath.h"),
+    ),
+    (
+        "/include/varargs.h",
+        include_bytes!("../../../user/third_party/tinycc/include/varargs.h"),
+    ),
+    (
+        "/include/chibicc/float.h",
+        include_bytes!("../../../user/third_party/chibicc/include/float.h"),
+    ),
+    (
+        "/include/chibicc/stdalign.h",
+        include_bytes!("../../../user/third_party/chibicc/include/stdalign.h"),
+    ),
+    (
+        "/include/chibicc/stdarg.h",
+        include_bytes!("../../../user/third_party/chibicc/include/stdarg.h"),
+    ),
+    (
+        "/include/chibicc/stdatomic.h",
+        include_bytes!("../../../user/third_party/chibicc/include/stdatomic.h"),
+    ),
+    (
+        "/include/chibicc/stdbool.h",
+        include_bytes!("../../../user/third_party/chibicc/include/stdbool.h"),
+    ),
+    (
+        "/include/chibicc/stddef.h",
+        include_bytes!("../../../user/third_party/chibicc/include/stddef.h"),
+    ),
+    (
+        "/include/chibicc/stdnoreturn.h",
+        include_bytes!("../../../user/third_party/chibicc/include/stdnoreturn.h"),
+    ),
+    (
+        "/include/fcntl.h",
+        include_bytes!("../../../user/include/fcntl.h"),
+    ),
+    (
+        "/include/octagram.h",
+        include_bytes!("../../../user/include/octagram.h"),
+    ),
+    (
+        "/include/spawn.h",
+        include_bytes!("../../../user/include/spawn.h"),
+    ),
+    (
+        "/include/stdarg.h",
+        include_bytes!("../../../user/include/stdarg.h"),
+    ),
+    (
+        "/include/stddef.h",
+        include_bytes!("../../../user/include/stddef.h"),
+    ),
+    (
+        "/include/stdint.h",
+        include_bytes!("../../../user/include/stdint.h"),
+    ),
+    (
+        "/include/stdio.h",
+        include_bytes!("../../../user/include/stdio.h"),
+    ),
+    (
+        "/include/stdlib.h",
+        include_bytes!("../../../user/include/stdlib.h"),
+    ),
+    (
+        "/include/string.h",
+        include_bytes!("../../../user/include/string.h"),
+    ),
+    (
+        "/include/unistd.h",
+        include_bytes!("../../../user/include/unistd.h"),
+    ),
+    (
+        "/include/sys/stat.h",
+        include_bytes!("../../../user/include/sys/stat.h"),
+    ),
+    (
+        "/include/sys/types.h",
+        include_bytes!("../../../user/include/sys/types.h"),
+    ),
+    (
+        "/include/sys/wait.h",
+        include_bytes!("../../../user/include/sys/wait.h"),
+    ),
+];
 
 /// Filesystem operation failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,12 +514,48 @@ pub fn init() {
         let mut root = RamFs::new();
         root.create_dir("/dev")
             .expect("creating the initial /dev directory must succeed");
+        root.create_dir("/bin")
+            .expect("creating the initial /bin directory must succeed");
+        root.create_dir("/lib")
+            .expect("creating the initial /lib directory must succeed");
+        root.create_dir("/lib/tcc")
+            .expect("creating the initial /lib/tcc directory must succeed");
+        root.create_dir("/include")
+            .expect("creating the initial /include directory must succeed");
+        root.create_dir("/include/chibicc")
+            .expect("creating the initial /include/chibicc directory must succeed");
+        root.create_dir("/include/sys")
+            .expect("creating the initial /include/sys directory must succeed");
+        root.create_dir("/tmp")
+            .expect("creating the initial /tmp directory must succeed");
         vfs.mount("/", root)
             .expect("mounting the initial root filesystem must succeed");
         vfs.mount("/dev", DevFs::new())
             .expect("mounting the device filesystem must succeed");
+        seed_file(&mut vfs, "/bin/gcc", GCC_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/chibicc", CHIBICC_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/tcc", TCC_ELF, 0o755);
+        seed_file(&mut vfs, "/lib/tcc/crt1.o", TCC_CRT1, 0o644);
+        seed_file(&mut vfs, "/lib/tcc/libc.a", TCC_LIBC, 0o644);
+        seed_file(&mut vfs, "/lib/tcc/libtcc1.a", TCC_LIBTCC1, 0o644);
+        seed_file(&mut vfs, "/tmp/test.c", CHIBICC_SMOKE_SOURCE, 0o644);
+        seed_file(&mut vfs, "/tmp/tcc.c", TCC_SMOKE_SOURCE, 0o644);
+        for (path, contents) in USER_HEADERS {
+            seed_file(&mut vfs, path, contents, 0o644);
+        }
         Mutex::new(vfs)
     });
+}
+
+fn seed_file(vfs: &mut Vfs, path: &str, contents: &[u8], permissions: u16) {
+    vfs.create_file(path)
+        .unwrap_or_else(|_| panic!("creating boot file {path} must succeed"));
+    let written = vfs
+        .write(path, 0, contents)
+        .unwrap_or_else(|_| panic!("writing boot file {path} must succeed"));
+    assert_eq!(written, contents.len(), "boot file {path} must be complete");
+    vfs.set_permissions(path, permissions)
+        .unwrap_or_else(|_| panic!("setting boot file permissions for {path} must succeed"));
 }
 
 /// Run an operation while holding the global VFS lock.
@@ -391,6 +570,81 @@ pub fn with_vfs<R>(operation: impl FnOnce(&mut Vfs) -> R) -> Result<R, FsError> 
 #[cfg(test)]
 mod tests {
     use super::{DevFs, DirectoryEntry, FileSystem, FsError, NodeType, RamFs, Vfs, normalize_path};
+
+    #[test]
+    fn initial_vfs_contains_executable_compilers_and_standard_headers() {
+        super::init();
+        super::with_vfs(|vfs| {
+            let gcc = vfs.metadata("/bin/gcc").unwrap();
+            assert_eq!(gcc.permissions, 0o755);
+            assert!(gcc.len > 0);
+            let mut magic = [0; 4];
+            assert_eq!(vfs.read("/bin/gcc", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let chibicc = vfs.metadata("/bin/chibicc").unwrap();
+            assert_eq!(chibicc.permissions, 0o755);
+            assert!(chibicc.len > 0);
+            assert_eq!(vfs.read("/bin/chibicc", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let tcc = vfs.metadata("/bin/tcc").unwrap();
+            assert_eq!(tcc.permissions, 0o755);
+            assert!(tcc.len > 0);
+            assert_eq!(vfs.read("/bin/tcc", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            assert!(vfs.metadata("/lib/tcc/crt1.o").unwrap().len > 0);
+            assert_eq!(vfs.read("/lib/tcc/crt1.o", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+            for path in ["/lib/tcc/libc.a", "/lib/tcc/libtcc1.a"] {
+                assert!(vfs.metadata(path).unwrap().len > 8);
+                let mut archive_magic = [0; 8];
+                assert_eq!(vfs.read(path, 0, &mut archive_magic), Ok(8));
+                assert_eq!(&archive_magic, b"!<arch>\n");
+            }
+
+            let smoke_source = include_bytes!("../../../user/examples/chibicc_smoke.c");
+            let smoke_metadata = vfs.metadata("/tmp/test.c").unwrap();
+            assert_eq!(smoke_metadata.len, smoke_source.len());
+            let mut smoke_contents = alloc::vec![0; smoke_metadata.len];
+            assert_eq!(
+                vfs.read("/tmp/test.c", 0, &mut smoke_contents),
+                Ok(smoke_source.len())
+            );
+            assert_eq!(&smoke_contents, smoke_source);
+
+            let tcc_source = include_bytes!("../../../user/examples/tcc_smoke.c");
+            let tcc_metadata = vfs.metadata("/tmp/tcc.c").unwrap();
+            assert_eq!(tcc_metadata.len, tcc_source.len());
+            let mut tcc_contents = alloc::vec![0; tcc_metadata.len];
+            assert_eq!(
+                vfs.read("/tmp/tcc.c", 0, &mut tcc_contents),
+                Ok(tcc_source.len())
+            );
+            assert_eq!(&tcc_contents, tcc_source);
+
+            let header = include_bytes!("../../../user/include/stdio.h");
+            let metadata = vfs.metadata("/include/stdio.h").unwrap();
+            assert_eq!(metadata.permissions, 0o644);
+            assert_eq!(metadata.len, header.len());
+            let mut contents = alloc::vec![0; metadata.len];
+            assert_eq!(
+                vfs.read("/include/stdio.h", 0, &mut contents),
+                Ok(header.len())
+            );
+            assert_eq!(&contents, header);
+
+            assert!(vfs.metadata("/include/stdlib.h").is_ok());
+            assert!(vfs.metadata("/include/sys/stat.h").is_ok());
+            assert!(vfs.metadata("/include/assert.h").is_ok());
+            assert!(vfs.metadata("/include/ctype.h").is_ok());
+            assert!(vfs.metadata("/include/chibicc/stdarg.h").is_ok());
+            assert!(vfs.metadata("/include/setjmp.h").is_ok());
+            assert!(vfs.metadata("/include/tccdefs.h").is_ok());
+        })
+        .unwrap();
+    }
 
     #[test]
     fn normalizes_paths_and_rejects_root_escape() {
@@ -463,7 +717,8 @@ mod tests {
         vfs.mount("/dev", DevFs::new()).unwrap();
 
         assert_eq!(vfs.metadata("/dev/tty").unwrap().node_type, NodeType::File);
-        assert_eq!(vfs.read_dir("/dev").unwrap().len(), 5);
+        assert_eq!(vfs.read_dir("/dev").unwrap().len(), 9);
+        assert_eq!(vfs.metadata("/dev/tty3").unwrap().node_type, NodeType::File);
     }
 
     #[test]

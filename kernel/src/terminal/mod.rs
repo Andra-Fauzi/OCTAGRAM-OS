@@ -1,169 +1,337 @@
-//! Terminal berbasis framebuffer: render teks, scroll, kursor.
-//!
-//! Dua macro publik yang dipakai di seluruh kernel:
-//! - [`print!`] — tulis string ke terminal tanpa newline.
-//! - [`println!`] — tulis string ke terminal lalu newline.
-//!
-//! Terminal tidak punya state threading yang complex; cursor position
-//! dijaga lewat [`CURSOR`] Mutex sehingga aman dari data race.
+//! Framebuffer-backed virtual terminals.
 
 use crate::graphics::Framebuffer;
 use crate::terminal::font::FONT8X16;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 
 pub mod font;
 
 use core::fmt::{self, Write};
 
-/// Posisi kursor saat ini: (x, y) dalam satuan pixel.
-static CURSOR: Mutex<(u64, u64)> = Mutex::new((0, 0));
-
-/// Font dimensions.
+pub const TERMINAL_COUNT: usize = 4;
+const MAX_COLUMNS: usize = 160;
+const MAX_ROWS: usize = 60;
 const CHAR_W: u64 = 8;
 const CHAR_H: u64 = 16;
 
-/// Zero-argument helper supaya `Write` impl bisa dibuat tanpa instance
-/// (terminal adalah stateless struct, state-nya di [`CURSOR`]).
-pub struct Terminal;
-
-impl Write for Terminal {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        terminal_print(s);
-        Ok(())
-    }
+struct TerminalState {
+    cells: [[u16; MAX_COLUMNS]; MAX_ROWS],
+    column: usize,
+    row: usize,
 }
 
-/// Tulis string ke terminal framebuffer.
-#[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        let mut t = $crate::terminal::Terminal;
-        t.write_fmt(format_args!($($arg)*)).unwrap();
-    }};
-}
-
-/// Tulis string ke terminal framebuffer, diakhiri newline.
-#[macro_export]
-macro_rules! println {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        let mut t = $crate::terminal::Terminal;
-        t.write_fmt(format_args!($($arg)*)).unwrap();
-        t.write_fmt(format_args!("\n")).unwrap();
-    }};
-}
-
-/// Geser seluruh isi framebuffer ke atas sebanyak `line_height` pixel.
-/// Baris paling bawah yang dikosongkan akan di-clear ke hitam.
-///
-/// # Safety
-/// `addr` harus pointer valid ke buffer framebuffer yang bisa ditulis.
-unsafe fn scroll_up(addr: *mut u8, pitch: u64, height: u64, line_height: u64) {
-    // Safety: caller menjamin addr valid.
-    unsafe {
-        let pitch = pitch as usize;
-        let height = height as usize;
-        let lh = line_height as usize;
-        let scroll_bytes = pitch * lh;
-        let total_bytes = pitch * height;
-        core::ptr::copy(addr.add(scroll_bytes), addr, total_bytes - scroll_bytes);
-        core::ptr::write_bytes(addr.add(total_bytes - scroll_bytes), 0, scroll_bytes);
-    }
-}
-
-/// Reset posisi kursor dan clear layar.
-pub fn terminal_clear() {
-    if let Some(fb) = Framebuffer::get() {
-        unsafe {
-            core::ptr::write_bytes(fb.addr(), 0, (fb.pitch() * fb.height()) as usize);
+impl TerminalState {
+    const fn new() -> Self {
+        Self {
+            cells: [[b' ' as u16; MAX_COLUMNS]; MAX_ROWS],
+            column: 0,
+            row: 0,
         }
     }
-    *CURSOR.lock() = (0, 0);
-}
 
-/// Erase the character immediately before the terminal cursor.
-pub fn terminal_backspace() {
-    let Some(framebuffer) = Framebuffer::get() else {
-        return;
-    };
-    let mut cursor = CURSOR.lock();
-    if cursor.0 >= CHAR_W {
-        cursor.0 -= CHAR_W;
-    } else if cursor.1 >= CHAR_H {
-        cursor.1 -= CHAR_H;
-        let columns = framebuffer.width() / CHAR_W;
-        if columns == 0 {
-            return;
-        }
-        cursor.0 = (columns - 1) * CHAR_W;
-    } else {
-        return;
+    fn dimensions(&self, framebuffer: Option<&Framebuffer>) -> (usize, usize) {
+        framebuffer.map_or((80, 25), |fb| {
+            (
+                ((fb.width() / CHAR_W) as usize).clamp(1, MAX_COLUMNS),
+                ((fb.height() / CHAR_H) as usize).clamp(1, MAX_ROWS),
+            )
+        })
     }
-
-    framebuffer.fill_rect(
-        cursor.0,
-        cursor.1,
-        cursor.0 + CHAR_W,
-        cursor.1 + CHAR_H,
-        crate::graphics::Color::BLACK,
-    );
 }
 
-/// Render satu string ke terminal. Semua kontrol karakter yang didukung: `\n`.
-pub fn terminal_print(s: &str) {
-    let fb = match Framebuffer::get() {
-        Some(f) => f,
-        None => return,
+static TERMINALS: [Mutex<TerminalState>; TERMINAL_COUNT] =
+    [const { Mutex::new(TerminalState::new()) }; TERMINAL_COUNT];
+static ACTIVE_TERMINAL: AtomicUsize = AtomicUsize::new(0);
+static OUTPUT_TERMINAL: AtomicUsize = AtomicUsize::new(0);
+static REDRAW_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Return the currently focused virtual terminal.
+pub fn active_terminal() -> usize {
+    ACTIVE_TERMINAL.load(Ordering::Acquire)
+}
+
+/// Return the active terminal's text dimensions in character cells.
+pub fn terminal_dimensions() -> (usize, usize) {
+    let framebuffer = Framebuffer::get();
+    TERMINALS[active_terminal()]
+        .lock()
+        .dimensions(framebuffer.as_ref())
+}
+
+/// Select the terminal used by default kernel output.
+pub fn set_output_terminal(terminal: usize) {
+    if terminal < TERMINAL_COUNT {
+        OUTPUT_TERMINAL.store(terminal, Ordering::Release);
+    }
+}
+
+/// Switch the visible terminal and redraw its saved text contents.
+pub fn switch_terminal(terminal: usize) -> bool {
+    if terminal >= TERMINAL_COUNT {
+        return false;
+    }
+    ACTIVE_TERMINAL.store(terminal, Ordering::Release);
+    OUTPUT_TERMINAL.store(terminal, Ordering::Release);
+    REDRAW_PENDING.store(true, Ordering::Release);
+    true
+}
+
+/// Redraw a pending terminal switch outside interrupt context.
+pub fn redraw_pending() {
+    if REDRAW_PENDING.swap(false, Ordering::AcqRel)
+        && let Some(state) = TERMINALS.get(active_terminal())
+    {
+        redraw(state.lock());
+    }
+}
+
+/// Write text to the default kernel output terminal.
+pub fn terminal_print(text: &str) {
+    terminal_print_to(OUTPUT_TERMINAL.load(Ordering::Acquire), text);
+}
+
+/// Write text to a specific virtual terminal.
+pub fn terminal_print_to(terminal: usize, text: &str) {
+    let Some(state) = TERMINALS.get(terminal) else {
+        return;
     };
+    let mut state = state.lock();
+    let framebuffer = Framebuffer::get();
+    let (columns, rows) = state.dimensions(framebuffer.as_ref());
 
-    let (fb_w, fb_h) = (fb.width(), fb.height());
-    let pitch = fb.pitch();
-    let addr = fb.addr();
-
-    let mut cur = CURSOR.lock();
-
-    for ch in s.chars() {
-        if ch == '\n' {
-            cur.1 += CHAR_H;
-            cur.0 = 0;
-            if cur.1 + CHAR_H > fb_h {
-                // Safety: addr valid, kita punya gambar framebuffer.
-                unsafe { scroll_up(addr, pitch, fb_h, CHAR_H) };
-                cur.1 -= CHAR_H;
+    for character in text.chars() {
+        if character == '\n' || character == '\r' {
+            state.column = 0;
+            state.row += 1;
+            if state.row >= rows {
+                state.scroll(rows);
+                if terminal == active_terminal()
+                    && let Some(framebuffer) = framebuffer.as_ref()
+                {
+                    scroll_framebuffer(framebuffer, rows);
+                }
             }
             continue;
         }
 
-        // Word-wrap otomatis
-        if cur.0 + CHAR_W > fb_w {
-            cur.1 += CHAR_H;
-            cur.0 = 0;
-            if cur.1 + CHAR_H > fb_h {
-                unsafe { scroll_up(addr, pitch, fb_h, CHAR_H) };
-                cur.1 -= CHAR_H;
-            }
-        }
-
-        let idx = ch as usize;
-        if idx < 256 {
-            let glyph = &FONT8X16[idx];
-            for row in 0..CHAR_H as usize {
-                let bits = glyph[row];
-                for col in 0..CHAR_W as usize {
-                    if bits & (0x80 >> col) != 0 {
-                        let px = cur.0 + col as u64;
-                        let py = cur.1 + row as u64;
-                        let off = (py * pitch + px * 4) as usize;
-                        // Safety: bounds dijaga oleh scroll_up dan word-wrap di atas.
-                        unsafe {
-                            (addr.add(off) as *mut u32).write_volatile(0x00FF_FFFF);
-                        }
-                    }
+        if state.column >= columns {
+            state.column = 0;
+            state.row += 1;
+            if state.row >= rows {
+                state.scroll(rows);
+                if terminal == active_terminal()
+                    && let Some(framebuffer) = framebuffer.as_ref()
+                {
+                    scroll_framebuffer(framebuffer, rows);
                 }
             }
         }
 
-        cur.0 += CHAR_W;
+        let glyph = if (character as u32) < FONT8X16.len() as u32 {
+            character as u16
+        } else {
+            u16::MAX
+        };
+        let row = state.row;
+        let column = state.column;
+        state.cells[row][column] = glyph;
+        if terminal == active_terminal()
+            && let Some(framebuffer) = framebuffer.as_ref()
+        {
+            draw_character(
+                framebuffer,
+                column,
+                row,
+                u8::try_from(glyph).unwrap_or(b' '),
+            );
+        }
+        state.column += 1;
+    }
+}
+
+/// Reset one terminal and clear its visible screen when selected.
+pub fn terminal_clear_for(terminal: usize) {
+    let Some(state) = TERMINALS.get(terminal) else {
+        return;
+    };
+    let mut state = state.lock();
+    *state = TerminalState::new();
+    if terminal == active_terminal()
+        && let Some(framebuffer) = Framebuffer::get()
+    {
+        framebuffer.clear();
+    }
+}
+
+/// Draw one character cell without changing the terminal's output cursor.
+pub fn terminal_put_char_at(terminal: usize, row: usize, column: usize, character: char) {
+    let Some(state) = TERMINALS.get(terminal) else {
+        return;
+    };
+    let mut state = state.lock();
+    let framebuffer = Framebuffer::get();
+    let (columns, rows) = state.dimensions(framebuffer.as_ref());
+    if row >= rows || column >= columns {
+        return;
+    }
+
+    let glyph = if (character as u32) < FONT8X16.len() as u32 {
+        character as u16
+    } else {
+        u16::MAX
+    };
+    state.cells[row][column] = glyph;
+    if terminal == active_terminal()
+        && let Some(framebuffer) = framebuffer.as_ref()
+    {
+        draw_character(
+            framebuffer,
+            column,
+            row,
+            u8::try_from(glyph).unwrap_or(b' '),
+        );
+    }
+}
+
+/// Clear the default kernel output terminal.
+pub fn terminal_clear() {
+    terminal_clear_for(OUTPUT_TERMINAL.load(Ordering::Acquire));
+}
+
+/// Erase the character immediately before the cursor on the default terminal.
+pub fn terminal_backspace() {
+    terminal_backspace_for(OUTPUT_TERMINAL.load(Ordering::Acquire));
+}
+
+/// Erase the character immediately before the cursor on a specific terminal.
+pub fn terminal_backspace_for(terminal: usize) {
+    let Some(state) = TERMINALS.get(terminal) else {
+        return;
+    };
+    let mut state = state.lock();
+    let framebuffer = Framebuffer::get();
+    let (columns, _) = state.dimensions(framebuffer.as_ref());
+    if state.column != 0 {
+        state.column -= 1;
+    } else if state.row != 0 {
+        state.row -= 1;
+        state.column = columns - 1;
+    } else {
+        return;
+    }
+    let row = state.row;
+    let column = state.column;
+    state.cells[row][column] = b' ' as u16;
+    if terminal == active_terminal()
+        && let Some(framebuffer) = framebuffer.as_ref()
+    {
+        draw_character(framebuffer, column, row, b' ');
+    }
+}
+
+impl TerminalState {
+    fn scroll(&mut self, rows: usize) {
+        self.cells.copy_within(1..rows, 0);
+        self.cells[rows - 1].fill(b' ' as u16);
+        self.row = rows - 1;
+    }
+}
+
+fn redraw(state: spin::mutex::MutexGuard<'_, TerminalState>) {
+    if let Some(framebuffer) = Framebuffer::get() {
+        redraw_with_framebuffer(&state, &framebuffer);
+    }
+}
+
+fn redraw_with_framebuffer(state: &TerminalState, framebuffer: &Framebuffer) {
+    framebuffer.clear();
+    let (columns, rows) = state.dimensions(Some(framebuffer));
+    for row in 0..rows {
+        for column in 0..columns {
+            let glyph = state.cells[row][column];
+            if glyph != b' ' as u16
+                && let Ok(character) = u8::try_from(glyph)
+            {
+                draw_character(framebuffer, column, row, character);
+            }
+        }
+    }
+}
+
+fn scroll_framebuffer(framebuffer: &Framebuffer, rows: usize) {
+    let pitch = framebuffer.pitch() as usize;
+    let height = rows * CHAR_H as usize;
+    let length = pitch * height;
+    // Safety: the framebuffer mapping covers pitch * framebuffer.height() bytes,
+    // and the terminal viewport is no taller than that mapping.
+    let pixels = unsafe { core::slice::from_raw_parts_mut(framebuffer.addr(), length) };
+    scroll_pixel_rows(pixels, pitch, height, CHAR_H as usize);
+}
+
+fn scroll_pixel_rows(pixels: &mut [u8], pitch: usize, height: usize, line_height: usize) {
+    let scroll_bytes = pitch * line_height;
+    let total_bytes = pitch * height;
+    pixels.copy_within(scroll_bytes..total_bytes, 0);
+    pixels[total_bytes - scroll_bytes..total_bytes].fill(0);
+}
+
+fn draw_character(framebuffer: &Framebuffer, column: usize, row: usize, character: u8) {
+    let x = column as u64 * CHAR_W;
+    let y = row as u64 * CHAR_H;
+    framebuffer.fill_rect(x, y, x + CHAR_W, y + CHAR_H, crate::graphics::Color::BLACK);
+    let glyph = &FONT8X16[character as usize];
+    for (row_offset, bits) in glyph.iter().enumerate() {
+        for column_offset in 0..CHAR_W as usize {
+            if bits & (0x80 >> column_offset) != 0 {
+                framebuffer.write_pixel(
+                    x + column_offset as u64,
+                    y + row_offset as u64,
+                    crate::graphics::Color::WHITE,
+                );
+            }
+        }
+    }
+}
+
+/// Stateless formatting adapter used by the kernel `print!` macros.
+pub struct Terminal;
+
+impl Write for Terminal {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        terminal_print(text);
+        crate::drivers::serial::write_str(text);
+        Ok(())
+    }
+}
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let mut terminal = $crate::terminal::Terminal;
+        terminal.write_fmt(format_args!($($arg)*)).unwrap();
+    }};
+}
+
+#[macro_export]
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use core::fmt::Write;
+        let mut terminal = $crate::terminal::Terminal;
+        terminal.write_fmt(format_args!($($arg)*)).unwrap();
+        terminal.write_fmt(format_args!("\n")).unwrap();
+    }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scroll_pixel_rows;
+
+    #[test]
+    fn scrolls_pixel_rows_and_clears_only_the_viewport_bottom() {
+        let mut pixels = [1, 1, 2, 2, 3, 3, 9, 9];
+        scroll_pixel_rows(&mut pixels, 2, 3, 1);
+        assert_eq!(pixels, [2, 2, 3, 3, 0, 0, 9, 9]);
     }
 }

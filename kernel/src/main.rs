@@ -42,6 +42,7 @@ unsafe extern "C" fn kmain() -> ! {
     // All limine requests must also be referenced in a called function, otherwise they may be
     // removed by the linker.
     assert!(BASE_REVISION.is_supported());
+    drivers::early_init();
 
     if let Some(framebuffer) = graphics::Framebuffer::get() {
         for i in 0..100_u64 {
@@ -57,12 +58,12 @@ unsafe extern "C" fn kmain() -> ! {
     }
     unsafe { asm!("cli") };
 
+    unsafe { arch::x86_64::fpu::init() };
     unsafe { arch::x86_64::gdt::load_gdt() };
     println!("GDT LOADED");
     unsafe { arch::x86_64::idt::load_idt() };
     println!("IDT LOADED");
-    println!("TES RSDP");
-    unsafe { rsdp::test_rsdp() };
+    rsdp::test_rsdp();
     arch::x86_64::apic::disable_pic();
     arch::x86_64::apic::LAPIC.call_once(|| unsafe { arch::x86_64::apic::init_lapic() });
     unsafe { arch::x86_64::apic::init_ioapic() };
@@ -70,12 +71,7 @@ unsafe extern "C" fn kmain() -> ! {
     unsafe { asm!("sti") };
     memory::init();
     fs::init();
-    drivers::pci::scan_pci_bus();
-    unsafe { drivers::ahci::init() };
-
-    // Cari & setup USB host controller (xHCI: init, MSI-X, enumerasi HID
-    // dan mass-storage). Lihat `drivers/usb`.
-    unsafe { drivers::usb::init_usb_controllers() };
+    unsafe { drivers::initialize() };
 
     let lapic = arch::x86_64::apic::LAPIC
         .get()
@@ -87,8 +83,10 @@ unsafe extern "C" fn kmain() -> ! {
     task::spawn(async {
         println!("Cooperative task executor is ready");
     });
-    let shell_handle = task::spawn(shell::run());
-    drivers::keyboard::set_input_waker(shell_handle);
+    for terminal in 0..terminal::TERMINAL_COUNT {
+        let shell_handle = task::spawn(shell::run(terminal));
+        drivers::keyboard::set_input_waker(terminal, shell_handle);
+    }
     hcf();
 }
 
@@ -123,7 +121,7 @@ fn hcf() -> ! {
             }
         }
 
-        // Run hotplug work outside the ISR, after interrupt completion.
-        unsafe { drivers::usb::poll_hotplug() };
+        // Deferred driver work runs after interrupt completion.
+        unsafe { drivers::poll_deferred() };
     }
 }

@@ -7,11 +7,15 @@ berada di `kernel/src/arch/x86_64/`; driver perangkat berada di
 
 ## Urutan boot
 
-`kmain` di `kernel/src/main.rs` menyiapkan GDT/TSS dan IDT, APIC/IOAPIC,
-memory allocator, VFS RAMFS, PCI, AHCI, lalu USB. Shell dijalankan sebagai
-future pada executor kooperatif. Perubahan urutan inisialisasi harus
-mempertimbangkan dependensi: alokasi kernel memerlukan memory subsystem dan
-shell memerlukan VFS serta keyboard.
+`kmain` mengaktifkan logger serial COM1 sebelum inisialisasi lain agar pesan
+boot awal tersedia di serial console. Setelah itu `kernel/src/main.rs`
+menyiapkan GDT/TSS dan IDT, APIC/IOAPIC,
+memory allocator, lalu VFS RAMFS. `drivers::initialize()` mengatur urutan
+PCI, AHCI, dan USB; `drivers::poll_deferred()` menangani hotplug dari idle loop,
+di luar interrupt handler. Shell dijalankan sebagai future pada executor
+kooperatif. Perubahan urutan inisialisasi harus mempertimbangkan dependensi:
+alokasi kernel memerlukan memory subsystem dan shell memerlukan VFS serta
+keyboard.
 
 ## Task, process, dan user mode
 
@@ -38,25 +42,27 @@ mencakup blocking/wakeup scheduler, `fork`, `exec`, `wait`, atau SMP.
 Loader menerima little-endian ELF64 `ET_EXEC`, memeriksa program headers,
 menolak dynamic/interpreter dan segmen writable+executable, lalu menyalin
 segmen ke alamat virtual yang diminta. Program mendapat stack 8 halaman dan
-heap tetap 1 MiB pada alamat `0x10000000`; syscall `brk` hanya mengatur batas
-logis heap tersebut. Total pemetaan program dibatasi 4096 halaman. Pemetaan
-user berada di page table privat tiap image, sedangkan pemetaan kernel
-dibagikan.
+heap awal 1 MiB pada alamat `0x10000000`; syscall `brk` memetakan halaman
+tambahan saat heap tumbuh hingga segmen ELF berikutnya atau 4 GiB. Syscall
+`mmap`/`munmap` menyediakan pemetaan anonim tambahan, dibatasi oleh alamat
+virtual dan frame fisik yang tersedia, bukan kuota halaman tetap. Pemetaan user
+berada di page table privat tiap image, sedangkan pemetaan kernel dibagikan.
 
 ## Filesystem dan terminal
 
 VFS global merutekan path ke mount point terpanjang. Root awal adalah RAMFS
-volatil; `/dev` adalah devfs yang menyediakan `/dev/tty`, `/dev/console`, dan
+volatil; `/dev` adalah devfs yang menyediakan empat virtual terminal,
+`/dev/tty0` sampai `/dev/tty3`, `/dev/tty` untuk terminal aktif, dan
 standard-stream endpoints. FAT32 dapat dipasang dari shell dan mendukung
 operasi baca/tulis VFS, tetapi tidak memiliki journaling.
 
 Program memiliki descriptor dan direktori kerja sendiri (diwarisi dari shell),
-tetapi berbagi
-namespace VFS dan mount global. Descriptor 0/1/2 terhubung ke TTY. Input TTY
-memakai mode baris dengan echo, Backspace, Enter, dan Ctrl-D; output terminal
-menggunakan framebuffer. Pembacaan input menunggu interrupt keyboard. Ini
-belum menyediakan pseudo-terminal, terminal control job, atau filesystem
-terisolasi per proses.
+tetapi berbagi namespace VFS dan mount global. Descriptor 0/1/2 terhubung ke
+TTY shell asal program. Input TTY memakai mode baris dengan echo, Backspace,
+Enter, dan Ctrl-D; tiap virtual terminal memiliki buffer teks dan antrean input
+sendiri. Pembacaan input menunggu interrupt keyboard. Syscall `putpixel`
+menyediakan gambar framebuffer dasar. Ini belum menyediakan pseudo-terminal,
+terminal control job, window system, atau filesystem terisolasi per proses.
 
 ## Modul penting
 
@@ -66,8 +72,10 @@ terisolasi per proses.
 - `elf.rs`: loader ELF, syscall ABI, dan pemakaian file VFS.
 - `fs/`: trait filesystem, mount router, dan RAMFS.
 - `storage/block.rs`: trait block device dan registry.
-- `storage/fat32.rs`: parser dan mutasi FAT32.
-- `drivers/`: driver PCI, AHCI, keyboard, dan USB.
+- `storage/fat32.rs` dan `storage/ext2.rs`: parsing serta operasi baca/tulis FAT32
+  dan ext2.
+- `drivers/`: driver PCI, AHCI, keyboard, USB, serial COM1 untuk log kernel,
+  RTC CMOS untuk perintah `date`, dan ACPI untuk shutdown.
 - `task.rs`: executor kooperatif.
 
 Sebelum mengubah subsystem, baca implementasi modul dan tesnya; jangan

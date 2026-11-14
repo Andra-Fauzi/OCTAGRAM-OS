@@ -31,6 +31,8 @@ endif
 # Default target.
 .PHONY: all
 all:
+	$(MAKE) -C ../user/rust gcc
+	$(MAKE) -C ../user chibicc tcc
 	RUSTFLAGS="-C relocation-model=static" cargo build --target $(RUST_TARGET) --profile $(RUST_PROFILE)
 	cp target/$(RUST_TARGET)/$(RUST_PROFILE_SUBDIR)/octagram-kernel $(OUTPUT)
 

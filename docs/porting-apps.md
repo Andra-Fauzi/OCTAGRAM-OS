@@ -2,10 +2,10 @@
 
 ## Mulai dari program freestanding
 
-Contoh pada `user/examples/` tidak menggunakan libc. Runtime
-`user/crt0.S` memanggil `main(void)`, lalu meneruskan nilai baliknya ke syscall
-`exit`. Gunakan wrapper pada `user/include/octagram.h` atau panggil syscall
-langsung.
+Contoh freestanding pada `user/examples/` memakai wrapper OCTAGRAM tanpa libc.
+Untuk aplikasi C yang menggunakan subset libc, lihat `tcc_smoke.c` dan
+`stdio_demo.c`. Runtime `user/crt0.S` memanggil `main(void)`, lalu meneruskan
+nilai baliknya ke syscall `exit`.
 
 Contoh output:
 
@@ -22,13 +22,16 @@ int main(void)
 Bangun dengan `make -C user`, lalu periksa hasilnya memakai `readelf -h -l`.
 Program harus berupa static `ET_EXEC`, little-endian ELF64 x86_64. Gunakan
 `-ffreestanding`, `-fno-pie`, `-fno-stack-protector`, dan `-mno-red-zone`.
-Linker script menetapkan alamat virtual dan menghasilkan segmen RX serta RW
-yang terpisah. Loader menolak dynamic linking dan segmen W+X.
+Kernel menginisialisasi FPU dan menyimpan state FPU/SIMD per proses; build C
+mengaktifkan SSE2 dan x87 serta menonaktifkan MMX. Linker script menetapkan
+alamat virtual dan menghasilkan segmen RX serta RW yang terpisah. Loader
+menolak dynamic linking dan segmen W+X.
 
 ## Menyesuaikan aplikasi
 
-1. Ganti pemanggilan libc seperti `printf`, `open`, dan `read` dengan wrapper
-   OCTAGRAM atau implementasikan subset kecil yang dibutuhkan.
+1. Gunakan subset runtime C yang tersedia: `stdio` dasar, wrapper file POSIX
+   (`open`, `read`, `write`, `stat`, `mkdir`, dan lainnya), dan syscall
+   OCTAGRAM. Port hanya subset tambahan yang benar-benar dibutuhkan.
 2. Hindari syscall Linux langsung; nomor syscall dan register Linux tidak
    digunakan OS ini.
 3. Path relatif dimulai dari direktori shell saat program dijalankan (default
@@ -37,15 +40,18 @@ yang terpisah. Loader menolak dynamic linking dan segmen W+X.
    namespace VFS dan mount yang sama.
 4. Aplikasi harus menangani hasil negatif `-errno`; descriptor file dimulai
    dari 3, stdin/stdout/stderr adalah 0/1/2.
-5. Implementasikan allocator sederhana di atas `oct_brk`, atau hindari
-   alokasi dinamis. Heap yang dipetakan hanya 1 MiB.
-6. Tidak ada `argv`/environment, clock, process creation, signals, sockets,
-   `mmap`, threads user, atau dynamic loader. Hilangkan dependensi fitur
-   tersebut atau port library yang lebih kecil.
+5. Allocator libc memakai `oct_brk`; `free` memakai ulang blok yang dibebaskan,
+   tetapi belum menggabungkan blok bersebelahan atau mengembalikan heap ke OS.
+   `oct_mmap`/`oct_munmap` tersedia untuk pemetaan anonim dengan ABI khusus
+   OCTAGRAM, bukan kontrak POSIX/Linux.
+6. `spawn`/`waitpid` dan subset `posix_spawn` tersedia, tetapi belum ada
+   `fork`, `execve`, signals, sockets, user threads, atau dynamic loader.
+   Hilangkan dependensi fitur tersebut atau port library yang lebih kecil.
 
 `user/runtime.c` menyediakan operasi memory/string dasar dan allocator
-`malloc`/`calloc` bump-only. `free` belum mengembalikan ruang ke heap. Tidak ada
-`printf`/`stdio`; tulis output dengan `oct_write`.
+`malloc`/`calloc`/`realloc` dengan reuse blok lewat `free`. `stdio` belum
+memiliki buffering atau floating-point formatting. Lihat
+[`docs/building.md`](building.md) untuk subset API yang tersedia.
 
 ## Batas keselamatan dan runtime
 

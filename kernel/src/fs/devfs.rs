@@ -9,7 +9,7 @@ const TTY_BUFFER_SIZE: usize = 256;
 
 #[derive(Clone, Copy, Debug)]
 enum Device {
-    Tty,
+    Tty(Option<usize>),
     Stdin,
     Stdout,
     Stderr,
@@ -19,7 +19,11 @@ enum Device {
 impl Device {
     fn from_path(path: &str) -> Option<Self> {
         match path {
-            "/tty" => Some(Self::Tty),
+            "/tty" => Some(Self::Tty(None)),
+            "/tty0" => Some(Self::Tty(Some(0))),
+            "/tty1" => Some(Self::Tty(Some(1))),
+            "/tty2" => Some(Self::Tty(Some(2))),
+            "/tty3" => Some(Self::Tty(Some(3))),
             "/stdin" => Some(Self::Stdin),
             "/stdout" => Some(Self::Stdout),
             "/stderr" => Some(Self::Stderr),
@@ -29,14 +33,21 @@ impl Device {
     }
 
     fn readable(self) -> bool {
-        matches!(self, Self::Tty | Self::Stdin | Self::Console)
+        matches!(self, Self::Tty(_) | Self::Stdin | Self::Console)
     }
 
     fn writable(self) -> bool {
         matches!(
             self,
-            Self::Tty | Self::Stdout | Self::Stderr | Self::Console
+            Self::Tty(_) | Self::Stdout | Self::Stderr | Self::Console
         )
+    }
+
+    fn terminal(self) -> usize {
+        match self {
+            Self::Tty(Some(terminal)) => terminal,
+            _ => crate::terminal::active_terminal(),
+        }
     }
 }
 
@@ -130,7 +141,8 @@ enum TtyAction {
     Ignore,
 }
 
-static TTY: Mutex<LineDiscipline> = Mutex::new(LineDiscipline::new());
+static TTY: [Mutex<LineDiscipline>; crate::terminal::TERMINAL_COUNT] =
+    [const { Mutex::new(LineDiscipline::new()) }; crate::terminal::TERMINAL_COUNT];
 
 pub struct DevFs;
 
@@ -170,7 +182,7 @@ impl FileSystem for DevFs {
         if !device.readable() {
             return Err(FsError::PermissionDenied);
         }
-        read_tty(buffer)
+        read_tty(device.terminal(), buffer)
     }
 
     fn write(&mut self, path: &str, _offset: usize, bytes: &[u8]) -> Result<usize, FsError> {
@@ -180,7 +192,7 @@ impl FileSystem for DevFs {
             return Err(FsError::PermissionDenied);
         }
         let text = core::str::from_utf8(bytes).map_err(|_| FsError::InvalidData)?;
-        crate::terminal::terminal_print(text);
+        crate::terminal::terminal_print_to(device.terminal(), text);
         Ok(bytes.len())
     }
 
@@ -218,6 +230,10 @@ impl FileSystem for DevFs {
             directory_entry("stdin"),
             directory_entry("stdout"),
             directory_entry("tty"),
+            directory_entry("tty0"),
+            directory_entry("tty1"),
+            directory_entry("tty2"),
+            directory_entry("tty3"),
         ])
     }
 }
@@ -238,16 +254,17 @@ fn directory_entry(name: &str) -> DirectoryEntry {
     }
 }
 
-fn read_tty(buffer: &mut [u8]) -> Result<usize, FsError> {
+pub(crate) fn read_tty(terminal: usize, buffer: &mut [u8]) -> Result<usize, FsError> {
     if buffer.is_empty() {
         return Ok(0);
     }
+    let tty = TTY.get(terminal).ok_or(FsError::InvalidPath)?;
     loop {
-        if let Some(count) = TTY.lock().read_ready(buffer) {
+        if let Some(count) = tty.lock().read_ready(buffer) {
             return Ok(count);
         }
 
-        let event = match crate::drivers::keyboard::pop_event() {
+        let event = match crate::drivers::keyboard::pop_event_for(terminal) {
             Some(event) => event,
             None => {
                 unsafe {
@@ -258,16 +275,16 @@ fn read_tty(buffer: &mut [u8]) -> Result<usize, FsError> {
         };
         let action = match event {
             crate::drivers::keyboard::KeyEvent::Character(character) => {
-                TTY.lock().push_character(character)
+                tty.lock().push_character(character)
             }
             _ => TtyAction::Ignore,
         };
         match action {
             TtyAction::Echo(character) => {
                 let mut encoded = [0; 4];
-                crate::terminal::terminal_print(character.encode_utf8(&mut encoded));
+                crate::terminal::terminal_print_to(terminal, character.encode_utf8(&mut encoded));
             }
-            TtyAction::Erase => crate::terminal::terminal_backspace(),
+            TtyAction::Erase => crate::terminal::terminal_backspace_for(terminal),
             TtyAction::EndOfFile => return Ok(0),
             TtyAction::Ignore => {}
         }
@@ -292,11 +309,12 @@ mod tests {
             })
         );
         let entries = devfs.read_dir("/").unwrap();
-        assert_eq!(entries.len(), 5);
+        assert_eq!(entries.len(), 9);
         assert!(Device::from_path("/stdin").unwrap().readable());
         assert!(Device::from_path("/stdout").unwrap().writable());
         assert_eq!(device_access("/dev/stdin"), Some((true, false)));
         assert_eq!(device_access("/dev/stdout"), Some((false, true)));
+        assert_eq!(device_access("/dev/tty2"), Some((true, true)));
         assert_eq!(
             devfs.write("/stdin", 0, b"no"),
             Err(FsError::PermissionDenied)

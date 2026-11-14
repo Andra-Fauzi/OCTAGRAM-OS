@@ -1,0 +1,11 @@
+[package]
+name = "octagram-rust-hello"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rust_hello"
+path = "src/main.rs"
+
+[dependencies]
+octagram-runtime = { path = "../runtime" }

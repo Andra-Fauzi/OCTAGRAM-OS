@@ -1,14 +1,17 @@
 //! Loader for static ELF64 x86_64 programs and the minimal OCTAGRAM syscall ABI.
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::arch::x86_64::{
+    fpu::{self, State as FpuState},
     gdt,
     interrupt::{self, InterruptFrame, InterruptStackFrame},
 };
-use crate::fs::{self, FsError, NodeType};
+use crate::fs::{self, DirectoryEntry, FsError, NodeType};
 use crate::memory::{
     allocate_frame, free_frame, paging,
     paging::{PAGE_SIZE, PagingError},
@@ -17,17 +20,23 @@ use crate::memory::{
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const MAX_PROGRAM_HEADERS: usize = 128;
-const MAX_MAPPED_PAGES: u64 = 4096;
 const STACK_PAGES: u64 = 8;
 const MAX_ARGUMENTS: usize = 64;
 const MAX_ARGUMENT_BYTES: usize = 4096;
+const MAX_ENVIRONMENT_VARIABLES: usize = 64;
+const MAX_ENVIRONMENT_BYTES: usize = 4096;
 const STACK_TOP: u64 = paging::USER_ADDRESS_MAX;
 const HEAP_START: u64 = 0x1000_0000;
 const HEAP_PAGES: u64 = 256;
+const HEAP_INITIAL_END: u64 = HEAP_START + HEAP_PAGES * PAGE_SIZE;
+const MMAP_START: u64 = 0x1_0000_0000;
+const MMAP_END: u64 = STACK_TOP - (STACK_PAGES + 1) * PAGE_SIZE;
 const MAX_USER_PATH: usize = 256;
 const MAX_SYSCALL_IO: usize = 4096;
 const MAX_OPEN_FILES: usize = 16;
 const MAX_SCHEDULED_PROCESSES: usize = 16;
+const PIPE_CAPACITY: usize = 4096;
+const WAIT_ANY_PID: u64 = u64::MAX;
 const PROCESS_KERNEL_STACK_SIZE: usize = 16 * 1024;
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
@@ -49,6 +58,24 @@ const SYSCALL_GETPID: u64 = 11;
 const SYSCALL_ISATTY: u64 = 12;
 const SYSCALL_CHDIR: u64 = 13;
 const SYSCALL_GETCWD: u64 = 14;
+const SYSCALL_PUTPIXEL: u64 = 15;
+const SYSCALL_MMAP: u64 = 16;
+const SYSCALL_MUNMAP: u64 = 17;
+const SYSCALL_MMAP_FILE: u64 = 18;
+const SYSCALL_SPAWN: u64 = 19;
+const SYSCALL_WAITPID: u64 = 20;
+const SYSCALL_PIPE: u64 = 21;
+const SYSCALL_DUP2: u64 = 22;
+const SYSCALL_SETENVIRON: u64 = 23;
+const SYSCALL_SPAWN_ENV: u64 = 24;
+const SYSCALL_CHMOD: u64 = 25;
+const SYSCALL_PRINTF: u64 = 26;
+const SYSCALL_OPENDIR: u64 = 27;
+const SYSCALL_READDIR: u64 = 28;
+
+const PROT_READ: u64 = 1;
+const PROT_WRITE: u64 = 2;
+const PROT_EXEC: u64 = 4;
 
 const O_RDONLY: u64 = 0;
 const O_WRONLY: u64 = 1;
@@ -59,14 +86,19 @@ const O_TRUNC: u64 = 1 << 9;
 const O_APPEND: u64 = 1 << 10;
 
 const EINTR: i32 = 4;
+const E2BIG: i32 = 7;
 const EIO: i32 = 5;
+const ENOEXEC: i32 = 8;
 const EBADF: i32 = 9;
+const ECHILD: i32 = 10;
+const EAGAIN: i32 = 11;
 const ENOMEM: i32 = 12;
 const EFAULT: i32 = 14;
 const ENOENT: i32 = 2;
 const EEXIST: i32 = 17;
 const ENOTDIR: i32 = 20;
 const EISDIR: i32 = 21;
+const ENODEV: i32 = 19;
 const EINVAL: i32 = 22;
 const ESPIPE: i32 = 29;
 const ERANGE: i32 = 34;
@@ -80,6 +112,9 @@ const ENOSYS: i32 = 38;
 const ENOTEMPTY: i32 = 39;
 const ELOOP: i32 = 40;
 const EILSEQ: i32 = 84;
+const EPIPE: i32 = 32;
+const EDEADLK: i32 = 35;
+const EOVERFLOW: i32 = 75;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElfError {
@@ -127,11 +162,14 @@ struct LoadSegment {
 pub struct LoadedElf {
     entry: u64,
     user_stack: u64,
-    heap_end: u64,
+    heap_limit: u64,
+    mmap_cursor: u64,
+    environment: Vec<String>,
     mapped_pages: Vec<u64>,
     address_space: paging::AddressSpace,
 }
 
+#[derive(Clone)]
 struct OpenFile {
     path: String,
     offset: usize,
@@ -140,20 +178,132 @@ struct OpenFile {
     append: bool,
 }
 
+struct DirectoryStream {
+    entries: Vec<DirectoryEntry>,
+    next_entry: usize,
+}
+
+#[repr(C)]
+struct UserDirent {
+    inode: u64,
+    offset: i64,
+    record_length: u16,
+    file_type: u8,
+    name: [u8; 256],
+}
+
+struct Pipe {
+    id: u64,
+    buffer: Vec<u8>,
+    head: usize,
+    length: usize,
+    readers: usize,
+    writers: usize,
+}
+
+impl Pipe {
+    fn write(&mut self, input: &[u8]) -> Result<usize, i32> {
+        if self.readers == 0 {
+            return Err(EPIPE);
+        }
+        let available = PIPE_CAPACITY - self.length;
+        if available == 0 {
+            return Err(EAGAIN);
+        }
+        let count = input.len().min(available);
+        for byte in &input[..count] {
+            let tail = (self.head + self.length) % PIPE_CAPACITY;
+            self.buffer[tail] = *byte;
+            self.length += 1;
+        }
+        Ok(count)
+    }
+
+    fn read(&mut self, output: &mut [u8]) -> Result<usize, i32> {
+        if self.length == 0 {
+            return if self.writers == 0 {
+                Ok(0)
+            } else {
+                Err(EAGAIN)
+            };
+        }
+        let count = output.len().min(self.length);
+        for byte in &mut output[..count] {
+            *byte = self.buffer[self.head];
+            self.head = (self.head + 1) % PIPE_CAPACITY;
+            self.length -= 1;
+        }
+        Ok(count)
+    }
+}
+
+struct PipeEnd {
+    pipe: Arc<Mutex<Pipe>>,
+    readable: bool,
+    writable: bool,
+}
+
+impl Clone for PipeEnd {
+    fn clone(&self) -> Self {
+        let mut pipe = self.pipe.lock();
+        if self.readable {
+            pipe.readers += 1;
+        }
+        if self.writable {
+            pipe.writers += 1;
+        }
+        drop(pipe);
+        Self {
+            pipe: Arc::clone(&self.pipe),
+            readable: self.readable,
+            writable: self.writable,
+        }
+    }
+}
+
+impl Drop for PipeEnd {
+    fn drop(&mut self) {
+        let mut pipe = self.pipe.lock();
+        if self.readable {
+            pipe.readers -= 1;
+        }
+        if self.writable {
+            pipe.writers -= 1;
+        }
+    }
+}
+
+#[derive(Clone)]
 enum UserDescriptor {
     ConsoleInput,
     ConsoleOutput,
     ConsoleError,
     File(OpenFile),
+    Directory(Arc<Mutex<DirectoryStream>>),
+    Pipe(PipeEnd),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProcessWait {
+    Child(u64),
+    PipeReadable(u64),
+    PipeWritable(u64),
 }
 
 struct UserProcess {
     active: bool,
     pid: u64,
+    terminal: usize,
     descriptors: Vec<Option<UserDescriptor>>,
     cwd: String,
+    environment: Vec<String>,
     program_break: u64,
-    heap_end: u64,
+    heap_mapped_end: u64,
+    heap_limit: u64,
+    mmap_cursor: u64,
+    heap_pages: Vec<u64>,
+    mmap_pages: Vec<u64>,
+    fpu_state: FpuState,
 }
 
 impl UserProcess {
@@ -161,10 +311,17 @@ impl UserProcess {
         Self {
             active: false,
             pid: 0,
+            terminal: 0,
             descriptors: Vec::new(),
             cwd: String::new(),
+            environment: Vec::new(),
             program_break: HEAP_START,
-            heap_end: HEAP_START,
+            heap_mapped_end: HEAP_INITIAL_END,
+            heap_limit: HEAP_INITIAL_END,
+            mmap_cursor: MMAP_START,
+            heap_pages: Vec::new(),
+            mmap_pages: Vec::new(),
+            fpu_state: FpuState::new(),
         }
     }
 }
@@ -189,16 +346,22 @@ impl ProcessKernelStack {
 struct ScheduledProcess {
     image: LoadedElf,
     state: UserProcess,
+    pid: u64,
     _kernel_stack: Option<ProcessKernelStack>,
     kernel_stack_top: u64,
     frame_pointer: usize,
     exit_status: Option<u64>,
+    parent_pid: Option<u64>,
+    waiting_for: Option<ProcessWait>,
+    wait_status_pointer: u64,
+    reaped: bool,
 }
 
 struct UserScheduler {
     processes: Vec<ScheduledProcess>,
     current: usize,
     active: bool,
+    next_pid: u64,
 }
 
 impl UserScheduler {
@@ -207,6 +370,24 @@ impl UserScheduler {
             processes: Vec::new(),
             current: 0,
             active: false,
+            next_pid: 1,
+        }
+    }
+}
+
+struct RestoreUserAddressSpace(u64);
+
+impl Drop for RestoreUserAddressSpace {
+    fn drop(&mut self) {
+        let scheduler = USER_SCHEDULER.lock();
+        if let Some(process) = scheduler
+            .processes
+            .iter()
+            .find(|process| process.pid == self.0)
+        {
+            unsafe { process.image.address_space.activate() };
+        } else {
+            panic!("spawn parent disappeared before syscall returned");
         }
     }
 }
@@ -221,6 +402,7 @@ struct UserStat {
 
 static USER_PROCESS: Mutex<UserProcess> = Mutex::new(UserProcess::new());
 static USER_SCHEDULER: Mutex<UserScheduler> = Mutex::new(UserScheduler::new());
+static NEXT_PIPE_ID: AtomicU64 = AtomicU64::new(1);
 
 impl LoadedElf {
     /// Run one trusted program until it exits or faults, then release its pages.
@@ -230,13 +412,17 @@ impl LoadedElf {
 
     /// Run one trusted program with a process-local current working directory.
     pub fn run_with_cwd(self, cwd: &str) -> Result<u64, ElfError> {
+        self.run_with_cwd_on_terminal(cwd, crate::terminal::active_terminal())
+    }
+
+    pub fn run_with_cwd_on_terminal(self, cwd: &str, terminal: usize) -> Result<u64, ElfError> {
         let mut images = Vec::new();
         if images.try_reserve_exact(1).is_err() {
             self.unload()?;
             return Err(ElfError::OutOfMemory);
         }
         images.push(self);
-        let statuses = run_loaded_processes(images, cwd)?;
+        let statuses = run_loaded_processes(images, cwd, terminal)?;
         statuses
             .first()
             .copied()
@@ -244,11 +430,23 @@ impl LoadedElf {
     }
 
     /// Release the mappings without running the program.
-    pub fn unload(mut self) -> Result<(), ElfError> {
+    pub fn unload(self) -> Result<(), ElfError> {
+        self.unload_with_extra_pages(&mut Vec::new(), &mut Vec::new())
+    }
+
+    fn unload_with_extra_pages(
+        mut self,
+        heap_pages: &mut Vec<u64>,
+        mmap_pages: &mut Vec<u64>,
+    ) -> Result<(), ElfError> {
         unsafe { self.address_space.activate() };
         let page_cleanup = release_pages(&mut self.mapped_pages);
+        let heap_cleanup = release_pages(heap_pages);
+        let mmap_cleanup = release_pages(mmap_pages);
         let table_cleanup = self.address_space.destroy();
         page_cleanup?;
+        heap_cleanup?;
+        mmap_cleanup?;
         table_cleanup?;
         Ok(())
     }
@@ -259,10 +457,17 @@ pub fn load(bytes: &[u8]) -> Result<LoadedElf, ElfError> {
 }
 
 pub fn load_with_args(bytes: &[u8], arguments: &[String]) -> Result<LoadedElf, ElfError> {
+    load_with_args_and_environment(bytes, arguments, &[])
+}
+
+pub fn load_with_args_and_environment(
+    bytes: &[u8],
+    arguments: &[String],
+    environment: &[String],
+) -> Result<LoadedElf, ElfError> {
+    let process_environment = try_clone_strings(environment)?;
     let (entry, segments) = parse(bytes)?;
-    let heap_end = HEAP_START
-        .checked_add(HEAP_PAGES * PAGE_SIZE)
-        .ok_or(ElfError::AddressRange)?;
+    let heap_end = HEAP_INITIAL_END;
     let stack_start = STACK_TOP
         .checked_sub(STACK_PAGES * PAGE_SIZE)
         .ok_or(ElfError::AddressRange)?;
@@ -271,18 +476,21 @@ pub fn load_with_args(bytes: &[u8], arguments: &[String]) -> Result<LoadedElf, E
         .ok_or(ElfError::AddressRange)?;
 
     let mut total_pages = STACK_PAGES + HEAP_PAGES;
+    let mut heap_limit = MMAP_START;
+    let mut mmap_cursor = MMAP_START;
     for (index, segment) in segments.iter().enumerate() {
         let start = page_start(segment.virtual_address);
         let end = page_end(segment.virtual_address, segment.memory_size)?;
+        mmap_cursor = mmap_cursor.max(end);
         if (start < STACK_TOP && guard_start < end) || (start < heap_end && HEAP_START < end) {
             return Err(ElfError::AddressRange);
+        }
+        if start >= heap_end && start < heap_limit {
+            heap_limit = start;
         }
         total_pages = total_pages
             .checked_add((end - start) / PAGE_SIZE)
             .ok_or(ElfError::TooLarge)?;
-        if total_pages > MAX_MAPPED_PAGES {
-            return Err(ElfError::TooLarge);
-        }
         for other in segments.iter().take(index) {
             let other_start = page_start(other.virtual_address);
             let other_end = page_end(other.virtual_address, other.memory_size)?;
@@ -306,7 +514,7 @@ pub fn load_with_args(bytes: &[u8], arguments: &[String]) -> Result<LoadedElf, E
 
     let mut mapped_pages = Vec::new();
     if mapped_pages
-        .try_reserve_exact(total_pages as usize)
+        .try_reserve_exact(usize::try_from(total_pages).map_err(|_| ElfError::TooLarge)?)
         .is_err()
     {
         address_space.destroy()?;
@@ -351,7 +559,7 @@ pub fn load_with_args(bytes: &[u8], arguments: &[String]) -> Result<LoadedElf, E
         }
 
         let (user_stack, initial_stack) =
-            build_initial_stack(stack_start, STACK_PAGES * PAGE_SIZE, arguments)?;
+            build_initial_stack(stack_start, STACK_PAGES * PAGE_SIZE, arguments, environment)?;
         copy_to_user_pages(user_stack, &initial_stack)?;
         Ok::<u64, ElfError>(user_stack)
     })();
@@ -362,7 +570,9 @@ pub fn load_with_args(bytes: &[u8], arguments: &[String]) -> Result<LoadedElf, E
             Ok(LoadedElf {
                 entry,
                 user_stack,
-                heap_end,
+                heap_limit,
+                mmap_cursor,
+                environment: process_environment,
                 mapped_pages,
                 address_space,
             })
@@ -393,12 +603,49 @@ pub fn run_file_from_with_args(
     cwd: &str,
     arguments: &[String],
 ) -> Result<u64, ElfError> {
+    run_file_from_with_args_on_terminal(path, cwd, arguments, crate::terminal::active_terminal())
+}
+
+pub fn run_file_from_with_args_on_terminal(
+    path: &str,
+    cwd: &str,
+    arguments: &[String],
+    terminal: usize,
+) -> Result<u64, ElfError> {
+    run_file_from_with_args_and_environment_on_terminal(path, cwd, arguments, &[], terminal)
+}
+
+pub fn run_file_from_with_args_and_environment_on_terminal(
+    path: &str,
+    cwd: &str,
+    arguments: &[String],
+    environment: &[String],
+    terminal: usize,
+) -> Result<u64, ElfError> {
     let bytes = read_executable_file(path)?;
-    load_with_args(&bytes, arguments)?.run_with_cwd(cwd)
+    load_with_args_and_environment(&bytes, arguments, environment)?
+        .run_with_cwd_on_terminal(cwd, terminal)
 }
 
 /// Run several ELF files concurrently under the user-process scheduler.
 pub fn run_files_parallel_from(paths: &[String], cwd: &str) -> Result<Vec<u64>, ElfError> {
+    run_files_parallel_from_on_terminal(paths, cwd, crate::terminal::active_terminal())
+}
+
+pub fn run_files_parallel_from_on_terminal(
+    paths: &[String],
+    cwd: &str,
+    terminal: usize,
+) -> Result<Vec<u64>, ElfError> {
+    run_files_parallel_from_with_environment_on_terminal(paths, cwd, &[], terminal)
+}
+
+pub fn run_files_parallel_from_with_environment_on_terminal(
+    paths: &[String],
+    cwd: &str,
+    environment: &[String],
+    terminal: usize,
+) -> Result<Vec<u64>, ElfError> {
     if paths.len() < 2 {
         return Err(ElfError::InvalidArguments);
     }
@@ -412,13 +659,13 @@ pub fn run_files_parallel_from(paths: &[String], cwd: &str) -> Result<Vec<u64>, 
             Ok(bytes) => bytes,
             Err(error) => return fail_after_unload(images, error),
         };
-        match load_with_args(&bytes, core::slice::from_ref(path)) {
+        match load_with_args_and_environment(&bytes, core::slice::from_ref(path), environment) {
             Ok(image) => images.push(image),
             Err(error) => return fail_after_unload(images, error),
         }
     }
 
-    run_loaded_processes(images, cwd)
+    run_loaded_processes(images, cwd, terminal)
 }
 
 fn read_executable_file(path: &str) -> Result<Vec<u8>, ElfError> {
@@ -443,7 +690,11 @@ fn read_executable_file(path: &str) -> Result<Vec<u8>, ElfError> {
     })?
 }
 
-fn run_loaded_processes(images: Vec<LoadedElf>, cwd: &str) -> Result<Vec<u64>, ElfError> {
+fn run_loaded_processes(
+    images: Vec<LoadedElf>,
+    cwd: &str,
+    terminal: usize,
+) -> Result<Vec<u64>, ElfError> {
     if images.is_empty() {
         return Err(ElfError::InvalidArguments);
     }
@@ -464,7 +715,18 @@ fn run_loaded_processes(images: Vec<LoadedElf>, cwd: &str) -> Result<Vec<u64>, E
     }
     for (index, image) in images.iter().enumerate() {
         let pid = index as u64 + 1;
-        match new_user_process(image.heap_end, cwd, pid) {
+        let process_environment = match try_clone_strings(&image.environment) {
+            Ok(environment) => environment,
+            Err(error) => return fail_after_unload(images, error),
+        };
+        match new_user_process(
+            image.heap_limit,
+            image.mmap_cursor,
+            cwd,
+            pid,
+            terminal,
+            process_environment,
+        ) {
             Ok(state) => states.push(state),
             Err(error) => return fail_after_unload(images, error),
         }
@@ -486,7 +748,10 @@ fn run_loaded_processes(images: Vec<LoadedElf>, cwd: &str) -> Result<Vec<u64>, E
     if processes.try_reserve_exact(images.len()).is_err() {
         return fail_after_unload(images, ElfError::OutOfMemory);
     }
-    for ((image, state), kernel_stack) in images.into_iter().zip(states).zip(stacks) {
+    let next_pid = images.len() as u64 + 1;
+    for (index, ((image, state), kernel_stack)) in
+        images.into_iter().zip(states).zip(stacks).enumerate()
+    {
         let kernel_stack_top = kernel_stack
             .as_ref()
             .map_or_else(gdt::user_kernel_stack_top, ProcessKernelStack::top);
@@ -496,10 +761,15 @@ fn run_loaded_processes(images: Vec<LoadedElf>, cwd: &str) -> Result<Vec<u64>, E
         processes.push(ScheduledProcess {
             image,
             state,
+            pid: index as u64 + 1,
             _kernel_stack: kernel_stack,
             kernel_stack_top,
             frame_pointer,
             exit_status: None,
+            parent_pid: None,
+            waiting_for: None,
+            wait_status_pointer: 0,
+            reaped: false,
         });
     }
 
@@ -508,6 +778,7 @@ fn run_loaded_processes(images: Vec<LoadedElf>, cwd: &str) -> Result<Vec<u64>, E
         scheduler.processes = processes;
         scheduler.current = 0;
         scheduler.active = true;
+        scheduler.next_pid = next_pid;
         let mut active_process = USER_PROCESS.lock();
         core::mem::swap(&mut *active_process, &mut scheduler.processes[0].state);
         let first = &scheduler.processes[0].image;
@@ -521,7 +792,9 @@ fn run_loaded_processes(images: Vec<LoadedElf>, cwd: &str) -> Result<Vec<u64>, E
         let first = &scheduler.processes[0].image;
         (first.entry, first.user_stack)
     };
+    restore_current_user_fpu();
     let _last_status = unsafe { gdt::enter_user_mode(entry, user_stack) };
+    restore_current_user_fpu();
 
     let mut scheduler = USER_SCHEDULER.lock();
     if let Some(first) = scheduler.processes.first() {
@@ -541,7 +814,7 @@ fn run_loaded_processes(images: Vec<LoadedElf>, cwd: &str) -> Result<Vec<u64>, E
     let status_reserve_failed = statuses.try_reserve_exact(processes.len()).is_err();
     let mut missing_status = false;
     let mut cleanup_error = None;
-    for process in processes {
+    for mut process in processes {
         if let Some(status) = process.exit_status {
             if !status_reserve_failed {
                 statuses.push(status);
@@ -549,7 +822,9 @@ fn run_loaded_processes(images: Vec<LoadedElf>, cwd: &str) -> Result<Vec<u64>, E
         } else {
             missing_status = true;
         }
-        if let Err(error) = process.image.unload()
+        if let Err(error) = process
+            .image
+            .unload_with_extra_pages(&mut process.state.heap_pages, &mut process.state.mmap_pages)
             && cleanup_error.is_none()
         {
             cleanup_error = Some(error);
@@ -622,8 +897,9 @@ fn build_initial_stack(
     stack_start: u64,
     stack_size: u64,
     arguments: &[String],
+    environment: &[String],
 ) -> Result<(u64, Vec<u8>), ElfError> {
-    if arguments.len() > MAX_ARGUMENTS {
+    if arguments.len() > MAX_ARGUMENTS || environment.len() > MAX_ENVIRONMENT_VARIABLES {
         return Err(ElfError::ArgumentsTooLarge);
     }
     let argument_bytes = arguments.iter().try_fold(0usize, |total, argument| {
@@ -639,6 +915,25 @@ fn build_initial_stack(
             .ok_or(ElfError::ArgumentsTooLarge)
     })?;
     if argument_bytes > MAX_ARGUMENT_BYTES {
+        return Err(ElfError::ArgumentsTooLarge);
+    }
+    let environment_bytes = environment.iter().try_fold(0usize, |total, variable| {
+        let Some((name, _)) = variable.split_once('=') else {
+            return Err(ElfError::InvalidArguments);
+        };
+        if !valid_environment_key(name) || variable.as_bytes().contains(&0) {
+            return Err(ElfError::InvalidArguments);
+        }
+        total
+            .checked_add(
+                variable
+                    .len()
+                    .checked_add(1)
+                    .ok_or(ElfError::ArgumentsTooLarge)?,
+            )
+            .ok_or(ElfError::ArgumentsTooLarge)
+    })?;
+    if environment_bytes > MAX_ENVIRONMENT_BYTES {
         return Err(ElfError::ArgumentsTooLarge);
     }
     let stack_size = usize::try_from(stack_size).map_err(|_| ElfError::ArgumentsTooLarge)?;
@@ -674,8 +969,31 @@ fn build_initial_stack(
     }
     pointers.reverse();
 
+    let mut environment_pointers = Vec::new();
+    environment_pointers
+        .try_reserve_exact(environment.len())
+        .map_err(|_| ElfError::OutOfMemory)?;
+    for variable in environment.iter().rev() {
+        let size = variable
+            .len()
+            .checked_add(1)
+            .ok_or(ElfError::ArgumentsTooLarge)?;
+        cursor = cursor
+            .checked_sub(size)
+            .ok_or(ElfError::ArgumentsTooLarge)?;
+        stack[cursor..cursor + variable.len()].copy_from_slice(variable.as_bytes());
+        environment_pointers.push(
+            stack_start
+                .checked_add(cursor as u64)
+                .ok_or(ElfError::AddressRange)?,
+        );
+    }
+    environment_pointers.reverse();
+
     let table_words = arguments
         .len()
+        .checked_add(environment.len())
+        .ok_or(ElfError::ArgumentsTooLarge)?
         .checked_add(3)
         .ok_or(ElfError::ArgumentsTooLarge)?;
     let table_bytes = table_words
@@ -699,6 +1017,19 @@ fn build_initial_stack(
     for (index, pointer) in pointers.iter().enumerate() {
         write_word(&mut stack, cursor + 8 * (index + 1), *pointer);
     }
+    let environment_start = arguments.len() + 2;
+    for (index, pointer) in environment_pointers.iter().enumerate() {
+        write_word(
+            &mut stack,
+            cursor + 8 * (environment_start + index),
+            *pointer,
+        );
+    }
+    write_word(
+        &mut stack,
+        cursor + 8 * (arguments.len() + environment.len() + 2),
+        0,
+    );
     let mut initial_stack = Vec::new();
     initial_stack
         .try_reserve_exact(stack_size - cursor)
@@ -708,11 +1039,37 @@ fn build_initial_stack(
 }
 
 pub fn handle_syscall(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    save_current_user_fpu();
+    let next_frame = handle_syscall_inner(frame);
+    restore_current_user_fpu();
+    next_frame
+}
+
+fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
     match frame.rax {
-        SYSCALL_EXIT => terminate_user(frame, frame.rdi),
+        SYSCALL_EXIT => terminate_user_inner(frame, frame.rdi),
+        SYSCALL_WAITPID => syscall_waitpid(frame),
+        SYSCALL_PRINTF => {
+            frame.rax = match syscall_printf(frame) {
+                Ok(value) => value,
+                Err(errno) => (-(errno as i64)) as u64,
+            };
+            frame_pointer
+        }
         number => {
-            frame.rax = match dispatch_syscall(number, frame.rdi, frame.rsi, frame.rdx) {
+            let result = dispatch_syscall(number, frame.rdi, frame.rsi, frame.rdx, frame.r10);
+            if result == Err(EAGAIN) {
+                let pipe_wait = match number {
+                    SYSCALL_READ => pipe_wait_target(frame.rdi, true),
+                    SYSCALL_WRITE => pipe_wait_target(frame.rdi, false),
+                    _ => None,
+                };
+                if let Some((_, wait_reason)) = pipe_wait {
+                    return block_current_on_pipe(frame, wait_reason);
+                }
+            }
+            frame.rax = match result {
                 Ok(value) => value,
                 Err(errno) => (-(errno as i64)) as u64,
             };
@@ -722,6 +1079,18 @@ pub fn handle_syscall(frame: &mut InterruptFrame) -> *mut InterruptFrame {
 }
 
 pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let from_user = frame.stack_frame.code_segment & 3 == 3;
+    if from_user {
+        save_current_user_fpu();
+    }
+    let next_frame = handle_timer_inner(frame);
+    if from_user {
+        restore_current_user_fpu();
+    }
+    next_frame
+}
+
+fn handle_timer_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
     if frame.stack_frame.code_segment & 3 != 3 {
         return frame_pointer;
@@ -738,7 +1107,7 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     }
     scheduler.processes[current].frame_pointer = frame_pointer as usize;
     let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-        scheduler.processes[index].exit_status.is_none()
+        is_process_runnable(&scheduler.processes[index])
     }) else {
         return frame_pointer;
     };
@@ -762,11 +1131,11 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     next_frame
 }
 
-fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64) -> Result<u64, i32> {
+fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> Result<u64, i32> {
     match number {
         SYSCALL_WRITE => syscall_write(arg1, arg2, arg3),
         SYSCALL_READ => syscall_read(arg1, arg2, arg3),
-        SYSCALL_OPEN => syscall_open(arg1, arg2),
+        SYSCALL_OPEN => syscall_open(arg1, arg2, arg3),
         SYSCALL_CLOSE => syscall_close(arg1),
         SYSCALL_LSEEK => syscall_lseek(arg1, arg2 as i64, arg3),
         SYSCALL_STAT => syscall_stat(arg1, arg2),
@@ -776,6 +1145,7 @@ fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64) -> Result<u64,
         SYSCALL_BRK => syscall_brk(arg1),
         SYSCALL_CHDIR => syscall_chdir(arg1),
         SYSCALL_GETCWD => syscall_getcwd(arg1, arg2),
+        SYSCALL_CHMOD => syscall_chmod(arg1, arg2),
         SYSCALL_GETPID => {
             let process = USER_PROCESS.lock();
             if process.active {
@@ -784,6 +1154,17 @@ fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64) -> Result<u64,
                 Err(EINTR)
             }
         }
+        SYSCALL_PUTPIXEL => syscall_putpixel(arg1, arg2, arg3),
+        SYSCALL_MMAP => syscall_mmap(arg1, arg2, arg3),
+        SYSCALL_MUNMAP => syscall_munmap(arg1, arg2),
+        SYSCALL_MMAP_FILE => syscall_mmap_file(arg1, arg2, arg3),
+        SYSCALL_SPAWN => syscall_spawn(arg1, arg2, arg3),
+        SYSCALL_SPAWN_ENV => syscall_spawn_with_environment(arg1, arg2, arg3, arg4),
+        SYSCALL_PIPE => syscall_pipe(arg1),
+        SYSCALL_DUP2 => syscall_dup2(arg1, arg2),
+        SYSCALL_SETENVIRON => syscall_set_environ(arg1),
+        SYSCALL_OPENDIR => syscall_opendir(arg1),
+        SYSCALL_READDIR => syscall_readdir(arg1, arg2),
         SYSCALL_ISATTY => {
             let fd = usize::try_from(arg1).map_err(|_| EBADF)?;
             let process = USER_PROCESS.lock();
@@ -798,6 +1179,8 @@ fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64) -> Result<u64,
                 ) => Ok(1),
                 Some(UserDescriptor::File(file)) if fs::is_tty_path(&file.path) => Ok(1),
                 Some(UserDescriptor::File(_)) => Err(ENOTTY),
+                Some(UserDescriptor::Directory(_)) => Err(ENOTTY),
+                Some(UserDescriptor::Pipe(_)) => Err(ENOTTY),
                 None => Err(EBADF),
             }
         }
@@ -805,7 +1188,357 @@ fn dispatch_syscall(number: u64, arg1: u64, arg2: u64, arg3: u64) -> Result<u64,
     }
 }
 
-fn new_user_process(heap_end: u64, cwd: &str, pid: u64) -> Result<UserProcess, ElfError> {
+fn syscall_spawn(path_address: u64, argv_address: u64, argc: u64) -> Result<u64, i32> {
+    syscall_spawn_with_environment(path_address, argv_address, argc, 0)
+}
+
+fn syscall_spawn_with_environment(
+    path_address: u64,
+    argv_address: u64,
+    argc: u64,
+    environment_address: u64,
+) -> Result<u64, i32> {
+    let path = resolve_process_path(&copy_user_path(path_address)?)?;
+    let arguments = copy_user_arguments(argv_address, argc)?;
+    let provided_environment = if environment_address == 0 {
+        None
+    } else {
+        Some(copy_user_environment(environment_address)?)
+    };
+    let (cwd, terminal, parent_pid, inherited_descriptors, environment) = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        let environment = match provided_environment {
+            Some(environment) => environment,
+            None => try_clone_strings(&process.environment).map_err(|_| ENOMEM)?,
+        };
+        let mut descriptors = Vec::new();
+        descriptors
+            .try_reserve_exact(process.descriptors.len())
+            .map_err(|_| ENOMEM)?;
+        descriptors.extend(process.descriptors.iter().cloned());
+        (
+            process.cwd.clone(),
+            process.terminal,
+            process.pid,
+            descriptors,
+            environment,
+        )
+    };
+    let _restore_address_space = RestoreUserAddressSpace(parent_pid);
+
+    let pid = {
+        let mut scheduler = USER_SCHEDULER.lock();
+        if !scheduler.active
+            || scheduler
+                .processes
+                .get(scheduler.current)
+                .is_none_or(|process| process.pid != parent_pid)
+        {
+            return Err(EINTR);
+        }
+        reap_completed_processes(&mut scheduler)?;
+        if scheduler.processes.len() >= MAX_SCHEDULED_PROCESSES {
+            return Err(ENOMEM);
+        }
+        scheduler.processes.try_reserve(1).map_err(|_| ENOMEM)?;
+        let pid = scheduler.next_pid;
+        scheduler.next_pid = pid.checked_add(1).ok_or(ENOMEM)?;
+        pid
+    };
+
+    let bytes = read_executable_file(&path).map_err(errno_from_elf)?;
+    {
+        let scheduler = USER_SCHEDULER.lock();
+        let parent = scheduler
+            .processes
+            .iter()
+            .find(|process| process.pid == parent_pid)
+            .ok_or(EINTR)?;
+        unsafe { parent.image.address_space.activate_kernel() };
+    }
+    let image =
+        load_with_args_and_environment(&bytes, &arguments, &environment).map_err(errno_from_elf)?;
+    let mut state = match new_user_process(
+        image.heap_limit,
+        image.mmap_cursor,
+        &cwd,
+        pid,
+        terminal,
+        environment,
+    ) {
+        Ok(state) => state,
+        Err(error) => {
+            return Err(cleanup_failed_spawn(image, errno_from_elf(error)));
+        }
+    };
+    state.descriptors = inherited_descriptors;
+    let kernel_stack = match ProcessKernelStack::new() {
+        Ok(stack) => stack,
+        Err(error) => {
+            return Err(cleanup_failed_spawn(image, errno_from_elf(error)));
+        }
+    };
+    let kernel_stack_top = kernel_stack.top();
+    let frame_pointer = initialize_user_frame(&image, kernel_stack_top);
+    let mut scheduler = USER_SCHEDULER.lock();
+    if !scheduler.active || scheduler.processes.len() >= MAX_SCHEDULED_PROCESSES {
+        drop(scheduler);
+        return Err(cleanup_failed_spawn(image, ENOMEM));
+    }
+    scheduler.processes.push(ScheduledProcess {
+        image,
+        state,
+        pid,
+        _kernel_stack: Some(kernel_stack),
+        kernel_stack_top,
+        frame_pointer,
+        exit_status: None,
+        parent_pid: Some(parent_pid),
+        waiting_for: None,
+        wait_status_pointer: 0,
+        reaped: false,
+    });
+    Ok(pid)
+}
+
+fn syscall_set_environ(address: u64) -> Result<u64, i32> {
+    let environment = copy_user_environment(address)?;
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    process.environment = environment;
+    Ok(0)
+}
+
+fn cleanup_failed_spawn(image: LoadedElf, original_error: i32) -> i32 {
+    match image.unload() {
+        Ok(()) => original_error,
+        Err(_) => EIO,
+    }
+}
+
+fn reap_completed_processes(scheduler: &mut UserScheduler) -> Result<(), i32> {
+    let mut index = 0;
+    while index < scheduler.processes.len() {
+        let process = &scheduler.processes[index];
+        if index == scheduler.current || !process.reaped || process.exit_status.is_none() {
+            index += 1;
+            continue;
+        }
+
+        let mut process = scheduler.processes.remove(index);
+        if index < scheduler.current {
+            scheduler.current -= 1;
+        }
+        process
+            .image
+            .unload_with_extra_pages(&mut process.state.heap_pages, &mut process.state.mmap_pages)
+            .map_err(|_| EIO)?;
+    }
+    Ok(())
+}
+
+fn errno_from_elf(error: ElfError) -> i32 {
+    match error {
+        ElfError::FileSystem(error) => errno_from_fs(error),
+        ElfError::OutOfMemory | ElfError::Paging(PagingError::OutOfFrames) => ENOMEM,
+        ElfError::PermissionDenied => EACCES,
+        ElfError::InvalidArguments | ElfError::ArgumentsTooLarge => EINVAL,
+        ElfError::ProcessAlreadyRunning => EINTR,
+        _ => ENOEXEC,
+    }
+}
+
+fn syscall_waitpid(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let wait_target = frame.rdi;
+    let status_pointer = frame.rsi;
+    if wait_target == 0 {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    }
+    if status_pointer != 0
+        && paging::validate_user_range(status_pointer, core::mem::size_of::<u64>(), true).is_err()
+    {
+        frame.rax = (-(EFAULT as i64)) as u64;
+        return frame_pointer;
+    }
+
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    let parent_pid = {
+        let process = USER_PROCESS.lock();
+        if !scheduler.active || !process.active || current >= scheduler.processes.len() {
+            frame.rax = (-(EINTR as i64)) as u64;
+            return frame_pointer;
+        }
+        process.pid
+    };
+    let Some(child) = scheduler.processes.iter().position(|process| {
+        process.parent_pid == Some(parent_pid)
+            && !process.reaped
+            && wait_target_matches(wait_target, process.pid)
+    }) else {
+        frame.rax = (-(ECHILD as i64)) as u64;
+        return frame_pointer;
+    };
+    let child_pid = scheduler.processes[child].pid;
+
+    if let Some(status) = scheduler.processes[child].exit_status {
+        if status_pointer != 0
+            && let Err(error) = write_user_u64(status_pointer, status)
+        {
+            frame.rax = (-(error as i64)) as u64;
+            return frame_pointer;
+        }
+        scheduler.processes[child].reaped = true;
+        frame.rax = child_pid;
+        return frame_pointer;
+    }
+
+    scheduler.processes[current].frame_pointer = frame_pointer as usize;
+    scheduler.processes[current].waiting_for = Some(ProcessWait::Child(wait_target));
+    scheduler.processes[current].wait_status_pointer = status_pointer;
+    let mut active_process = USER_PROCESS.lock();
+    core::mem::swap(
+        &mut *active_process,
+        &mut scheduler.processes[current].state,
+    );
+    let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
+        is_process_runnable(&scheduler.processes[index])
+    }) else {
+        core::mem::swap(
+            &mut *active_process,
+            &mut scheduler.processes[current].state,
+        );
+        scheduler.processes[current].waiting_for = None;
+        scheduler.processes[current].wait_status_pointer = 0;
+        frame.rax = (-(ECHILD as i64)) as u64;
+        return frame_pointer;
+    };
+    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
+    scheduler.current = next;
+    let next_process = &scheduler.processes[next];
+    let next_frame = next_process.frame_pointer as *mut InterruptFrame;
+    unsafe {
+        gdt::set_ring0_stack_top(next_process.kernel_stack_top);
+        next_process.image.address_space.activate();
+    }
+    next_frame
+}
+
+fn wait_target_matches(target: u64, child_pid: u64) -> bool {
+    target == WAIT_ANY_PID || target == child_pid
+}
+
+fn write_user_u64(address: u64, value: u64) -> Result<(), i32> {
+    paging::validate_user_range(address, core::mem::size_of::<u64>(), true).map_err(|_| EFAULT)?;
+    unsafe { (address as *mut u64).write_unaligned(value) };
+    Ok(())
+}
+
+fn pipe_wait_target(fd: u64, reading: bool) -> Option<(u64, ProcessWait)> {
+    let fd = usize::try_from(fd).ok()?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return None;
+    }
+    let Some(UserDescriptor::Pipe(endpoint)) = process.descriptors.get(fd).and_then(Option::as_ref)
+    else {
+        return None;
+    };
+    let pipe_id = endpoint.pipe.lock().id;
+    let wait = match (reading, endpoint.readable, endpoint.writable) {
+        (true, true, _) => ProcessWait::PipeReadable(pipe_id),
+        (false, _, true) => ProcessWait::PipeWritable(pipe_id),
+        _ => return None,
+    };
+    Some((pipe_id, wait))
+}
+
+fn block_current_on_pipe(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let Some(retry_address) = frame.stack_frame.instruction_pointer.checked_sub(2) else {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    };
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    {
+        let process = USER_PROCESS.lock();
+        if !scheduler.active || !process.active || current >= scheduler.processes.len() {
+            frame.rax = (-(EINTR as i64)) as u64;
+            return frame_pointer;
+        }
+    }
+
+    scheduler.processes[current].frame_pointer = frame_pointer as usize;
+    scheduler.processes[current].waiting_for = Some(wait);
+    // Retry the int 0x80 instruction when the pipe becomes ready.
+    frame.stack_frame.instruction_pointer = retry_address;
+    let mut active_process = USER_PROCESS.lock();
+    core::mem::swap(
+        &mut *active_process,
+        &mut scheduler.processes[current].state,
+    );
+    let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
+        is_process_runnable(&scheduler.processes[index])
+    }) else {
+        core::mem::swap(
+            &mut *active_process,
+            &mut scheduler.processes[current].state,
+        );
+        scheduler.processes[current].waiting_for = None;
+        frame.stack_frame.instruction_pointer = retry_address + 2;
+        frame.rax = (-(EDEADLK as i64)) as u64;
+        return frame_pointer;
+    };
+    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
+    scheduler.current = next;
+    let next_process = &scheduler.processes[next];
+    let next_frame = next_process.frame_pointer as *mut InterruptFrame;
+    unsafe {
+        gdt::set_ring0_stack_top(next_process.kernel_stack_top);
+        next_process.image.address_space.activate();
+    }
+    next_frame
+}
+
+fn wake_pipe_waiters(pipe_id: u64, readers_ready: bool, writers_ready: bool) {
+    let mut scheduler = USER_SCHEDULER.lock();
+    wake_pipe_waiters_in_scheduler(&mut scheduler, pipe_id, readers_ready, writers_ready);
+}
+
+fn wake_pipe_waiters_in_scheduler(
+    scheduler: &mut UserScheduler,
+    pipe_id: u64,
+    readers_ready: bool,
+    writers_ready: bool,
+) {
+    for process in &mut scheduler.processes {
+        let ready = match process.waiting_for {
+            Some(ProcessWait::PipeReadable(waiting_id)) => readers_ready && waiting_id == pipe_id,
+            Some(ProcessWait::PipeWritable(waiting_id)) => writers_ready && waiting_id == pipe_id,
+            _ => false,
+        };
+        if ready {
+            process.waiting_for = None;
+        }
+    }
+}
+
+fn new_user_process(
+    heap_limit: u64,
+    mmap_cursor: u64,
+    cwd: &str,
+    pid: u64,
+    terminal: usize,
+    environment: Vec<String>,
+) -> Result<UserProcess, ElfError> {
     let cwd = fs::normalize_path(cwd)?;
     let metadata = fs::with_vfs(|vfs| vfs.metadata(&cwd))??;
     if metadata.node_type != NodeType::Directory {
@@ -829,11 +1562,125 @@ fn new_user_process(heap_end: u64, cwd: &str, pid: u64) -> Result<UserProcess, E
     Ok(UserProcess {
         active: true,
         pid,
+        terminal,
         descriptors,
         cwd: process_cwd,
+        environment,
         program_break: HEAP_START,
-        heap_end,
+        heap_mapped_end: HEAP_INITIAL_END,
+        heap_limit,
+        mmap_cursor,
+        heap_pages: Vec::new(),
+        mmap_pages: Vec::new(),
+        fpu_state: FpuState::new(),
     })
+}
+
+fn save_current_user_fpu() {
+    let mut process = USER_PROCESS.lock();
+    if process.active {
+        unsafe { fpu::save(&mut process.fpu_state) };
+    }
+}
+
+fn restore_current_user_fpu() {
+    let process = USER_PROCESS.lock();
+    unsafe {
+        if process.active {
+            fpu::restore(&process.fpu_state);
+        } else {
+            fpu::restore(&FpuState::new());
+        }
+    }
+}
+
+fn try_clone_strings(values: &[String]) -> Result<Vec<String>, ElfError> {
+    let mut cloned = Vec::new();
+    cloned
+        .try_reserve_exact(values.len())
+        .map_err(|_| ElfError::OutOfMemory)?;
+    for value in values {
+        let mut copy = String::new();
+        copy.try_reserve(value.len())
+            .map_err(|_| ElfError::OutOfMemory)?;
+        copy.push_str(value);
+        cloned.push(copy);
+    }
+    Ok(cloned)
+}
+
+pub(crate) fn valid_environment_key(key: &str) -> bool {
+    let mut bytes = key.bytes();
+    matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        && bytes.all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_'))
+}
+
+fn create_pipe() -> Result<(PipeEnd, PipeEnd), i32> {
+    let id = NEXT_PIPE_ID
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map_err(|_| ENOMEM)?;
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(PIPE_CAPACITY)
+        .map_err(|_| ENOMEM)?;
+    buffer.resize(PIPE_CAPACITY, 0);
+    let pipe = Arc::new(Mutex::new(Pipe {
+        id,
+        buffer,
+        head: 0,
+        length: 0,
+        readers: 1,
+        writers: 1,
+    }));
+    Ok((
+        PipeEnd {
+            pipe: Arc::clone(&pipe),
+            readable: true,
+            writable: false,
+        },
+        PipeEnd {
+            pipe,
+            readable: false,
+            writable: true,
+        },
+    ))
+}
+
+fn reserve_descriptor_slot(descriptors: &mut Vec<Option<UserDescriptor>>) -> Result<usize, i32> {
+    if let Some(fd) = descriptors
+        .iter()
+        .enumerate()
+        .find_map(|(index, descriptor)| descriptor.is_none().then_some(index))
+    {
+        return Ok(fd);
+    }
+    if descriptors.len() >= MAX_OPEN_FILES {
+        return Err(EMFILE);
+    }
+    descriptors.try_reserve(1).map_err(|_| ENOMEM)?;
+    descriptors.push(None);
+    Ok(descriptors.len() - 1)
+}
+
+fn install_pipe_descriptors(
+    descriptors: &mut Vec<Option<UserDescriptor>>,
+    read_end: PipeEnd,
+    write_end: PipeEnd,
+) -> Result<(usize, usize), i32> {
+    let read_fd = reserve_descriptor_slot(descriptors)?;
+    descriptors[read_fd] = Some(UserDescriptor::Pipe(read_end));
+    let write_fd = match reserve_descriptor_slot(descriptors) {
+        Ok(fd) => fd,
+        Err(error) => {
+            descriptors[read_fd] = None;
+            while descriptors.last().is_some_and(Option::is_none) {
+                descriptors.pop();
+            }
+            return Err(error);
+        }
+    };
+    descriptors[write_fd] = Some(UserDescriptor::Pipe(write_end));
+    Ok((read_fd, write_fd))
 }
 
 fn syscall_write(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
@@ -847,24 +1694,33 @@ fn syscall_write(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
     }
     paging::validate_user_range(address, length, false).map_err(|_| EFAULT)?;
     let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, length) };
+    syscall_write_bytes(fd, bytes)
+}
+
+fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
+    if bytes.len() > MAX_SYSCALL_IO {
+        return Err(EINVAL);
+    }
+    if bytes.is_empty() {
+        return Ok(0);
+    }
     let mut process = USER_PROCESS.lock();
     if !process.active {
         return Err(EINTR);
     }
+    let terminal = process.terminal;
     let descriptor = process
         .descriptors
         .get_mut(fd)
         .and_then(Option::as_mut)
         .ok_or(EBADF)?;
-    match descriptor {
-        UserDescriptor::ConsoleOutput => fs::with_vfs(|vfs| vfs.write("/dev/stdout", 0, bytes))
-            .map_err(errno_from_fs)?
-            .map(|count| count as u64)
-            .map_err(errno_from_fs),
-        UserDescriptor::ConsoleError => fs::with_vfs(|vfs| vfs.write("/dev/stderr", 0, bytes))
-            .map_err(errno_from_fs)?
-            .map(|count| count as u64)
-            .map_err(errno_from_fs),
+    let mut pipe_id = None;
+    let result = match descriptor {
+        UserDescriptor::ConsoleOutput | UserDescriptor::ConsoleError => {
+            let text = core::str::from_utf8(bytes).map_err(|_| EILSEQ)?;
+            crate::terminal::terminal_print_to(terminal, text);
+            Ok(bytes.len() as u64)
+        }
         UserDescriptor::File(file) => {
             if !file.writable {
                 return Err(EBADF);
@@ -888,8 +1744,377 @@ fn syscall_write(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
             file.offset = offset.checked_add(count).ok_or(EINVAL)?;
             Ok(count as u64)
         }
-        UserDescriptor::ConsoleInput => Err(EBADF),
+        UserDescriptor::Pipe(endpoint) => {
+            if !endpoint.writable {
+                return Err(EBADF);
+            }
+            let mut pipe = endpoint.pipe.lock();
+            let count = pipe.write(bytes)?;
+            pipe_id = Some(pipe.id);
+            Ok(count as u64)
+        }
+        UserDescriptor::ConsoleInput | UserDescriptor::Directory(_) => Err(EBADF),
+    };
+    drop(process);
+    if let Some(pipe_id) = pipe_id {
+        wake_pipe_waiters(pipe_id, true, false);
     }
+    result
+}
+
+fn syscall_printf(frame: &InterruptFrame) -> Result<u64, i32> {
+    let format = copy_user_string(frame.rdi, MAX_SYSCALL_IO)?;
+    let output = format_printf(
+        &format,
+        |index| printf_argument(frame, index),
+        |address, limit| copy_user_string(address, limit),
+    )?;
+    syscall_write_bytes(1, &output)
+}
+
+fn printf_argument(frame: &InterruptFrame, index: usize) -> Result<u64, i32> {
+    match index {
+        0 => Ok(frame.rsi),
+        1 => Ok(frame.rdx),
+        2 => Ok(frame.rcx),
+        3 => Ok(frame.r8),
+        4 => Ok(frame.r9),
+        _ => {
+            let stack_index = index - 5;
+            let offset = stack_index
+                .checked_mul(core::mem::size_of::<u64>())
+                .and_then(|offset| offset.checked_add(core::mem::size_of::<u64>()))
+                .and_then(|offset| u64::try_from(offset).ok())
+                .ok_or(EFAULT)?;
+            let address = frame
+                .stack_frame
+                .stack_pointer
+                .checked_add(offset)
+                .ok_or(EFAULT)?;
+            paging::validate_user_range(address, core::mem::size_of::<u64>(), false)
+                .map_err(|_| EFAULT)?;
+            Ok(unsafe { (address as *const u64).read_unaligned() })
+        }
+    }
+}
+
+fn format_printf(
+    format: &str,
+    mut argument: impl FnMut(usize) -> Result<u64, i32>,
+    mut copy_string: impl FnMut(u64, usize) -> Result<String, i32>,
+) -> Result<Vec<u8>, i32> {
+    let input = format.as_bytes();
+    let mut output = Vec::new();
+    output.try_reserve(input.len()).map_err(|_| ENOMEM)?;
+    let mut cursor = 0;
+    let mut argument_index = 0;
+
+    while cursor < input.len() {
+        if input[cursor] != b'%' {
+            append_printf_bytes(&mut output, &input[cursor..cursor + 1])?;
+            cursor += 1;
+            continue;
+        }
+        cursor += 1;
+        if input.get(cursor) == Some(&b'%') {
+            append_printf_bytes(&mut output, b"%")?;
+            cursor += 1;
+            continue;
+        }
+
+        let mut left = false;
+        let mut plus = false;
+        let mut space = false;
+        let mut alternate = false;
+        let mut zero = false;
+        loop {
+            match input.get(cursor) {
+                Some(b'-') => left = true,
+                Some(b'+') => plus = true,
+                Some(b' ') => space = true,
+                Some(b'#') => alternate = true,
+                Some(b'0') => zero = true,
+                _ => break,
+            }
+            cursor += 1;
+        }
+
+        let width = if input.get(cursor) == Some(&b'*') {
+            cursor += 1;
+            let width = argument(argument_index)? as i32;
+            argument_index += 1;
+            if width < 0 {
+                left = true;
+                width.unsigned_abs() as usize
+            } else {
+                width as usize
+            }
+        } else {
+            parse_printf_number(input, &mut cursor)?.unwrap_or(0)
+        };
+        if width > MAX_SYSCALL_IO {
+            return Err(EOVERFLOW);
+        }
+
+        let precision = if input.get(cursor) == Some(&b'.') {
+            cursor += 1;
+            if input.get(cursor) == Some(&b'*') {
+                cursor += 1;
+                let precision = argument(argument_index)? as i32;
+                argument_index += 1;
+                if precision < 0 {
+                    None
+                } else {
+                    let precision = precision as usize;
+                    if precision > MAX_SYSCALL_IO {
+                        return Err(EOVERFLOW);
+                    }
+                    Some(precision)
+                }
+            } else {
+                Some(parse_printf_number(input, &mut cursor)?.unwrap_or(0))
+            }
+        } else {
+            None
+        };
+
+        let mut length_modifier = 0;
+        if input.get(cursor) == Some(&b'h') {
+            cursor += 1;
+            length_modifier = 1;
+            if input.get(cursor) == Some(&b'h') {
+                cursor += 1;
+                length_modifier = 2;
+            }
+        } else if input.get(cursor) == Some(&b'l') {
+            cursor += 1;
+            length_modifier = 3;
+            if input.get(cursor) == Some(&b'l') {
+                cursor += 1;
+                length_modifier = 4;
+            }
+        } else if matches!(input.get(cursor), Some(b'z' | b't' | b'j')) {
+            cursor += 1;
+            length_modifier = 3;
+        }
+
+        let conversion = *input.get(cursor).ok_or(EINVAL)?;
+        cursor += 1;
+        match conversion {
+            b's' => {
+                let text = copy_string(argument(argument_index)?, MAX_SYSCALL_IO)?;
+                argument_index += 1;
+                let bytes = text.as_bytes();
+                let count = precision.map_or(bytes.len(), |limit| bytes.len().min(limit));
+                let padding = width.saturating_sub(count);
+                if !left {
+                    append_printf_repeat(&mut output, b' ', padding)?;
+                }
+                append_printf_bytes(&mut output, &bytes[..count])?;
+                if left {
+                    append_printf_repeat(&mut output, b' ', padding)?;
+                }
+            }
+            b'c' => {
+                let character = argument(argument_index)? as u8;
+                argument_index += 1;
+                let padding = width.saturating_sub(1);
+                if !left {
+                    append_printf_repeat(&mut output, b' ', padding)?;
+                }
+                append_printf_bytes(&mut output, &[character])?;
+                if left {
+                    append_printf_repeat(&mut output, b' ', padding)?;
+                }
+            }
+            b'd' | b'i' => {
+                let raw = argument(argument_index)?;
+                argument_index += 1;
+                let value = match length_modifier {
+                    1 => raw as i16 as i64,
+                    2 => raw as i8 as i64,
+                    3 | 4 => raw as i64,
+                    _ => raw as u32 as i32 as i64,
+                };
+                append_printf_integer(
+                    &mut output,
+                    value.unsigned_abs(),
+                    value < 0,
+                    10,
+                    false,
+                    width,
+                    precision,
+                    left,
+                    zero,
+                    plus,
+                    space,
+                    false,
+                    false,
+                )?;
+            }
+            b'u' | b'o' | b'x' | b'X' | b'p' => {
+                let raw = argument(argument_index)?;
+                argument_index += 1;
+                let value = if length_modifier >= 3 || conversion == b'p' {
+                    raw
+                } else {
+                    match length_modifier {
+                        1 => raw as u16 as u64,
+                        2 => raw as u8 as u64,
+                        _ => raw as u32 as u64,
+                    }
+                };
+                let base = match conversion {
+                    b'o' => 8,
+                    b'x' | b'X' | b'p' => 16,
+                    _ => 10,
+                };
+                append_printf_integer(
+                    &mut output,
+                    value,
+                    false,
+                    base,
+                    conversion == b'X',
+                    width,
+                    precision,
+                    left,
+                    zero,
+                    false,
+                    false,
+                    alternate || conversion == b'p',
+                    conversion == b'p',
+                )?;
+            }
+            _ => return Err(EINVAL),
+        }
+    }
+    Ok(output)
+}
+
+fn parse_printf_number(input: &[u8], cursor: &mut usize) -> Result<Option<usize>, i32> {
+    let start = *cursor;
+    let mut value = 0usize;
+    while let Some(byte) = input.get(*cursor).copied().filter(u8::is_ascii_digit) {
+        let digit = byte - b'0';
+        value = value
+            .checked_mul(10)
+            .and_then(|value| value.checked_add(digit as usize))
+            .filter(|value| *value <= MAX_SYSCALL_IO)
+            .ok_or(EOVERFLOW)?;
+        *cursor += 1;
+    }
+    Ok((*cursor > start).then_some(value))
+}
+
+fn append_printf_integer(
+    output: &mut Vec<u8>,
+    mut value: u64,
+    negative: bool,
+    base: u64,
+    uppercase: bool,
+    width: usize,
+    precision: Option<usize>,
+    left: bool,
+    zero: bool,
+    plus: bool,
+    space: bool,
+    alternate: bool,
+    pointer: bool,
+) -> Result<(), i32> {
+    let alphabet = if uppercase {
+        b"0123456789ABCDEF"
+    } else {
+        b"0123456789abcdef"
+    };
+    let mut digits = [0; 64];
+    let mut digit_count = 0;
+    if value != 0 || precision != Some(0) {
+        loop {
+            digits[digit_count] = alphabet[(value % base) as usize];
+            digit_count += 1;
+            value /= base;
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    let mut leading_zeroes = precision.unwrap_or(0).saturating_sub(digit_count);
+    if base == 8
+        && alternate
+        && (digit_count == 0 || digits[digit_count - 1] != b'0')
+        && leading_zeroes == 0
+    {
+        leading_zeroes = 1;
+    }
+    let sign = if negative {
+        Some(b'-')
+    } else if plus {
+        Some(b'+')
+    } else if space {
+        Some(b' ')
+    } else {
+        None
+    };
+    let prefix = if pointer
+        || (alternate && base == 16 && digit_count != 0 && !(digit_count == 1 && digits[0] == b'0'))
+    {
+        Some(if uppercase { b"0X" } else { b"0x" }.as_slice())
+    } else {
+        None
+    };
+    let prefix_length = prefix.map_or(0, <[u8]>::len);
+    let total = digit_count
+        .checked_add(leading_zeroes)
+        .and_then(|length| length.checked_add(prefix_length))
+        .and_then(|length| length.checked_add(usize::from(sign.is_some())))
+        .ok_or(EOVERFLOW)?;
+    let mut padding = width.saturating_sub(total);
+    if !left && (!zero || precision.is_some()) {
+        append_printf_repeat(output, b' ', padding)?;
+    }
+    if let Some(sign) = sign {
+        append_printf_bytes(output, &[sign])?;
+    }
+    if let Some(prefix) = prefix {
+        append_printf_bytes(output, prefix)?;
+    }
+    if !left && zero && precision.is_none() {
+        leading_zeroes = leading_zeroes.checked_add(padding).ok_or(EOVERFLOW)?;
+        padding = 0;
+    }
+    append_printf_repeat(output, b'0', leading_zeroes)?;
+    while digit_count != 0 {
+        digit_count -= 1;
+        append_printf_bytes(output, &digits[digit_count..digit_count + 1])?;
+    }
+    if left {
+        append_printf_repeat(output, b' ', padding)?;
+    }
+    Ok(())
+}
+
+fn append_printf_bytes(output: &mut Vec<u8>, bytes: &[u8]) -> Result<(), i32> {
+    let new_length = output
+        .len()
+        .checked_add(bytes.len())
+        .filter(|length| *length <= MAX_SYSCALL_IO)
+        .ok_or(EOVERFLOW)?;
+    output.try_reserve(bytes.len()).map_err(|_| ENOMEM)?;
+    output.extend_from_slice(bytes);
+    debug_assert_eq!(output.len(), new_length);
+    Ok(())
+}
+
+fn append_printf_repeat(output: &mut Vec<u8>, byte: u8, count: usize) -> Result<(), i32> {
+    let new_length = output
+        .len()
+        .checked_add(count)
+        .filter(|length| *length <= MAX_SYSCALL_IO)
+        .ok_or(EOVERFLOW)?;
+    output.try_reserve(count).map_err(|_| ENOMEM)?;
+    output.resize(new_length, byte);
+    Ok(())
 }
 
 fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
@@ -907,14 +2132,15 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
     if !process.active {
         return Err(EINTR);
     }
+    let terminal = process.terminal;
     let descriptor = process
         .descriptors
         .get_mut(fd)
         .and_then(Option::as_mut)
         .ok_or(EBADF)?;
-    match descriptor {
-        UserDescriptor::ConsoleInput => fs::with_vfs(|vfs| vfs.read("/dev/stdin", 0, output))
-            .map_err(errno_from_fs)?
+    let mut pipe_id = None;
+    let result = match descriptor {
+        UserDescriptor::ConsoleInput => fs::read_tty(terminal, output)
             .map(|count| count as u64)
             .map_err(errno_from_fs),
         UserDescriptor::File(file) => {
@@ -929,21 +2155,52 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
             }
             Ok(count as u64)
         }
+        UserDescriptor::Pipe(endpoint) => {
+            if !endpoint.readable {
+                return Err(EBADF);
+            }
+            let mut pipe = endpoint.pipe.lock();
+            let count = pipe.read(output)?;
+            pipe_id = Some(pipe.id);
+            Ok(count as u64)
+        }
         UserDescriptor::ConsoleOutput | UserDescriptor::ConsoleError => Err(EBADF),
+        UserDescriptor::Directory(_) => Err(EBADF),
+    };
+    drop(process);
+    if let Some(pipe_id) = pipe_id {
+        wake_pipe_waiters(pipe_id, false, true);
     }
+    result
 }
 
-fn syscall_open(address: u64, flags: u64) -> Result<u64, i32> {
+fn syscall_open(address: u64, flags: u64, mode: u64) -> Result<u64, i32> {
     const ALLOWED_FLAGS: u64 = O_ACCESS_MASK | O_CREAT | O_TRUNC | O_APPEND;
     if flags & !ALLOWED_FLAGS != 0 || flags & O_ACCESS_MASK == 3 {
         return Err(EINVAL);
     }
+    let mode = if flags & O_CREAT != 0 {
+        let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
+        if mode & !0o777 != 0 {
+            return Err(EINVAL);
+        }
+        mode
+    } else {
+        0o644
+    };
     let writable = flags & O_ACCESS_MASK != O_RDONLY;
     let readable = flags & O_ACCESS_MASK != O_WRONLY;
     if flags & O_TRUNC != 0 && !writable || flags & O_APPEND != 0 && !writable {
         return Err(EINVAL);
     }
-    let path = resolve_process_path(&copy_user_path(address)?)?;
+    let mut path = resolve_process_path(&copy_user_path(address)?)?;
+    let process_terminal = USER_PROCESS.lock().terminal;
+    if matches!(
+        path.as_str(),
+        "/dev/tty" | "/dev/stdin" | "/dev/stdout" | "/dev/stderr" | "/dev/console"
+    ) {
+        path = alloc::format!("/dev/tty{process_terminal}");
+    }
     if let Some((device_readable, device_writable)) = fs::device_access(&path)
         && (readable && !device_readable || writable && !device_writable)
     {
@@ -971,10 +2228,13 @@ fn syscall_open(address: u64, flags: u64) -> Result<u64, i32> {
         }
     };
     let size = match fs::with_vfs(|vfs| {
+        let mut created = false;
         let metadata = match vfs.metadata(&path) {
             Ok(metadata) => metadata,
             Err(FsError::NotFound) if flags & O_CREAT != 0 => {
                 vfs.create_file(&path)?;
+                vfs.set_permissions(&path, mode)?;
+                created = true;
                 vfs.metadata(&path)?
             }
             Err(error) => return Err(error),
@@ -982,8 +2242,9 @@ fn syscall_open(address: u64, flags: u64) -> Result<u64, i32> {
         if metadata.node_type == NodeType::Directory {
             return Err(FsError::IsDirectory);
         }
-        if (readable && metadata.permissions & 0o400 == 0)
-            || (writable && metadata.permissions & 0o200 == 0)
+        if !created
+            && ((readable && metadata.permissions & 0o400 == 0)
+                || (writable && metadata.permissions & 0o200 == 0))
         {
             return Err(FsError::PermissionDenied);
         }
@@ -1015,6 +2276,78 @@ fn syscall_open(address: u64, flags: u64) -> Result<u64, i32> {
     Ok(fd as u64)
 }
 
+fn syscall_pipe(address: u64) -> Result<u64, i32> {
+    paging::validate_user_range(address, core::mem::size_of::<[i32; 2]>(), true)
+        .map_err(|_| EFAULT)?;
+    let (read_end, write_end) = create_pipe()?;
+    let (read_fd, write_fd) = {
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        install_pipe_descriptors(&mut process.descriptors, read_end, write_end)?
+    };
+    unsafe {
+        (address as *mut [i32; 2]).write_unaligned([read_fd as i32, write_fd as i32]);
+    }
+    Ok(0)
+}
+
+fn syscall_dup2(source_fd: u64, target_fd: u64) -> Result<u64, i32> {
+    let source_fd = usize::try_from(source_fd).map_err(|_| EBADF)?;
+    let target_fd = usize::try_from(target_fd).map_err(|_| EBADF)?;
+    if target_fd >= MAX_OPEN_FILES {
+        return Err(EBADF);
+    }
+    if source_fd == target_fd {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        return process
+            .descriptors
+            .get(source_fd)
+            .and_then(Option::as_ref)
+            .map(|_| target_fd as u64)
+            .ok_or(EBADF);
+    }
+
+    let replaced_pipe_id = {
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        let duplicate = process
+            .descriptors
+            .get(source_fd)
+            .and_then(Option::as_ref)
+            .ok_or(EBADF)?
+            .clone();
+        let replaced_pipe_id = process
+            .descriptors
+            .get(target_fd)
+            .and_then(Option::as_ref)
+            .and_then(|descriptor| match descriptor {
+                UserDescriptor::Pipe(endpoint) => Some(endpoint.pipe.lock().id),
+                _ => None,
+            });
+        if target_fd >= process.descriptors.len() {
+            let additional = target_fd + 1 - process.descriptors.len();
+            process
+                .descriptors
+                .try_reserve(additional)
+                .map_err(|_| ENOMEM)?;
+            process.descriptors.resize_with(target_fd + 1, || None);
+        }
+        process.descriptors[target_fd] = Some(duplicate);
+        replaced_pipe_id
+    };
+    if let Some(pipe_id) = replaced_pipe_id {
+        wake_pipe_waiters(pipe_id, true, true);
+    }
+    Ok(target_fd as u64)
+}
+
 fn syscall_close(fd: u64) -> Result<u64, i32> {
     let fd = usize::try_from(fd).map_err(|_| EBADF)?;
     let mut process = USER_PROCESS.lock();
@@ -1025,7 +2358,15 @@ fn syscall_close(fd: u64) -> Result<u64, i32> {
     if descriptor.is_none() {
         return Err(EBADF);
     }
+    let pipe_id = descriptor.as_ref().and_then(|descriptor| match descriptor {
+        UserDescriptor::Pipe(endpoint) => Some(endpoint.pipe.lock().id),
+        _ => None,
+    });
     *descriptor = None;
+    drop(process);
+    if let Some(pipe_id) = pipe_id {
+        wake_pipe_waiters(pipe_id, true, true);
+    }
     Ok(0)
 }
 
@@ -1037,6 +2378,7 @@ fn syscall_lseek(fd: u64, offset: i64, whence: u64) -> Result<u64, i32> {
     }
     let file = match process.descriptors.get_mut(fd).and_then(Option::as_mut) {
         Some(UserDescriptor::File(file)) => file,
+        Some(UserDescriptor::Pipe(_) | UserDescriptor::Directory(_)) => return Err(ESPIPE),
         _ => return Err(EBADF),
     };
     if fs::is_tty_path(&file.path) {
@@ -1056,6 +2398,74 @@ fn syscall_lseek(fd: u64, offset: i64, whence: u64) -> Result<u64, i32> {
     }
     file.offset = result as usize;
     Ok(file.offset as u64)
+}
+
+fn syscall_opendir(address: u64) -> Result<u64, i32> {
+    let path = resolve_process_path(&copy_user_path(address)?)?;
+    let entries = fs::with_vfs(|vfs| vfs.read_dir(&path))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let fd = reserve_descriptor_slot(&mut process.descriptors)?;
+    process.descriptors[fd] = Some(UserDescriptor::Directory(Arc::new(Mutex::new(
+        DirectoryStream {
+            entries,
+            next_entry: 0,
+        },
+    ))));
+    Ok(fd as u64)
+}
+
+fn syscall_readdir(fd: u64, address: u64) -> Result<u64, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let directory = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        match process.descriptors.get(fd).and_then(Option::as_ref) {
+            Some(UserDescriptor::Directory(directory)) => Arc::clone(directory),
+            Some(_) => return Err(ENOTDIR),
+            None => return Err(EBADF),
+        }
+    };
+
+    paging::validate_user_range(address, core::mem::size_of::<UserDirent>(), true)
+        .map_err(|_| EFAULT)?;
+    let mut directory = directory.lock();
+    let Some(entry) = directory.entries.get(directory.next_entry) else {
+        return Ok(0);
+    };
+    let record = user_dirent(directory.next_entry, entry)?;
+    directory.next_entry += 1;
+    unsafe {
+        core::ptr::write_unaligned(address as *mut UserDirent, record);
+    }
+    Ok(1)
+}
+
+fn user_dirent(index: usize, entry: &DirectoryEntry) -> Result<UserDirent, i32> {
+    if entry.name.len() >= 256 {
+        return Err(ENAMETOOLONG);
+    }
+    let offset = i64::try_from(index.checked_add(1).ok_or(EOVERFLOW)?).map_err(|_| EOVERFLOW)?;
+    let file_type = match entry.metadata.node_type {
+        NodeType::File => 8,
+        NodeType::Directory => 4,
+        NodeType::Symlink => 10,
+    };
+    let mut record = UserDirent {
+        inode: 0,
+        offset,
+        record_length: u16::try_from(core::mem::size_of::<UserDirent>()).map_err(|_| EOVERFLOW)?,
+        file_type,
+        name: [0; 256],
+    };
+    record.name[..entry.name.len()].copy_from_slice(entry.name.as_bytes());
+    Ok(record)
 }
 
 fn syscall_stat(path_address: u64, stat_address: u64) -> Result<u64, i32> {
@@ -1120,11 +2530,306 @@ fn syscall_brk(address: u64) -> Result<u64, i32> {
     if address == 0 {
         return Ok(process.program_break);
     }
-    if !(HEAP_START..=process.heap_end).contains(&address) {
-        return Err(ENOMEM);
+    let target_mapped_end = heap_mapping_end(address, process.heap_limit)?;
+
+    if target_mapped_end > process.heap_mapped_end {
+        let additional_pages =
+            usize::try_from((target_mapped_end - process.heap_mapped_end) / PAGE_SIZE)
+                .map_err(|_| ENOMEM)?;
+        process
+            .heap_pages
+            .try_reserve_exact(additional_pages)
+            .map_err(|_| ENOMEM)?;
+        let initial_page_count = process.heap_pages.len();
+        let mut page = process.heap_mapped_end;
+        while page < target_mapped_end {
+            if let Err(error) = map_zeroed_page(
+                page,
+                paging::flags::USER | paging::flags::WRITABLE | paging::flags::NO_EXECUTE,
+                &mut process.heap_pages,
+            ) {
+                let cleanup =
+                    release_tracked_pages_from(&mut process.heap_pages, initial_page_count);
+                return Err(if cleanup.is_err() {
+                    EIO
+                } else {
+                    match error {
+                        ElfError::OutOfMemory => ENOMEM,
+                        ElfError::Paging(error) => paging_errno(error),
+                        _ => EIO,
+                    }
+                });
+            }
+            page += PAGE_SIZE;
+        }
+        process.heap_mapped_end = target_mapped_end;
+    } else if target_mapped_end < process.heap_mapped_end {
+        while process.heap_mapped_end > target_mapped_end {
+            let page = process.heap_mapped_end - PAGE_SIZE;
+            if process.heap_pages.last().copied() != Some(page) {
+                return Err(EIO);
+            }
+            let physical = unsafe { paging::unmap_page(page) }.map_err(|_| EIO)?;
+            free_frame(physical as usize);
+            process.heap_pages.pop();
+            process.heap_mapped_end = page;
+        }
     }
+
     process.program_break = address;
     Ok(address)
+}
+
+fn heap_mapping_end(address: u64, heap_limit: u64) -> Result<u64, i32> {
+    if !(HEAP_START..=heap_limit).contains(&address) {
+        return Err(ENOMEM);
+    }
+    let mapped_end = address.checked_add(PAGE_SIZE - 1).ok_or(ENOMEM)? & !(PAGE_SIZE - 1);
+    let mapped_end = mapped_end.max(HEAP_INITIAL_END);
+    if mapped_end > heap_limit {
+        return Err(ENOMEM);
+    }
+    Ok(mapped_end)
+}
+
+fn syscall_mmap(address: u64, length: u64, protection: u64) -> Result<u64, i32> {
+    let (mapped_size, page_count) = mapping_size(length)?;
+    let page_flags = mapping_flags(protection)?;
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+
+    let start = if address == 0 {
+        let end = process.mmap_cursor.checked_add(mapped_size).ok_or(ENOMEM)?;
+        if process.mmap_cursor < paging::USER_ADDRESS_MIN || end > MMAP_END {
+            return Err(ENOMEM);
+        }
+        process.mmap_cursor
+    } else {
+        if address % PAGE_SIZE != 0 {
+            return Err(EINVAL);
+        }
+        validate_mapping_range(address, mapped_size)?;
+        address
+    };
+    let end = start.checked_add(mapped_size).ok_or(ENOMEM)?;
+    process
+        .mmap_pages
+        .try_reserve_exact(page_count)
+        .map_err(|_| ENOMEM)?;
+    let initial_page_count = process.mmap_pages.len();
+
+    for index in 0..page_count {
+        let page = start
+            .checked_add(
+                u64::try_from(index)
+                    .map_err(|_| ENOMEM)?
+                    .checked_mul(PAGE_SIZE)
+                    .ok_or(ENOMEM)?,
+            )
+            .ok_or(ENOMEM)?;
+        let Some(physical) = allocate_frame() else {
+            let cleanup = release_tracked_pages_from(&mut process.mmap_pages, initial_page_count);
+            return Err(if cleanup.is_err() { EIO } else { ENOMEM });
+        };
+        let physical = physical as u64;
+        if let Err(error) = unsafe { paging::map_page(page, physical, page_flags) } {
+            free_frame(physical as usize);
+            let cleanup = release_tracked_pages_from(&mut process.mmap_pages, initial_page_count);
+            return Err(if cleanup.is_err() {
+                EIO
+            } else {
+                paging_errno(error)
+            });
+        }
+        process.mmap_pages.push(page);
+    }
+
+    process.mmap_pages.sort_unstable();
+    process.mmap_cursor = process.mmap_cursor.max(end);
+    Ok(start)
+}
+
+fn syscall_mmap_file(fd: u64, offset: u64, length: u64) -> Result<u64, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let path = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        let file = match process.descriptors.get(fd).and_then(Option::as_ref) {
+            Some(UserDescriptor::File(file)) if file.readable => file,
+            _ => return Err(EBADF),
+        };
+        let mut path = String::new();
+        path.try_reserve_exact(file.path.len())
+            .map_err(|_| ENOMEM)?;
+        path.push_str(&file.path);
+        path
+    };
+
+    mapping_size(length)?;
+    let metadata = fs::with_vfs(|vfs| vfs.metadata(&path))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    if metadata.node_type != NodeType::File {
+        return Err(EINVAL);
+    }
+    let file_size = u64::try_from(metadata.len).map_err(|_| EINVAL)?;
+    validate_file_mapping_range(offset, length, file_size)?;
+    let file_offset = usize::try_from(offset).map_err(|_| EINVAL)?;
+    let file_length = usize::try_from(length).map_err(|_| EINVAL)?;
+    file_offset.checked_add(file_length).ok_or(EINVAL)?;
+
+    let address = syscall_mmap(0, length, PROT_READ)?;
+    let mut copied = 0usize;
+    let mut page_buffer = [0; PAGE_SIZE as usize];
+    while copied < file_length {
+        let chunk = (file_length - copied).min(PAGE_SIZE as usize);
+        let read_offset = file_offset + copied;
+        let read = match fs::with_vfs(|vfs| vfs.read(&path, read_offset, &mut page_buffer[..chunk]))
+        {
+            Ok(Ok(read)) => read,
+            Ok(Err(error)) | Err(error) => {
+                return discard_mapping(address, length, errno_from_fs(error));
+            }
+        };
+        if read != chunk {
+            return discard_mapping(address, length, EIO);
+        }
+        let destination = match address.checked_add(copied as u64) {
+            Some(destination) => destination,
+            None => return discard_mapping(address, length, EIO),
+        };
+        if copy_to_user_pages(destination, &page_buffer[..chunk]).is_err() {
+            return discard_mapping(address, length, EIO);
+        }
+        copied += chunk;
+    }
+    Ok(address)
+}
+
+fn discard_mapping(address: u64, length: u64, error: i32) -> Result<u64, i32> {
+    if syscall_munmap(address, length).is_err() {
+        Err(EIO)
+    } else {
+        Err(error)
+    }
+}
+
+fn syscall_munmap(address: u64, length: u64) -> Result<u64, i32> {
+    if address == 0 || address % PAGE_SIZE != 0 {
+        return Err(EINVAL);
+    }
+    let (mapped_size, page_count) = mapping_size(length)?;
+    validate_mapping_range(address, mapped_size)?;
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+
+    for index in 0..page_count {
+        let page = address
+            .checked_add(
+                u64::try_from(index)
+                    .map_err(|_| EINVAL)?
+                    .checked_mul(PAGE_SIZE)
+                    .ok_or(EINVAL)?,
+            )
+            .ok_or(EINVAL)?;
+        if process.mmap_pages.binary_search(&page).is_err() {
+            return Err(EINVAL);
+        }
+    }
+    let first_page = process
+        .mmap_pages
+        .binary_search(&address)
+        .map_err(|_| EINVAL)?;
+    for index in 0..page_count {
+        let page = address
+            .checked_add(
+                u64::try_from(index)
+                    .map_err(|_| EINVAL)?
+                    .checked_mul(PAGE_SIZE)
+                    .ok_or(EINVAL)?,
+            )
+            .ok_or(EINVAL)?;
+        let physical = match unsafe { paging::unmap_page(page) } {
+            Ok(physical) => physical,
+            Err(_) => {
+                process.mmap_pages.retain(|mapped| *mapped != 0);
+                return Err(EIO);
+            }
+        };
+        free_frame(physical as usize);
+        process.mmap_pages[first_page + index] = 0;
+    }
+    process.mmap_pages.retain(|mapped| *mapped != 0);
+    Ok(0)
+}
+
+fn mapping_size(length: u64) -> Result<(u64, usize), i32> {
+    if length == 0 {
+        return Err(EINVAL);
+    }
+    let mapped_size = length.checked_add(PAGE_SIZE - 1).ok_or(EINVAL)? & !(PAGE_SIZE - 1);
+    let page_count = usize::try_from(mapped_size / PAGE_SIZE).map_err(|_| ENOMEM)?;
+    Ok((mapped_size, page_count))
+}
+
+fn validate_file_mapping_range(offset: u64, length: u64, file_size: u64) -> Result<(), i32> {
+    if length == 0 || offset % PAGE_SIZE != 0 {
+        return Err(EINVAL);
+    }
+    let end = offset.checked_add(length).ok_or(EINVAL)?;
+    if end > file_size {
+        return Err(EINVAL);
+    }
+    Ok(())
+}
+
+fn mapping_flags(protection: u64) -> Result<u64, i32> {
+    if protection & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0
+        || protection & PROT_READ == 0
+        || protection & (PROT_WRITE | PROT_EXEC) == (PROT_WRITE | PROT_EXEC)
+    {
+        return Err(EINVAL);
+    }
+    let mut flags = paging::flags::USER;
+    if protection & PROT_WRITE != 0 {
+        flags |= paging::flags::WRITABLE;
+    }
+    if protection & PROT_EXEC == 0 {
+        flags |= paging::flags::NO_EXECUTE;
+    }
+    Ok(flags)
+}
+
+fn validate_mapping_range(address: u64, length: u64) -> Result<(), i32> {
+    let end = address.checked_add(length).ok_or(EINVAL)?;
+    if address < paging::USER_ADDRESS_MIN || end > MMAP_END {
+        return Err(EINVAL);
+    }
+    Ok(())
+}
+
+fn release_tracked_pages_from(mapped_pages: &mut Vec<u64>, first_page: usize) -> Result<(), i32> {
+    while mapped_pages.len() > first_page {
+        let page = *mapped_pages.last().ok_or(EIO)?;
+        let physical = unsafe { paging::unmap_page(page) }.map_err(|_| EIO)?;
+        mapped_pages.pop();
+        free_frame(physical as usize);
+    }
+    Ok(())
+}
+
+fn paging_errno(error: PagingError) -> i32 {
+    match error {
+        PagingError::AlreadyMapped => EEXIST,
+        PagingError::OutOfFrames | PagingError::HhdmUnavailable => ENOMEM,
+        _ => EINVAL,
+    }
 }
 
 fn syscall_chdir(path_address: u64) -> Result<u64, i32> {
@@ -1140,6 +2845,18 @@ fn syscall_chdir(path_address: u64) -> Result<u64, i32> {
         return Err(EINTR);
     }
     process.cwd = path;
+    Ok(0)
+}
+
+fn syscall_chmod(path_address: u64, mode: u64) -> Result<u64, i32> {
+    let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
+    if mode & !0o777 != 0 {
+        return Err(EINVAL);
+    }
+    let path = resolve_process_path(&copy_user_path(path_address)?)?;
+    fs::with_vfs(|vfs| vfs.set_permissions(&path, mode))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
     Ok(0)
 }
 
@@ -1165,6 +2882,20 @@ fn syscall_getcwd(address: u64, size: u64) -> Result<u64, i32> {
         (address as *mut u8).add(path.len()).write(0);
     }
     Ok(needed as u64)
+}
+
+fn syscall_putpixel(x: u64, y: u64, color: u64) -> Result<u64, i32> {
+    let framebuffer = crate::graphics::Framebuffer::get().ok_or(ENODEV)?;
+    let color = validate_pixel(x, y, color, framebuffer.width(), framebuffer.height())?;
+    framebuffer.write_pixel(x, y, crate::graphics::Color(color));
+    Ok(0)
+}
+
+fn validate_pixel(x: u64, y: u64, color: u64, width: u64, height: u64) -> Result<u32, i32> {
+    if color > 0x00FF_FFFF || x >= width || y >= height {
+        return Err(EINVAL);
+    }
+    Ok(color as u32)
 }
 
 fn resolve_process_path(path: &str) -> Result<String, i32> {
@@ -1202,17 +2933,97 @@ fn resolve_user_path(cwd: &str, path: &str) -> Result<String, FsError> {
 }
 
 fn copy_user_path(address: u64) -> Result<String, i32> {
+    copy_user_string(address, MAX_USER_PATH)
+}
+
+fn copy_user_arguments(address: u64, count: u64) -> Result<Vec<String>, i32> {
+    let count = usize::try_from(count).map_err(|_| EINVAL)?;
+    if count > MAX_ARGUMENTS {
+        return Err(EINVAL);
+    }
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let pointer_bytes = count
+        .checked_mul(core::mem::size_of::<u64>())
+        .ok_or(EINVAL)?;
+    if address == 0 {
+        return Err(EFAULT);
+    }
+    paging::validate_user_range(address, pointer_bytes, false).map_err(|_| EFAULT)?;
+
+    let mut arguments = Vec::new();
+    arguments.try_reserve_exact(count).map_err(|_| ENOMEM)?;
+    let mut total_bytes = 0usize;
+    for index in 0..count {
+        let pointer_address = address
+            .checked_add((index * core::mem::size_of::<u64>()) as u64)
+            .ok_or(EFAULT)?;
+        let argument_address = unsafe { (pointer_address as *const u64).read_unaligned() };
+        let argument = copy_user_string(argument_address, MAX_ARGUMENT_BYTES)?;
+        total_bytes = total_bytes
+            .checked_add(argument.len().checked_add(1).ok_or(EINVAL)?)
+            .filter(|length| *length <= MAX_ARGUMENT_BYTES)
+            .ok_or(EINVAL)?;
+        arguments.push(argument);
+    }
+    Ok(arguments)
+}
+
+fn copy_user_environment(address: u64) -> Result<Vec<String>, i32> {
+    if address == 0 {
+        return Err(EFAULT);
+    }
+    let mut environment = Vec::new();
+    environment
+        .try_reserve_exact(MAX_ENVIRONMENT_VARIABLES)
+        .map_err(|_| ENOMEM)?;
+    let mut total_bytes = 0usize;
+    for index in 0..=MAX_ENVIRONMENT_VARIABLES {
+        let pointer_address = address
+            .checked_add((index * core::mem::size_of::<u64>()) as u64)
+            .ok_or(EFAULT)?;
+        paging::validate_user_range(pointer_address, core::mem::size_of::<u64>(), false)
+            .map_err(|_| EFAULT)?;
+        let entry_address = unsafe { (pointer_address as *const u64).read_unaligned() };
+        if entry_address == 0 {
+            return Ok(environment);
+        }
+        if index == MAX_ENVIRONMENT_VARIABLES {
+            return Err(E2BIG);
+        }
+
+        let entry = copy_user_string(entry_address, MAX_ENVIRONMENT_BYTES)?;
+        let (key, _) = entry.split_once('=').ok_or(EINVAL)?;
+        if !valid_environment_key(key) {
+            return Err(EINVAL);
+        }
+        total_bytes = total_bytes
+            .checked_add(entry.len().checked_add(1).ok_or(E2BIG)?)
+            .filter(|length| *length <= MAX_ENVIRONMENT_BYTES)
+            .ok_or(E2BIG)?;
+        environment.push(entry);
+    }
+    Err(E2BIG)
+}
+
+fn copy_user_string(address: u64, maximum_length: usize) -> Result<String, i32> {
     if address == 0 {
         return Err(EFAULT);
     }
     let mut bytes = Vec::new();
-    bytes.try_reserve(MAX_USER_PATH).map_err(|_| ENOMEM)?;
-    for index in 0..MAX_USER_PATH {
+    bytes
+        .try_reserve(maximum_length.min(64))
+        .map_err(|_| ENOMEM)?;
+    for index in 0..maximum_length {
         let current = address.checked_add(index as u64).ok_or(EFAULT)?;
         paging::validate_user_range(current, 1, false).map_err(|_| EFAULT)?;
         let byte = unsafe { (current as *const u8).read() };
         if byte == 0 {
             return String::from_utf8(bytes).map_err(|_| EILSEQ);
+        }
+        if bytes.len() == bytes.capacity() {
+            bytes.try_reserve(1).map_err(|_| ENOMEM)?;
         }
         bytes.push(byte);
     }
@@ -1267,7 +3078,17 @@ fn next_runnable(
     None
 }
 
+fn is_process_runnable(process: &ScheduledProcess) -> bool {
+    process.exit_status.is_none() && process.waiting_for.is_none()
+}
+
 pub fn terminate_user(frame: &mut InterruptFrame, status: u64) -> *mut InterruptFrame {
+    let next_frame = terminate_user_inner(frame, status);
+    restore_current_user_fpu();
+    next_frame
+}
+
+fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
     if frame.stack_frame.code_segment & 3 != 3 {
         return frame_pointer;
@@ -1277,6 +3098,8 @@ pub fn terminate_user(frame: &mut InterruptFrame, status: u64) -> *mut Interrupt
     if scheduler.active && !scheduler.processes.is_empty() {
         let current = scheduler.current;
         if current < scheduler.processes.len() {
+            let child_pid = scheduler.processes[current].pid;
+            let parent_pid = scheduler.processes[current].parent_pid;
             scheduler.processes[current].exit_status = Some(status);
             let mut active_process = USER_PROCESS.lock();
             core::mem::swap(
@@ -1284,8 +3107,61 @@ pub fn terminate_user(frame: &mut InterruptFrame, status: u64) -> *mut Interrupt
                 &mut scheduler.processes[current].state,
             );
             scheduler.processes[current].state.active = false;
+            while let Some(descriptor) = scheduler.processes[current].state.descriptors.pop() {
+                let pipe_id = descriptor.as_ref().and_then(|descriptor| match descriptor {
+                    UserDescriptor::Pipe(endpoint) => Some(endpoint.pipe.lock().id),
+                    _ => None,
+                });
+                drop(descriptor);
+                if let Some(pipe_id) = pipe_id {
+                    wake_pipe_waiters_in_scheduler(&mut scheduler, pipe_id, true, true);
+                }
+            }
+
+            if let Some(parent) = parent_pid.and_then(|pid| {
+                scheduler.processes.iter().position(|process| {
+                    process.pid == pid
+                        && matches!(
+                            process.waiting_for,
+                            Some(ProcessWait::Child(target))
+                                if wait_target_matches(target, child_pid)
+                        )
+                })
+            }) {
+                let status_pointer = scheduler.processes[parent].wait_status_pointer;
+                scheduler.processes[parent].waiting_for = None;
+                scheduler.processes[parent].wait_status_pointer = 0;
+                core::mem::swap(&mut *active_process, &mut scheduler.processes[parent].state);
+                scheduler.current = parent;
+                let parent_process = &scheduler.processes[parent];
+                let parent_frame = parent_process.frame_pointer as *mut InterruptFrame;
+                unsafe {
+                    gdt::set_ring0_stack_top(parent_process.kernel_stack_top);
+                    parent_process.image.address_space.activate();
+                    (*parent_frame).rax = if status_pointer == 0 {
+                        child_pid
+                    } else {
+                        match write_user_u64(status_pointer, status) {
+                            Ok(()) => child_pid,
+                            Err(error) => (-(error as i64)) as u64,
+                        }
+                    };
+                }
+                if status_pointer == 0
+                    || paging::validate_user_range(
+                        status_pointer,
+                        core::mem::size_of::<u64>(),
+                        true,
+                    )
+                    .is_ok()
+                {
+                    scheduler.processes[current].reaped = true;
+                }
+                return parent_frame;
+            }
+
             if let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-                scheduler.processes[index].exit_status.is_none()
+                is_process_runnable(&scheduler.processes[index])
             }) {
                 core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
                 scheduler.current = next;
@@ -1510,10 +3386,55 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, ElfError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EACCES, EEXIST, EILSEQ, ENOENT, ENOSYS, ElfError, NodeType, build_initial_stack,
-        dispatch_syscall, errno_from_fs, next_runnable, parse, resolve_user_path, stat_mode,
+        EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOMEM, ENOSYS, EPIPE, ElfError,
+        HEAP_INITIAL_END, HEAP_START, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY, PROT_EXEC,
+        PROT_READ, PROT_WRITE, Pipe, SYSCALL_BRK, SYSCALL_MMAP, SYSCALL_MMAP_FILE, SYSCALL_MUNMAP,
+        UserDescriptor, UserDirent, WAIT_ANY_PID, build_initial_stack, create_pipe,
+        dispatch_syscall, errno_from_fs, heap_mapping_end, install_pipe_descriptors, mapping_flags,
+        mapping_size, next_runnable, parse, resolve_user_path, stat_mode, user_dirent,
+        validate_file_mapping_range, validate_mapping_range, validate_pixel, wait_target_matches,
     };
-    use crate::fs::FsError;
+    use crate::fs::{DirectoryEntry, FsError, Metadata};
+
+    #[test]
+    fn encodes_directory_entries_in_the_user_abi_layout() {
+        let entry = DirectoryEntry {
+            name: String::from("sample"),
+            metadata: Metadata {
+                node_type: NodeType::Directory,
+                len: 0,
+                permissions: 0o755,
+            },
+        };
+        let record = user_dirent(2, &entry).unwrap();
+
+        assert_eq!(core::mem::size_of::<UserDirent>(), 280);
+        assert_eq!(core::mem::offset_of!(UserDirent, name), 19);
+        assert_eq!(record.offset, 3);
+        assert_eq!(
+            record.record_length as usize,
+            core::mem::size_of::<UserDirent>()
+        );
+        assert_eq!(record.file_type, 4);
+        assert_eq!(&record.name[..7], b"sample\0");
+    }
+
+    #[test]
+    fn rejects_directory_entry_names_that_do_not_fit_the_abi() {
+        let entry = DirectoryEntry {
+            name: String::from_utf8(alloc::vec![b'x'; 256]).unwrap(),
+            metadata: Metadata {
+                node_type: NodeType::File,
+                len: 0,
+                permissions: 0o644,
+            },
+        };
+
+        assert!(matches!(
+            user_dirent(0, &entry),
+            Err(error) if error == super::ENAMETOOLONG
+        ));
+    }
 
     fn sample_elf() -> Vec<u8> {
         let mut bytes = alloc::vec![0; 0x1001];
@@ -1535,6 +3456,34 @@ mod tests {
         put_u64(&mut bytes, 112, 0x1000);
         bytes[0x1000] = 0xC3;
         bytes
+    }
+
+    #[test]
+    fn formats_printf_string_signed_and_hexadecimal_arguments() {
+        let arguments = [24, 42, 1];
+        let output = super::format_printf(
+            "umur %d, hex %#x, %s\n",
+            |index| arguments.get(index).copied().ok_or(EINVAL),
+            |address, _| {
+                if address == 1 {
+                    Ok(alloc::string::String::from("siap"))
+                } else {
+                    Err(EINVAL)
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(output, b"umur 24, hex 0x2a, siap\n");
+    }
+
+    #[test]
+    fn formats_printf_width_and_rejects_unsupported_conversions() {
+        let output = super::format_printf("%04d", |_| Ok(7), |_, _| Err(EINVAL)).unwrap();
+        assert_eq!(output, b"0007");
+        assert_eq!(
+            super::format_printf("%.2f", |_| Ok(0), |_, _| Err(EINVAL)),
+            Err(EINVAL)
+        );
     }
 
     fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
@@ -1584,7 +3533,87 @@ mod tests {
         assert_eq!(errno_from_fs(FsError::AlreadyExists), EEXIST);
         assert_eq!(errno_from_fs(FsError::PermissionDenied), EACCES);
         assert_eq!(errno_from_fs(FsError::InvalidData), EILSEQ);
-        assert_eq!(dispatch_syscall(u64::MAX, 0, 0, 0), Err(ENOSYS));
+        assert_eq!(dispatch_syscall(u64::MAX, 0, 0, 0, 0), Err(ENOSYS));
+    }
+
+    #[test]
+    fn validates_pixel_color_and_framebuffer_bounds() {
+        assert_eq!(validate_pixel(2, 3, 0x123456, 8, 8), Ok(0x123456));
+        assert_eq!(validate_pixel(8, 3, 0, 8, 8), Err(EINVAL));
+        assert_eq!(validate_pixel(2, 8, 0, 8, 8), Err(EINVAL));
+        assert_eq!(validate_pixel(2, 3, 0x1_000000, 8, 8), Err(EINVAL));
+    }
+
+    #[test]
+    fn validates_anonymous_mapping_size_and_protection() {
+        assert_eq!(mapping_size(1), Ok((4096, 1)));
+        assert_eq!(mapping_size(4097), Ok((8192, 2)));
+        assert_eq!(mapping_size(0), Err(EINVAL));
+        assert_eq!(mapping_size(u64::MAX), Err(EINVAL));
+
+        assert!(mapping_flags(PROT_READ).is_ok());
+        assert!(mapping_flags(PROT_READ | PROT_WRITE).is_ok());
+        assert!(mapping_flags(PROT_READ | PROT_EXEC).is_ok());
+        assert_eq!(mapping_flags(0), Err(EINVAL));
+        assert_eq!(
+            mapping_flags(PROT_READ | PROT_WRITE | PROT_EXEC),
+            Err(EINVAL)
+        );
+        assert_eq!(mapping_flags(PROT_WRITE), Err(EINVAL));
+    }
+
+    #[test]
+    fn mmap_syscalls_require_an_active_user_process() {
+        assert_eq!(
+            dispatch_syscall(SYSCALL_MMAP, 0, 4096, PROT_READ, 0),
+            Err(EINTR)
+        );
+        assert_eq!(
+            dispatch_syscall(SYSCALL_MUNMAP, MMAP_START, 4096, 0, 0),
+            Err(EINTR)
+        );
+        assert_eq!(
+            dispatch_syscall(SYSCALL_MMAP_FILE, 3, 0, 4096, 0),
+            Err(EINTR)
+        );
+        assert_eq!(
+            dispatch_syscall(SYSCALL_BRK, HEAP_START + 1, 0, 0, 0),
+            Err(EINTR)
+        );
+    }
+
+    #[test]
+    fn validates_read_only_file_mapping_bounds() {
+        assert_eq!(validate_file_mapping_range(4096, 4096, 8192), Ok(()));
+        assert_eq!(validate_file_mapping_range(1, 4096, 8192), Err(EINVAL));
+        assert_eq!(validate_file_mapping_range(0, 0, 8192), Err(EINVAL));
+        assert_eq!(validate_file_mapping_range(4096, 4097, 8192), Err(EINVAL));
+        assert_eq!(
+            validate_file_mapping_range(u64::MAX - 4095, 8192, u64::MAX),
+            Err(EINVAL)
+        );
+    }
+
+    #[test]
+    fn computes_heap_mapping_growth_and_enforces_heap_limit() {
+        assert_eq!(
+            heap_mapping_end(HEAP_START, MMAP_START),
+            Ok(HEAP_INITIAL_END)
+        );
+        assert_eq!(
+            heap_mapping_end(HEAP_INITIAL_END + 1, MMAP_START),
+            Ok(HEAP_INITIAL_END + 4096)
+        );
+        assert_eq!(heap_mapping_end(MMAP_START, MMAP_START), Ok(MMAP_START));
+        assert_eq!(heap_mapping_end(MMAP_START + 1, MMAP_START), Err(ENOMEM));
+    }
+
+    #[test]
+    fn validates_anonymous_mapping_user_address_range() {
+        assert_eq!(validate_mapping_range(0x10000, 4096), Ok(()));
+        assert_eq!(validate_mapping_range(MMAP_END - 4096, 4096), Ok(()));
+        assert_eq!(validate_mapping_range(0xFFFF, 4096), Err(EINVAL));
+        assert_eq!(validate_mapping_range(MMAP_END - 4095, 4096), Err(EINVAL));
     }
 
     #[test]
@@ -1613,7 +3642,7 @@ mod tests {
     #[test]
     fn builds_an_aligned_initial_stack_with_argv_and_empty_envp() {
         let arguments = alloc::vec![String::from("program"), String::from("two words")];
-        let (stack_pointer, stack) = build_initial_stack(0x7000, 4096, &arguments).unwrap();
+        let (stack_pointer, stack) = build_initial_stack(0x7000, 4096, &arguments, &[]).unwrap();
         let word =
             |offset: usize| u64::from_le_bytes(stack[offset..offset + 8].try_into().unwrap());
         assert_eq!(stack_pointer % 16, 0);
@@ -1625,6 +3654,34 @@ mod tests {
         assert_eq!(&stack[second..second + 10], b"two words\0");
         assert_eq!(word(24), 0);
         assert_eq!(word(32), 0);
+    }
+
+    #[test]
+    fn builds_initial_stack_with_environment_pointers() {
+        let arguments = alloc::vec![String::from("program")];
+        let environment = alloc::vec![String::from("PATH=/bin:/usr/bin"), String::from("HOME=/"),];
+        let (stack_pointer, stack) =
+            build_initial_stack(0x7000, 4096, &arguments, &environment).unwrap();
+        let word =
+            |offset: usize| u64::from_le_bytes(stack[offset..offset + 8].try_into().unwrap());
+        assert_eq!(word(0), 1);
+        assert_eq!(word(16), 0);
+
+        let path = (word(24) - stack_pointer) as usize;
+        let home = (word(32) - stack_pointer) as usize;
+        assert_eq!(&stack[path..path + 19], b"PATH=/bin:/usr/bin\0");
+        assert_eq!(&stack[home..home + 7], b"HOME=/\0");
+        assert_eq!(word(40), 0);
+    }
+
+    #[test]
+    fn rejects_invalid_environment_entries() {
+        let arguments = alloc::vec![String::from("program")];
+        let invalid = alloc::vec![String::from("=value")];
+        assert_eq!(
+            build_initial_stack(0x7000, 4096, &arguments, &invalid),
+            Err(ElfError::InvalidArguments)
+        );
     }
 
     #[test]
@@ -1658,16 +3715,80 @@ mod tests {
     }
 
     #[test]
+    fn wait_target_matches_specific_or_any_child() {
+        assert!(wait_target_matches(7, 7));
+        assert!(!wait_target_matches(7, 8));
+        assert!(wait_target_matches(WAIT_ANY_PID, 7));
+    }
+
+    #[test]
+    fn pipe_handles_empty_eof_capacity_and_wrapped_data() {
+        let mut buffer = Vec::new();
+        buffer.resize(PIPE_CAPACITY, 0);
+        let mut pipe = Pipe {
+            id: 1,
+            buffer,
+            head: 0,
+            length: 0,
+            readers: 1,
+            writers: 1,
+        };
+        let mut output = [0; 5];
+        assert_eq!(pipe.read(&mut output), Err(EAGAIN));
+
+        assert_eq!(pipe.write(b"abc"), Ok(3));
+        assert_eq!(pipe.read(&mut output[..2]), Ok(2));
+        assert_eq!(&output[..2], b"ab");
+        assert_eq!(pipe.write(b"defg"), Ok(4));
+        assert_eq!(pipe.read(&mut output), Ok(5));
+        assert_eq!(&output, b"cdefg");
+
+        let full = [1; PIPE_CAPACITY];
+        assert_eq!(pipe.write(&full), Ok(PIPE_CAPACITY));
+        assert_eq!(pipe.write(b"x"), Err(EAGAIN));
+        pipe.readers = 0;
+        assert_eq!(pipe.write(b"x"), Err(EPIPE));
+        pipe.writers = 0;
+        let mut drain = [0; PIPE_CAPACITY];
+        assert_eq!(pipe.read(&mut drain), Ok(PIPE_CAPACITY));
+        assert_eq!(pipe.read(&mut drain), Ok(0));
+    }
+
+    #[test]
+    fn pipe_endpoints_receive_distinct_descriptor_slots() {
+        let mut descriptors = Vec::new();
+        descriptors.extend([
+            Some(UserDescriptor::ConsoleInput),
+            Some(UserDescriptor::ConsoleOutput),
+            Some(UserDescriptor::ConsoleError),
+        ]);
+        let (read_end, write_end) = create_pipe().unwrap();
+
+        assert_eq!(
+            install_pipe_descriptors(&mut descriptors, read_end, write_end),
+            Ok((3, 4))
+        );
+        assert!(descriptors[3].as_ref().is_some_and(|descriptor| matches!(
+            descriptor,
+            UserDescriptor::Pipe(endpoint) if endpoint.readable && !endpoint.writable
+        )));
+        assert!(descriptors[4].as_ref().is_some_and(|descriptor| matches!(
+            descriptor,
+            UserDescriptor::Pipe(endpoint) if !endpoint.readable && endpoint.writable
+        )));
+    }
+
+    #[test]
     fn rejects_arguments_with_nul_or_exceeding_limits() {
         let nul_argument = alloc::vec![String::from("bad\0argument")];
         assert_eq!(
-            build_initial_stack(0x7000, 4096, &nul_argument),
+            build_initial_stack(0x7000, 4096, &nul_argument, &[]),
             Err(ElfError::InvalidArguments)
         );
 
         let too_many = alloc::vec![String::from("arg"); 65];
         assert_eq!(
-            build_initial_stack(0x7000, 4096, &too_many),
+            build_initial_stack(0x7000, 4096, &too_many, &[]),
             Err(ElfError::ArgumentsTooLarge)
         );
     }

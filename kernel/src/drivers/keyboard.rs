@@ -14,14 +14,32 @@ const RIGHT_SHIFT: u8 = 1 << 1;
 const CAPS_LOCK: u8 = 1 << 2;
 const LEFT_CTRL: u8 = 1 << 3;
 const RIGHT_CTRL: u8 = 1 << 4;
+const LEFT_ALT: u8 = 1 << 5;
+const RIGHT_ALT: u8 = 1 << 6;
 
-static INPUT: [AtomicU32; INPUT_CAPACITY] = [const { AtomicU32::new(0) }; INPUT_CAPACITY];
-static INPUT_HEAD: AtomicUsize = AtomicUsize::new(0);
-static INPUT_TAIL: AtomicUsize = AtomicUsize::new(0);
+struct InputQueue {
+    events: [AtomicU32; INPUT_CAPACITY],
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    waker: Once<TaskHandle>,
+}
+
+impl InputQueue {
+    const fn new() -> Self {
+        Self {
+            events: [const { AtomicU32::new(0) }; INPUT_CAPACITY],
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            waker: Once::new(),
+        }
+    }
+}
+
+static INPUT: [InputQueue; crate::terminal::TERMINAL_COUNT] =
+    [const { InputQueue::new() }; crate::terminal::TERMINAL_COUNT];
 static PS2_MODIFIERS: AtomicU8 = AtomicU8::new(0);
 static PS2_EXTENDED: AtomicBool = AtomicBool::new(false);
 static PS2_SKIP_REMAINING: AtomicU8 = AtomicU8::new(0);
-static INPUT_WAKER: Once<TaskHandle> = Once::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyEvent {
@@ -32,8 +50,10 @@ pub enum KeyEvent {
     Down,
 }
 
-pub fn set_input_waker(waker: TaskHandle) {
-    INPUT_WAKER.call_once(|| waker);
+pub fn set_input_waker(terminal: usize, waker: TaskHandle) {
+    if let Some(queue) = INPUT.get(terminal) {
+        queue.waker.call_once(|| waker);
+    }
 }
 
 /// Push one character from an interrupt handler. Returns false if the queue is full.
@@ -43,9 +63,16 @@ pub fn push_char(character: char) -> bool {
 
 /// Push a character or navigation key from an interrupt handler.
 pub fn push_event(event: KeyEvent) -> bool {
-    let head = INPUT_HEAD.load(Ordering::Relaxed);
+    push_event_to(crate::terminal::active_terminal(), event)
+}
+
+fn push_event_to(terminal: usize, event: KeyEvent) -> bool {
+    let Some(queue) = INPUT.get(terminal) else {
+        return false;
+    };
+    let head = queue.head.load(Ordering::Relaxed);
     let next = head.wrapping_add(1) & INPUT_MASK;
-    if next == INPUT_TAIL.load(Ordering::Acquire) {
+    if next == queue.tail.load(Ordering::Acquire) {
         return false;
     }
 
@@ -56,23 +83,25 @@ pub fn push_event(event: KeyEvent) -> bool {
         KeyEvent::Up => KEY_EVENT_BASE + 2,
         KeyEvent::Down => KEY_EVENT_BASE + 3,
     };
-    INPUT[head].store(value, Ordering::Relaxed);
-    INPUT_HEAD.store(next, Ordering::Release);
-    if let Some(waker) = INPUT_WAKER.get() {
+    queue.events[head].store(value, Ordering::Relaxed);
+    queue.head.store(next, Ordering::Release);
+    if let Some(waker) = queue.waker.get() {
         waker.wake();
     }
     true
 }
 
-/// Remove the next event entered by either keyboard driver.
-pub fn pop_event() -> Option<KeyEvent> {
-    let tail = INPUT_TAIL.load(Ordering::Relaxed);
-    if tail == INPUT_HEAD.load(Ordering::Acquire) {
+pub fn pop_event_for(terminal: usize) -> Option<KeyEvent> {
+    let queue = INPUT.get(terminal)?;
+    let tail = queue.tail.load(Ordering::Relaxed);
+    if tail == queue.head.load(Ordering::Acquire) {
         return None;
     }
 
-    let value = INPUT[tail].load(Ordering::Relaxed);
-    INPUT_TAIL.store(tail.wrapping_add(1) & INPUT_MASK, Ordering::Release);
+    let value = queue.events[tail].load(Ordering::Relaxed);
+    queue
+        .tail
+        .store(tail.wrapping_add(1) & INPUT_MASK, Ordering::Release);
     Some(match value {
         KEY_EVENT_BASE => KeyEvent::Left,
         value if value == KEY_EVENT_BASE + 1 => KeyEvent::Right,
@@ -82,27 +111,22 @@ pub fn pop_event() -> Option<KeyEvent> {
     })
 }
 
-/// Remove the next character, discarding navigation keys.
-pub fn pop_char() -> Option<char> {
-    match pop_event()? {
-        KeyEvent::Character(character) => Some(character),
-        _ => None,
-    }
-}
-
-pub async fn next_event() -> KeyEvent {
-    core::future::poll_fn(|_| match pop_event() {
-        Some(event) => core::task::Poll::Ready(event),
-        None => core::task::Poll::Pending,
+pub async fn next_event_for(terminal: usize) -> KeyEvent {
+    core::future::poll_fn(|_| {
+        crate::terminal::redraw_pending();
+        match pop_event_for(terminal) {
+            Some(event) => core::task::Poll::Ready(event),
+            None => core::task::Poll::Pending,
+        }
     })
     .await
 }
 
-pub async fn next_char() -> char {
-    loop {
-        if let KeyEvent::Character(character) = next_event().await {
-            return character;
-        }
+pub fn switch_terminal(terminal: usize) {
+    if crate::terminal::switch_terminal(terminal)
+        && let Some(waker) = INPUT[terminal].waker.get()
+    {
+        waker.wake();
     }
 }
 
@@ -128,6 +152,10 @@ pub fn handle_ps2_irq() {
             update_modifier(RIGHT_CTRL, released);
             return;
         }
+        if key == 0x38 {
+            update_modifier(RIGHT_ALT, released);
+            return;
+        }
         if released {
             return;
         }
@@ -148,8 +176,12 @@ pub fn handle_ps2_irq() {
         0x2A => update_modifier(LEFT_SHIFT, released),
         0x36 => update_modifier(RIGHT_SHIFT, released),
         0x1D => update_modifier(LEFT_CTRL, released),
+        0x38 => update_modifier(LEFT_ALT, released),
         0x3A if !released => {
             PS2_MODIFIERS.fetch_xor(CAPS_LOCK, Ordering::Relaxed);
+        }
+        0x3B..=0x3E if !released && has_ctrl_alt(PS2_MODIFIERS.load(Ordering::Relaxed)) => {
+            switch_terminal((key - 0x3B) as usize);
         }
         _ if released => {}
         _ => {
@@ -170,6 +202,10 @@ fn update_modifier(mask: u8, released: bool) {
     } else {
         PS2_MODIFIERS.fetch_or(mask, Ordering::Relaxed);
     }
+}
+
+fn has_ctrl_alt(modifiers: u8) -> bool {
+    modifiers & (LEFT_CTRL | RIGHT_CTRL) != 0 && modifiers & (LEFT_ALT | RIGHT_ALT) != 0
 }
 
 fn ps2_keycode_to_ascii(key: u8, shift: bool, caps_lock: bool, control: bool) -> Option<char> {
@@ -253,7 +289,15 @@ fn ps2_keycode_to_ascii(key: u8, shift: bool, caps_lock: bool, control: bool) ->
 
 #[cfg(test)]
 mod tests {
-    use super::ps2_keycode_to_ascii;
+    use super::{KeyEvent, pop_event_for, ps2_keycode_to_ascii, push_event_to};
+
+    #[test]
+    fn virtual_terminal_input_queues_are_independent() {
+        assert!(push_event_to(2, KeyEvent::Character('a')));
+        assert!(push_event_to(3, KeyEvent::Character('b')));
+        assert_eq!(pop_event_for(2), Some(KeyEvent::Character('a')));
+        assert_eq!(pop_event_for(3), Some(KeyEvent::Character('b')));
+    }
 
     #[test]
     fn maps_ps2_letters_with_shift_and_caps_lock() {

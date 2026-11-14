@@ -9,13 +9,14 @@ use alloc::vec::Vec;
 
 const OBJECT_MAGIC: &[u8; 8] = b"OCTOBJ1\0";
 const MAX_SOURCE_SIZE: usize = 8 * 1024;
+const MAX_ASSEMBLY_SIZE: usize = 256 * 1024;
 const MAX_C_EXPRESSION_DEPTH: usize = 64;
 const MAX_C_EXPRESSION_OPERATIONS: usize = 64;
 const MAX_C_CONTROL_DEPTH: usize = 32;
 const MAX_INCLUDE_DEPTH: usize = 8;
 const MAX_INCLUDE_FILES: usize = 32;
 const MAX_INCLUDE_BYTES: usize = 32 * 1024;
-const MAX_CODE_SIZE: usize = 64 * 1024;
+const MAX_CODE_SIZE: usize = 512 * 1024;
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const ELF_LOAD_OFFSET: usize = 0x1000;
@@ -41,12 +42,58 @@ pub enum ToolchainError {
 enum Item {
     Label(String),
     Bytes(Vec<u8>),
+    Align(usize),
     MoveImmediate {
         register: u8,
         value: u64,
     },
+    MoveImmediate32 {
+        register: u8,
+        value: u32,
+    },
+    MoveImmediateByte {
+        register: u8,
+        value: u8,
+    },
     MoveRegister {
         source: u8,
+        destination: u8,
+    },
+    MoveRegister32 {
+        source: u8,
+        destination: u8,
+    },
+    MoveZeroExtendByteToRegister {
+        source: u8,
+        destination: u8,
+    },
+    MoveRegisterToMemory {
+        source: u8,
+        memory: MemoryOperand,
+    },
+    MoveRegister32ToMemory {
+        source: u8,
+        memory: MemoryOperand,
+    },
+    MoveMemoryToRegister {
+        memory: MemoryOperand,
+        destination: u8,
+    },
+    MoveMemory32ToRegister {
+        memory: MemoryOperand,
+        destination: u8,
+    },
+    SignExtend32MemoryToRegister {
+        memory: MemoryOperand,
+        destination: u8,
+    },
+    LeaMemory {
+        memory: MemoryOperand,
+        destination: u8,
+    },
+    ImmediateBinary {
+        operation: BinaryOperation,
+        value: i32,
         destination: u8,
     },
     PushRegister(u8),
@@ -56,9 +103,30 @@ enum Item {
         source: u8,
         destination: u8,
     },
+    BinaryRegister32 {
+        operation: BinaryOperation,
+        source: u8,
+        destination: u8,
+    },
     TestRegister {
         left: u8,
         right: u8,
+    },
+    CompareRegister {
+        left: u8,
+        right: u8,
+    },
+    CompareRegister32 {
+        left: u8,
+        right: u8,
+    },
+    CompareImmediate32 {
+        value: i32,
+        destination: u8,
+    },
+    SetConditionByte {
+        condition: BranchCondition,
+        destination: u8,
     },
     LeaRip {
         label: String,
@@ -72,6 +140,7 @@ enum Item {
         label: String,
         condition: BranchCondition,
     },
+    RepStosByte,
     Syscall,
     Return,
     Nop,
@@ -88,37 +157,129 @@ enum BinaryOperation {
 enum BranchCondition {
     Equal,
     NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MemoryOperand {
+    displacement: i32,
+    base: u8,
 }
 
 impl Item {
-    fn encoded_size(&self) -> usize {
+    fn encoded_size(&self, offset: usize) -> usize {
         match self {
             Self::Label(_) => 0,
             Self::Bytes(bytes) => bytes.len(),
+            Self::Align(alignment) => (alignment - offset % alignment) % alignment,
             Self::MoveImmediate { .. } => 10,
+            Self::MoveImmediate32 { register, .. } => 5 + usize::from(*register >= 8),
+            Self::MoveImmediateByte { register, .. } => 2 + usize::from(*register >= 4),
             Self::MoveRegister { .. } => 3,
-            Self::PushRegister(_) | Self::PopRegister(_) => 1,
+            Self::MoveRegister32 {
+                source,
+                destination,
+            } => 2 + usize::from(*source >= 8 || *destination >= 8),
+            Self::MoveZeroExtendByteToRegister { .. } => 4,
+            Self::MoveRegisterToMemory { memory, .. }
+            | Self::MoveMemoryToRegister { memory, .. }
+            | Self::LeaMemory { memory, .. } => 2 + memory_modrm_size(*memory),
+            Self::MoveRegister32ToMemory { source, memory }
+            | Self::MoveMemory32ToRegister {
+                destination: source,
+                memory,
+            } => usize::from(*source >= 8 || memory.base >= 8) + 1 + memory_modrm_size(*memory),
+            Self::SignExtend32MemoryToRegister { memory, .. } => 2 + memory_modrm_size(*memory),
+            Self::ImmediateBinary { value, .. } => {
+                if i8::try_from(*value).is_ok() {
+                    4
+                } else {
+                    7
+                }
+            }
+            Self::PushRegister(register) | Self::PopRegister(register) => {
+                1 + usize::from(*register >= 8)
+            }
             Self::BinaryRegister {
                 operation: BinaryOperation::Multiply,
                 ..
             } => 4,
             Self::BinaryRegister { .. } => 3,
-            Self::TestRegister { .. } => 3,
+            Self::BinaryRegister32 {
+                source,
+                destination,
+                ..
+            } => 2 + usize::from(*source >= 8 || *destination >= 8),
+            Self::TestRegister { .. } | Self::CompareRegister { .. } => 3,
+            Self::CompareRegister32 { left, right } => 2 + usize::from(*left >= 8 || *right >= 8),
+            Self::CompareImmediate32 { value, destination } => {
+                usize::from(*destination >= 8)
+                    + 2
+                    + if i8::try_from(*value).is_ok() { 1 } else { 4 }
+            }
+            Self::SetConditionByte { destination, .. } => 3 + usize::from(*destination >= 4),
             Self::LeaRip { .. } => 7,
             Self::RelativeBranch { .. } => 5,
             Self::ConditionalBranch { .. } => 6,
             Self::Syscall => 2,
+            Self::RepStosByte => 2,
             Self::Return | Self::Nop => 1,
         }
     }
 }
 
 pub fn assemble(source: &[u8]) -> Result<Vec<u8>, ToolchainError> {
-    if source.len() > MAX_SOURCE_SIZE {
+    if source.len() > MAX_ASSEMBLY_SIZE {
         return Err(ToolchainError::SourceTooLarge);
     }
     let source = core::str::from_utf8(source).map_err(|_| ToolchainError::InvalidUtf8)?;
-    let items = parse_assembly(source)?;
+    let mut items = parse_assembly(source)?;
+    if !items
+        .iter()
+        .any(|item| matches!(item, Item::Label(label) if label == "_start"))
+    {
+        if !items
+            .iter()
+            .any(|item| matches!(item, Item::Label(label) if label == "main"))
+        {
+            return Err(ToolchainError::InvalidAssembly);
+        }
+        let mut startup = alloc::vec![
+            Item::Label(String::from("_start")),
+            Item::MoveMemoryToRegister {
+                memory: MemoryOperand {
+                    displacement: 0,
+                    base: 4,
+                },
+                destination: 7,
+            },
+            Item::LeaMemory {
+                memory: MemoryOperand {
+                    displacement: 8,
+                    base: 4,
+                },
+                destination: 6,
+            },
+            Item::RelativeBranch {
+                label: String::from("main"),
+                call: true,
+            },
+            Item::MoveRegister {
+                source: 0,
+                destination: 7,
+            },
+            Item::MoveImmediate {
+                register: 0,
+                value: 0,
+            },
+            Item::Syscall,
+        ];
+        startup.append(&mut items);
+        items = startup;
+    }
     let mut labels = BTreeMap::new();
     let mut offsets = Vec::with_capacity(items.len());
     let mut code_size = 0usize;
@@ -133,7 +294,7 @@ pub fn assemble(source: &[u8]) -> Result<Vec<u8>, ToolchainError> {
             }
             _ => {
                 code_size = code_size
-                    .checked_add(item.encoded_size())
+                    .checked_add(item.encoded_size(code_size))
                     .ok_or(ToolchainError::OutOfBounds)?;
                 if code_size > MAX_CODE_SIZE {
                     return Err(ToolchainError::SourceTooLarge);
@@ -150,40 +311,237 @@ pub fn assemble(source: &[u8]) -> Result<Vec<u8>, ToolchainError> {
         match item {
             Item::Label(_) => {}
             Item::Bytes(bytes) => code.extend_from_slice(bytes),
+            Item::Align(_) => code.resize(code.len() + item.encoded_size(offset), 0),
             Item::MoveImmediate { register, value } => {
-                code.extend_from_slice(&[0x48, 0xB8 + register]);
+                code.extend_from_slice(&[0x48 | u8::from(*register >= 8), 0xB8 + (*register & 7)]);
                 code.extend_from_slice(&value.to_le_bytes());
+            }
+            Item::MoveImmediate32 { register, value } => {
+                if *register >= 8 {
+                    code.push(rex(false, 0, 0, *register));
+                }
+                code.push(0xB8 + (*register & 7));
+                code.extend_from_slice(&value.to_le_bytes());
+            }
+            Item::MoveImmediateByte { register, value } => {
+                if *register >= 4 {
+                    code.push(rex(false, 0, 0, *register));
+                }
+                code.extend_from_slice(&[0xB0 + (*register & 7), *value]);
             }
             Item::MoveRegister {
                 source,
                 destination,
             } => {
-                code.extend_from_slice(&[0x48, 0x89, 0xC0 | (source << 3) | destination]);
+                code.push(rex(true, *source, 0, *destination));
+                code.extend_from_slice(&[0x89, 0xC0 | ((*source & 7) << 3) | (*destination & 7)]);
             }
-            Item::PushRegister(register) => code.push(0x50 + register),
-            Item::PopRegister(register) => code.push(0x58 + register),
+            Item::MoveRegister32 {
+                source,
+                destination,
+            } => {
+                if *source >= 8 || *destination >= 8 {
+                    code.push(rex(false, *source, 0, *destination));
+                }
+                code.extend_from_slice(&[0x89, 0xC0 | ((*source & 7) << 3) | (*destination & 7)]);
+            }
+            Item::MoveZeroExtendByteToRegister {
+                source,
+                destination,
+            } => {
+                code.push(rex(true, *destination, 0, *source));
+                code.extend_from_slice(&[
+                    0x0F,
+                    0xB6,
+                    0xC0 | ((*destination & 7) << 3) | (*source & 7),
+                ]);
+            }
+            Item::MoveRegisterToMemory { source, memory } => {
+                code.push(rex(true, *source, 0, memory.base));
+                code.push(0x89);
+                emit_memory_modrm(&mut code, *source, *memory);
+            }
+            Item::MoveRegister32ToMemory { source, memory } => {
+                if *source >= 8 || memory.base >= 8 {
+                    code.push(rex(false, *source, 0, memory.base));
+                }
+                code.push(0x89);
+                emit_memory_modrm(&mut code, *source, *memory);
+            }
+            Item::MoveMemoryToRegister {
+                memory,
+                destination,
+            } => {
+                code.push(rex(true, *destination, 0, memory.base));
+                code.push(0x8B);
+                emit_memory_modrm(&mut code, *destination, *memory);
+            }
+            Item::MoveMemory32ToRegister {
+                memory,
+                destination,
+            } => {
+                if *destination >= 8 || memory.base >= 8 {
+                    code.push(rex(false, *destination, 0, memory.base));
+                }
+                code.push(0x8B);
+                emit_memory_modrm(&mut code, *destination, *memory);
+            }
+            Item::SignExtend32MemoryToRegister {
+                memory,
+                destination,
+            } => {
+                code.push(rex(true, *destination, 0, memory.base));
+                code.push(0x63);
+                emit_memory_modrm(&mut code, *destination, *memory);
+            }
+            Item::LeaMemory {
+                memory,
+                destination,
+            } => {
+                code.push(rex(true, *destination, 0, memory.base));
+                code.push(0x8D);
+                emit_memory_modrm(&mut code, *destination, *memory);
+            }
+            Item::ImmediateBinary {
+                operation,
+                value,
+                destination,
+            } => {
+                let extension = match operation {
+                    BinaryOperation::Add => 0,
+                    BinaryOperation::Subtract => 5,
+                    BinaryOperation::Multiply => return Err(ToolchainError::InvalidAssembly),
+                };
+                code.push(rex(true, 0, 0, *destination));
+                if let Ok(value) = i8::try_from(*value) {
+                    code.extend_from_slice(&[
+                        0x83,
+                        0xC0 | (extension << 3) | (*destination & 7),
+                        value as u8,
+                    ]);
+                } else {
+                    code.extend_from_slice(&[0x81, 0xC0 | (extension << 3) | (*destination & 7)]);
+                    code.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            Item::PushRegister(register) => {
+                if *register >= 8 {
+                    code.push(0x41);
+                }
+                code.push(0x50 + (*register & 7));
+            }
+            Item::PopRegister(register) => {
+                if *register >= 8 {
+                    code.push(0x41);
+                }
+                code.push(0x58 + (*register & 7));
+            }
             Item::BinaryRegister {
                 operation,
                 source,
                 destination,
             } => match operation {
                 BinaryOperation::Add => {
-                    code.extend_from_slice(&[0x48, 0x01, 0xC0 | (source << 3) | destination]);
+                    code.push(rex(true, *source, 0, *destination));
+                    code.extend_from_slice(&[
+                        0x01,
+                        0xC0 | ((*source & 7) << 3) | (*destination & 7),
+                    ]);
                 }
                 BinaryOperation::Subtract => {
-                    code.extend_from_slice(&[0x48, 0x29, 0xC0 | (source << 3) | destination]);
+                    code.push(rex(true, *source, 0, *destination));
+                    code.extend_from_slice(&[
+                        0x29,
+                        0xC0 | ((*source & 7) << 3) | (*destination & 7),
+                    ]);
                 }
                 BinaryOperation::Multiply => {
-                    code.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xC0 | (destination << 3) | source]);
+                    code.push(rex(true, *destination, 0, *source));
+                    code.extend_from_slice(&[
+                        0x0F,
+                        0xAF,
+                        0xC0 | ((*destination & 7) << 3) | (*source & 7),
+                    ]);
                 }
             },
+            Item::BinaryRegister32 {
+                operation,
+                source,
+                destination,
+            } => {
+                if *source >= 8 || *destination >= 8 {
+                    code.push(rex(false, *source, 0, *destination));
+                }
+                match operation {
+                    BinaryOperation::Add | BinaryOperation::Subtract => {
+                        code.extend_from_slice(&[
+                            if matches!(operation, BinaryOperation::Add) {
+                                0x01
+                            } else {
+                                0x29
+                            },
+                            0xC0 | ((*source & 7) << 3) | (*destination & 7),
+                        ]);
+                    }
+                    BinaryOperation::Multiply => {
+                        code.extend_from_slice(&[
+                            0x0F,
+                            0xAF,
+                            0xC0 | ((*destination & 7) << 3) | (*source & 7),
+                        ]);
+                    }
+                }
+            }
             Item::TestRegister { left, right } => {
-                code.extend_from_slice(&[0x48, 0x85, 0xC0 | (left << 3) | right]);
+                code.push(rex(true, *left, 0, *right));
+                code.extend_from_slice(&[0x85, 0xC0 | ((*left & 7) << 3) | (*right & 7)]);
+            }
+            Item::CompareRegister { left, right } => {
+                code.push(rex(true, *left, 0, *right));
+                code.extend_from_slice(&[0x39, 0xC0 | ((*left & 7) << 3) | (*right & 7)]);
+            }
+            Item::CompareRegister32 { left, right } => {
+                if *left >= 8 || *right >= 8 {
+                    code.push(rex(false, *left, 0, *right));
+                }
+                code.extend_from_slice(&[0x39, 0xC0 | ((*left & 7) << 3) | (*right & 7)]);
+            }
+            Item::CompareImmediate32 { value, destination } => {
+                if *destination >= 8 {
+                    code.push(rex(false, 0, 0, *destination));
+                }
+                if let Ok(value) = i8::try_from(*value) {
+                    code.extend_from_slice(&[0x83, 0xF8 | (*destination & 7), value as u8]);
+                } else {
+                    code.extend_from_slice(&[0x81, 0xF8 | (*destination & 7)]);
+                    code.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            Item::SetConditionByte {
+                condition,
+                destination,
+            } => {
+                if *destination >= 4 {
+                    code.push(rex(false, 0, 0, *destination));
+                }
+                code.extend_from_slice(&[
+                    0x0F,
+                    match condition {
+                        BranchCondition::Equal => 0x94,
+                        BranchCondition::NotEqual => 0x95,
+                        BranchCondition::Less => 0x9C,
+                        BranchCondition::GreaterEqual => 0x9D,
+                        BranchCondition::LessEqual => 0x9E,
+                        BranchCondition::Greater => 0x9F,
+                    },
+                    0xC0 | (*destination & 7),
+                ]);
             }
             Item::LeaRip { label, destination } => {
                 let target = *labels.get(label).ok_or(ToolchainError::InvalidAssembly)?;
                 let displacement = relative_displacement(target, offset + 7)?;
-                code.extend_from_slice(&[0x48, 0x8D, 0x05 | (destination << 3)]);
+                code.push(rex(true, *destination, 0, 0));
+                code.extend_from_slice(&[0x8D, 0x05 | ((*destination & 7) << 3)]);
                 code.extend_from_slice(&displacement.to_le_bytes());
             }
             Item::RelativeBranch { label, call } => {
@@ -200,10 +558,15 @@ pub fn assemble(source: &[u8]) -> Result<Vec<u8>, ToolchainError> {
                     match condition {
                         BranchCondition::Equal => 0x84,
                         BranchCondition::NotEqual => 0x85,
+                        BranchCondition::Less => 0x8C,
+                        BranchCondition::GreaterEqual => 0x8D,
+                        BranchCondition::LessEqual => 0x8E,
+                        BranchCondition::Greater => 0x8F,
                     },
                 ]);
                 code.extend_from_slice(&displacement.to_le_bytes());
             }
+            Item::RepStosByte => code.extend_from_slice(&[0xF3, 0xAA]),
             Item::Syscall => code.extend_from_slice(&[0xCD, 0x80]),
             Item::Return => code.push(0xC3),
             Item::Nop => code.push(0x90),
@@ -319,8 +682,12 @@ where
     F: FnMut(&str) -> Result<Vec<u8>, FsError>,
 {
     fn new(read_include: F) -> Self {
+        let mut macros = BTreeMap::new();
+        macros.insert(String::from("OCT_STDIN"), String::from("0"));
+        macros.insert(String::from("OCT_STDOUT"), String::from("1"));
+        macros.insert(String::from("OCT_STDERR"), String::from("2"));
         Self {
-            macros: BTreeMap::new(),
+            macros,
             once_paths: Vec::new(),
             include_files: 0,
             include_bytes: 0,
@@ -465,7 +832,25 @@ where
         output: &mut String,
     ) -> Result<(), ToolchainError> {
         let (name, angled) = parse_include(arguments)?;
-        if angled && matches!(name.as_str(), "stddef.h" | "stdint.h") {
+        if angled
+            && matches!(
+                name.as_str(),
+                "stddef.h"
+                    | "stdint.h"
+                    | "stdarg.h"
+                    | "stdio.h"
+                    | "stdlib.h"
+                    | "string.h"
+                    | "unistd.h"
+                    | "fcntl.h"
+                    | "errno.h"
+                    | "octagram.h"
+                    | "spawn.h"
+                    | "sys/types.h"
+                    | "sys/wait.h"
+                    | "sys/stat.h"
+            )
+        {
             return Ok(());
         }
         if depth >= MAX_INCLUDE_DEPTH {
@@ -576,6 +961,70 @@ fn include_candidates(
     Ok(candidates)
 }
 
+fn rex(wide: bool, reg: u8, index: u8, base: u8) -> u8 {
+    0x40 | (u8::from(wide) << 3) | ((reg >> 3) << 2) | ((index >> 3) << 1) | (base >> 3)
+}
+
+fn memory_displacement_size(memory: MemoryOperand) -> (u8, usize) {
+    let base = memory.base & 7;
+    if memory.displacement == 0 && base != 5 {
+        (0, 0)
+    } else if i8::try_from(memory.displacement).is_ok() {
+        (1, 1)
+    } else {
+        (2, 4)
+    }
+}
+
+fn memory_modrm_size(memory: MemoryOperand) -> usize {
+    let (_, displacement_size) = memory_displacement_size(memory);
+    1 + usize::from(memory.base & 7 == 4) + displacement_size
+}
+
+fn emit_memory_modrm(output: &mut Vec<u8>, register: u8, memory: MemoryOperand) {
+    let (mode, displacement_size) = memory_displacement_size(memory);
+    let base = memory.base & 7;
+    output.push((mode << 6) | ((register & 7) << 3) | if base == 4 { 4 } else { base });
+    if base == 4 {
+        output.push(0x24);
+    }
+    match displacement_size {
+        0 => {}
+        1 => output.push(memory.displacement as i8 as u8),
+        _ => output.extend_from_slice(&memory.displacement.to_le_bytes()),
+    }
+}
+
+fn parse_memory_operand(operand: &str) -> Result<MemoryOperand, ToolchainError> {
+    let (displacement, base) = operand
+        .trim()
+        .split_once('(')
+        .ok_or(ToolchainError::InvalidAssembly)?;
+    let base = base
+        .strip_suffix(')')
+        .ok_or(ToolchainError::InvalidAssembly)?;
+    let displacement = if displacement.trim().is_empty() {
+        0
+    } else {
+        parse_signed_integer(displacement.trim())?
+    };
+    Ok(MemoryOperand {
+        displacement,
+        base: parse_register(base.trim())?,
+    })
+}
+
+fn parse_signed_integer(value: &str) -> Result<i32, ToolchainError> {
+    if let Some(value) = value.strip_prefix('-') {
+        let value = parse_integer(value)?;
+        let value = i64::try_from(value).map_err(|_| ToolchainError::InvalidAssembly)?;
+        i32::try_from(-value).map_err(|_| ToolchainError::InvalidAssembly)
+    } else {
+        let value = parse_integer(value)?;
+        i32::try_from(value).map_err(|_| ToolchainError::InvalidAssembly)
+    }
+}
+
 fn parse_assembly(source: &str) -> Result<Vec<Item>, ToolchainError> {
     let mut items = Vec::new();
     for raw_line in source.lines() {
@@ -599,6 +1048,24 @@ fn parse_assembly(source: &str) -> Result<Vec<Item>, ToolchainError> {
                     if !valid_label(arguments.trim()) {
                         return Err(ToolchainError::InvalidAssembly);
                     }
+                }
+                ".file" | ".loc" | ".local" | ".type" | ".size" => {}
+                ".align" | ".balign" | ".p2align" => {
+                    let value = parse_integer(arguments.trim())?;
+                    let alignment = if directive == ".p2align" {
+                        1usize
+                            .checked_shl(
+                                u32::try_from(value)
+                                    .map_err(|_| ToolchainError::InvalidAssembly)?,
+                            )
+                            .ok_or(ToolchainError::InvalidAssembly)?
+                    } else {
+                        usize::try_from(value).map_err(|_| ToolchainError::InvalidAssembly)?
+                    };
+                    if alignment == 0 || alignment > 4096 {
+                        return Err(ToolchainError::InvalidAssembly);
+                    }
+                    items.push(Item::Align(alignment));
                 }
                 ".ascii" | ".asciz" | ".string" => {
                     let mut bytes = parse_quoted(arguments.trim())?;
@@ -629,17 +1096,69 @@ fn parse_assembly(source: &str) -> Result<Vec<Item>, ToolchainError> {
                 let (left, right) = arguments
                     .split_once(',')
                     .ok_or(ToolchainError::InvalidAssembly)?;
-                let right = parse_register(right.trim())?;
                 if let Some(immediate) = left.trim().strip_prefix('$') {
-                    Item::MoveImmediate {
-                        register: right,
-                        value: parse_integer(immediate)?,
+                    let right = right.trim();
+                    if let Ok(register) = parse_byte_register(right) {
+                        Item::MoveImmediateByte {
+                            register,
+                            value: parse_byte_immediate(immediate)?,
+                        }
+                    } else if let Ok(register) = parse_32bit_register(right) {
+                        Item::MoveImmediate32 {
+                            register,
+                            value: parse_32bit_immediate(immediate)?,
+                        }
+                    } else {
+                        Item::MoveImmediate {
+                            register: parse_register(right)?,
+                            value: parse_immediate(immediate)?,
+                        }
+                    }
+                } else if parse_byte_register(left.trim()).is_ok() {
+                    return Err(ToolchainError::InvalidAssembly);
+                } else if let Ok(source) = parse_32bit_register(left.trim()) {
+                    if let Ok(destination) = parse_32bit_register(right.trim()) {
+                        Item::MoveRegister32 {
+                            source,
+                            destination,
+                        }
+                    } else {
+                        Item::MoveRegister32ToMemory {
+                            source,
+                            memory: parse_memory_operand(right.trim())?,
+                        }
+                    }
+                } else if let Ok(source) = parse_register(left.trim()) {
+                    if let Ok(destination) = parse_register(right.trim()) {
+                        Item::MoveRegister {
+                            source,
+                            destination,
+                        }
+                    } else {
+                        Item::MoveRegisterToMemory {
+                            source,
+                            memory: parse_memory_operand(right.trim())?,
+                        }
+                    }
+                } else if let Ok(destination) = parse_32bit_register(right.trim()) {
+                    Item::MoveMemory32ToRegister {
+                        memory: parse_memory_operand(left.trim())?,
+                        destination,
                     }
                 } else {
-                    Item::MoveRegister {
-                        source: parse_register(left.trim())?,
-                        destination: right,
+                    Item::MoveMemoryToRegister {
+                        memory: parse_memory_operand(left.trim())?,
+                        destination: parse_register(right.trim())?,
                     }
+                }
+            }
+            "movzb" => {
+                let (left, right) = arguments
+                    .split_once(',')
+                    .ok_or(ToolchainError::InvalidAssembly)?;
+                Item::MoveZeroExtendByteToRegister {
+                    source: parse_byte_register(left.trim())?,
+                    destination: parse_register(right.trim())?,
                 }
             }
             "push" if !arguments.is_empty() => Item::PushRegister(parse_register(arguments)?),
@@ -648,15 +1167,39 @@ fn parse_assembly(source: &str) -> Result<Vec<Item>, ToolchainError> {
                 let (left, right) = arguments
                     .split_once(',')
                     .ok_or(ToolchainError::InvalidAssembly)?;
-                let operation = match mnemonic {
-                    "add" => BinaryOperation::Add,
-                    "sub" => BinaryOperation::Subtract,
-                    _ => BinaryOperation::Multiply,
-                };
-                Item::BinaryRegister {
-                    operation,
-                    source: parse_register(left.trim())?,
-                    destination: parse_register(right.trim())?,
+                if let Some(immediate) = left.trim().strip_prefix('$') {
+                    let operation = match mnemonic {
+                        "add" => BinaryOperation::Add,
+                        "sub" => BinaryOperation::Subtract,
+                        _ => return Err(ToolchainError::InvalidAssembly),
+                    };
+                    Item::ImmediateBinary {
+                        operation,
+                        value: parse_signed_integer(immediate)?,
+                        destination: parse_register(right.trim())?,
+                    }
+                } else {
+                    let operation = match mnemonic {
+                        "add" => BinaryOperation::Add,
+                        "sub" => BinaryOperation::Subtract,
+                        _ => BinaryOperation::Multiply,
+                    };
+                    if let (Ok(source), Ok(destination)) = (
+                        parse_32bit_register(left.trim()),
+                        parse_32bit_register(right.trim()),
+                    ) {
+                        Item::BinaryRegister32 {
+                            operation,
+                            source,
+                            destination,
+                        }
+                    } else {
+                        Item::BinaryRegister {
+                            operation,
+                            source: parse_register(left.trim())?,
+                            destination: parse_register(right.trim())?,
+                        }
+                    }
                 }
             }
             "test" => {
@@ -668,23 +1211,72 @@ fn parse_assembly(source: &str) -> Result<Vec<Item>, ToolchainError> {
                     right: parse_register(right.trim())?,
                 }
             }
+            "cmp" => {
+                let (left, right) = arguments
+                    .split_once(',')
+                    .ok_or(ToolchainError::InvalidAssembly)?;
+                if let Some(immediate) = left.trim().strip_prefix('$') {
+                    Item::CompareImmediate32 {
+                        value: parse_signed_integer(immediate)?,
+                        destination: parse_32bit_register(right.trim())?,
+                    }
+                } else if let (Ok(left), Ok(right)) = (
+                    parse_32bit_register(left.trim()),
+                    parse_32bit_register(right.trim()),
+                ) {
+                    Item::CompareRegister32 { left, right }
+                } else {
+                    Item::CompareRegister {
+                        left: parse_register(left.trim())?,
+                        right: parse_register(right.trim())?,
+                    }
+                }
+            }
+            "sete" | "setz" | "setne" | "setnz" | "setl" | "setle" | "setg" | "setge" => {
+                Item::SetConditionByte {
+                    condition: match mnemonic {
+                        "sete" | "setz" => BranchCondition::Equal,
+                        "setne" | "setnz" => BranchCondition::NotEqual,
+                        "setl" => BranchCondition::Less,
+                        "setle" => BranchCondition::LessEqual,
+                        "setg" => BranchCondition::Greater,
+                        _ => BranchCondition::GreaterEqual,
+                    },
+                    destination: parse_byte_register(arguments)?,
+                }
+            }
             "lea" => {
                 let (left, right) = arguments
                     .split_once(',')
                     .ok_or(ToolchainError::InvalidAssembly)?;
-                let label = left
-                    .trim()
-                    .strip_suffix("(%rip)")
-                    .ok_or(ToolchainError::InvalidAssembly)?
-                    .trim();
-                if !valid_label(label) {
-                    return Err(ToolchainError::InvalidAssembly);
+                let destination = parse_register(right.trim())?;
+                let source = left.trim();
+                if let Some(label) = source.strip_suffix("(%rip)") {
+                    let label = label.trim();
+                    if !valid_label(label) {
+                        return Err(ToolchainError::InvalidAssembly);
+                    }
+                    Item::LeaRip {
+                        label: String::from(label),
+                        destination,
+                    }
+                } else {
+                    Item::LeaMemory {
+                        memory: parse_memory_operand(source)?,
+                        destination,
+                    }
                 }
-                Item::LeaRip {
-                    label: String::from(label),
+            }
+            "movsxd" => {
+                let (left, right) = arguments
+                    .split_once(',')
+                    .ok_or(ToolchainError::InvalidAssembly)?;
+                Item::SignExtend32MemoryToRegister {
+                    memory: parse_memory_operand(left.trim())?,
                     destination: parse_register(right.trim())?,
                 }
             }
+            "rep" if arguments == "stosb" => Item::RepStosByte,
             "call" | "jmp" => {
                 if !valid_label(arguments) {
                     return Err(ToolchainError::InvalidAssembly);
@@ -694,16 +1286,19 @@ fn parse_assembly(source: &str) -> Result<Vec<Item>, ToolchainError> {
                     call: mnemonic == "call",
                 }
             }
-            "je" | "jz" | "jne" | "jnz" => {
+            "je" | "jz" | "jne" | "jnz" | "jl" | "jle" | "jg" | "jge" => {
                 if !valid_label(arguments) {
                     return Err(ToolchainError::InvalidAssembly);
                 }
                 Item::ConditionalBranch {
                     label: String::from(arguments),
-                    condition: if matches!(mnemonic, "je" | "jz") {
-                        BranchCondition::Equal
-                    } else {
-                        BranchCondition::NotEqual
+                    condition: match mnemonic {
+                        "je" | "jz" => BranchCondition::Equal,
+                        "jne" | "jnz" => BranchCondition::NotEqual,
+                        "jl" => BranchCondition::Less,
+                        "jle" => BranchCondition::LessEqual,
+                        "jg" => BranchCondition::Greater,
+                        _ => BranchCondition::GreaterEqual,
                     },
                 }
             }
@@ -776,9 +1371,65 @@ fn valid_label(label: &str) -> bool {
 fn parse_register(register: &str) -> Result<u8, ToolchainError> {
     match register {
         "%rax" => Ok(0),
+        "%rcx" => Ok(1),
         "%rdx" => Ok(2),
+        "%rbx" => Ok(3),
+        "%rsp" => Ok(4),
+        "%rbp" => Ok(5),
         "%rsi" => Ok(6),
         "%rdi" => Ok(7),
+        "%r8" => Ok(8),
+        "%r9" => Ok(9),
+        "%r10" => Ok(10),
+        "%r11" => Ok(11),
+        "%r12" => Ok(12),
+        "%r13" => Ok(13),
+        "%r14" => Ok(14),
+        "%r15" => Ok(15),
+        _ => Err(ToolchainError::InvalidAssembly),
+    }
+}
+
+fn parse_32bit_register(register: &str) -> Result<u8, ToolchainError> {
+    match register {
+        "%eax" => Ok(0),
+        "%ecx" => Ok(1),
+        "%edx" => Ok(2),
+        "%ebx" => Ok(3),
+        "%esp" => Ok(4),
+        "%ebp" => Ok(5),
+        "%esi" => Ok(6),
+        "%edi" => Ok(7),
+        "%r8d" => Ok(8),
+        "%r9d" => Ok(9),
+        "%r10d" => Ok(10),
+        "%r11d" => Ok(11),
+        "%r12d" => Ok(12),
+        "%r13d" => Ok(13),
+        "%r14d" => Ok(14),
+        "%r15d" => Ok(15),
+        _ => Err(ToolchainError::InvalidAssembly),
+    }
+}
+
+fn parse_byte_register(register: &str) -> Result<u8, ToolchainError> {
+    match register {
+        "%al" => Ok(0),
+        "%cl" => Ok(1),
+        "%dl" => Ok(2),
+        "%bl" => Ok(3),
+        "%spl" => Ok(4),
+        "%bpl" => Ok(5),
+        "%sil" => Ok(6),
+        "%dil" => Ok(7),
+        "%r8b" => Ok(8),
+        "%r9b" => Ok(9),
+        "%r10b" => Ok(10),
+        "%r11b" => Ok(11),
+        "%r12b" => Ok(12),
+        "%r13b" => Ok(13),
+        "%r14b" => Ok(14),
+        "%r15b" => Ok(15),
         _ => Err(ToolchainError::InvalidAssembly),
     }
 }
@@ -791,6 +1442,40 @@ fn parse_integer(value: &str) -> Result<u64, ToolchainError> {
             .parse::<u64>()
             .map_err(|_| ToolchainError::InvalidAssembly)
     }
+}
+
+fn parse_immediate(value: &str) -> Result<u64, ToolchainError> {
+    if let Ok(value) = value.parse::<i64>() {
+        return Ok(value as u64);
+    }
+    if let Some(hex) = value.strip_prefix("-0x") {
+        let magnitude = i64::try_from(
+            u64::from_str_radix(hex, 16).map_err(|_| ToolchainError::InvalidAssembly)?,
+        )
+        .map_err(|_| ToolchainError::InvalidAssembly)?;
+        return magnitude
+            .checked_neg()
+            .map(|value| value as u64)
+            .ok_or(ToolchainError::InvalidAssembly);
+    }
+    parse_integer(value)
+}
+
+fn parse_32bit_immediate(value: &str) -> Result<u32, ToolchainError> {
+    if value.starts_with('-') {
+        return parse_signed_integer(value).map(|value| value as u32);
+    }
+    u32::try_from(parse_integer(value)?).map_err(|_| ToolchainError::InvalidAssembly)
+}
+
+fn parse_byte_immediate(value: &str) -> Result<u8, ToolchainError> {
+    if value.starts_with('-') {
+        let value = parse_signed_integer(value)?;
+        return i8::try_from(value)
+            .map(|value| value as u8)
+            .map_err(|_| ToolchainError::InvalidAssembly);
+    }
+    u8::try_from(parse_integer(value)?).map_err(|_| ToolchainError::InvalidAssembly)
 }
 
 fn relative_displacement(target: usize, next_instruction: usize) -> Result<i32, ToolchainError> {
@@ -832,6 +1517,7 @@ enum CExpression {
     Number(u64),
     Register(CRegister),
     Negate(Box<Self>),
+    LogicalNot(Box<Self>),
     Binary {
         operator: COperator,
         left: Box<Self>,
@@ -844,6 +1530,14 @@ enum COperator {
     Add,
     Subtract,
     Multiply,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    LogicalAnd,
+    LogicalOr,
 }
 
 #[derive(Clone, Copy)]
@@ -884,36 +1578,119 @@ enum CStatement {
         condition: CExpression,
         body: Vec<CStatement>,
     },
+    For {
+        initializer: Option<Box<CStatement>>,
+        condition: Option<CExpression>,
+        increment: Option<Box<CStatement>>,
+        body: Vec<CStatement>,
+    },
+    Switch {
+        expression: CExpression,
+        cases: Vec<CSwitchCase>,
+    },
+    Break,
+    Continue,
+}
+
+struct CSwitchCase {
+    value: Option<u64>,
+    body: Vec<CStatement>,
+}
+
+#[derive(Clone)]
+struct CControlTarget {
+    break_label: String,
+    continue_label: Option<String>,
 }
 
 impl CExpression {
-    fn emit(&self, assembly: &mut String) {
+    fn emit(&self, assembly: &mut String, next_label: &mut usize) {
         match self {
             Self::Number(value) => assembly.push_str(&format!("mov ${value}, %rax\n")),
             Self::Register(register) => {
                 assembly.push_str(&format!("mov {}, %rax\n", register.name()));
             }
             Self::Negate(expression) => {
-                expression.emit(assembly);
+                expression.emit(assembly, next_label);
                 assembly.push_str("push %rax\nmov $0, %rax\npop %rdi\nsub %rdi, %rax\n");
+            }
+            Self::LogicalNot(expression) => {
+                let label = *next_label;
+                *next_label += 1;
+                expression.emit(assembly, next_label);
+                assembly.push_str(&format!(
+                    "test %rax, %rax\nmov $0, %rax\nje .Lnot_true{label}\njmp .Lnot_end{label}\n.Lnot_true{label}:\nmov $1, %rax\n.Lnot_end{label}:\n"
+                ));
             }
             Self::Binary {
                 operator,
                 left,
                 right,
-            } => {
-                left.emit(assembly);
-                assembly.push_str("push %rax\n");
-                right.emit(assembly);
-                assembly.push_str("pop %rdi\n");
-                match operator {
-                    COperator::Add => assembly.push_str("add %rdi, %rax\n"),
-                    COperator::Subtract => {
-                        assembly.push_str("sub %rax, %rdi\nmov %rdi, %rax\n");
+            } => match operator {
+                COperator::LogicalAnd | COperator::LogicalOr => {
+                    let label = *next_label;
+                    *next_label += 1;
+                    left.emit(assembly, next_label);
+                    assembly.push_str("test %rax, %rax\n");
+                    if matches!(operator, COperator::LogicalAnd) {
+                        assembly.push_str(&format!("je .Llogic_false{label}\n"));
+                    } else {
+                        assembly.push_str(&format!("jne .Llogic_true{label}\n"));
                     }
-                    COperator::Multiply => assembly.push_str("imul %rdi, %rax\n"),
+                    right.emit(assembly, next_label);
+                    assembly.push_str("test %rax, %rax\n");
+                    if matches!(operator, COperator::LogicalAnd) {
+                        assembly.push_str(&format!("je .Llogic_false{label}\n"));
+                        assembly.push_str(&format!(
+                                "mov $1, %rax\njmp .Llogic_end{label}\n.Llogic_false{label}:\nmov $0, %rax\n.Llogic_end{label}:\n"
+                            ));
+                    } else {
+                        assembly.push_str(&format!("jne .Llogic_true{label}\n"));
+                        assembly.push_str(&format!(
+                                "mov $0, %rax\njmp .Llogic_end{label}\n.Llogic_true{label}:\nmov $1, %rax\n.Llogic_end{label}:\n"
+                            ));
+                    }
                 }
-            }
+                COperator::Equal
+                | COperator::NotEqual
+                | COperator::Less
+                | COperator::LessEqual
+                | COperator::Greater
+                | COperator::GreaterEqual => {
+                    let label = *next_label;
+                    *next_label += 1;
+                    left.emit(assembly, next_label);
+                    assembly.push_str("push %rax\n");
+                    right.emit(assembly, next_label);
+                    assembly.push_str("pop %rdi\ncmp %rax, %rdi\nmov $0, %rax\n");
+                    let branch = match operator {
+                        COperator::Equal => "je",
+                        COperator::NotEqual => "jne",
+                        COperator::Less => "jl",
+                        COperator::LessEqual => "jle",
+                        COperator::Greater => "jg",
+                        COperator::GreaterEqual => "jge",
+                        _ => unreachable!(),
+                    };
+                    assembly.push_str(&format!(
+                            "{branch} .Lcompare_true{label}\njmp .Lcompare_end{label}\n.Lcompare_true{label}:\nmov $1, %rax\n.Lcompare_end{label}:\n"
+                        ));
+                }
+                COperator::Add | COperator::Subtract | COperator::Multiply => {
+                    left.emit(assembly, next_label);
+                    assembly.push_str("push %rax\n");
+                    right.emit(assembly, next_label);
+                    assembly.push_str("pop %rdi\n");
+                    match operator {
+                        COperator::Add => assembly.push_str("add %rdi, %rax\n"),
+                        COperator::Subtract => {
+                            assembly.push_str("sub %rax, %rdi\nmov %rdi, %rax\n");
+                        }
+                        COperator::Multiply => assembly.push_str("imul %rdi, %rax\n"),
+                        _ => unreachable!(),
+                    }
+                }
+            },
         }
     }
 }
@@ -930,8 +1707,13 @@ impl CProgram {
             ".global _start\n.text\n_start:\ncall main\nmov %rax, %rdi\nmov $0, %rax\nint $0x80\nmain:\n",
         );
         let mut next_label = 0;
-        emit_statements(&self.statements, &mut assembly, &mut next_label);
-        self.return_expression.emit(&mut assembly);
+        emit_statements(
+            &self.statements,
+            &mut assembly,
+            &mut next_label,
+            &mut Vec::new(),
+        );
+        self.return_expression.emit(&mut assembly, &mut next_label);
         assembly.push_str("ret\n.rodata\n");
         for (index, bytes) in self.strings.iter().enumerate() {
             assembly.push_str(&format!(".Lstring{index}:\n.byte "));
@@ -944,62 +1726,157 @@ impl CProgram {
     }
 }
 
-fn emit_statements(statements: &[CStatement], assembly: &mut String, next_label: &mut usize) {
+fn emit_statements(
+    statements: &[CStatement],
+    assembly: &mut String,
+    next_label: &mut usize,
+    controls: &mut Vec<CControlTarget>,
+) {
     for statement in statements {
-        match statement {
-            CStatement::Declare {
-                register,
-                expression,
+        emit_statement(statement, assembly, next_label, controls);
+    }
+}
+
+fn emit_statement(
+    statement: &CStatement,
+    assembly: &mut String,
+    next_label: &mut usize,
+    controls: &mut Vec<CControlTarget>,
+) {
+    match statement {
+        CStatement::Declare {
+            register,
+            expression,
+        }
+        | CStatement::Assign {
+            register,
+            expression,
+        } => {
+            expression.emit(assembly, next_label);
+            assembly.push_str(&format!("mov %rax, {}\n", register.name()));
+        }
+        CStatement::Write {
+            string_index,
+            length,
+            saved_registers,
+        } => {
+            for register in saved_registers {
+                assembly.push_str(&format!("push {}\n", register.name()));
             }
-            | CStatement::Assign {
-                register,
-                expression,
-            } => {
-                expression.emit(assembly);
-                assembly.push_str(&format!("mov %rax, {}\n", register.name()));
+            assembly.push_str("mov $1, %rax\nmov $1, %rdi\n");
+            assembly.push_str(&format!("lea .Lstring{string_index}(%rip), %rsi\n"));
+            assembly.push_str(&format!("mov ${length}, %rdx\nint $0x80\n"));
+            for register in saved_registers.iter().rev() {
+                assembly.push_str(&format!("pop {}\n", register.name()));
             }
-            CStatement::Write {
-                string_index,
-                length,
-                saved_registers,
-            } => {
-                for register in saved_registers {
-                    assembly.push_str(&format!("push {}\n", register.name()));
-                }
-                assembly.push_str("mov $1, %rax\nmov $1, %rdi\n");
-                assembly.push_str(&format!("lea .Lstring{string_index}(%rip), %rsi\n"));
-                assembly.push_str(&format!("mov ${length}, %rdx\nint $0x80\n"));
-                for register in saved_registers.iter().rev() {
-                    assembly.push_str(&format!("pop {}\n", register.name()));
+        }
+        CStatement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            let label = *next_label;
+            *next_label += 1;
+            condition.emit(assembly, next_label);
+            assembly.push_str(&format!("test %rax, %rax\nje .Lif_else{label}\n"));
+            emit_statements(then_body, assembly, next_label, controls);
+            if !else_body.is_empty() {
+                assembly.push_str(&format!("jmp .Lif_end{label}\n"));
+            }
+            assembly.push_str(&format!(".Lif_else{label}:\n"));
+            emit_statements(else_body, assembly, next_label, controls);
+            if !else_body.is_empty() {
+                assembly.push_str(&format!(".Lif_end{label}:\n"));
+            }
+        }
+        CStatement::While { condition, body } => {
+            let label = *next_label;
+            *next_label += 1;
+            let start_label = format!(".Lwhile_start{label}");
+            let end_label = format!(".Lwhile_end{label}");
+            assembly.push_str(&format!(".Lwhile_start{label}:\n"));
+            condition.emit(assembly, next_label);
+            assembly.push_str(&format!("test %rax, %rax\nje .Lwhile_end{label}\n"));
+            controls.push(CControlTarget {
+                break_label: end_label,
+                continue_label: Some(start_label.clone()),
+            });
+            emit_statements(body, assembly, next_label, controls);
+            controls.pop();
+            assembly.push_str(&format!("jmp .Lwhile_start{label}\n.Lwhile_end{label}:\n"));
+        }
+        CStatement::For {
+            initializer,
+            condition,
+            increment,
+            body,
+        } => {
+            let label = *next_label;
+            *next_label += 1;
+            if let Some(initializer) = initializer {
+                emit_statement(initializer, assembly, next_label, controls);
+            }
+            let start_label = format!(".Lfor_start{label}");
+            let increment_label = format!(".Lfor_increment{label}");
+            let end_label = format!(".Lfor_end{label}");
+            assembly.push_str(&format!("{start_label}:\n"));
+            if let Some(condition) = condition {
+                condition.emit(assembly, next_label);
+                assembly.push_str(&format!("test %rax, %rax\nje {end_label}\n"));
+            }
+            controls.push(CControlTarget {
+                break_label: end_label.clone(),
+                continue_label: Some(increment_label.clone()),
+            });
+            emit_statements(body, assembly, next_label, controls);
+            controls.pop();
+            assembly.push_str(&format!("{increment_label}:\n"));
+            if let Some(increment) = increment {
+                emit_statement(increment, assembly, next_label, controls);
+            }
+            assembly.push_str(&format!("jmp {start_label}\n{end_label}:\n"));
+        }
+        CStatement::Switch { expression, cases } => {
+            let label = *next_label;
+            *next_label += 1;
+            let end_label = format!(".Lswitch_end{label}");
+            expression.emit(assembly, next_label);
+            for (index, case) in cases.iter().enumerate() {
+                if let Some(value) = case.value {
+                    assembly.push_str(&format!(
+                        "mov ${value}, %rdi\ncmp %rdi, %rax\nje .Lswitch_case{label}_{index}\n"
+                    ));
                 }
             }
-            CStatement::If {
-                condition,
-                then_body,
-                else_body,
-            } => {
-                let label = *next_label;
-                *next_label += 1;
-                condition.emit(assembly);
-                assembly.push_str(&format!("test %rax, %rax\nje .Lif_else{label}\n"));
-                emit_statements(then_body, assembly, next_label);
-                if !else_body.is_empty() {
-                    assembly.push_str(&format!("jmp .Lif_end{label}\n"));
-                }
-                assembly.push_str(&format!(".Lif_else{label}:\n"));
-                emit_statements(else_body, assembly, next_label);
-                if !else_body.is_empty() {
-                    assembly.push_str(&format!(".Lif_end{label}:\n"));
-                }
+            let default_index = cases.iter().position(|case| case.value.is_none());
+            if let Some(index) = default_index {
+                assembly.push_str(&format!("jmp .Lswitch_case{label}_{index}\n"));
+            } else {
+                assembly.push_str(&format!("jmp {end_label}\n"));
             }
-            CStatement::While { condition, body } => {
-                let label = *next_label;
-                *next_label += 1;
-                assembly.push_str(&format!(".Lwhile_start{label}:\n"));
-                condition.emit(assembly);
-                assembly.push_str(&format!("test %rax, %rax\nje .Lwhile_end{label}\n"));
-                emit_statements(body, assembly, next_label);
-                assembly.push_str(&format!("jmp .Lwhile_start{label}\n.Lwhile_end{label}:\n"));
+            controls.push(CControlTarget {
+                break_label: end_label.clone(),
+                continue_label: None,
+            });
+            for (index, case) in cases.iter().enumerate() {
+                assembly.push_str(&format!(".Lswitch_case{label}_{index}:\n"));
+                emit_statements(&case.body, assembly, next_label, controls);
+            }
+            controls.pop();
+            assembly.push_str(&format!("{end_label}:\n"));
+        }
+        CStatement::Break => {
+            if let Some(target) = controls.last() {
+                assembly.push_str(&format!("jmp {}\n", target.break_label));
+            }
+        }
+        CStatement::Continue => {
+            if let Some(target) = controls
+                .iter()
+                .rev()
+                .find_map(|target| target.continue_label.as_deref())
+            {
+                assembly.push_str(&format!("jmp {target}\n"));
             }
         }
     }
@@ -1011,6 +1888,7 @@ struct CParser<'a> {
     macros: &'a BTreeMap<String, String>,
     variables: BTreeMap<String, CRegister>,
     local_registers: Vec<CRegister>,
+    controls: Vec<bool>,
 }
 
 impl<'a> CParser<'a> {
@@ -1021,6 +1899,7 @@ impl<'a> CParser<'a> {
             macros,
             variables: BTreeMap::new(),
             local_registers: Vec::new(),
+            controls: Vec::new(),
         })
     }
 
@@ -1091,8 +1970,120 @@ impl<'a> CParser<'a> {
             self.expect_symbol(b'(')?;
             let condition = self.parse_expression(0)?;
             self.expect_symbol(b')')?;
+            self.controls.push(true);
             let body = self.parse_block(control_depth + 1, strings)?;
+            self.controls.pop();
             return Ok(CStatement::While { condition, body });
+        }
+        if self.peek_identifier("for") {
+            if control_depth >= MAX_C_CONTROL_DEPTH {
+                return Err(ToolchainError::UnsupportedC);
+            }
+            self.index += 1;
+            self.expect_symbol(b'(')?;
+            let initializer = if self.peek_symbol(b';') {
+                None
+            } else if self.peek_identifier("int") {
+                self.index += 1;
+                let Some(CToken::Identifier(name)) = self.next_token() else {
+                    return Err(ToolchainError::InvalidCSource);
+                };
+                if self.variables.contains_key(&name) {
+                    return Err(ToolchainError::InvalidCSource);
+                }
+                self.expect_symbol(b'=')?;
+                let expression = self.parse_expression(0)?;
+                let register = self.allocate_local(name)?;
+                Some(Box::new(CStatement::Declare {
+                    register,
+                    expression,
+                }))
+            } else {
+                Some(Box::new(self.parse_for_assignment()?))
+            };
+            self.expect_symbol(b';')?;
+            let condition = if self.peek_symbol(b';') {
+                None
+            } else {
+                Some(self.parse_expression(0)?)
+            };
+            self.expect_symbol(b';')?;
+            let increment = if self.peek_symbol(b')') {
+                None
+            } else {
+                Some(Box::new(self.parse_for_assignment()?))
+            };
+            self.expect_symbol(b')')?;
+            self.controls.push(true);
+            let body = self.parse_block(control_depth + 1, strings)?;
+            self.controls.pop();
+            return Ok(CStatement::For {
+                initializer,
+                condition,
+                increment,
+                body,
+            });
+        }
+        if self.peek_identifier("switch") {
+            if control_depth >= MAX_C_CONTROL_DEPTH {
+                return Err(ToolchainError::UnsupportedC);
+            }
+            self.index += 1;
+            self.expect_symbol(b'(')?;
+            let expression = self.parse_expression(0)?;
+            self.expect_symbol(b')')?;
+            self.expect_symbol(b'{')?;
+            self.controls.push(false);
+            let mut cases: Vec<CSwitchCase> = Vec::new();
+            while !self.peek_symbol(b'}') {
+                let value = if self.peek_identifier("case") {
+                    self.index += 1;
+                    let value = self.expect_number()?;
+                    if cases.iter().any(|case| case.value == Some(value)) {
+                        return Err(ToolchainError::InvalidCSource);
+                    }
+                    Some(value)
+                } else if self.peek_identifier("default") {
+                    self.index += 1;
+                    if cases.iter().any(|case| case.value.is_none()) {
+                        return Err(ToolchainError::InvalidCSource);
+                    }
+                    None
+                } else {
+                    return Err(ToolchainError::InvalidCSource);
+                };
+                self.expect_symbol(b':')?;
+                let mut body = Vec::new();
+                while !self.peek_symbol(b'}')
+                    && !self.peek_identifier("case")
+                    && !self.peek_identifier("default")
+                {
+                    if self.peek_identifier("return") {
+                        return Err(ToolchainError::UnsupportedC);
+                    }
+                    body.push(self.parse_statement(control_depth + 1, strings)?);
+                }
+                cases.push(CSwitchCase { value, body });
+            }
+            self.expect_symbol(b'}')?;
+            self.controls.pop();
+            return Ok(CStatement::Switch { expression, cases });
+        }
+        if self.peek_identifier("break") {
+            self.index += 1;
+            self.expect_symbol(b';')?;
+            if self.controls.is_empty() {
+                return Err(ToolchainError::InvalidCSource);
+            }
+            return Ok(CStatement::Break);
+        }
+        if self.peek_identifier("continue") {
+            self.index += 1;
+            self.expect_symbol(b';')?;
+            if !self.controls.iter().any(|is_loop| *is_loop) {
+                return Err(ToolchainError::InvalidCSource);
+            }
+            return Ok(CStatement::Continue);
         }
         if self.peek_identifier("int") {
             if control_depth != 0 {
@@ -1108,13 +2099,7 @@ impl<'a> CParser<'a> {
             self.expect_symbol(b'=')?;
             let expression = self.parse_expression(0)?;
             self.expect_symbol(b';')?;
-            let register = match self.variables.len() {
-                0 => CRegister::Rsi,
-                1 => CRegister::Rdx,
-                _ => return Err(ToolchainError::UnsupportedC),
-            };
-            self.variables.insert(name, register);
-            self.local_registers.push(register);
+            let register = self.allocate_local(name)?;
             return Ok(CStatement::Declare {
                 register,
                 expression,
@@ -1130,27 +2115,68 @@ impl<'a> CParser<'a> {
             });
         }
 
-        self.expect_identifier("oct_write")?;
-        self.expect_symbol(b'(')?;
-        if self.expect_number()? != 1 {
+        let writer = if self.peek_identifier("oct_write") {
+            self.index += 1;
+            self.expect_symbol(b'(')?;
+            if self.expect_number()? != 1 {
+                return Err(ToolchainError::UnsupportedC);
+            }
+            self.expect_symbol(b',')?;
+            let message = self.expect_string()?;
+            self.expect_symbol(b',')?;
+            let length =
+                usize::try_from(self.expect_number()?).map_err(|_| ToolchainError::OutOfBounds)?;
+            if length > message.len() {
+                return Err(ToolchainError::InvalidCSource);
+            }
+            self.expect_symbol(b')')?;
+            (message, length)
+        } else if self.peek_identifier("puts") || self.peek_identifier("printf") {
+            let is_puts = self.peek_identifier("puts");
+            self.index += 1;
+            self.expect_symbol(b'(')?;
+            let mut message = self.expect_string()?;
+            if is_puts {
+                message.push(b'\n');
+            } else if message.contains(&b'%') {
+                return Err(ToolchainError::UnsupportedC);
+            }
+            self.expect_symbol(b')')?;
+            let length = message.len();
+            (message, length)
+        } else {
             return Err(ToolchainError::UnsupportedC);
-        }
-        self.expect_symbol(b',')?;
-        let message = self.expect_string()?;
-        self.expect_symbol(b',')?;
-        let length =
-            usize::try_from(self.expect_number()?).map_err(|_| ToolchainError::OutOfBounds)?;
-        if length > message.len() {
-            return Err(ToolchainError::InvalidCSource);
-        }
-        self.expect_symbol(b')')?;
+        };
         self.expect_symbol(b';')?;
         let string_index = strings.len();
-        strings.push(message);
+        strings.push(writer.0);
         Ok(CStatement::Write {
             string_index,
-            length,
+            length: writer.1,
             saved_registers: self.local_registers.clone(),
+        })
+    }
+
+    fn allocate_local(&mut self, name: String) -> Result<CRegister, ToolchainError> {
+        let register = match self.variables.len() {
+            0 => CRegister::Rsi,
+            1 => CRegister::Rdx,
+            _ => return Err(ToolchainError::UnsupportedC),
+        };
+        self.variables.insert(name, register);
+        self.local_registers.push(register);
+        Ok(register)
+    }
+
+    fn parse_for_assignment(&mut self) -> Result<CStatement, ToolchainError> {
+        let Some(register) = self.peek_assignment() else {
+            return Err(ToolchainError::UnsupportedC);
+        };
+        self.index += 2;
+        let expression = self.parse_expression(0)?;
+        Ok(CStatement::Assign {
+            register,
+            expression,
         })
     }
 
@@ -1202,7 +2228,7 @@ impl<'a> CParser<'a> {
                     return Err(ToolchainError::UnsupportedC);
                 }
                 CExpression::Negate(Box::new(self.parse_expression_nested(
-                    3,
+                    7,
                     depth + 1,
                     operations,
                 )?))
@@ -1212,7 +2238,18 @@ impl<'a> CParser<'a> {
                 if *operations > MAX_C_EXPRESSION_OPERATIONS {
                     return Err(ToolchainError::UnsupportedC);
                 }
-                self.parse_expression_nested(3, depth + 1, operations)?
+                self.parse_expression_nested(7, depth + 1, operations)?
+            }
+            Some(CToken::Symbol(b'!')) => {
+                *operations += 1;
+                if *operations > MAX_C_EXPRESSION_OPERATIONS {
+                    return Err(ToolchainError::UnsupportedC);
+                }
+                CExpression::LogicalNot(Box::new(self.parse_expression_nested(
+                    7,
+                    depth + 1,
+                    operations,
+                )?))
             }
             Some(CToken::Symbol(b'(')) => {
                 let expression = self.parse_expression_nested(0, depth + 1, operations)?;
@@ -1226,16 +2263,30 @@ impl<'a> CParser<'a> {
             let Some(CToken::Symbol(symbol)) = self.tokens.get(self.index) else {
                 break;
             };
-            let (precedence, operator) = match *symbol {
-                b'+' => (1, COperator::Add),
-                b'-' => (1, COperator::Subtract),
-                b'*' => (2, COperator::Multiply),
+            let double_symbol = matches!(
+                self.tokens.get(self.index + 1),
+                Some(CToken::Symbol(next)) if *next == *symbol
+            );
+            let second_is_equal =
+                matches!(self.tokens.get(self.index + 1), Some(CToken::Symbol(b'=')));
+            let (precedence, operator, token_count) = match *symbol {
+                b'|' if double_symbol => (1, COperator::LogicalOr, 2),
+                b'&' if double_symbol => (2, COperator::LogicalAnd, 2),
+                b'=' if second_is_equal => (3, COperator::Equal, 2),
+                b'!' if second_is_equal => (3, COperator::NotEqual, 2),
+                b'<' if second_is_equal => (4, COperator::LessEqual, 2),
+                b'>' if second_is_equal => (4, COperator::GreaterEqual, 2),
+                b'<' => (4, COperator::Less, 1),
+                b'>' => (4, COperator::Greater, 1),
+                b'+' => (5, COperator::Add, 1),
+                b'-' => (5, COperator::Subtract, 1),
+                b'*' => (6, COperator::Multiply, 1),
                 _ => break,
             };
             if precedence < minimum_precedence {
                 break;
             }
-            self.index += 1;
+            self.index += token_count;
             *operations += 1;
             if *operations > MAX_C_EXPRESSION_OPERATIONS {
                 return Err(ToolchainError::UnsupportedC);
@@ -1308,6 +2359,9 @@ impl<'a> CParser<'a> {
             return None;
         };
         if !matches!(self.tokens.get(self.index + 1), Some(CToken::Symbol(b'='))) {
+            return None;
+        }
+        if matches!(self.tokens.get(self.index + 2), Some(CToken::Symbol(b'='))) {
             return None;
         }
         self.variables.get(name).copied()
@@ -1428,7 +2482,8 @@ fn tokenize_c(source: &str) -> Result<Vec<CToken>, ToolchainError> {
                 }
                 tokens.push(CToken::Number(value));
             }
-            symbol @ (b'(' | b')' | b'{' | b'}' | b',' | b';' | b'+' | b'-' | b'*' | b'=') => {
+            symbol @ (b'(' | b')' | b'{' | b'}' | b',' | b';' | b'+' | b'-' | b'*' | b'='
+            | b':' | b'!' | b'<' | b'>' | b'&' | b'|') => {
                 tokens.push(CToken::Symbol(symbol));
                 index += 1;
             }
@@ -1474,6 +2529,82 @@ mod tests {
     }
 
     #[test]
+    fn assembler_accepts_chibicc_metadata_and_alignment_directives() {
+        let object = assemble(
+            b".file 1 \"input.c\"\n.text\n.local .L..1\n.type _start, @function\n.byte 0x90\n.align 4\n.byte 0xCC\n.loc 1 4 0\n.p2align 3\n.global _start\n_start:\nret\n.size _start, .-_start\n",
+        )
+        .unwrap();
+        assert_eq!(u64::from_le_bytes(object[8..16].try_into().unwrap()), 8);
+        assert_eq!(&object[24..], &[0x90, 0, 0, 0, 0xCC, 0, 0, 0, 0xC3]);
+        assert_eq!(
+            assemble(b".align 0\n.global _start\n_start:\nret\n"),
+            Err(ToolchainError::InvalidAssembly)
+        );
+        assert_eq!(
+            assemble(b".p2align 13\n.global _start\n_start:\nret\n"),
+            Err(ToolchainError::InvalidAssembly)
+        );
+    }
+
+    #[test]
+    fn assembles_and_links_a_minimal_chibicc_main_function() {
+        let object = assemble(
+            b".file 1 \"smoke.c\"\n.local .L..1\n.data\n.type .L..1, @object\n.size .L..1, 5\n.align 1\n.L..1:\n.byte 109\n.byte 97\n.byte 105\n.byte 110\n.byte 0\n.globl main\n.text\n.type main, @function\nmain:\npush %rbp\nmov %rsp, %rbp\nsub $16, %rsp\nmov %rsp, -8(%rbp)\n.loc 1 2\nmov $42, %rax\njmp .L.return.main\nmov $0, %rax\n.L.return.main:\nmov %rbp, %rsp\npop %rbp\nret\n.size main, .-main\n",
+        )
+        .unwrap();
+        let executable = link(&object).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(executable[24..32].try_into().unwrap()),
+            super::ELF_BASE
+        );
+        let code = &executable[super::ELF_LOAD_OFFSET..];
+        assert!(
+            code.windows(4)
+                .any(|bytes| bytes == [0x48, 0x83, 0xEC, 0x10])
+        );
+        assert!(
+            code.windows(4)
+                .any(|bytes| bytes == [0x48, 0x89, 0x65, 0xF8])
+        );
+        assert!(
+            code.windows(10)
+                .any(|bytes| bytes == [0x48, 0xB8, 42, 0, 0, 0, 0, 0, 0, 0])
+        );
+        assert!(code.windows(2).any(|bytes| bytes == [0xCD, 0x80]));
+    }
+
+    #[test]
+    fn assembles_chibicc_local_integer_initialization_and_load() {
+        let object = assemble(
+            b".globl main\n.text\n.type main, @function\nmain:\npush %rbp\nmov %rsp, %rbp\nsub $16, %rsp\nmov %rsp, -16(%rbp)\nmov $4, %rcx\nlea -4(%rbp), %rdi\nmov $0, %al\nrep stosb\nlea -4(%rbp), %rax\npush %rax\nmov $5, %rax\npop %rdi\nmov %eax, (%rdi)\nlea -4(%rbp), %rax\nmovsxd (%rax), %rax\njmp .L.return.main\nmov $0, %rax\n.L.return.main:\nmov %rbp, %rsp\npop %rbp\nret\n",
+        )
+        .unwrap();
+        let code = &object[24..];
+        assert!(code.windows(2).any(|bytes| bytes == [0xF3, 0xAA]));
+        assert!(code.windows(2).any(|bytes| bytes == [0x89, 0x07]));
+        assert!(code.windows(3).any(|bytes| bytes == [0x48, 0x63, 0x00]));
+        assert!(
+            code.windows(4)
+                .any(|bytes| bytes == [0x48, 0x8D, 0x45, 0xFC])
+        );
+    }
+
+    #[test]
+    fn assembles_chibicc_integer_arithmetic_and_conditions() {
+        let object = assemble(
+            b".global _start\n_start:\nadd %edi, %eax\ncmp %edi, %eax\nsetne %al\nmovzb %al, %rax\ncmp $0, %eax\nret\n",
+        )
+        .unwrap();
+        assert_eq!(
+            &object[24..],
+            &[
+                0x01, 0xF8, 0x39, 0xF8, 0x0F, 0x95, 0xC0, 0x48, 0x0F, 0xB6, 0xC0, 0x83, 0xF8, 0x00,
+                0xC3,
+            ]
+        );
+    }
+
+    #[test]
     fn assembles_and_links_a_static_elf() {
         let object =
             assemble(b".global _start\n.text\n_start:\nmov $0, %rax\nmov $9, %rdi\nint $0x80\n")
@@ -1494,6 +2625,41 @@ mod tests {
             compile(b"int main(void) { oct_write(OCT_STDOUT, \"ok\\n\", 3); return 0; }").unwrap();
         assert_eq!(&elf[..4], b"\x7FELF");
         assert_eq!(u16::from_le_bytes([elf[16], elf[17]]), 2);
+    }
+
+    #[test]
+    fn compiles_stdio_literals_and_ignores_installed_standard_headers() {
+        let elf = compile_with_includes(
+            b"#include <stdio.h>\n#include <stdlib.h>\nint main(void) { puts(\"hello\"); printf(\"world\\n\"); return 0; }",
+            "/main.c",
+            |_| Err(FsError::NotFound),
+        )
+        .unwrap();
+        assert!(elf.windows(6).any(|bytes| bytes == b"hello\n"));
+        assert!(elf.windows(6).any(|bytes| bytes == b"world\n"));
+        assert_eq!(
+            compile(b"#include <stdio.h>\nint main(void) { printf(\"%d\", 1); return 0; }"),
+            Err(ToolchainError::UnsupportedC)
+        );
+    }
+
+    #[test]
+    fn compiles_signed_comparisons_and_short_circuit_logic() {
+        let elf = compile(
+            b"int main(void) { if (1 < 2 && 2 <= 3 || 4 > 3 && 4 >= 4 && 5 == 5 && 6 != 7 && !0) { puts(\"yes\"); } return 0; }",
+        )
+        .unwrap();
+        let code = &elf[super::ELF_LOAD_OFFSET..];
+        for opcode in [
+            [0x0F, 0x84],
+            [0x0F, 0x85],
+            [0x0F, 0x8C],
+            [0x0F, 0x8D],
+            [0x0F, 0x8E],
+            [0x0F, 0x8F],
+        ] {
+            assert!(code.windows(2).any(|bytes| bytes == opcode));
+        }
     }
 
     #[test]
@@ -1548,6 +2714,26 @@ mod tests {
         assert_eq!(
             compile(b"int main(void) { if (1) { int nested = 1; } return 0; }"),
             Err(ToolchainError::UnsupportedC)
+        );
+    }
+
+    #[test]
+    fn compiles_for_switch_break_and_continue() {
+        let elf = compile(
+            b"int main(void) { for (int count = 3; count; count = count - 1) { if (count - 2) { continue; } switch (count) { case 1: oct_write(1, \"one\", 3); break; case 2: break; default: oct_write(1, \"other\", 5); } } return 0; }",
+        )
+        .unwrap();
+        let text = &elf[super::ELF_LOAD_OFFSET..];
+        assert!(text.windows(3).any(|bytes| bytes == [0x48, 0x39, 0xF8]));
+        assert!(text.windows(2).any(|bytes| bytes == [0x0F, 0x84]));
+        assert!(text.contains(&0xE9));
+        assert_eq!(
+            compile(b"int main(void) { break; return 0; }"),
+            Err(ToolchainError::InvalidCSource)
+        );
+        assert_eq!(
+            compile(b"int main(void) { switch (1) { case 1: continue; } return 0; }"),
+            Err(ToolchainError::InvalidCSource)
         );
     }
 

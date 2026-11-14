@@ -8,7 +8,7 @@ serta tulis sinkron. Registry memberi nama seperti `sata0` atau `usb0`.
 
 ## Mount dari shell
 
-VFS dimulai dengan RAMFS pada `/`. Untuk memasang FAT32:
+VFS dimulai dengan RAMFS pada `/`. FAT32 tetap menjadi tipe default:
 
 ```text
 mkdir /mnt
@@ -24,6 +24,23 @@ Volume yang ditangani adalah FAT32 MBR partition atau superfloppy. Implementasi
 mendukung baca/tulis file, truncate, pembuatan file/direktori, penghapusan,
 nama panjang, FAT mirroring, dan FSInfo yang valid. GPT, exFAT, NTFS, dan UASP
 belum didukung.
+
+Ext2 dapat dipasang eksplisit dari primary MBR partition bertipe `0x83` atau
+superfloppy:
+
+```text
+mount sata0 /mnt ext2
+ls /mnt
+touch /mnt/new.txt
+umount /mnt
+```
+
+Ext2 mendukung baca/tulis, truncate, direktori, symbolic link, permission,
+direct serta indirect block, dan block size 1/2/4 KiB. Filesystem ber-journal
+(ext3), extents, 64-bit block addressing, dan fitur ext4 yang tidak dikenal
+ditolak saat mount. Ext2 tidak memiliki journal; kegagalan I/O atau listrik
+mati di tengah mutasi dapat merusak metadata. Selalu unmount sebelum melepas
+media dan uji penulisan pada image atau media kosong.
 
 FAT32 tidak memiliki journaling. Kegagalan I/O atau listrik mati di tengah
 mutasi dapat meninggalkan FAT dan direktori tidak konsisten. Selalu unmount

@@ -2,34 +2,48 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::drivers::keyboard;
 use crate::fs::{FsError, Metadata, NodeType, Vfs};
-use crate::storage::{block, fat32::Fat32};
+use crate::storage::{block, ext2::Ext2, fat32::Fat32};
 
 const MAX_COMMAND_LENGTH: usize = 256;
 const MAX_FILE_OPERATION: usize = 8192;
-const MAX_TOOLCHAIN_FILE: usize = 72 * 1024;
+const MAX_TOOLCHAIN_FILE: usize = 1024 * 1024;
+static CHIBICC_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_PROGRAM_PATH: &[&str] = &["/bin", "/usr/bin", "/usr/local/bin"];
 
-pub async fn run() {
-    crate::println!("OCTAGRAM-OS shell");
+pub async fn run(terminal: usize) {
+    crate::terminal::set_output_terminal(terminal);
+    crate::println!("OCTAGRAM-OS shell (tty{})", terminal);
     let mut current_dir = String::from("/");
     let mut program_path = DEFAULT_PROGRAM_PATH
         .iter()
         .map(|path| String::from(*path))
         .collect::<Vec<_>>();
+    let mut environment = alloc::vec![String::from("PATH=/bin:/usr/bin:/usr/local/bin")];
     print_prompt(&current_dir);
     let mut line = String::new();
 
     loop {
-        let keyboard::KeyEvent::Character(character) = keyboard::next_event().await else {
+        let event = keyboard::next_event_for(terminal).await;
+        crate::terminal::set_output_terminal(terminal);
+        let keyboard::KeyEvent::Character(character) = event else {
             continue;
         };
         match character {
             '\n' | '\r' => {
                 crate::print!("\n");
-                execute(&line, &mut current_dir, &mut program_path).await;
+                execute(
+                    &line,
+                    &mut current_dir,
+                    &mut program_path,
+                    &mut environment,
+                    terminal,
+                )
+                .await;
+                crate::terminal::set_output_terminal(terminal);
                 line.clear();
                 print_prompt(&current_dir);
             }
@@ -57,7 +71,13 @@ fn print_prompt(current_dir: &str) {
     crate::print!("octagram:{current_dir} $ ");
 }
 
-async fn execute(line: &str, current_dir: &mut String, program_path: &mut Vec<String>) {
+async fn execute(
+    line: &str,
+    current_dir: &mut String,
+    program_path: &mut Vec<String>,
+    environment: &mut Vec<String>,
+    terminal: usize,
+) {
     let line = line.trim_start();
     let mut parts = line.splitn(2, char::is_whitespace);
     let command = parts.next().unwrap_or("");
@@ -71,11 +91,15 @@ async fn execute(line: &str, current_dir: &mut String, program_path: &mut Vec<St
         "clear" => crate::terminal::terminal_clear(),
         "pwd" => crate::println!("{current_dir}"),
         "path" => print_program_path(program_path),
-        "export" => set_program_path(current_dir, arguments, program_path),
+        "export" => set_environment(current_dir, arguments, program_path, environment),
         "cd" => change_directory(current_dir, arguments),
         "echo" => crate::println!("{arguments}"),
         "ls" => list_directory(current_dir, arguments),
         "cat" => show_file(current_dir, arguments),
+        "head" => show_line_selection(current_dir, arguments, false),
+        "tail" => show_line_selection(current_dir, arguments, true),
+        "wc" => count_file_text(current_dir, arguments),
+        "grep" => search_file_text(current_dir, arguments),
         "touch" => create_node(current_dir, arguments, false),
         "mkdir" => create_node(current_dir, arguments, true),
         "ln" => create_symlink(current_dir, arguments),
@@ -83,16 +107,26 @@ async fn execute(line: &str, current_dir: &mut String, program_path: &mut Vec<St
         "chmod" => change_permissions(current_dir, arguments),
         "stat" => show_metadata(current_dir, arguments),
         "cp" => copy_file(current_dir, arguments),
-        "edit" => edit_file(current_dir, arguments).await,
+        "edit" => edit_file(current_dir, arguments, terminal).await,
+        "date" => show_date(),
+        "shutdown" => shutdown(),
         "devices" => list_block_devices(),
         "mount" => mount_device(current_dir, arguments),
         "umount" => unmount_device(current_dir, arguments),
         "as" => run_toolchain_command("as", current_dir, arguments),
         "ld" => run_toolchain_command("ld", current_dir, arguments),
         "cc" => run_toolchain_command("cc", current_dir, arguments),
-        "run" => run_program(current_dir, arguments),
-        "runp" => run_parallel_programs(current_dir, arguments),
-        _ => run_external_program(current_dir, command, arguments, program_path),
+        "chibicc" => run_chibicc(current_dir, arguments, environment, terminal),
+        "run" => run_program(current_dir, arguments, environment, terminal),
+        "runp" => run_parallel_programs(current_dir, arguments, environment, terminal),
+        _ => run_external_program(
+            current_dir,
+            command,
+            arguments,
+            program_path,
+            environment,
+            terminal,
+        ),
     }
 }
 
@@ -102,10 +136,14 @@ fn print_help() {
     crate::println!("  clear                  clear the screen");
     crate::println!("  pwd                    show the current directory");
     crate::println!("  path                   show executable search directories");
-    crate::println!("  export PATH=<dirs>     set colon-separated executable search paths");
+    crate::println!("  export NAME=value     set an environment variable");
     crate::println!("  cd [path]              change directory (default: /)");
     crate::println!("  ls [path]              list a directory");
     crate::println!("  cat <path>             print a UTF-8 file");
+    crate::println!("  head [-n count] <file> print the first lines of a text file");
+    crate::println!("  tail [-n count] <file> print the last lines of a text file");
+    crate::println!("  wc <file>              count lines, words, and bytes");
+    crate::println!("  grep [-n] <text> <file> search literal text in a file");
     crate::println!("  touch <path>           create an empty file");
     crate::println!("  mkdir <path>           create a directory");
     crate::println!("  ln -s <target> <link>  create a symbolic link");
@@ -114,16 +152,43 @@ fn print_help() {
     crate::println!("  stat <path>            show file metadata");
     crate::println!("  cp <source> <target>   copy a file");
     crate::println!("  edit <path>            edit a UTF-8 file");
+    crate::println!("  date                   show date and time from the RTC");
+    crate::println!("  shutdown               power off using ACPI");
     crate::println!("  devices                list detected storage devices");
-    crate::println!("  mount <device> <path>  mount a FAT32 volume read-write");
+    crate::println!("  mount <device> <path> [fat32|ext2]  mount a filesystem read-write");
     crate::println!("  umount <path>          unmount a filesystem");
     crate::println!("  as <input.s> -o <out.o> assemble supported x86_64 source");
     crate::println!("  ld <input.o> -o <out.elf> link a native toolchain object");
-    crate::println!("  cc <input.c> -o <out.elf> compile the OCTAGRAM C subset");
+    crate::println!("  cc <input.c> -o <out.elf> compile the kernel C subset");
+    crate::println!("  gcc <input.c> [-o <out.elf>] run the userland mini compiler");
+    crate::println!("  tcc <input.c> [-o <out.elf>] compile C with TinyCC");
+    crate::println!("  chibicc <input.c> [-o <out>] compile a C file to a static ELF");
     crate::println!("  echo <text>            print text");
     crate::println!("  run <path>             run a static x86_64 ELF");
     crate::println!("  runp <elf> <elf>...    run multiple ELFs with timer preemption");
     crate::println!("  <program>              run a program found in PATH");
+}
+
+fn show_date() {
+    match crate::drivers::rtc::read() {
+        Ok(time) => crate::println!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            time.year,
+            time.month,
+            time.day,
+            time.hour,
+            time.minute,
+            time.second
+        ),
+        Err(error) => crate::println!("date: RTC read failed: {error:?}"),
+    }
+}
+
+fn shutdown() {
+    crate::println!("shutdown: requesting ACPI power-off");
+    if let Err(error) = crate::drivers::acpi::power_off() {
+        crate::println!("shutdown: power-off failed: {error:?}");
+    }
 }
 
 fn change_directory(current_dir: &mut String, arguments: &str) {
@@ -187,6 +252,152 @@ fn show_file(current_dir: &str, arguments: &str) {
         },
         Err(error) => print_fs_error("cat", &path, error),
     }
+}
+
+fn show_line_selection(current_dir: &str, arguments: &str, from_end: bool) {
+    let command = if from_end { "tail" } else { "head" };
+    let words = match split_shell_words(arguments) {
+        Ok(words) => words,
+        Err(()) => {
+            crate::println!("{command}: unmatched quote or escape");
+            return;
+        }
+    };
+    let (count, path_word) = match parse_line_selection_arguments(&words) {
+        Ok(arguments) => arguments,
+        Err(()) => {
+            crate::println!("usage: {command} [-n count] <file>");
+            return;
+        }
+    };
+    let Some(path) = resolve_path(current_dir, path_word) else {
+        crate::println!("{command}: invalid path");
+        return;
+    };
+    let Some(text) = read_text_file(command, &path) else {
+        return;
+    };
+    let line_count = text.lines().count();
+    let range = selected_line_range(line_count, count, from_end);
+    for line in text.lines().skip(range.start).take(range.len()) {
+        crate::println!("{line}");
+    }
+}
+
+fn count_file_text(current_dir: &str, arguments: &str) {
+    let words = match split_shell_words(arguments) {
+        Ok(words) if words.len() == 1 => words,
+        Ok(_) => {
+            crate::println!("usage: wc <file>");
+            return;
+        }
+        Err(()) => {
+            crate::println!("wc: unmatched quote or escape");
+            return;
+        }
+    };
+    let Some(path) = resolve_path(current_dir, &words[0]) else {
+        crate::println!("wc: invalid path");
+        return;
+    };
+    let Some(text) = read_text_file("wc", &path) else {
+        return;
+    };
+    let (lines, words, bytes) = text_counts(&text);
+    crate::println!("{lines} {words} {bytes} {path}");
+}
+
+fn search_file_text(current_dir: &str, arguments: &str) {
+    let words = match split_shell_words(arguments) {
+        Ok(words) => words,
+        Err(()) => {
+            crate::println!("grep: unmatched quote or escape");
+            return;
+        }
+    };
+    let (show_line_numbers, pattern, file) = match parse_grep_arguments(&words) {
+        Ok(arguments) => arguments,
+        Err(()) => {
+            crate::println!("usage: grep [-n] <text> <file>");
+            return;
+        }
+    };
+    let Some(path) = resolve_path(current_dir, file) else {
+        crate::println!("grep: invalid path");
+        return;
+    };
+    let Some(text) = read_text_file("grep", &path) else {
+        return;
+    };
+    for (index, line) in matching_lines(&text, pattern) {
+        if show_line_numbers {
+            crate::println!("{}:{line}", index + 1);
+        } else {
+            crate::println!("{line}");
+        }
+    }
+}
+
+fn parse_line_selection_arguments(words: &[String]) -> Result<(usize, &str), ()> {
+    match words {
+        [path] => Ok((10, path)),
+        [option, count, path] if option == "-n" => {
+            Ok((count.parse::<usize>().map_err(|_| ())?, path))
+        }
+        _ => Err(()),
+    }
+}
+
+fn parse_grep_arguments(words: &[String]) -> Result<(bool, &str, &str), ()> {
+    let (show_line_numbers, pattern_index) = if words.first().is_some_and(|word| word == "-n") {
+        (true, 1)
+    } else {
+        (false, 0)
+    };
+    if words.len() != pattern_index + 2 {
+        return Err(());
+    }
+    Ok((
+        show_line_numbers,
+        &words[pattern_index],
+        &words[pattern_index + 1],
+    ))
+}
+
+fn matching_lines<'a>(text: &'a str, pattern: &'a str) -> impl Iterator<Item = (usize, &'a str)> {
+    text.lines()
+        .enumerate()
+        .filter(move |(_, line)| line.contains(pattern))
+}
+
+fn read_text_file(command: &str, path: &str) -> Option<String> {
+    match with_vfs(|vfs| read_file(vfs, path)) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => Some(text),
+            Err(_) => {
+                crate::println!("{command}: {path}: file is not valid UTF-8");
+                None
+            }
+        },
+        Err(error) => {
+            print_fs_error(command, path, error);
+            None
+        }
+    }
+}
+
+fn selected_line_range(line_count: usize, count: usize, from_end: bool) -> core::ops::Range<usize> {
+    if from_end {
+        line_count.saturating_sub(count)..line_count
+    } else {
+        0..line_count.min(count)
+    }
+}
+
+fn text_counts(text: &str) -> (usize, usize, usize) {
+    let lines = text.bytes().filter(|byte| *byte == b'\n').count();
+    let words = text.split_whitespace().count();
+    (lines, words, text.len())
 }
 
 fn create_node(current_dir: &str, arguments: &str, directory: bool) {
@@ -317,7 +528,7 @@ fn copy_file(current_dir: &str, arguments: &str) {
     }
 }
 
-fn run_program(current_dir: &str, arguments: &str) {
+fn run_program(current_dir: &str, arguments: &str, environment: &[String], terminal: usize) {
     let words = match split_shell_words(arguments) {
         Ok(words) if !words.is_empty() => words,
         _ => {
@@ -329,13 +540,26 @@ fn run_program(current_dir: &str, arguments: &str) {
         crate::println!("usage: run <path>");
         return;
     };
-    match crate::elf::run_file_from_with_args(&path, current_dir, &words) {
+    let result = crate::elf::run_file_from_with_args_and_environment_on_terminal(
+        &path,
+        current_dir,
+        &words,
+        environment,
+        terminal,
+    );
+    crate::terminal::set_output_terminal(terminal);
+    match result {
         Ok(status) => crate::println!("program exited with status {status}"),
         Err(error) => crate::println!("run: {path}: {error:?}"),
     }
 }
 
-fn run_parallel_programs(current_dir: &str, arguments: &str) {
+fn run_parallel_programs(
+    current_dir: &str,
+    arguments: &str,
+    environment: &[String],
+    terminal: usize,
+) {
     let words = match split_shell_words(arguments) {
         Ok(words) if words.len() >= 2 => words,
         _ => {
@@ -355,7 +579,14 @@ fn run_parallel_programs(current_dir: &str, arguments: &str) {
         };
         paths.push(path);
     }
-    match crate::elf::run_files_parallel_from(&paths, current_dir) {
+    let result = crate::elf::run_files_parallel_from_with_environment_on_terminal(
+        &paths,
+        current_dir,
+        environment,
+        terminal,
+    );
+    crate::terminal::set_output_terminal(terminal);
+    match result {
         Ok(statuses) => {
             for (index, status) in statuses.iter().enumerate() {
                 crate::println!("runp: pid {} exited with status {status}", index + 1);
@@ -369,22 +600,102 @@ fn print_program_path(program_path: &[String]) {
     crate::println!("{}", program_path.join(":"));
 }
 
-fn set_program_path(current_dir: &str, arguments: &str, program_path: &mut Vec<String>) {
-    let Some(value) = arguments.strip_prefix("PATH=") else {
-        crate::println!("usage: export PATH=<dir>:<dir>:...");
+fn set_environment(
+    current_dir: &str,
+    arguments: &str,
+    program_path: &mut Vec<String>,
+    environment: &mut Vec<String>,
+) {
+    let words = match split_shell_words(arguments) {
+        Ok(words) if words.len() == 1 => words,
+        _ => {
+            crate::println!("usage: export NAME=value");
+            return;
+        }
+    };
+    let Some((name, value)) = words[0].split_once('=') else {
+        crate::println!("usage: export NAME=value");
         return;
     };
-    let mut paths = Vec::new();
-    for path in value.split(':').filter(|path| !path.is_empty()) {
-        let Some(path) = resolve_path(current_dir, path) else {
-            crate::println!("export: invalid PATH entry");
+    if !crate::elf::valid_environment_key(name) {
+        crate::println!("export: invalid variable name");
+        return;
+    }
+
+    let mut normalized_paths = None;
+    let mut normalized_value = String::new();
+    if normalized_value.try_reserve(value.len()).is_err() {
+        crate::println!("export: out of memory");
+        return;
+    }
+    normalized_value.push_str(value);
+    if name == "PATH" {
+        let mut paths = Vec::new();
+        for path in value.split(':').filter(|path| !path.is_empty()) {
+            let Some(path) = resolve_path(current_dir, path) else {
+                crate::println!("export: invalid PATH entry");
+                return;
+            };
+            if !paths.contains(&path) {
+                if paths.try_reserve(1).is_err() {
+                    crate::println!("export: out of memory");
+                    return;
+                }
+                paths.push(path);
+            }
+        }
+        let value_length = paths
+            .iter()
+            .enumerate()
+            .try_fold(0usize, |length, (index, path)| {
+                length
+                    .checked_add(path.len())
+                    .and_then(|length| length.checked_add(usize::from(index != 0)))
+            });
+        let Some(value_length) = value_length else {
+            crate::println!("export: value too long");
             return;
         };
-        if !paths.contains(&path) {
-            paths.push(path);
+        normalized_value.clear();
+        if normalized_value.try_reserve(value_length).is_err() {
+            crate::println!("export: out of memory");
+            return;
         }
+        for (index, path) in paths.iter().enumerate() {
+            if index != 0 {
+                normalized_value.push(':');
+            }
+            normalized_value.push_str(path);
+        }
+        normalized_paths = Some(paths);
     }
-    *program_path = paths;
+
+    let mut assignment = String::new();
+    if assignment
+        .try_reserve(name.len() + 1 + normalized_value.len())
+        .is_err()
+    {
+        crate::println!("export: out of memory");
+        return;
+    }
+    assignment.push_str(name);
+    assignment.push('=');
+    assignment.push_str(&normalized_value);
+    let existing = environment.iter().position(|entry| {
+        entry.starts_with(name) && entry.as_bytes().get(name.len()) == Some(&b'=')
+    });
+    if existing.is_none() && environment.try_reserve(1).is_err() {
+        crate::println!("export: out of memory");
+        return;
+    }
+    if let Some(existing) = existing {
+        environment[existing] = assignment;
+    } else {
+        environment.push(assignment);
+    }
+    if let Some(paths) = normalized_paths {
+        *program_path = paths;
+    }
 }
 
 fn run_external_program(
@@ -392,6 +703,8 @@ fn run_external_program(
     command: &str,
     arguments: &str,
     program_path: &[String],
+    environment: &[String],
+    terminal: usize,
 ) {
     let extra_arguments = match split_shell_words(arguments) {
         Ok(arguments) => arguments,
@@ -413,7 +726,15 @@ fn run_external_program(
             Ok(metadata)
                 if metadata.node_type == NodeType::File && metadata.permissions & 0o111 != 0 =>
             {
-                match crate::elf::run_file_from_with_args(&path, current_dir, &argv) {
+                let result = crate::elf::run_file_from_with_args_and_environment_on_terminal(
+                    &path,
+                    current_dir,
+                    &argv,
+                    environment,
+                    terminal,
+                );
+                crate::terminal::set_output_terminal(terminal);
+                match result {
                     Ok(status) => crate::println!("program exited with status {status}"),
                     Err(error) => crate::println!("{command}: {error:?}"),
                 }
@@ -531,11 +852,15 @@ fn list_block_devices() {
 
 fn mount_device(current_dir: &str, arguments: &str) {
     let mut parts = arguments.split_whitespace();
-    let (Some(device_name), Some(mountpoint), None) = (parts.next(), parts.next(), parts.next())
-    else {
-        crate::println!("usage: mount <device> <path>");
+    let (Some(device_name), Some(mountpoint)) = (parts.next(), parts.next()) else {
+        crate::println!("usage: mount <device> <path> [fat32|ext2]");
         return;
     };
+    let filesystem_type = parts.next().unwrap_or("fat32");
+    if parts.next().is_some() || !matches!(filesystem_type, "fat32" | "ext2") {
+        crate::println!("usage: mount <device> <path> [fat32|ext2]");
+        return;
+    }
     let Some(mountpoint) = resolve_path(current_dir, mountpoint) else {
         crate::println!("mount: invalid mount path");
         return;
@@ -544,12 +869,26 @@ fn mount_device(current_dir: &str, arguments: &str) {
         crate::println!("mount: storage device `{device_name}` not found (try `devices`)");
         return;
     };
-    match Fat32::mount(device) {
-        Ok(filesystem) => match with_vfs(|vfs| vfs.mount(&mountpoint, filesystem)) {
-            Ok(()) => crate::println!("mounted {device_name} at {mountpoint} (FAT32, read-write)"),
-            Err(error) => crate::println!("mount: {mountpoint}: {error:?}"),
-        },
-        Err(error) => crate::println!("mount: {device_name}: {error:?}"),
+    if filesystem_type == "ext2" {
+        match Ext2::mount(device) {
+            Ok(filesystem) => match with_vfs(|vfs| vfs.mount(&mountpoint, filesystem)) {
+                Ok(()) => {
+                    crate::println!("mounted {device_name} at {mountpoint} (ext2, read-write)")
+                }
+                Err(error) => crate::println!("mount: {mountpoint}: {error:?}"),
+            },
+            Err(error) => crate::println!("mount: {device_name}: {error:?}"),
+        }
+    } else {
+        match Fat32::mount(device) {
+            Ok(filesystem) => match with_vfs(|vfs| vfs.mount(&mountpoint, filesystem)) {
+                Ok(()) => {
+                    crate::println!("mounted {device_name} at {mountpoint} (FAT32, read-write)")
+                }
+                Err(error) => crate::println!("mount: {mountpoint}: {error:?}"),
+            },
+            Err(error) => crate::println!("mount: {device_name}: {error:?}"),
+        }
     }
 }
 
@@ -610,6 +949,242 @@ fn run_toolchain_command(command: &str, current_dir: &str, arguments: &str) {
     }
 }
 
+fn run_chibicc(current_dir: &str, arguments: &str, environment: &[String], terminal: usize) {
+    let words = match split_shell_words(arguments) {
+        Ok(words) if !words.is_empty() => words,
+        _ => {
+            crate::println!("usage: chibicc <input.c> [-o <output>] [-c|-S|-E]");
+            return;
+        }
+    };
+
+    if words
+        .iter()
+        .any(|word| matches!(word.as_str(), "-S" | "-E"))
+    {
+        let mut argv = Vec::with_capacity(words.len() + 1);
+        argv.push(String::from("chibicc"));
+        argv.extend(words);
+        let result = crate::elf::run_file_from_with_args_and_environment_on_terminal(
+            "/bin/chibicc",
+            current_dir,
+            &argv,
+            environment,
+            terminal,
+        );
+        crate::terminal::set_output_terminal(terminal);
+        match result {
+            Ok(0) => {}
+            Ok(status) => crate::println!("chibicc: exited with status {status}"),
+            Err(error) => crate::println!("chibicc: {error:?}"),
+        }
+        return;
+    }
+
+    let mut source = None;
+    let mut output = None;
+    let mut compile_only = false;
+    let mut explicit_c_language = false;
+    let mut forward = Vec::with_capacity(words.len() + 3);
+    let mut index = 0;
+    while index < words.len() {
+        let word = &words[index];
+        if word == "-o" {
+            index += 1;
+            let Some(path) = words.get(index) else {
+                crate::println!("chibicc: missing argument after -o");
+                return;
+            };
+            output = Some(path.as_str());
+        } else if let Some(path) = word.strip_prefix("-o").filter(|path| !path.is_empty()) {
+            output = Some(path);
+        } else if word == "-c" {
+            compile_only = true;
+        } else if word == "-x" {
+            index += 1;
+            let Some(language) = words.get(index) else {
+                crate::println!("chibicc: missing language after -x");
+                return;
+            };
+            explicit_c_language = language == "c";
+            if !explicit_c_language {
+                crate::println!("chibicc: only C source is supported for compilation");
+                return;
+            }
+            forward.push(word.clone());
+            forward.push(language.clone());
+        } else if word.starts_with("-l")
+            || word.starts_with("-L")
+            || word.starts_with("-Wl,")
+            || matches!(word.as_str(), "-Xlinker" | "-shared" | "-static")
+        {
+            crate::println!("chibicc: external libraries and linker flags are not supported");
+            return;
+        } else if chibicc_option_takes_argument(word) {
+            index += 1;
+            let Some(value) = words.get(index) else {
+                crate::println!("chibicc: missing argument after {word}");
+                return;
+            };
+            forward.push(word.clone());
+            forward.push(value.clone());
+        } else if word.starts_with("-l")
+            || word.starts_with("-Wl,")
+            || matches!(word.as_str(), "-shared" | "-static")
+        {
+            crate::println!("chibicc: external libraries and linker flags are not supported");
+            return;
+        } else if word.starts_with('-') {
+            forward.push(word.clone());
+        } else if source.replace(word.as_str()).is_some() {
+            crate::println!("chibicc: this compiler path accepts one C source file");
+            return;
+        }
+        index += 1;
+    }
+
+    let Some(source) = source else {
+        crate::println!("chibicc: no C source file");
+        return;
+    };
+    if !explicit_c_language && !source.ends_with(".c") {
+        crate::println!("chibicc: expected a .c source file");
+        return;
+    }
+
+    let output_name = match output {
+        Some(output) => String::from(output),
+        None if compile_only => {
+            let filename = source.rsplit('/').next().unwrap_or(source);
+            let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
+            alloc::format!("{stem}.o")
+        }
+        None => String::from("a.out"),
+    };
+    let Some(output_path) = resolve_path(current_dir, &output_name) else {
+        crate::println!("chibicc: invalid output path");
+        return;
+    };
+    let sequence = CHIBICC_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let Some(assembly_path) = resolve_path(
+        current_dir,
+        &alloc::format!(".chibicc-compile-{sequence}.s"),
+    ) else {
+        crate::println!("chibicc: cannot create temporary path");
+        return;
+    };
+
+    let mut compiler_argv = Vec::with_capacity(forward.len() + 5);
+    compiler_argv.push(String::from("chibicc"));
+    compiler_argv.extend(forward);
+    compiler_argv.push(String::from("-S"));
+    compiler_argv.push(String::from("-o"));
+    compiler_argv.push(assembly_path.clone());
+    compiler_argv.push(String::from(source));
+
+    let compile_result = crate::elf::run_file_from_with_args_and_environment_on_terminal(
+        "/bin/chibicc",
+        current_dir,
+        &compiler_argv,
+        environment,
+        terminal,
+    );
+    crate::terminal::set_output_terminal(terminal);
+    match compile_result {
+        Ok(0) => {}
+        Ok(status) => {
+            crate::println!("chibicc: front end exited with status {status}");
+            remove_chibicc_temporary(&assembly_path);
+            return;
+        }
+        Err(error) => {
+            crate::println!("chibicc: {error:?}");
+            remove_chibicc_temporary(&assembly_path);
+            return;
+        }
+    }
+
+    let assembly = match read_toolchain_file(&assembly_path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            print_fs_error("chibicc", &assembly_path, error);
+            remove_chibicc_temporary(&assembly_path);
+            return;
+        }
+    };
+    let assembly = append_chibicc_builtin_stubs(&assembly);
+    let object = match crate::toolchain::assemble(&assembly) {
+        Ok(object) => object,
+        Err(error) => {
+            crate::println!("chibicc: assembler failed: {error:?}");
+            remove_chibicc_temporary(&assembly_path);
+            return;
+        }
+    };
+    let output_bytes = if compile_only {
+        object
+    } else {
+        match crate::toolchain::link(&object) {
+            Ok(executable) => executable,
+            Err(error) => {
+                crate::println!("chibicc: linker failed: {error:?}");
+                remove_chibicc_temporary(&assembly_path);
+                return;
+            }
+        }
+    };
+    remove_chibicc_temporary(&assembly_path);
+    match write_toolchain_file(&output_path, &output_bytes, !compile_only) {
+        Ok(()) => crate::println!(
+            "chibicc: wrote {} bytes to {output_path}",
+            output_bytes.len()
+        ),
+        Err(error) => print_fs_error("chibicc", &output_path, error),
+    }
+}
+
+fn append_chibicc_builtin_stubs(assembly: &[u8]) -> Vec<u8> {
+    let calls_printf = assembly
+        .windows(b"call printf".len())
+        .any(|window| window == b"call printf");
+    let defines_printf = assembly
+        .windows(b"printf:\n".len())
+        .any(|window| window == b"printf:\n");
+    if !calls_printf || defines_printf {
+        return Vec::from(assembly);
+    }
+
+    let mut output = Vec::with_capacity(assembly.len() + 96);
+    output.extend_from_slice(assembly);
+    output.extend_from_slice(
+        b"\n.text\n.globl printf\n.type printf, @function\nprintf:\nmov $26, %rax\nint $0x80\nret\n",
+    );
+    output
+}
+
+fn chibicc_option_takes_argument(option: &str) -> bool {
+    matches!(
+        option,
+        "-I" | "-idirafter"
+            | "-include"
+            | "-x"
+            | "-D"
+            | "-U"
+            | "-MF"
+            | "-MT"
+            | "-MQ"
+            | "-Xlinker"
+            | "-L"
+    )
+}
+
+fn remove_chibicc_temporary(path: &str) {
+    match with_vfs(|vfs| vfs.remove(path)) {
+        Ok(()) | Err(FsError::NotFound) => {}
+        Err(error) => crate::println!("chibicc: cannot remove temporary {path}: {error:?}"),
+    }
+}
+
 fn read_toolchain_file(path: &str) -> Result<Vec<u8>, FsError> {
     with_vfs(|vfs| {
         let metadata = vfs.metadata(path)?;
@@ -653,7 +1228,8 @@ fn write_toolchain_file(path: &str, bytes: &[u8], executable: bool) -> Result<()
     })
 }
 
-async fn edit_file(current_dir: &str, arguments: &str) {
+async fn edit_file(current_dir: &str, arguments: &str, terminal: usize) {
+    crate::terminal::set_output_terminal(terminal);
     let Some(path) = path_argument(current_dir, arguments) else {
         crate::println!("usage: edit <path>");
         return;
@@ -676,10 +1252,23 @@ async fn edit_file(current_dir: &str, arguments: &str) {
     let mut dirty = false;
     let mut confirming_discard = false;
     let mut status = String::new();
-    render_editor(&path, &text, cursor, &status);
+    let mut viewport = EditorViewport::default();
+    render_editor(&path, &text, cursor, &status, terminal, &mut viewport);
 
     loop {
-        match keyboard::next_event().await {
+        let event = keyboard::next_event_for(terminal).await;
+        crate::terminal::set_output_terminal(terminal);
+        let previous_cursor = cursor;
+        let previous_viewport = (viewport.top_line, viewport.left_column);
+        let update_cursor_only = status.is_empty()
+            && matches!(
+                event,
+                keyboard::KeyEvent::Left
+                    | keyboard::KeyEvent::Right
+                    | keyboard::KeyEvent::Up
+                    | keyboard::KeyEvent::Down
+            );
+        match event {
             keyboard::KeyEvent::Character('\x13') => {
                 match save_editor_file(&path, &text) {
                     Ok(()) => {
@@ -754,7 +1343,26 @@ async fn edit_file(current_dir: &str, arguments: &str) {
             }
             _ => {}
         }
-        render_editor(&path, &text, cursor, &status);
+        if update_cursor_only {
+            let (columns, rows) = crate::terminal::terminal_dimensions();
+            let visible_rows = rows.saturating_sub(2).max(1);
+            let (cursor_line, cursor_column) = editor_cursor_position(&text, cursor);
+            update_editor_viewport(
+                cursor_line,
+                cursor_column,
+                visible_rows,
+                columns,
+                &mut viewport,
+            );
+            if previous_viewport != (viewport.top_line, viewport.left_column) {
+                render_editor(&path, &text, cursor, &status, terminal, &mut viewport);
+            } else if previous_cursor != cursor {
+                render_editor_caret(&text, previous_cursor, terminal, &viewport, false);
+                render_editor_caret(&text, cursor, terminal, &viewport, true);
+            }
+        } else {
+            render_editor(&path, &text, cursor, &status, terminal, &mut viewport);
+        }
     }
 }
 
@@ -779,17 +1387,153 @@ fn save_editor_file(path: &str, text: &str) -> Result<(), FsError> {
     })
 }
 
-fn render_editor(path: &str, text: &str, cursor: usize, status: &str) {
-    crate::terminal::terminal_clear();
-    crate::println!("OCTAGRAM nano - {path}");
-    crate::print!("{}", &text[..cursor]);
-    crate::print!("|");
-    crate::print!("{}", &text[cursor..]);
-    crate::print!("\n");
-    crate::println!("Ctrl+S Save   Ctrl+Q Quit   Arrow keys move");
-    if !status.is_empty() {
-        crate::println!("{status}");
+#[derive(Default)]
+struct EditorViewport {
+    top_line: usize,
+    left_column: usize,
+}
+
+fn render_editor(
+    path: &str,
+    text: &str,
+    cursor: usize,
+    status: &str,
+    terminal: usize,
+    viewport: &mut EditorViewport,
+) {
+    let (columns, rows) = crate::terminal::terminal_dimensions();
+    let footer_rows = if status.is_empty() { 1 } else { 2 };
+    let visible_rows = rows.saturating_sub(1 + footer_rows).max(1);
+    let (cursor_line, cursor_column) = editor_cursor_position(text, cursor);
+    update_editor_viewport(cursor_line, cursor_column, visible_rows, columns, viewport);
+
+    crate::terminal::terminal_clear_for(terminal);
+    render_editor_text_at(terminal, 0, 0, "OCTAGRAM nano - ", columns);
+    let prefix_columns = "OCTAGRAM nano - ".chars().count();
+    render_editor_text_at(
+        terminal,
+        0,
+        prefix_columns,
+        path,
+        columns.saturating_sub(prefix_columns),
+    );
+
+    let mut lines = text.split('\n').skip(viewport.top_line);
+    for row in 0..visible_rows {
+        if let Some(line) = lines.next() {
+            let line_cursor = (cursor_line == viewport.top_line + row).then_some(cursor_column);
+            render_editor_line(
+                terminal,
+                row + 1,
+                line,
+                line_cursor,
+                viewport.left_column,
+                columns,
+            );
+        }
     }
+
+    let help = "Ctrl+S Save   Ctrl+Q Quit   Arrow keys move";
+    let help_row = visible_rows + 1;
+    if status.is_empty() {
+        render_editor_text_at(terminal, help_row, 0, help, columns);
+    } else {
+        render_editor_text_at(terminal, help_row, 0, help, columns);
+        render_editor_text_at(terminal, help_row + 1, 0, status, columns);
+    }
+}
+
+fn editor_cursor_position(text: &str, cursor: usize) -> (usize, usize) {
+    let before_cursor = &text[..cursor];
+    let line = before_cursor.bytes().filter(|byte| *byte == b'\n').count();
+    let line_start = before_cursor.rfind('\n').map_or(0, |index| index + 1);
+    let column = before_cursor[line_start..].chars().count();
+    (line, column)
+}
+
+fn update_editor_viewport(
+    cursor_line: usize,
+    cursor_column: usize,
+    visible_rows: usize,
+    visible_columns: usize,
+    viewport: &mut EditorViewport,
+) {
+    let visible_rows = visible_rows.max(1);
+    let visible_columns = visible_columns.max(1);
+    if cursor_line < viewport.top_line {
+        viewport.top_line = cursor_line;
+    } else if cursor_line >= viewport.top_line.saturating_add(visible_rows) {
+        viewport.top_line = cursor_line + 1 - visible_rows;
+    }
+    if cursor_column < viewport.left_column {
+        viewport.left_column = cursor_column;
+    } else if cursor_column >= viewport.left_column.saturating_add(visible_columns) {
+        viewport.left_column = cursor_column + 1 - visible_columns;
+    }
+}
+
+fn render_editor_line(
+    terminal: usize,
+    screen_row: usize,
+    line: &str,
+    cursor_column: Option<usize>,
+    left_column: usize,
+    width: usize,
+) {
+    let line_length = line.chars().count();
+    for (screen_column, (column, character)) in line
+        .chars()
+        .enumerate()
+        .skip(left_column)
+        .take(width)
+        .enumerate()
+    {
+        let character = if cursor_column == Some(column) {
+            '|'
+        } else {
+            character
+        };
+        crate::terminal::terminal_put_char_at(terminal, screen_row, screen_column, character);
+    }
+    if let Some(cursor_column) = cursor_column
+        && cursor_column == line_length
+        && cursor_column >= left_column
+        && cursor_column - left_column < width
+    {
+        crate::terminal::terminal_put_char_at(
+            terminal,
+            screen_row,
+            cursor_column - left_column,
+            '|',
+        );
+    }
+}
+
+fn render_editor_text_at(terminal: usize, row: usize, column: usize, text: &str, width: usize) {
+    for (offset, character) in text.chars().take(width).enumerate() {
+        crate::terminal::terminal_put_char_at(terminal, row, column + offset, character);
+    }
+}
+
+fn render_editor_caret(
+    text: &str,
+    cursor: usize,
+    terminal: usize,
+    viewport: &EditorViewport,
+    visible: bool,
+) {
+    let (line, column) = editor_cursor_position(text, cursor);
+    let screen_row = line.saturating_sub(viewport.top_line) + 1;
+    let screen_column = column.saturating_sub(viewport.left_column);
+    let character = if visible {
+        '|'
+    } else {
+        text.split('\n')
+            .nth(line)
+            .and_then(|line_text| line_text.chars().nth(column))
+            .unwrap_or(' ')
+    };
+    crate::terminal::terminal_put_char_at(terminal, screen_row, screen_column, character);
 }
 
 fn previous_char_boundary(text: &str, cursor: usize) -> Option<usize> {
@@ -918,8 +1662,10 @@ fn print_fs_error(command: &str, path: &str, error: FsError) {
 #[cfg(test)]
 mod tests {
     use super::{
-        move_vertical, next_char_boundary, previous_char_boundary, program_candidates,
-        resolve_path, split_shell_words,
+        EditorViewport, editor_cursor_position, matching_lines, move_vertical, next_char_boundary,
+        parse_grep_arguments, parse_line_selection_arguments, previous_char_boundary,
+        program_candidates, resolve_path, selected_line_range, split_shell_words, text_counts,
+        update_editor_viewport,
     };
 
     #[test]
@@ -975,11 +1721,66 @@ mod tests {
     }
 
     #[test]
+    fn selects_head_and_tail_lines_with_empty_and_oversized_counts() {
+        assert_eq!(selected_line_range(4, 2, false), 0..2);
+        assert_eq!(selected_line_range(4, 2, true), 2..4);
+        assert_eq!(selected_line_range(4, 0, true), 4..4);
+        assert_eq!(selected_line_range(4, 8, false), 0..4);
+    }
+
+    #[test]
+    fn parses_line_counts_and_literal_grep_arguments() {
+        let head_words = split_shell_words("-n 2 'two words.txt'").unwrap();
+        assert_eq!(
+            parse_line_selection_arguments(&head_words),
+            Ok((2, "two words.txt"))
+        );
+        assert!(
+            parse_line_selection_arguments(&split_shell_words("-n many file").unwrap()).is_err()
+        );
+
+        let grep_words = split_shell_words("-n 'two words' file.txt").unwrap();
+        assert_eq!(
+            parse_grep_arguments(&grep_words),
+            Ok((true, "two words", "file.txt"))
+        );
+        assert!(parse_grep_arguments(&split_shell_words("pattern").unwrap()).is_err());
+    }
+
+    #[test]
+    fn matches_literal_text_and_preserves_line_numbers() {
+        assert_eq!(
+            matching_lines("one\nneedle\nother needle\n", "needle").collect::<Vec<_>>(),
+            vec![(1, "needle"), (2, "other needle")]
+        );
+    }
+
+    #[test]
+    fn counts_newlines_words_and_utf8_bytes() {
+        assert_eq!(text_counts("é\none two"), (1, 3, 10));
+        assert_eq!(text_counts(""), (0, 0, 0));
+    }
+
+    #[test]
     fn editor_cursor_moves_between_lines_and_utf8_characters() {
         let text = "aé\nxy";
         assert_eq!(previous_char_boundary(text, 3), Some(1));
         assert_eq!(next_char_boundary(text, 1), 3);
         assert_eq!(move_vertical(text, 3, true), 6);
         assert_eq!(move_vertical(text, 5, false), 1);
+        assert_eq!(editor_cursor_position("alpha\néx", 8), (1, 1));
+    }
+
+    #[test]
+    fn editor_viewport_scrolls_only_when_cursor_reaches_an_edge() {
+        let mut viewport = EditorViewport::default();
+        update_editor_viewport(2, 4, 3, 5, &mut viewport);
+        assert_eq!((viewport.top_line, viewport.left_column), (0, 0));
+
+        update_editor_viewport(3, 5, 3, 5, &mut viewport);
+        assert_eq!((viewport.top_line, viewport.left_column), (1, 1));
+
+        update_editor_viewport(0, 0, 3, 5, &mut viewport);
+        assert_eq!((viewport.top_line, viewport.left_column), (0, 0));
     }
 }

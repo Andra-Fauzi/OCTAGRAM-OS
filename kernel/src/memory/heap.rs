@@ -1,10 +1,10 @@
-//! Kernel global allocator backed by a statically mapped 1 MiB heap region.
+//! Kernel global allocator backed by a statically mapped 4 MiB heap region.
 
 use core::mem::MaybeUninit;
 use linked_list_allocator::LockedHeap;
 
 const FRAME_SIZE: usize = 4096;
-const HEAP_FRAMES: usize = 256;
+const HEAP_FRAMES: usize = 1024;
 pub const HEAP_SIZE: usize = HEAP_FRAMES * FRAME_SIZE;
 
 #[repr(align(16))]

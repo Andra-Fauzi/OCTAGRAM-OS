@@ -359,6 +359,121 @@ pub(super) fn wait_for_target_init<R: ce::RegisterIo>(
     Ok((false, indicator))
 }
 
+/// Millisecond ladder used to sample the SoC window after the cold reset.
+///
+/// `ath10k_pci_cold_reset` warns that "pulling out of reset pcie may not be
+/// stable for any immediate pcie register access and cause bus error", so one
+/// sample right after the release cannot tell a dead window from a window that
+/// simply needs a few milliseconds.
+const TIMELINE_CHECKPOINTS_MS: [u16; 6] = [1, 5, 20, 100, 500, 3000];
+const TIMELINE_SAMPLES: usize = TIMELINE_CHECKPOINTS_MS.len();
+/// Values that mean "this read never reached the device" rather than a real
+/// register content.
+pub(super) const READ_FAILED_PATTERN: u32 = 0xdead_c0de;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TimelineSample {
+    pub elapsed_ms: u16,
+    /// `RTC_STATE` (PCIE_LOCAL + 0x0) after the wake request was re-driven.
+    pub rtc_state: u32,
+    /// `SOC_GLOBAL_RESET` (PCIE_LOCAL + 0x8).
+    pub soc_global_reset: u32,
+    /// BAR base window + 0x0, the address the previous dump already sampled.
+    pub bar0: u32,
+    /// `SOC_CHIP_ID` (RTC_SOC + 0xf0); ath10k reads 0x003821ff here on the
+    /// laptops that boot this device.
+    pub chip_id: u32,
+    pub fw_indicator: u32,
+    pub awake: bool,
+}
+
+impl TimelineSample {
+    const EMPTY: Self = Self {
+        elapsed_ms: 0,
+        rtc_state: 0,
+        soc_global_reset: 0,
+        bar0: 0,
+        chip_id: 0,
+        fw_indicator: 0,
+        awake: false,
+    };
+}
+
+/// Millisecond-by-millisecond record of the SoC window after the cold reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ChipIdTimeline {
+    samples: [TimelineSample; TIMELINE_SAMPLES],
+    len: usize,
+    /// First checkpoint that returned a real `SOC_CHIP_ID`; `None` means the
+    /// window never answered inside the 3 s ladder.
+    pub first_valid_ms: Option<u16>,
+}
+
+impl ChipIdTimeline {
+    const fn empty() -> Self {
+        Self {
+            samples: [TimelineSample::EMPTY; TIMELINE_SAMPLES],
+            len: 0,
+            first_valid_ms: None,
+        }
+    }
+
+    pub(super) fn samples(&self) -> &[TimelineSample] {
+        &self.samples[..self.len]
+    }
+}
+
+/// A zero, all-ones or bus-error read means no register answered.
+pub(super) fn chip_id_is_valid(value: u32) -> bool {
+    value != 0 && value != u32::MAX && value != READ_FAILED_PATTERN
+}
+
+/// Sample the SoC window across [`TIMELINE_CHECKPOINTS_MS`] after the cold
+/// reset, re-driving `PCIE_SOC_WAKE` at every step.
+///
+/// The reset drops the wake request the driver set before it, so the first read
+/// after the release can hit a sleeping SoC and return zeros; re-asserting wake
+/// and waiting for `RTC_STATE` first is what `ath10k_pci_force_wake` does. The
+/// walk stops at the first valid chip id, and otherwise keeps the whole ladder
+/// so the boot log proves the window never answered instead of guessing.
+pub(super) fn sample_chip_id_timeline<R: ce::RegisterIo>(
+    registers: &mut R,
+) -> Result<ChipIdTimeline, ce::CeError> {
+    let mut timeline = ChipIdTimeline::empty();
+    let mut elapsed = 0u16;
+    for checkpoint in TIMELINE_CHECKPOINTS_MS {
+        settle_reset_delay(checkpoint.saturating_sub(elapsed));
+        elapsed = elapsed.max(checkpoint);
+
+        registers.write32(QCA6174_PCIE_SOC_WAKE_ADDRESS, PCIE_SOC_WAKE_V_MASK)?;
+        let rtc_state = registers
+            .read32(RTC_STATE_BAR_OFFSET)
+            .unwrap_or(u32::MAX);
+        let sample = TimelineSample {
+            elapsed_ms: elapsed,
+            rtc_state,
+            awake: rtc_state & RTC_STATE_V_MASK == RTC_STATE_V_ON,
+            soc_global_reset: registers
+                .read32(QCA6174_SOC_GLOBAL_RESET_ADDRESS)
+                .unwrap_or(u32::MAX),
+            bar0: registers.read32(QCA6174_BAR_PROBE_0).unwrap_or(u32::MAX),
+            chip_id: registers
+                .read32(CHIP_ID_BAR_OFFSET)
+                .unwrap_or(u32::MAX),
+            fw_indicator: registers
+                .read32(QCA6174_FW_INDICATOR_ADDRESS)
+                .unwrap_or(u32::MAX),
+        };
+        timeline.samples[timeline.len] = sample;
+        timeline.len += 1;
+        if chip_id_is_valid(sample.chip_id) {
+            timeline.first_valid_ms = Some(elapsed);
+            break;
+        }
+    }
+    Ok(timeline)
+}
+
 /// Result of the cold reset, carried until the target CPU is released.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct TargetReset {
@@ -378,6 +493,9 @@ pub(super) struct TargetReset {
     pub dump_before: ResetRegisterDump,
     /// The same registers sampled immediately after the cold reset.
     pub dump_after: ResetRegisterDump,
+    /// Chip-id/wake samples taken across the first three seconds after the cold
+    /// reset, showing when (or whether) the SoC window answered.
+    pub chip_id_timeline: ChipIdTimeline,
 }
 
 /// Raw snapshot of the four registers that decide whether `0x8` really is the
@@ -475,6 +593,8 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
     target_wake(registers, poll_limit)
         .map_err(|error| failed("wake after cold reset", error))?;
     let dump_after = ResetRegisterDump::capture(registers);
+    let chip_id_timeline = sample_chip_id_timeline(registers)
+        .map_err(|error| failed("sample chip id window", error))?;
 
     // `ath10k_pci_qca6174_chip_reset` waits for target init between the cold and
     // warm reset. Keeping the value tells the boot log whether the ROM ever came
@@ -492,6 +612,7 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         cold_ready,
         dump_before,
         dump_after,
+        chip_id_timeline,
     })
 }
 
@@ -994,8 +1115,9 @@ mod tests {
         QCA9377_TARGET_VERSION_1_0, QCA9377_TARGET_VERSION_1_1, RTC_SOC_CE_RESET,
         RTC_SOC_CPU_RESET, RTC_STATE_BAR_OFFSET, SiliconIdentity, download_board_data,
         is_ath10k_pci_candidate, pci_board_name, release_target_cpu,
-        required_register_window_size, reset_target_soc, silicon_identity, soc_global_reset,
-        supports_qca9377_firmware, wait_for_target_init, with_target_awake,
+        required_register_window_size, reset_target_soc, sample_chip_id_timeline, silicon_identity,
+        soc_global_reset, supports_qca9377_firmware, wait_for_target_init, with_target_awake,
+        READ_FAILED_PATTERN,
     };
     use crate::drivers::pci::PciDevice;
     use crate::drivers::wifi_firmware::FirmwareImages;
@@ -1180,6 +1302,66 @@ mod tests {
         assert_eq!(dump.bar8, 0xdead_beef);
         assert_eq!(dump.local8, 0xfeed_face);
         assert_eq!(dump.local0, 0x71);
+    }
+
+    /// Chip-id window mock that serves prepared values in order, so the
+    /// millisecond ladder after the cold reset can be observed without hardware.
+    struct MockChipIdWindow {
+        chip_ids: alloc::vec::Vec<u32>,
+        next: usize,
+        awake: bool,
+    }
+
+    impl RegisterIo for MockChipIdWindow {
+        fn read32(&mut self, offset: u64) -> Result<u32, CeError> {
+            match offset {
+                CHIP_ID_BAR_OFFSET => {
+                    let value = self.chip_ids.get(self.next).copied().unwrap_or(u32::MAX);
+                    self.next += 1;
+                    Ok(value)
+                }
+                RTC_STATE_BAR_OFFSET => Ok(if self.awake { 0x73 } else { 0x71 }),
+                _ => Ok(0),
+            }
+        }
+
+        fn write32(&mut self, offset: u64, value: u32) -> Result<(), CeError> {
+            if offset == QCA6174_PCIE_SOC_WAKE_ADDRESS {
+                self.awake = value & 1 != 0;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn chip_id_timeline_stops_at_the_first_real_value() {
+        // Right after the reset the window still answers zero or a bus-error
+        // pattern; the ladder has to keep going and report when it answers.
+        let mut window = MockChipIdWindow {
+            chip_ids: alloc::vec![0, READ_FAILED_PATTERN, 0x0038_21ff],
+            next: 0,
+            awake: false,
+        };
+        let timeline = sample_chip_id_timeline(&mut window).unwrap();
+        assert_eq!(timeline.first_valid_ms, Some(20));
+        assert_eq!(timeline.samples().len(), 3);
+        assert_eq!(timeline.samples()[2].chip_id, 0x0038_21ff);
+        // The cold reset drops the wake request, so every step re-drives it
+        // before reading the SoC window.
+        assert!(timeline.samples().iter().all(|sample| sample.awake));
+    }
+
+    #[test]
+    fn chip_id_timeline_keeps_the_full_ladder_when_the_window_stays_silent() {
+        let mut window = MockChipIdWindow {
+            chip_ids: alloc::vec![],
+            next: 0,
+            awake: false,
+        };
+        let timeline = sample_chip_id_timeline(&mut window).unwrap();
+        assert_eq!(timeline.first_valid_ms, None);
+        assert_eq!(timeline.samples().len(), 6);
+        assert_eq!(timeline.samples().last().unwrap().elapsed_ms, 3000);
     }
 
     #[test]

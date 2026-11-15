@@ -385,6 +385,18 @@ reconstruction of them:
   comes from the 8254 PIT channel 2 (1.193182 MHz), not from a spin loop whose
   duration depends on the CPU.
 
+After the cold reset the driver walks a millisecond ladder (+1, +5, +20, +100,
++500, +3000 ms) over the SoC window, re-driving `PCIE_SOC_WAKE` at every step
+because the reset drops the wake request. Each sample logs `RTC_STATE`,
+`SOC_GLOBAL_RESET`, BAR0, `SOC_CHIP_ID` and `FW_INDICATOR`, and the walk stops at
+the first valid chip id. A zero, all-ones or `0xdeadc0de` chip id counts as "no
+register answered", so a window that never comes back is visible in the log
+instead of being read as hw1.0. PCIe configuration space is re-read at the same
+point (id, command, BAR0, link control/status), and memory decoding, bus
+mastering and BAR0 are restored if the reset cleared them — ath10k relies on
+`ath10k_pci_claim` having set those once, which a bare-metal driver cannot
+assume.
+
 ### Shell Commands
 
 The shell provides user commands under `net wifi`:

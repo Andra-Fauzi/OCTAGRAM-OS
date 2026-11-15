@@ -171,6 +171,58 @@ fn log_bmi_ce_ring(registers: &mut MmioWindow, name: &str, base: u64) {
 /// Must be called once after PCI enumeration, with interrupts enabled and
 /// memory/DMA allocator ready.  The calling context must not hold any locks
 /// that the allocator or PCI subsystem acquires.
+/// Re-read PCIe configuration space after the chip reset and restore the bits
+/// the reset can clear.
+///
+/// `ath10k_pci_cold_reset` puts "Target, including PCIe" into reset, so the
+/// command register, BAR0 and the link state can come back different. The boot
+/// ROM needs memory decoding and bus mastering to move the BMI rings in host
+/// memory; a reset that dropped either would surface later as a BMI timeout
+/// instead of a PCIe error, so the values are logged and re-applied here.
+fn restore_pcie_after_cold_reset(
+    device: &PciDevice,
+    expected_bar0: u64,
+) -> Result<(), &'static str> {
+    let id = pci::read_config_u32(device, 0x00);
+    let command_status = pci::read_config_u32(device, 0x04);
+    let command = (command_status & 0xffff) as u16;
+    let bar0 = pci::read_config_u32(device, 0x10);
+    // PCIe capability + 0x10 holds link control (low half) and link status
+    // (high half); bit 13 of the status is Data Link Layer active.
+    let link = unsafe { pci::find_capability(device, pci::CAP_ID_PCIE) }
+        .and_then(|capability| capability.checked_add(0x10))
+        .map(|offset| pci::read_config_u32(device, offset));
+    let (link_control, link_status) = match link {
+        Some(value) => ((value & 0xffff) as u16, (value >> 16) as u16),
+        None => (0, 0),
+    };
+    crate::println!(
+        "QCA9377 PCIe after cold reset: id={id:#010x} command={command:#06x} bar0={bar0:#010x} link_control={link_control:#06x} link_status={link_status:#06x} dll_active={} training={}",
+        link_status & (1 << 13) != 0,
+        link_status & (1 << 11) != 0
+    );
+
+    const COMMAND_MEMORY_SPACE: u16 = 1 << 1;
+    const COMMAND_BUS_MASTER: u16 = 1 << 2;
+    if command & COMMAND_MEMORY_SPACE == 0 {
+        unsafe { pci::enable_mmio_only(device) }?;
+    }
+    if command & COMMAND_BUS_MASTER == 0 {
+        unsafe { pci::enable_bus_master(device) }?;
+    }
+    if bar0 & 0xffff_fff0 == 0 && expected_bar0 != 0 {
+        pci::write_config_u32(device, 0x10, expected_bar0 as u32);
+        let high = (expected_bar0 >> 32) as u32;
+        if high != 0 {
+            pci::write_config_u32(device, 0x14, high);
+        }
+        crate::println!(
+            "QCA9377 PCIe BAR0 was cleared across the cold reset; restored {expected_bar0:#x}"
+        );
+    }
+    Ok(())
+}
+
 pub unsafe fn initialize_device(
     device: &PciDevice,
     subsystem_vendor: u16,
@@ -325,6 +377,34 @@ pub unsafe fn initialize_device(
             target_reset.cold_indicator,
             target_reset.cold_ready
         );
+        for sample in target_reset.chip_id_timeline.samples() {
+            crate::println!(
+                "QCA9377 window +{}ms wake={} local0={:#010x} local8={:#010x} bar0={:#010x} chip_id={:#010x} fw_ind={:#010x}",
+                sample.elapsed_ms,
+                sample.awake,
+                sample.rtc_state,
+                sample.soc_global_reset,
+                sample.bar0,
+                sample.chip_id,
+                sample.fw_indicator
+            );
+        }
+        match target_reset.chip_id_timeline.first_valid_ms {
+            Some(milliseconds) => crate::println!(
+                "QCA9377 chip id window answered at +{milliseconds}ms"
+            ),
+            None => crate::println!(
+                "QCA9377 chip id window never answered within 3000ms"
+            ),
+        }
+
+        // `ath10k_pci_cold_reset` puts "Target, including PCIe" into reset, so
+        // the command register, BAR and link state can come back cleared.
+        if let Err(error) = restore_pcie_after_cold_reset(device, bar.address) {
+            crate::println!("QCA9377 PCIe restore after cold reset failed: {error}");
+            let _ = target_sleep(&mut registers);
+            return Err(InitError::BusMaster);
+        }
 
         // Bus mastering is still enabled from the previous attempt, but the
         // global reset is re-driven every time, so confirm the bit instead of

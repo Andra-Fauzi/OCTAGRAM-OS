@@ -7,12 +7,13 @@
 use super::{
     bmi::BmiClient,
     ce::{
-        BmiCeRings, BmiCeTransport, CeError, MmioWindow, PipePair, RegisterIo as _, RxCe, TxCe,
-        CE_PACKET_MAX_BYTES, PIPE_EP0_RX_CE, PIPE_EP0_TX_CE, PIPE_HTT_RX_CE, PIPE_HTT_TX_CE,
-        PIPE_WMI_RX_CE, PIPE_WMI_TX_CE,
+        BmiCeRings, BmiCeTransport, CeError, DiagnosticCe, MmioWindow, PipePair,
+        RegisterIo as _, RxCe, TxCe, CE_PACKET_MAX_BYTES, PIPE_EP0_RX_CE, PIPE_EP0_TX_CE,
+        PIPE_HTT_RX_CE, PIPE_HTT_TX_CE, PIPE_WMI_RX_CE, PIPE_WMI_TX_CE,
     },
     htc::{HtcClient, HtcClientError, HtcError, HTC_SERVICE_HTT_DATA, HTC_SERVICE_WMI_CONTROL},
     pci::{self, PciDevice},
+    target,
     wifi_firmware,
     wmi::{self, WmiCmdId, WmiEvent},
 };
@@ -30,7 +31,7 @@ const DEFAULT_FREQ_MHZ: u32 = 2437;
 
 // Convenience re-exports from parent.
 use super::{
-    boot_firmware, pci_board_name, silicon_identity, target_sleep, target_wake, wake_target_cpu,
+    boot_firmware, pci_board_name, reset_for_bmi, silicon_identity, target_sleep, wake_target_cpu,
     with_target_awake, SiliconIdentity, BmiBootError, CHIP_ID_BAR_OFFSET, QCA_WAKE_POLL_LIMIT,
     PAGE_OFFSET_MASK,
 };
@@ -42,6 +43,8 @@ pub enum InitError {
     MmioSetup,
     DmaAlloc,
     SiliconUnknown,
+    TargetReset,
+    TargetConfig,
     BmiBoot,
     HtcReady,
     HtcConnect,
@@ -146,14 +149,40 @@ pub unsafe fn initialize_device(
     let board = wifi_firmware::select_board_data(firmware.board_bundle, board_name.as_bytes())
         .map_err(|_| InitError::BoardDataUnavailable)?;
 
+    // ── 3b. Reset the target SoC and release its CPU ─────────────────────────
+    // The boot ROM only services BMI after a cold reset and CPU release. Skipping
+    // this made the first BMI command time out with `SourceTimeout`.
+    match reset_for_bmi(&mut registers, QCA_WAKE_POLL_LIMIT) {
+        Ok(outcome) => {
+            crate::println!(
+                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={}",
+                outcome.indicator_before, outcome.indicator_after, outcome.ready
+            );
+            if !outcome.ready {
+                crate::println!(
+                    "QCA9377 boot ROM did not report FW_IND_INITIALIZED; attempting BMI anyway"
+                );
+            }
+        }
+        Err(failure) => {
+            crate::println!(
+                "QCA9377 reset failed at \"{}\": {:?}",
+                failure.step, failure.error
+            );
+            return Err(InitError::TargetReset);
+        }
+    }
+
     // ── 4. BMI boot (GET_TARGET_INFO + download board/OTP/firmware) ───────────
     let mut bmi_rings = BmiCeRings::allocate().map_err(|_| InitError::DmaAlloc)?;
+    let mut target_config_ce = DiagnosticCe::allocate().map_err(|_| InitError::DmaAlloc)?;
     let mut keep_rings = false;
 
-    // Wake the target SoC and KEEP IT AWAKE throughout BMI transfer and firmware boot
-    target_wake(&mut registers, QCA_WAKE_POLL_LIMIT).map_err(|_| InitError::DmaAlloc)?;
-
     if unsafe { bmi_rings.configure(&mut registers) }.is_err() {
+        let _ = target_sleep(&mut registers);
+        return Err(InitError::DmaAlloc);
+    }
+    if unsafe { target_config_ce.configure(&mut registers) }.is_err() {
         let _ = target_sleep(&mut registers);
         return Err(InitError::DmaAlloc);
     }
@@ -163,6 +192,36 @@ pub unsafe fn initialize_device(
         return Err(InitError::BusMaster);
     }
     keep_rings = true;
+
+    // ── 4b. Target-side CE layout and HTC service map ────────────────────────
+    // Tells the boot ROM which CE carries HTC control, WMI and HTT. This runs
+    // before BMI DONE starts the firmware, because the firmware reads these
+    // tables while it boots (`ath10k_pci_init_config`).
+    {
+        let mut memory =
+            unsafe { target::Ce7TargetMemory::new(&mut target_config_ce, &mut registers) };
+        match target::configure_pipes(&mut memory) {
+            Ok(report) => crate::println!(
+                "QCA9377 target CE config: pcie_state={:#010x} pipe_cfg={:#010x} svc_map={:#010x} banks={} flags={:#x}",
+                report.pcie_state,
+                report.pipe_config_address,
+                report.service_map_address,
+                target::QCA9377_IRAM_BANKS,
+                report.config_flags
+            ),
+            Err(error) => {
+                crate::println!("QCA9377 target CE config failed: {error:?}");
+                let _ = pci::disable_bus_master(device);
+                let _ = target_sleep(&mut registers);
+                return Err(InitError::TargetConfig);
+            }
+        }
+    }
+    // CE7 is host-only (its target pipe entry has zero entries), so its ring
+    // registers can be cleared once the tables are written.
+    if unsafe { target_config_ce.deconfigure(&mut registers) }.is_err() {
+        core::mem::forget(target_config_ce);
+    }
 
     // Wake the target CPU (trigger CPU interrupt) so it starts servicing BMI/CE
     let _ = wake_target_cpu(&mut registers);

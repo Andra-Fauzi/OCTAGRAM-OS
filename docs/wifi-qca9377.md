@@ -106,6 +106,25 @@ QCA6174/QCA9377 target CPU addresses to CE address space. It is not yet wired
 into startup, and this work does not change the probe's disabled-by-default
 status.
 
+Before the first BMI command the driver now follows ath10k's QCA6174/QCA9377
+bring-up: it pulses the SoC global reset (`PCIE_LOCAL + 0x8`), wakes the
+target, resets the target CPU through `RTC_SOC` bit 6 while clearing the
+stale `FW_INDICATOR`, cycles the copy-engine reset line, and waits for
+`FW_IND_INITIALIZED` before programming the CE0/CE1 BMI rings. Previously the
+boot ROM was never reset, so it never consumed the first CE0 source descriptor
+and BMI failed with `SourceTimeout`. The wait is bounded and only warns, so a
+target that never reports readiness still reaches BMI and shows that failure
+instead.
+
+After the CE rings are programmed the driver writes the target-side CE layout
+and HTC service map (`qca9377/target.rs`, mirroring `ath10k_pci_init_config`):
+it follows the HOST_INTEREST pointers to the pipe table and service map, writes
+seven `ce_pipe_config` rows plus the QCA9377 service map (including the CE5
+outbound override and HTT RX on CE1), clears `PCIE_CONFIG_FLAG_ENABLE_L1`,
+stamps the early-allocation magic with nine IRAM banks, and sets
+`HI_OPTION_EARLY_CFG_DONE`. The tables go over the CE7 diagnostic pipe before
+BMI DONE starts the firmware, which reads them while it boots.
+
 ### Complete Initialization & Connection Pipeline (`qca9377/init.rs`)
 
 The full driver initialization sequence is implemented in `kernel/src/drivers/qca9377/init.rs`:

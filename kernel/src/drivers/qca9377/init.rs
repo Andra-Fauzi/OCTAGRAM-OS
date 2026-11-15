@@ -36,8 +36,8 @@ const DEFAULT_FREQ_MHZ: u32 = 2437;
 // Convenience re-exports from parent.
 use super::{
     boot_firmware, pci_board_name, release_target_cpu, reset_target_soc, silicon_identity,
-    target_sleep, wake_target_cpu, with_target_awake, SiliconIdentity, BmiBootError,
-    CHIP_ID_BAR_OFFSET, CHIP_RESET_ATTEMPTS, QCA_WAKE_POLL_LIMIT, PAGE_OFFSET_MASK,
+    target_sleep, wake_target_cpu, SiliconIdentity, BmiBootError,
+    CHIP_RESET_ATTEMPTS, QCA_WAKE_POLL_LIMIT, PAGE_OFFSET_MASK, read_chip_id_awake,
 };
 
 #[derive(Debug)]
@@ -219,10 +219,11 @@ pub unsafe fn initialize_device(
     };
 
     // ── 2. Verify silicon ────────────────────────────────────────────────────
-    let chip_id = with_target_awake(&mut registers, QCA_WAKE_POLL_LIMIT, |r| {
-        r.read32(CHIP_ID_BAR_OFFSET)
-    })
-    .map_err(|_| InitError::SiliconUnknown)?;
+    // The target is woken for the identity read and deliberately left awake:
+    // ath10k's `ath10k_pci_force_wake()` is a no-op for QCA9377, so Linux never
+    // puts the SoC back to sleep between probe and `ath10k_pci_chip_reset`.
+    let chip_id = read_chip_id_awake(&mut registers, QCA_WAKE_POLL_LIMIT)
+        .map_err(|_| InitError::SiliconUnknown)?;
 
     match silicon_identity(chip_id) {
         SiliconIdentity::Qca9377Hw10 | SiliconIdentity::Qca9377Hw11 => {}
@@ -401,9 +402,7 @@ pub unsafe fn initialize_device(
     // and that is the first point where `SOC_CHIP_ID` holds the real value: the
     // pre-reset read on the E203NAH returns 0. Log the identity ath10k reports
     // (`qca9377 hw1.1 chip_id ...`) so the boot log can be compared directly.
-    match with_target_awake(&mut registers, QCA_WAKE_POLL_LIMIT, |registers| {
-        registers.read32(CHIP_ID_BAR_OFFSET)
-    }) {
+    match read_chip_id_awake(&mut registers, QCA_WAKE_POLL_LIMIT) {
         Ok(chip_id) => crate::println!(
             "QCA9377 target identity after chip reset: chip_id={chip_id:#010x} silicon={:?}",
             silicon_identity(chip_id)

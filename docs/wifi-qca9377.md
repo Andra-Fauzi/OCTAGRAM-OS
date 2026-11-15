@@ -162,7 +162,14 @@ bit before the reset, so the boot ROM never starts against a CE configuration
 left behind by the firmware that ran before the driver. It also reads the chip id
 *after* the chip reset, the way ath10k does, because `SOC_CHIP_ID` reads back
 zero before the reset (the earlier pre-reset read reported `0x00000000`, i.e.
-"hw1.0", where the chip is really hw1.1). Everything after the reset — the pipe/service
+"hw1.0", where the chip is really hw1.1).
+
+ath10k also never clears `PCIE_SOC_WAKE` before the chip reset: for
+QCA6174/QCA9377 `ath10k_pci_force_wake()` returns immediately, so the SoC stays
+awake from probe until the boot ROM finishes initialising. The identity read and
+the silicon probe therefore wake the target and leave it awake
+(`read_chip_id_awake`), instead of sleeping it microseconds before
+`SOC_GLOBAL_RESET`. Everything after the reset — the pipe/service
 tables and every BMI command — depends on a running boot ROM, so continuing
 only produced a misleading `MissingPcieState` from an unpopulated
 `HOST_INTEREST`.

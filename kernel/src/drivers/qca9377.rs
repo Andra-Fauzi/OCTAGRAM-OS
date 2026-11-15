@@ -156,6 +156,26 @@ pub(super) fn target_sleep<R: ce::RegisterIo>(registers: &mut R) -> Result<(), c
     registers.write32(QCA6174_PCIE_SOC_WAKE_ADDRESS, 0)
 }
 
+/// Read `SOC_CHIP_ID` with the target awake and leave it awake.
+///
+/// ath10k never writes `PCIE_SOC_WAKE=0` before `ath10k_pci_chip_reset`: for
+/// QCA6174/QCA9377 `ath10k_pci_force_wake()` returns immediately (`pci_ps` is
+/// true), so the SoC stays up from probe until the boot ROM finishes init.
+/// Sleeping the target between the identity read and the reset was one more
+/// difference to the working reference, and the reset, BMI and CE7 paths all
+/// need the SoC awake anyway.
+pub(super) fn read_chip_id_awake<R: ce::RegisterIo>(
+    registers: &mut R,
+    poll_limit: usize,
+) -> Result<u32, ce::CeError> {
+    target_wake(registers, poll_limit)?;
+    let chip_id = registers.read32(CHIP_ID_BAR_OFFSET)?;
+    if chip_id == u32::MAX {
+        return Err(ce::CeError::DeviceUnavailable);
+    }
+    Ok(chip_id)
+}
+
 pub(super) fn wake_target_cpu<R: ce::RegisterIo>(registers: &mut R) -> Result<(), ce::CeError> {
     let current = registers.read32(ce::QCA6174_CORE_CTRL_ADDRESS)?;
     registers.write32(
@@ -688,15 +708,12 @@ fn read_target_registers(device: &PciDevice) -> Result<(u32, u32), &'static str>
     // window must refuse accesses beyond that even though BAR0 is larger.
     let mut registers = unsafe { ce::MmioWindow::new(bar_virt as usize, required_size) }
         .map_err(|_| "QCA9377 MMIO window is unavailable")?;
-    with_target_awake(&mut registers, QCA_WAKE_POLL_LIMIT, |registers| {
-        let rtc_state = registers.read32(RTC_STATE_BAR_OFFSET)?;
-        let chip_id = registers.read32(CHIP_ID_BAR_OFFSET)?;
-        if chip_id == u32::MAX {
-            return Err(ce::CeError::DeviceUnavailable);
-        }
-        Ok((rtc_state, chip_id))
-    })
-    .map_err(|_| "QCA9377 target wake or register read failed")
+    let chip_id = read_chip_id_awake(&mut registers, QCA_WAKE_POLL_LIMIT)
+        .map_err(|_| "QCA9377 target wake or register read failed")?;
+    let rtc_state = registers
+        .read32(RTC_STATE_BAR_OFFSET)
+        .map_err(|_| "QCA9377 target wake or register read failed")?;
+    Ok((rtc_state, chip_id))
 }
 
 fn probe_bmi_target_info(device: &PciDevice) -> Result<TargetInfo, BmiProbeError> {

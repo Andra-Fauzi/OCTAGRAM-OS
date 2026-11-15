@@ -340,9 +340,23 @@ does when it re-posts a buffer.
 
 Offloaded indications (`HTT_RX_IN_ORD_IND_INFO_OFFLOAD_MASK`) hold a
 `struct htt_rx_offload_msdu` header followed by a complete Ethernet frame, so
-they go straight to the stack. Non-offloaded buffers hold an rx descriptor plus
-an 802.11 frame; those are counted as dropped, because 802.11 decapsulation is
-not implemented here. After association the bring-up drains up to 32 HTT
+they go straight to the stack.
+
+Non-offloaded indications carry the raw 802.11 frame instead. The buffer holds
+the v1 rx descriptor first — its `mac80211_hdr` copy fills bytes 236..300 — and
+the frame itself starts at the `msdu_payload` offset, **300**. The frame length is
+the indication's `msdu_len` (ath10k's `amsdu_len`), and the descriptor only counts
+once `RX_ATTENTION_FLAGS_MSDU_DONE` (bit 31) is set; `MSDU_LENGTH_ERR` (bit 17)
+and `MPDU_LENGTH_ERR` (bit 27) reject the frame rather than pass it truncated.
+
+Because this kernel has no mac80211, `htt::ieee80211_to_ethernet()` does the
+`ieee80211_data_to_8023_exthdr()` job: it maps the IBSS, ToDS and FromDS address
+triples to Ethernet destination/source, skips the 2-byte QoS control field (and
+the 4-byte HT control field when the order bit is set), requires the LLC/SNAP
+header `aa aa 03 00 00 00` plus an EtherType, and refuses what it cannot decode —
+WDS (four-address), A-MSDU aggregates (QoS bit 7), protected frames (no key is
+installed here) and non-data frames. The resulting Ethernet frame goes to
+`network::receive_ethernet`. After association the bring-up drains up to 32 HTT
 messages and logs `QCA9377 HTT RX: <n> frame(s) delivered, <m> dropped`.
 
 ### Shell Commands

@@ -930,9 +930,33 @@ unsafe fn process_htt_rx(ring: &mut htt::HttRxRing, message: &[u8]) -> RxOutcome
         Err(_) => return RxOutcome::Skipped,
     };
     if !indication.offload {
-        // Non-offloaded buffers start with an rx descriptor and hold an 802.11
-        // frame; turning those into Ethernet frames is not implemented here.
-        return RxOutcome::Dropped;
+        // Non-offloaded indications point at a v1 rx descriptor followed by the
+        // 802.11 frame, which mac80211 would decapsulate. This driver has no
+        // mac80211, so it converts the frame itself before handing it to the
+        // network stack.
+        let mut buffer = alloc::vec![0u8; htt::HTT_RX_BUF_SIZE];
+        let mut ethernet = alloc::vec![0u8; htt::HTT_RX_BUF_SIZE];
+        let mut delivered = false;
+        for msdu in &indication.msdus {
+            let Some(index) = ring.index_of(msdu.paddr) else {
+                continue;
+            };
+            if !ring.read_buffer(index, &mut buffer) {
+                continue;
+            }
+            if let Some(frame) = htt::non_offload_frame(&buffer, usize::from(msdu.len)) {
+                if let Some(length) = htt::ieee80211_to_ethernet(frame, &mut ethernet) {
+                    network::receive_ethernet(&ethernet[..length]);
+                    delivered = true;
+                }
+            }
+            ring.release(index);
+        }
+        return if delivered {
+            RxOutcome::Delivered
+        } else {
+            RxOutcome::Dropped
+        };
     }
 
     let mut buffer = alloc::vec![0u8; htt::HTT_RX_BUF_SIZE];

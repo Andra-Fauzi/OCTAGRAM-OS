@@ -51,6 +51,18 @@ const RX_IN_ORD_IND_INFO_OFFLOAD_MASK: u8 = 0x20;
 const RX_IN_ORD_IND_INFO_TID_MASK: u8 = 0x1f;
 /// `struct htt_rx_offload_msdu` in front of an offloaded Ethernet frame.
 pub const HTT_RX_OFFLOAD_MSDU_HEADER_LEN: usize = 7;
+/// `offsets[HTT_RX_DESC_OFFSETS_MSDU_PAYLOAD]`: a non-offloaded rx buffer holds
+/// the v1 rx descriptor (its `mac80211_hdr` copy fills bytes 236..300) followed by
+/// the 802.11 frame, which starts at byte 300.
+pub const HTT_RX_DESC_V1_MSDU_PAYLOAD_OFFSET: usize = 300;
+/// `rx_attention` is the second word of the v1 descriptor (`flags`).
+const RX_DESC_V1_ATTENTION_OFFSET: usize = 4;
+/// `RX_ATTENTION_FLAGS_MSDU_LENGTH_ERR`.
+const RX_ATTENTION_MSDU_LENGTH_ERR: u32 = 1 << 17;
+/// `RX_ATTENTION_FLAGS_MPDU_LENGTH_ERR`.
+const RX_ATTENTION_MPDU_LENGTH_ERR: u32 = 1 << 27;
+/// `RX_ATTENTION_FLAGS_MSDU_DONE`: the hardware finished filling the descriptor.
+const RX_ATTENTION_MSDU_DONE: u32 = 1 << 31;
 /// `htt_cmd_hdr` + `htt_rx_ring_setup_32` + one `htt_rx_ring_setup_ring32`.
 const HTT_RX_RING_CFG_LEN: usize = 1 + 3 + 36;
 /// `offsetof(struct htt_rx_desc_v1, field) / 4` in `htt_rx_ring_rx_desc_offsets`
@@ -413,6 +425,131 @@ pub fn offload_frame(buffer: &[u8]) -> Option<&[u8]> {
     Some(&buffer[start..start + frame_len])
 }
 
+/// Slice the 802.11 frame out of a non-offloaded MSDU buffer.
+///
+/// A non-offloaded indication points at an rx ring buffer holding the v1 rx
+/// descriptor followed by the frame at `HTT_RX_DESC_V1_MSDU_PAYLOAD_OFFSET`.
+/// `msdu_len` is the frame length the indication carried
+/// (`htt_rx_in_ord_msdu_desc.msdu_len`, ath10k's `amsdu_len`), and it covers only
+/// the frame, not the descriptor.
+///
+/// The descriptor has to show `RX_ATTENTION_FLAGS_MSDU_DONE` before its contents
+/// mean anything, and frames the MAC flagged with a length error are refused
+/// rather than handed to the stack truncated.
+pub fn non_offload_frame(buffer: &[u8], msdu_len: usize) -> Option<&[u8]> {
+    let attention: [u8; 4] = buffer
+        .get(RX_DESC_V1_ATTENTION_OFFSET..RX_DESC_V1_ATTENTION_OFFSET + 4)?
+        .try_into()
+        .ok()?;
+    let attention = u32::from_le_bytes(attention);
+    if attention & RX_ATTENTION_MSDU_DONE == 0
+        || attention & (RX_ATTENTION_MSDU_LENGTH_ERR | RX_ATTENTION_MPDU_LENGTH_ERR) != 0
+    {
+        return None;
+    }
+
+    let start = HTT_RX_DESC_V1_MSDU_PAYLOAD_OFFSET;
+    let end = start.checked_add(msdu_len)?;
+    // The shortest 802.11 header is 24 bytes; anything smaller is a bad length.
+    if msdu_len < 24 || end > buffer.len() {
+        return None;
+    }
+    Some(&buffer[start..end])
+}
+
+// `IEEE80211_FCTL_*` frame control bits and `IEEE80211_FTYPE_DATA`.
+const IEEE80211_FCTL_FTYPE: u16 = 0x000c;
+const IEEE80211_FCTL_TODS: u16 = 0x0100;
+const IEEE80211_FCTL_FROMDS: u16 = 0x0200;
+const IEEE80211_FCTL_PROTECTED: u16 = 0x4000;
+const IEEE80211_FCTL_ORDER: u16 = 0x8000;
+const IEEE80211_FTYPE_DATA: u16 = 0x0008;
+/// The QoS bit of `IEEE80211_STYPE_QOS_DATA` inside the subtype field.
+const IEEE80211_STYPE_QOS: u16 = 0x0080;
+/// QoS control bit 7: the frame aggregates A-MSDUs, which need deaggregation.
+const IEEE80211_QOS_CTL_A_MSDU_PRESENT: u16 = 0x0080;
+const IEEE80211_HEADER_LEN: usize = 24;
+const LLC_SNAP_LEN: usize = 8;
+const ETHERNET_HEADER_LEN: usize = 14;
+
+/// Convert a plain 802.11 data frame into an Ethernet II frame.
+///
+/// This is the driver-side equivalent of mac80211's
+/// `ieee80211_data_to_8023_exthdr()`: the three non-WDS address mappings are
+/// translated, the QoS and HT-Control fields are skipped so the LLC/SNAP header
+/// is found, and only an untagged SNAP payload (OUI `00:00:00`) is accepted.
+/// Frames this driver cannot decode are refused instead of guessed at: WDS
+/// (four-address) frames, A-MSDU aggregates, and encrypted payloads, for which no
+/// key is installed here.
+///
+/// Returns the number of bytes written to `out`, or `None`.
+pub fn ieee80211_to_ethernet(frame: &[u8], out: &mut [u8]) -> Option<usize> {
+    if frame.len() < IEEE80211_HEADER_LEN {
+        return None;
+    }
+    let frame_control = u16::from_le_bytes([frame[0], frame[1]]);
+    if frame_control & IEEE80211_FCTL_FTYPE != IEEE80211_FTYPE_DATA {
+        return None;
+    }
+    if frame_control & IEEE80211_FCTL_PROTECTED != 0 {
+        return None;
+    }
+    let to_ds = frame_control & IEEE80211_FCTL_TODS != 0;
+    let from_ds = frame_control & IEEE80211_FCTL_FROMDS != 0;
+    if to_ds && from_ds {
+        return None;
+    }
+
+    let mut header_len = IEEE80211_HEADER_LEN;
+    if frame_control & IEEE80211_STYPE_QOS != 0 {
+        let qos_control = u16::from_le_bytes([*frame.get(24)?, *frame.get(25)?]);
+        if qos_control & IEEE80211_QOS_CTL_A_MSDU_PRESENT != 0 {
+            return None;
+        }
+        header_len += 2;
+    }
+    if frame_control & IEEE80211_FCTL_ORDER != 0 {
+        // HT control field follows the QoS control field.
+        header_len += 4;
+    }
+
+    // Address mapping from `ieee80211_data_to_8023_exthdr()`: a station only ever
+    // sees the IBSS, ToDS and FromDS cases.
+    let (destination, source) = if to_ds {
+        // ToDS: addr2 is the transmitter (us), addr3 is the destination behind DS.
+        (frame.get(16..22)?, frame.get(10..16)?)
+    } else if from_ds {
+        // FromDS: addr1 is the destination, addr3 is the original source.
+        (frame.get(4..10)?, frame.get(16..22)?)
+    } else {
+        // IBSS: addr1 and addr2 are destination and source.
+        (frame.get(4..10)?, frame.get(10..16)?)
+    };
+
+    let payload = frame.get(header_len..)?;
+    if payload.len() < LLC_SNAP_LEN {
+        return None;
+    }
+    // IEEE 802.2 LLC/SNAP: dsap/ssap 0xaa, control 0x03, OUI 00:00:00.
+    if payload[0] != 0xaa || payload[1] != 0xaa || payload[2] != 0x03 {
+        return None;
+    }
+    if payload[3] != 0 || payload[4] != 0 || payload[5] != 0 {
+        return None;
+    }
+    let ether_type = [payload[6], payload[7]];
+    let body = &payload[LLC_SNAP_LEN..];
+    let total = ETHERNET_HEADER_LEN + body.len();
+    if out.len() < total {
+        return None;
+    }
+    out[..6].copy_from_slice(destination);
+    out[6..12].copy_from_slice(source);
+    out[12..14].copy_from_slice(&ether_type);
+    out[ETHERNET_HEADER_LEN..total].copy_from_slice(body);
+    Some(total)
+}
+
 struct RxRingLayout {
     index_shadow: u32,
     ring_base: u32,
@@ -444,12 +581,123 @@ fn encode_rx_ring_cfg(layout: &RxRingLayout) -> [u8; HTT_RX_RING_CFG_LEN] {
 #[cfg(test)]
 mod tests {
     use super::{
-        HTT_RX_BUF_SIZE, HTT_RX_DESC_V1_OFFSETS_WORDS, HTT_RX_OFFLOAD_MSDU_HEADER_LEN,
-        HTT_RX_RING_CFG_LEN, HTT_RX_RING_FLAGS, HTT_VERSION_REQ_LEN, HttError, HttVersion,
-        RxIndication, RxMsdu, RxRingLayout, encode_rx_ring_cfg, offload_frame, parse_rx_indication,
-        parse_version_conf,
+        HTT_RX_BUF_SIZE, HTT_RX_DESC_V1_MSDU_PAYLOAD_OFFSET, HTT_RX_DESC_V1_OFFSETS_WORDS,
+        HTT_RX_OFFLOAD_MSDU_HEADER_LEN, HTT_RX_RING_CFG_LEN, HTT_RX_RING_FLAGS,
+        HTT_VERSION_REQ_LEN, HttError, HttVersion, RxIndication, RxMsdu, RxRingLayout,
+        encode_rx_ring_cfg, ieee80211_to_ethernet, non_offload_frame, offload_frame,
+        parse_rx_indication, parse_version_conf,
     };
     use alloc::vec::Vec;
+
+    /// A v1 rx descriptor holding `frame`, with `MSDU_DONE` set.
+    fn non_offload_buffer(frame: &[u8]) -> Vec<u8> {
+        let mut buffer = alloc::vec![0u8; HTT_RX_DESC_V1_MSDU_PAYLOAD_OFFSET + frame.len()];
+        buffer[4..8].copy_from_slice(&(1u32 << 31).to_le_bytes());
+        buffer[HTT_RX_DESC_V1_MSDU_PAYLOAD_OFFSET..].copy_from_slice(frame);
+        buffer
+    }
+
+    /// One 802.11 data frame with an LLC/SNAP payload around `body`.
+    fn data_frame(
+        frame_control: u16,
+        addresses: [&[u8; 6]; 3],
+        qos_control: Option<u16>,
+        body: &[u8],
+    ) -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&frame_control.to_le_bytes());
+        frame.extend_from_slice(&[0, 0]);
+        for address in addresses {
+            frame.extend_from_slice(address);
+        }
+        frame.extend_from_slice(&[0, 0]);
+        if let Some(qos_control) = qos_control {
+            frame.extend_from_slice(&qos_control.to_le_bytes());
+        }
+        frame.extend_from_slice(&[0xaa, 0xaa, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00]);
+        frame.extend_from_slice(body);
+        frame
+    }
+
+    #[test]
+    fn non_offload_frame_starts_after_the_v1_descriptor() {
+        let frame = data_frame(0x0208, [&[1; 6], &[2; 6], &[3; 6]], None, b"payload");
+        let buffer = non_offload_buffer(&frame);
+        assert_eq!(
+            non_offload_frame(&buffer, frame.len()),
+            Some(frame.as_slice())
+        );
+
+        // Without MSDU_DONE the descriptor may still be stale.
+        let mut stale = buffer.clone();
+        stale[4..8].fill(0);
+        assert_eq!(non_offload_frame(&stale, frame.len()), None);
+
+        // Frames the MAC flagged as truncated are refused.
+        let mut broken = buffer.clone();
+        broken[4..8].copy_from_slice(&((1u32 << 31) | (1u32 << 27)).to_le_bytes());
+        assert_eq!(non_offload_frame(&broken, frame.len()), None);
+
+        // A length that runs past the buffer is refused too.
+        assert_eq!(non_offload_frame(&buffer, buffer.len()), None);
+    }
+
+    #[test]
+    fn decapsulates_a_from_ds_frame_into_ethernet() {
+        let destination = [0x02, 0, 0, 0, 0, 0x11];
+        let bssid = [0x02, 0, 0, 0, 0, 0x22];
+        let source = [0x02, 0, 0, 0, 0, 0x33];
+        // FromDS data frame: addr1 destination, addr2 BSSID, addr3 source.
+        let frame = data_frame(0x0208, [&destination, &bssid, &source], None, b"hello");
+
+        let mut out = [0u8; 64];
+        let length = ieee80211_to_ethernet(&frame, &mut out).expect("ethernet frame");
+        assert_eq!(&out[..6], &destination);
+        assert_eq!(&out[6..12], &source);
+        assert_eq!(&out[12..14], &[0x08, 0x00]);
+        assert_eq!(&out[14..length], b"hello");
+        assert_eq!(length, 14 + 5);
+    }
+
+    #[test]
+    fn decapsulates_a_qos_to_ds_frame_and_skips_its_qos_field() {
+        let bssid = [0x02, 0, 0, 0, 0, 0x22];
+        let source = [0x02, 0, 0, 0, 0, 0x44];
+        let destination = [0x02, 0, 0, 0, 0, 0x55];
+        // ToDS QoS data frame: addr1 BSSID, addr2 source, addr3 destination.
+        let frame = data_frame(0x0188, [&bssid, &source, &destination], Some(5), b"abc");
+
+        let mut out = [0u8; 32];
+        let length = ieee80211_to_ethernet(&frame, &mut out).expect("ethernet frame");
+        assert_eq!(&out[..6], &destination);
+        assert_eq!(&out[6..12], &source);
+        assert_eq!(&out[14..length], b"abc");
+    }
+
+    #[test]
+    fn refuses_frames_the_driver_cannot_decode() {
+        let first = [1u8; 6];
+        let second = [2u8; 6];
+        let third = [3u8; 6];
+        let mut out = [0u8; 64];
+
+        // WDS (both DS bits) needs the fourth address this mapping lacks.
+        let wds = data_frame(0x0308, [&first, &second, &third], None, b"x");
+        assert_eq!(ieee80211_to_ethernet(&wds, &mut out), None);
+        // Protected frames need a key installed here.
+        let protected = data_frame(0x4208, [&first, &second, &third], None, b"x");
+        assert_eq!(ieee80211_to_ethernet(&protected, &mut out), None);
+        // A-MSDU aggregates carry several subframes behind one header.
+        let amsdu = data_frame(0x0288, [&first, &second, &third], Some(0x0080), b"x");
+        assert_eq!(ieee80211_to_ethernet(&amsdu, &mut out), None);
+        // Management frames never reach the network stack.
+        let beacon = data_frame(0x0080, [&first, &second, &third], None, b"x");
+        assert_eq!(ieee80211_to_ethernet(&beacon, &mut out), None);
+        // A payload shorter than the LLC/SNAP header is refused.
+        let mut truncated = data_frame(0x0208, [&first, &second, &third], None, b"");
+        truncated.truncate(24 + 4);
+        assert_eq!(ieee80211_to_ethernet(&truncated, &mut out), None);
+    }
 
     /// One offloaded MSDU descriptor: paddr 0xdead_beef, 32 bytes, fw_desc 0.
     fn offload_indication(count: u8) -> [u8; 16] {

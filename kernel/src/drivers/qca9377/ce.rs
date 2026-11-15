@@ -1,4 +1,5 @@
 use super::bmi::BmiTransport;
+use super::htc::HtcTransport;
 use crate::memory;
 use core::{
     ptr::NonNull,
@@ -18,6 +19,9 @@ pub const CE1_REGISTER_BASE: u64 = CE0_REGISTER_BASE + CE_REGISTER_STRIDE;
 pub const CE7_REGISTER_BASE: u64 = CE0_REGISTER_BASE + 7 * CE_REGISTER_STRIDE;
 pub const CE_DIAGNOSTIC_RING_ENTRIES: usize = 2;
 pub const CE_DIAGNOSTIC_MAX_BYTES: usize = 2048;
+pub const CE_PACKET_RING_ENTRIES: usize = 16;
+pub const CE_PACKET_MAX_BYTES: usize = 2048;
+pub const CE_PIPE_COUNT: usize = 8;
 
 pub const CE_SOURCE_RING_BASE: u64 = 0x00;
 pub const CE_SOURCE_RING_SIZE: u64 = 0x04;
@@ -61,6 +65,7 @@ pub enum CeError {
     InvalidResponseLength,
     ResponseBufferTooSmall,
     TransportPoisoned,
+    InvalidPipe,
 }
 
 #[repr(C)]
@@ -571,6 +576,190 @@ impl<R: RegisterIo> BmiTransport for BmiCeTransport<'_, R> {
     }
 }
 
+pub struct PacketCe {
+    pipe_index: usize,
+    max_packet_bytes: usize,
+    source: DescriptorRing,
+    destination: DescriptorRing,
+    receive_buffer: DmaPage,
+    transmit_buffer: DmaPage,
+    poisoned: bool,
+}
+
+impl PacketCe {
+    pub fn allocate(pipe_index: usize, max_packet_bytes: usize) -> Result<Self, CeError> {
+        if pipe_index >= CE_PIPE_COUNT {
+            return Err(CeError::InvalidPipe);
+        }
+        if max_packet_bytes == 0 || max_packet_bytes > CE_PACKET_MAX_BYTES {
+            return Err(CeError::TransferTooLarge);
+        }
+        Ok(Self {
+            pipe_index,
+            max_packet_bytes,
+            source: DescriptorRing::allocate(CE_PACKET_RING_ENTRIES)?,
+            destination: DescriptorRing::allocate(CE_PACKET_RING_ENTRIES)?,
+            receive_buffer: DmaPage::allocate()?,
+            transmit_buffer: DmaPage::allocate()?,
+            poisoned: false,
+        })
+    }
+
+    fn register_base(&self) -> u64 {
+        CE0_REGISTER_BASE + self.pipe_index as u64 * CE_REGISTER_STRIDE
+    }
+
+    /// Configure one CE as a polled bidirectional packet pipe.
+    ///
+    /// # Safety
+    /// The device must be awake and exclusively owned, PCI bus mastering must
+    /// be disabled, and no agent may access this CE. Keep `self` alive until
+    /// DMA stops and its register references are cleared.
+    pub unsafe fn configure(&mut self, registers: &mut impl RegisterIo) -> Result<(), CeError> {
+        configure_packet_registers(
+            registers,
+            self.register_base(),
+            self.source.physical_address(),
+            self.destination.physical_address(),
+            self.source.entry_count(),
+            self.destination.entry_count(),
+            self.max_packet_bytes,
+        )?;
+        let descriptor = Descriptor::new(u64::from(self.receive_buffer.physical_address()), 0, 0)?;
+        self.destination.enqueue(descriptor)?;
+        registers.write32(
+            self.register_base() + CE_DESTINATION_WRITE_INDEX,
+            self.destination.write_index() as u32,
+        )
+    }
+
+    /// Clear this CE's ring registers before releasing its DMA pages.
+    ///
+    /// # Safety
+    /// PCI bus mastering must be disabled and no transfer may be in flight.
+    pub unsafe fn deconfigure(&mut self, registers: &mut impl RegisterIo) -> Result<(), CeError> {
+        if self.poisoned || self.source.read_index() != self.source.write_index() {
+            return Err(CeError::TransportPoisoned);
+        }
+        clear_pipe_registers(registers, self.register_base())
+    }
+
+    /// Send one packet and wait for its source descriptor to complete.
+    ///
+    /// # Safety
+    /// `configure` must have completed, PCI bus mastering must be enabled,
+    /// and this object must remain alive while the device can access its pages.
+    pub unsafe fn send(
+        &mut self,
+        registers: &mut impl RegisterIo,
+        packet: &[u8],
+    ) -> Result<(), CeError> {
+        if self.poisoned {
+            return Err(CeError::TransportPoisoned);
+        }
+        if packet.is_empty() || packet.len() > self.max_packet_bytes {
+            return Err(CeError::TransferTooLarge);
+        }
+
+        self.transmit_buffer.write(packet);
+        let descriptor = Descriptor::new(
+            u64::from(self.transmit_buffer.physical_address()),
+            packet.len(),
+            0,
+        )?;
+        self.source.enqueue(descriptor)?;
+        self.poisoned = true;
+        registers.write32(
+            self.register_base() + CE_SOURCE_WRITE_INDEX,
+            self.source.write_index() as u32,
+        )?;
+
+        let sent = wait_for_completion(
+            registers,
+            self.register_base() + CE_SOURCE_READ_INDEX,
+            &mut self.source,
+        )
+        .map_err(|error| completion_error(error, CeError::SourceTimeout))?;
+        if sent.address() != self.transmit_buffer.physical_address()
+            || usize::from(sent.byte_len()) != packet.len()
+        {
+            return Err(CeError::InvalidResponseLength);
+        }
+        self.poisoned = false;
+        Ok(())
+    }
+
+    /// Receive one posted packet and immediately repost the receive buffer.
+    ///
+    /// # Safety
+    /// `configure` must have completed, PCI bus mastering must be enabled,
+    /// and this object must remain alive while the device can access its pages.
+    pub unsafe fn receive(
+        &mut self,
+        registers: &mut impl RegisterIo,
+        output: &mut [u8],
+    ) -> Result<usize, CeError> {
+        if self.poisoned {
+            return Err(CeError::TransportPoisoned);
+        }
+        self.poisoned = true;
+        let received = wait_for_completion(
+            registers,
+            self.register_base() + CE_DESTINATION_READ_INDEX,
+            &mut self.destination,
+        )
+        .map_err(|error| completion_error(error, CeError::DestinationTimeout))?;
+        let received_length = usize::from(received.byte_len());
+        let response_error = if received.address() != self.receive_buffer.physical_address()
+            || received_length == 0
+            || received_length > self.max_packet_bytes
+        {
+            Some(CeError::InvalidResponseLength)
+        } else if output.len() < received_length {
+            Some(CeError::ResponseBufferTooSmall)
+        } else {
+            self.receive_buffer.read(&mut output[..received_length]);
+            None
+        };
+
+        let descriptor = Descriptor::new(u64::from(self.receive_buffer.physical_address()), 0, 0)?;
+        self.destination.enqueue(descriptor)?;
+        registers.write32(
+            self.register_base() + CE_DESTINATION_WRITE_INDEX,
+            self.destination.write_index() as u32,
+        )?;
+        self.poisoned = false;
+
+        response_error.map_or(Ok(received_length), Err)
+    }
+}
+
+pub struct PacketCeTransport<'a, R: RegisterIo> {
+    pipe: &'a mut PacketCe,
+    registers: &'a mut R,
+}
+
+impl<'a, R: RegisterIo> PacketCeTransport<'a, R> {
+    /// # Safety
+    /// The pipe must be configured, PCI bus mastering enabled, and both the
+    /// registers and DMA pages must remain valid for this transport lifetime.
+    pub unsafe fn new(pipe: &'a mut PacketCe, registers: &'a mut R) -> Self {
+        Self { pipe, registers }
+    }
+}
+
+impl<R: RegisterIo> HtcTransport for PacketCeTransport<'_, R> {
+    type Error = CeError;
+
+    fn send(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
+        unsafe { self.pipe.send(self.registers, frame) }
+    }
+
+    fn receive(&mut self, frame: &mut [u8]) -> Result<usize, Self::Error> {
+        unsafe { self.pipe.receive(self.registers, frame) }
+    }
+}
+
 fn validate_bmi_request(request: &[u8]) -> Result<(), CeError> {
     if request.is_empty() || request.len() > CE_BMI_SOURCE_MAX_BYTES || request.len() & 3 != 0 {
         return Err(CeError::InvalidRequest);
@@ -734,6 +923,89 @@ fn configure_diagnostic_registers(
     registers.write32(
         CE7_REGISTER_BASE + CE_DESTINATION_WATERMARK,
         CE_DIAGNOSTIC_RING_ENTRIES as u32,
+    )?;
+    Ok(())
+}
+
+fn configure_packet_registers(
+    registers: &mut impl RegisterIo,
+    base: u64,
+    source_ring_address: u32,
+    destination_ring_address: u32,
+    source_entries: usize,
+    destination_entries: usize,
+    max_packet_bytes: usize,
+) -> Result<(), CeError> {
+    if base < CE0_REGISTER_BASE
+        || base > CE7_REGISTER_BASE
+        || (base - CE0_REGISTER_BASE) % CE_REGISTER_STRIDE != 0
+    {
+        return Err(CeError::InvalidPipe);
+    }
+    if max_packet_bytes == 0 || max_packet_bytes > CE_PACKET_MAX_BYTES {
+        return Err(CeError::TransferTooLarge);
+    }
+
+    let ring_bytes = |entries: usize| {
+        if entries < 2 || !entries.is_power_of_two() {
+            return Err(CeError::InvalidRingSize);
+        }
+        entries
+            .checked_mul(core::mem::size_of::<Descriptor>())
+            .filter(|bytes| *bytes <= DMA_PAGE_SIZE)
+            .ok_or(CeError::InvalidRingSize)
+    };
+    let source_ring_bytes = ring_bytes(source_entries)?;
+    let destination_ring_bytes = ring_bytes(destination_entries)?;
+
+    if source_ring_address & 7 != 0 || destination_ring_address & 7 != 0 {
+        return Err(CeError::DmaAddressMisaligned);
+    }
+    if !is_dma32_range(u64::from(source_ring_address), source_ring_bytes)
+        || !is_dma32_range(
+            u64::from(destination_ring_address),
+            destination_ring_bytes,
+        )
+    {
+        return Err(CeError::DmaAddressOutOfRange);
+    }
+
+    let indices = [
+        registers.read32(base + CE_SOURCE_READ_INDEX)?,
+        registers.read32(base + CE_SOURCE_WRITE_INDEX)?,
+        registers.read32(base + CE_DESTINATION_READ_INDEX)?,
+        registers.read32(base + CE_DESTINATION_WRITE_INDEX)?,
+    ];
+    if indices.iter().any(|index| *index == u32::MAX) {
+        return Err(CeError::DeviceUnavailable);
+    }
+    if indices.iter().any(|index| *index != 0) {
+        return Err(CeError::EngineNotIdle);
+    }
+
+    registers.write32(base + CE_SOURCE_RING_BASE, source_ring_address)?;
+    registers.write32(base + CE_SOURCE_RING_SIZE, source_entries as u32)?;
+    registers.write32(
+        base + CE_DESTINATION_RING_BASE,
+        destination_ring_address,
+    )?;
+    registers.write32(
+        base + CE_DESTINATION_RING_SIZE,
+        destination_entries as u32,
+    )?;
+    let control = registers.read32(base + CE_CONTROL)?;
+    let control = (control
+        & !(CE_CONTROL_DMAX_MASK
+            | CE_CONTROL_SOURCE_BYTE_SWAP
+            | CE_CONTROL_DESTINATION_BYTE_SWAP))
+        | max_packet_bytes as u32;
+    registers.write32(base + CE_CONTROL, control)?;
+    registers.write32(base + CE_HOST_INTERRUPT_ENABLE, 0)?;
+    registers.write32(base + CE_MISC_INTERRUPT_ENABLE, 0)?;
+    registers.write32(base + CE_SOURCE_WATERMARK, source_entries as u32)?;
+    registers.write32(
+        base + CE_DESTINATION_WATERMARK,
+        destination_entries as u32,
     )?;
     Ok(())
 }
@@ -936,8 +1208,9 @@ mod tests {
         CE_HOST_INTERRUPT_ENABLE, CE_MISC_INTERRUPT_ENABLE, CE_SOURCE_READ_INDEX,
         CE_SOURCE_RING_BASE, CE_SOURCE_RING_SIZE, CE_SOURCE_WATERMARK, CE0_REGISTER_BASE,
         CE0_SOURCE_RING_ENTRIES, CE1_DESTINATION_RING_ENTRIES, CE1_REGISTER_BASE,
-        CE7_REGISTER_BASE, CeError, Descriptor, RegisterIo, RingIndices, clear_bmi_registers,
-        clear_pipe_registers, completion_error, configure_bmi_registers,
+        CE7_REGISTER_BASE, CE_PACKET_MAX_BYTES, CE_PACKET_RING_ENTRIES, CeError, Descriptor,
+        RegisterIo, RingIndices, clear_bmi_registers, clear_pipe_registers, completion_error,
+        configure_bmi_registers, configure_packet_registers,
         configure_diagnostic_registers, is_dma32_range, target_cpu_to_ce_address,
         validate_bmi_request, validate_diagnostic_transfer,
     };
@@ -1126,6 +1399,68 @@ mod tests {
             registers.values[&(CE7_REGISTER_BASE + CE_MISC_INTERRUPT_ENABLE)],
             0
         );
+    }
+
+    #[test]
+    fn configures_packet_pipe_rings_and_rejects_bad_pipe_sizes() {
+        let base = CE0_REGISTER_BASE + 2 * super::CE_REGISTER_STRIDE;
+        let mut registers = MockRegisters::default();
+        registers.values.insert(base + CE_CONTROL, 0xabcd_0000);
+
+        configure_packet_registers(
+            &mut registers,
+            base,
+            0x1000,
+            0x2000,
+            CE_PACKET_RING_ENTRIES,
+            CE_PACKET_RING_ENTRIES,
+            CE_PACKET_MAX_BYTES,
+        )
+        .unwrap();
+
+        assert_eq!(
+            registers.values[&(base + CE_SOURCE_RING_SIZE)],
+            CE_PACKET_RING_ENTRIES as u32
+        );
+        assert_eq!(
+            registers.values[&(base + CE_DESTINATION_RING_SIZE)],
+            CE_PACKET_RING_ENTRIES as u32
+        );
+        assert_eq!(
+            registers.values[&(base + CE_CONTROL)],
+            0xabcc_0000 | CE_PACKET_MAX_BYTES as u32
+        );
+        assert_eq!(
+            registers.values[&(base + CE_SOURCE_WATERMARK)],
+            CE_PACKET_RING_ENTRIES as u32
+        );
+        assert_eq!(
+            registers.values[&(base + CE_DESTINATION_WATERMARK)],
+            CE_PACKET_RING_ENTRIES as u32
+        );
+        assert_eq!(
+            registers.values[&(base + CE_HOST_INTERRUPT_ENABLE)],
+            0
+        );
+        assert_eq!(
+            registers.values[&(base + CE_MISC_INTERRUPT_ENABLE)],
+            0
+        );
+
+        let mut registers = MockRegisters::default();
+        assert_eq!(
+            configure_packet_registers(
+                &mut registers,
+                base,
+                0x1000,
+                0x2000,
+                CE_PACKET_RING_ENTRIES,
+                CE_PACKET_RING_ENTRIES,
+                CE_PACKET_MAX_BYTES + 1,
+            ),
+            Err(CeError::TransferTooLarge)
+        );
+        assert!(registers.writes.is_empty());
     }
 
     #[test]

@@ -75,6 +75,10 @@ firmware. These operations are not invoked during boot because the complete CE
 and firmware lifecycle has not been validated. The feature-gated target-info
 probe is disabled by default; when enabled, it temporarily enables PCI bus
 mastering and verifies it disabled again before releasing DMA pages.
+The HTC layer now provides a transport-independent client for READY negotiation,
+service connection, and service packet send/receive. It is not yet attached to
+a runtime CE data transport; WMI/HTT startup and packet handling remain
+unimplemented.
 An unintegrated CE7 diagnostic helper now validates transfer bounds and maps
 QCA6174/QCA9377 target CPU addresses to CE address space. It is not yet wired
 into startup, and this work does not change the probe's disabled-by-default

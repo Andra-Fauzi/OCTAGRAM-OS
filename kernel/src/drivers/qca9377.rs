@@ -2,6 +2,7 @@
 
 pub mod bmi;
 pub mod ce;
+pub mod htc;
 
 use super::{
     pci::{self, PciDevice},
@@ -461,7 +462,7 @@ pub(crate) fn report_pci_candidates(devices: &[PciDevice]) {
             Err(error) => crate::println!("QCA9377 firmware unavailable: {error}"),
         }
         crate::println!(
-            "QCA9377 Wi-Fi is not active: the BMI target-info probe does not upload board data or run OTP/firmware; HTC, WMI, and HTT startup are not implemented"
+            "QCA9377 Wi-Fi is not active: the BMI target-info probe does not upload board data or run OTP/firmware; HTC has no CE data transport, and WMI/HTT startup is not implemented"
         );
     }
 

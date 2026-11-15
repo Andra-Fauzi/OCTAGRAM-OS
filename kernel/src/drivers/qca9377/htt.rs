@@ -341,6 +341,143 @@ impl HttRxRing {
     }
 }
 
+/// TX framing (`HTT_H2T_MSG_TYPE_TX_FRM`), the descriptor ath10k's
+/// `ath10k_htt_tx_32()` writes for data and management frames.
+///
+/// Nothing transmits frames yet, so the module is allowed to be unused until
+/// the TX path lands.
+#[allow(dead_code)]
+pub mod tx {
+    // ── TX frame (`HTT_H2T_MSG_TYPE_TX_FRM`) ─────────────────────────────────────
+
+    /// HTT >= 3.0 sends data **and** management frames with `TX_FRM`;
+    /// `HTT_H2T_MSG_TYPE_MGMT_TX` is only the HTT < 3.0 path.
+    pub const HTT_H2T_MSG_TYPE_TX_FRM: u8 = 1;
+    /// `ath10k_htt_tx_32()` copies `36 + 4 + 8 + 2` bytes of the frame behind the
+    /// descriptor (`802.11 + qos + ht`, `802.1q`, `llc/snap`, `ip dscp/priority`) so
+    /// the target can classify it, rounded up to a word.
+    pub const HTT_TX_PREFETCH_LEN: usize = 50;
+    /// `struct htt_data_tx_desc`: flags0, flags1, len, id, frags_paddr, peerid.
+    pub const HTT_TX_DESC_LEN: usize = 15;
+    /// `htt_cmd_hdr` in front of the descriptor.
+    pub const HTT_TX_HEADER_LEN: usize = 1 + HTT_TX_DESC_LEN;
+    /// `HTT_INVALID_PEERID`: alpha frames this driver sends are not per-peer.
+    pub const HTT_INVALID_PEERID: u16 = 0xffff;
+    /// `HTT_DATA_TX_EXT_TID_MGMT` and `HTT_DATA_TX_EXT_TID_NON_QOS_MCAST_BCAST`.
+    pub const HTT_DATA_TX_EXT_TID_MGMT: u8 = 17;
+    pub const HTT_DATA_TX_EXT_TID_NON_QOS_MCAST_BCAST: u8 = 16;
+
+    // `enum htt_data_tx_desc_flags0`.
+    const HTT_TX_FLAGS0_MAC_HDR_PRESENT: u8 = 1 << 0;
+    const HTT_TX_FLAGS0_NO_ENCRYPT: u8 = 1 << 2;
+    const HTT_TX_FLAGS0_PKT_TYPE_MASK: u8 = 0xe0;
+    const HTT_TX_FLAGS0_PKT_TYPE_LSB: u8 = 5;
+    // `enum htt_data_tx_desc_flags1`.
+    const HTT_TX_FLAGS1_VDEV_ID_MASK: u16 = 0x003f;
+    const HTT_TX_FLAGS1_EXT_TID_MASK: u16 = 0x001f;
+    const HTT_TX_FLAGS1_EXT_TID_LSB: u16 = 6;
+    const HTT_TX_FLAGS1_POSTPONED: u16 = 1 << 11;
+
+    /// `enum ath10k_hw_txrx_mode`: the value `ath10k_htt_tx_32()` puts in the
+    /// descriptor's `flags0` packet type field.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HttTxMode {
+        Raw,
+        NativeWifi,
+        Ethernet,
+        Mgmt,
+    }
+
+    impl HttTxMode {
+        /// `HTT_DATA_TX_DESC_FLAGS0_PKT_TYPE`.
+        const fn packet_type(self) -> u8 {
+            match self {
+                Self::Raw => 0,
+                Self::NativeWifi => 1,
+                Self::Ethernet => 2,
+                Self::Mgmt => 3,
+            }
+        }
+
+        /// `ath10k_htt_tx_32()` sets `MAC_HDR_PRESENT` for raw, native-wifi and
+        /// management frames; only Ethernet frames carry no MAC header.
+        const fn mac_header_present(self) -> bool {
+            matches!(self, Self::Raw | Self::NativeWifi | Self::Mgmt)
+        }
+    }
+
+    /// The HTT `TX_FRM` header for one frame, as `ath10k_htt_tx_32()` builds it.
+    pub struct HttTxFrame<'a> {
+        pub mode: HttTxMode,
+        pub vdev_id: u8,
+        /// `ext_tid`: 0-15 for QoS data, `HTT_DATA_TX_EXT_TID_MGMT` for management.
+        pub tid: u8,
+        pub msdu_id: u16,
+        /// Physical address of the fragment list the target reads for the full frame.
+        pub frags_paddr: u32,
+        /// `ATH10K_SKB_F_NO_HWCRYPT`: the frame was already encrypted by the host.
+        pub no_encrypt: bool,
+        pub frame: &'a [u8],
+    }
+
+    impl HttTxFrame<'_> {
+        /// Bytes of the frame copied behind the descriptor, rounded up to a word,
+        /// exactly like ath10k's `roundup(min(prefetch_len, msdu->len), 4)`.
+        pub fn prefetch_len(&self) -> usize {
+            let prefetch = self.frame.len().min(HTT_TX_PREFETCH_LEN);
+            (prefetch + 3) & !3
+        }
+
+        /// Encode `htt_cmd_hdr` + `htt_data_tx_desc` + the prefetched frame bytes.
+        ///
+        /// The result is one HTT message for `HttEndpoint::send`, which prepends the
+        /// HTC header. `HTT_TX_HEADER_LEN + prefetch_len` is word aligned, which is
+        /// the length ath10k writes into its HTC header for this message.
+        ///
+        /// Returns the message length, or `None` when the frame does not fit a
+        /// 16-bit length or `out` is too small.
+        pub fn encode(&self, out: &mut [u8]) -> Option<usize> {
+            let frame_len = u16::try_from(self.frame.len()).ok()?;
+            let prefetch = self.prefetch_len();
+            let total = HTT_TX_HEADER_LEN.checked_add(prefetch)?;
+            if out.len() < total {
+                return None;
+            }
+
+            let mut flags0 = (self.mode.packet_type() << HTT_TX_FLAGS0_PKT_TYPE_LSB)
+                & HTT_TX_FLAGS0_PKT_TYPE_MASK;
+            if self.mode.mac_header_present() {
+                flags0 |= HTT_TX_FLAGS0_MAC_HDR_PRESENT;
+            }
+            if self.no_encrypt {
+                flags0 |= HTT_TX_FLAGS0_NO_ENCRYPT;
+            }
+            let flags1 = (u16::from(self.vdev_id) & HTT_TX_FLAGS1_VDEV_ID_MASK)
+                | ((u16::from(self.tid) & HTT_TX_FLAGS1_EXT_TID_MASK) << HTT_TX_FLAGS1_EXT_TID_LSB)
+                | HTT_TX_FLAGS1_POSTPONED;
+
+            out[0] = HTT_H2T_MSG_TYPE_TX_FRM;
+            out[1] = flags0;
+            out[2..4].copy_from_slice(&flags1.to_le_bytes());
+            out[4..6].copy_from_slice(&frame_len.to_le_bytes());
+            out[6..8].copy_from_slice(&self.msdu_id.to_le_bytes());
+            out[8..12].copy_from_slice(&self.frags_paddr.to_le_bytes());
+            out[12..16].copy_from_slice(&u32::from(HTT_INVALID_PEERID).to_le_bytes());
+            // Only the bytes the frame actually has are copied; the word padding is
+            // explicit rather than read past the end of the frame.
+            let copied = self.frame.len().min(prefetch);
+            out[HTT_TX_HEADER_LEN..HTT_TX_HEADER_LEN + copied]
+                .copy_from_slice(&self.frame[..copied]);
+            out[HTT_TX_HEADER_LEN + copied..total].fill(0);
+            Some(total)
+        }
+    }
+}
+
+// The TX path will import these from `htt`; until it exists only the tests do.
+#[allow(unused_imports)]
+pub use tx::*;
+
 /// One MSDU the firmware placed in the RX ring (`htt_rx_in_ord_msdu_desc`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RxMsdu {
@@ -584,8 +721,9 @@ mod tests {
         HTT_RX_BUF_SIZE, HTT_RX_DESC_V1_MSDU_PAYLOAD_OFFSET, HTT_RX_DESC_V1_OFFSETS_WORDS,
         HTT_RX_OFFLOAD_MSDU_HEADER_LEN, HTT_RX_RING_CFG_LEN, HTT_RX_RING_FLAGS,
         HTT_VERSION_REQ_LEN, HttError, HttVersion, RxIndication, RxMsdu, RxRingLayout,
-        encode_rx_ring_cfg, ieee80211_to_ethernet, non_offload_frame, offload_frame,
-        parse_rx_indication, parse_version_conf,
+        encode_data_message, encode_rx_ring_cfg, ieee80211_to_ethernet, non_offload_frame,
+        offload_frame, parse_rx_indication, parse_version_conf, HTT_DATA_TX_EXT_TID_MGMT,
+        HTT_TX_HEADER_LEN, HTT_TX_PREFETCH_LEN, HttTxFrame, HttTxMode,
     };
     use alloc::vec::Vec;
 
@@ -617,6 +755,149 @@ mod tests {
         frame.extend_from_slice(&[0xaa, 0xaa, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00]);
         frame.extend_from_slice(body);
         frame
+    }
+
+    /// A `TX_FRM` descriptor for `frame`, filled like `ath10k_htt_tx_32()`.
+    fn tx_frame<'a>(mode: HttTxMode, frame: &'a [u8]) -> HttTxFrame<'a> {
+        HttTxFrame {
+            mode,
+            vdev_id: 0,
+            tid: 0,
+            msdu_id: 0,
+            frags_paddr: 0,
+            no_encrypt: false,
+            frame,
+        }
+    }
+
+    #[test]
+    fn tx_frm_data_frame_uses_the_ath10k_descriptor_layout() {
+        let frame = [0x42u8; 60];
+        let tx = HttTxFrame {
+            mode: HttTxMode::Ethernet,
+            vdev_id: 1,
+            tid: 5,
+            msdu_id: 0x1234,
+            frags_paddr: 0xdead_beef,
+            no_encrypt: false,
+            frame: &frame,
+        };
+
+        let mut message = [0u8; 128];
+        let message_len = tx.encode(&mut message).expect("encoded");
+
+        // `roundup(min(50, 60), 4)` bytes of the frame follow the descriptor.
+        assert_eq!(tx.prefetch_len(), 52);
+        assert_eq!(message_len, HTT_TX_HEADER_LEN + 52);
+        // htt_cmd_hdr(msg_type = TX_FRM) | flags0 | flags1 | len | id |
+        // frags_paddr | peerid, all little endian.
+        assert_eq!(
+            &message[..HTT_TX_HEADER_LEN],
+            &[
+                1, // HTT_H2T_MSG_TYPE_TX_FRM
+                0x40, // pkt_type Ethernet (2 << 5), no MAC header
+                0x41, 0x09, // vdev 1 | ext_tid 5 << 6 | POSTPONED
+                60, 0x00, // len
+                0x34, 0x12, // msdu id
+                0xef, 0xbe, 0xad, 0xde, // frags_paddr
+                0xff, 0xff, 0x00, 0x00, // HTT_INVALID_PEERID
+            ]
+        );
+        assert_eq!(&message[HTT_TX_HEADER_LEN..message_len], &frame[..52]);
+    }
+
+    #[test]
+    fn tx_frm_management_frame_sets_mac_hdr_present() {
+        let frame = [0x80u8; 24];
+        let tx = HttTxFrame {
+            mode: HttTxMode::Mgmt,
+            vdev_id: 0,
+            tid: HTT_DATA_TX_EXT_TID_MGMT,
+            msdu_id: 7,
+            frags_paddr: 0x1000,
+            no_encrypt: true,
+            frame: &frame,
+        };
+
+        let mut message = [0u8; 64];
+        let message_len = tx.encode(&mut message).expect("encoded");
+
+        assert_eq!(tx.prefetch_len(), 24);
+        assert_eq!(message_len, HTT_TX_HEADER_LEN + 24);
+        // mgmt packet type (3 << 5) + MAC_HDR_PRESENT + NO_ENCRYPT, then ext_tid
+        // 17 and POSTPONED.
+        assert_eq!(
+            &message[..HTT_TX_HEADER_LEN],
+            &[
+                1, 0x65, 0x40, 0x0c, 24, 0x00, 7, 0x00, 0x00, 0x10, 0x00, 0x00, 0xff, 0xff, 0x00,
+                0x00,
+            ]
+        );
+        assert_eq!(&message[HTT_TX_HEADER_LEN..message_len], &frame[..]);
+    }
+
+    #[test]
+    fn tx_frm_flags0_packet_type_follows_ath10k_txrx_modes() {
+        let frame = [0u8; 8];
+        let mut message = [0u8; 32];
+        // Raw and native-wifi carry an 802.11 header; Ethernet does not.
+        for (mode, flags0) in [
+            (HttTxMode::Raw, 0x01),
+            (HttTxMode::NativeWifi, 0x21),
+            (HttTxMode::Ethernet, 0x40),
+            (HttTxMode::Mgmt, 0x61),
+        ] {
+            let tx = tx_frame(mode, &frame);
+            tx.encode(&mut message).expect("encoded");
+            assert_eq!(message[0], 1, "message type for {mode:?}");
+            assert_eq!(message[1], flags0, "flags0 for {mode:?}");
+        }
+    }
+
+    #[test]
+    fn tx_frm_refuses_frames_that_do_not_fit() {
+        let frame = [0u8; 32];
+        let tx = tx_frame(HttTxMode::NativeWifi, &frame);
+        let mut small = [0u8; HTT_TX_HEADER_LEN];
+        assert_eq!(tx.encode(&mut small), None);
+
+        // A frame longer than the descriptor's 16-bit length is refused.
+        let oversized = alloc::vec![0u8; usize::from(u16::MAX) + 1];
+        let tx = tx_frame(HttTxMode::NativeWifi, &oversized);
+        let mut message = [0u8; 128];
+        assert_eq!(tx.encode(&mut message), None);
+
+        // Short frames still round the prefetch up to a word and zero the pad.
+        let short = [0x5au8; 3];
+        let tx = tx_frame(HttTxMode::NativeWifi, &short);
+        let message_len = tx.encode(&mut message).expect("encoded");
+        assert_eq!(tx.prefetch_len(), 4);
+        assert_eq!(message_len, HTT_TX_HEADER_LEN + 4);
+        assert_eq!(&message[HTT_TX_HEADER_LEN..message_len], &[0x5a, 0x5a, 0x5a, 0]);
+    }
+
+    #[test]
+    fn tx_frame_travels_as_one_word_aligned_htc_message() {
+        let frame = [0x11u8; 40];
+        let mut tx = tx_frame(HttTxMode::NativeWifi, &frame);
+        tx.vdev_id = 2;
+        tx.msdu_id = 1;
+        tx.frags_paddr = 0x2000;
+
+        let mut message = [0u8; 128];
+        let message_len = tx.encode(&mut message).expect("encoded");
+        // 16 + roundup(min(50, 40), 4) = 56, which HTC can carry unpadded.
+        assert_eq!(message_len, HTT_TX_HEADER_LEN + 40);
+        assert_eq!(message_len % 4, 0);
+        assert!(HTT_TX_PREFETCH_LEN >= 36 + 4 + 8 + 2);
+
+        let mut htc_frame = [0u8; 128];
+        let total = encode_data_message(&mut htc_frame, 3, 0, 9, &message[..message_len])
+            .expect("framed");
+        assert_eq!(total, 8 + message_len);
+        assert_eq!(htc_frame[0], 3); // HTT data endpoint
+        assert_eq!(&htc_frame[2..4], &(message_len as u16).to_le_bytes());
+        assert_eq!(&htc_frame[8..total], &message[..message_len]);
     }
 
     #[test]

@@ -49,7 +49,8 @@ const CE_CONTROL_DMAX_MASK: u32 = 0x0000_ffff;
 const CE_CONTROL_SOURCE_BYTE_SWAP: u32 = 1 << 16;
 const CE_CONTROL_DESTINATION_BYTE_SWAP: u32 = 1 << 17;
 const CE_REGISTER_WINDOW_END: u64 = CE7_REGISTER_BASE + CE_DESTINATION_WATERMARK + 4;
-const QCA6174_CORE_CTRL_ADDRESS: u64 = 0x0003_a000;
+pub const QCA6174_CORE_CTRL_ADDRESS: u64 = 0x0003_a000;
+pub const CORE_CTRL_CPU_INTR_MASK: u32 = 0x0000_2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CeError {
@@ -368,6 +369,9 @@ impl BmiCeRings {
             CE0_REGISTER_BASE + CE_SOURCE_WRITE_INDEX,
             self.source.write_index() as u32,
         )?;
+        // Trigger CPU interrupt to alert target CPU to incoming CE0 request
+        let core_ctrl = registers.read32(QCA6174_CORE_CTRL_ADDRESS)?;
+        registers.write32(QCA6174_CORE_CTRL_ADDRESS, core_ctrl | CORE_CTRL_CPU_INTR_MASK)?;
 
         let sent = wait_for_completion(
             registers,

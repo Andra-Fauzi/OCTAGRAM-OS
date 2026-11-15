@@ -106,31 +106,46 @@ pub(super) fn silicon_identity(chip_id: u32) -> SiliconIdentity {
     }
 }
 
+pub(super) fn target_wake<R: ce::RegisterIo>(
+    registers: &mut R,
+    poll_limit: usize,
+) -> Result<(), ce::CeError> {
+    registers.write32(QCA6174_PCIE_SOC_WAKE_ADDRESS, PCIE_SOC_WAKE_V_MASK)?;
+    for _ in 0..poll_limit {
+        let current = registers.read32(RTC_STATE_BAR_OFFSET)?;
+        if current == u32::MAX {
+            let _ = target_sleep(registers);
+            return Err(ce::CeError::DeviceUnavailable);
+        }
+        if current & RTC_STATE_V_MASK == RTC_STATE_V_ON {
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+    let _ = target_sleep(registers);
+    Err(ce::CeError::Timeout)
+}
+
+pub(super) fn target_sleep<R: ce::RegisterIo>(registers: &mut R) -> Result<(), ce::CeError> {
+    registers.write32(QCA6174_PCIE_SOC_WAKE_ADDRESS, 0)
+}
+
+pub(super) fn wake_target_cpu<R: ce::RegisterIo>(registers: &mut R) -> Result<(), ce::CeError> {
+    let current = registers.read32(ce::QCA6174_CORE_CTRL_ADDRESS)?;
+    registers.write32(
+        ce::QCA6174_CORE_CTRL_ADDRESS,
+        current | ce::CORE_CTRL_CPU_INTR_MASK,
+    )
+}
+
 pub(super) fn with_target_awake<R: ce::RegisterIo, T>(
     registers: &mut R,
     poll_limit: usize,
     operation: impl FnOnce(&mut R) -> Result<T, ce::CeError>,
 ) -> Result<T, ce::CeError> {
-    registers.write32(QCA6174_PCIE_SOC_WAKE_ADDRESS, PCIE_SOC_WAKE_V_MASK)?;
-    let result = (|| {
-        let mut awake = false;
-        for _ in 0..poll_limit {
-            let current = registers.read32(RTC_STATE_BAR_OFFSET)?;
-            if current == u32::MAX {
-                return Err(ce::CeError::DeviceUnavailable);
-            }
-            if current & RTC_STATE_V_MASK == RTC_STATE_V_ON {
-                awake = true;
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        if !awake {
-            return Err(ce::CeError::Timeout);
-        }
-        operation(registers)
-    })();
-    let sleep_result = registers.write32(QCA6174_PCIE_SOC_WAKE_ADDRESS, 0);
+    target_wake(registers, poll_limit)?;
+    let result = operation(registers);
+    let sleep_result = target_sleep(registers);
     match (result, sleep_result) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
@@ -463,43 +478,6 @@ pub(crate) fn report_pci_candidates(devices: &[PciDevice]) {
                 false
             }
         };
-
-        if cfg!(feature = "qca9377-bmi-probe") && qca9377_revision {
-            match probe_bmi_target_info(device) {
-                Ok(target_info) => {
-                    crate::println!(
-                        "QCA BMI target info: version={:#010x} type={:#010x}",
-                        target_info.version,
-                        target_info.target_type
-                    );
-                    crate::println!(
-                        "QCA BMI probe complete; bus mastering disabled and CE rings cleared"
-                    );
-                    if !supports_qca9377_firmware(target_info) {
-                        crate::println!(
-                            "QCA BMI target version is unsupported; firmware and OTP remain disabled"
-                        );
-                    }
-                }
-                Err(BmiProbeError::Setup(error)) => {
-                    crate::println!("QCA9377 BMI target-info probe setup failed: {error}")
-                }
-                Err(BmiProbeError::Operation { stage, error }) => {
-                    crate::println!(
-                        "QCA9377 BMI target-info probe failed during {stage}: {error:?}"
-                    )
-                }
-                Err(BmiProbeError::BusMasterDisable) => {
-                    crate::println!(
-                        "QCA9377 BMI probe could not disable bus mastering; DMA pages were retained"
-                    )
-                }
-            }
-        } else if qca9377_revision {
-            crate::println!(
-                "QCA BMI DMA probe disabled; upstream target CE initialization is not implemented"
-            );
-        }
 
         match wifi_firmware::qca9377() {
             Ok(firmware) => {

@@ -30,8 +30,9 @@ const DEFAULT_FREQ_MHZ: u32 = 2437;
 
 // Convenience re-exports from parent.
 use super::{
-    boot_firmware, pci_board_name, silicon_identity, with_target_awake,
-    SiliconIdentity, BmiBootError, CHIP_ID_BAR_OFFSET, QCA_WAKE_POLL_LIMIT, PAGE_OFFSET_MASK,
+    boot_firmware, pci_board_name, silicon_identity, target_sleep, target_wake, wake_target_cpu,
+    with_target_awake, SiliconIdentity, BmiBootError, CHIP_ID_BAR_OFFSET, QCA_WAKE_POLL_LIMIT,
+    PAGE_OFFSET_MASK,
 };
 
 #[derive(Debug)]
@@ -149,15 +150,22 @@ pub unsafe fn initialize_device(
     let mut bmi_rings = BmiCeRings::allocate().map_err(|_| InitError::DmaAlloc)?;
     let mut keep_rings = false;
 
-    let result = with_target_awake(&mut registers, QCA_WAKE_POLL_LIMIT, |regs| {
-        unsafe { bmi_rings.configure(regs) }
-    });
-    if result.is_err() {
+    // Wake the target SoC and KEEP IT AWAKE throughout BMI transfer and firmware boot
+    target_wake(&mut registers, QCA_WAKE_POLL_LIMIT).map_err(|_| InitError::DmaAlloc)?;
+
+    if unsafe { bmi_rings.configure(&mut registers) }.is_err() {
+        let _ = target_sleep(&mut registers);
         return Err(InitError::DmaAlloc);
     }
 
-    pci::enable_bus_master(device).map_err(|_| InitError::BusMaster)?;
+    if pci::enable_bus_master(device).is_err() {
+        let _ = target_sleep(&mut registers);
+        return Err(InitError::BusMaster);
+    }
     keep_rings = true;
+
+    // Wake the target CPU (trigger CPU interrupt) so it starts servicing BMI/CE
+    let _ = wake_target_cpu(&mut registers);
 
     let mac_addr = {
         let transport = unsafe { BmiCeTransport::new(&mut bmi_rings, &mut registers) };
@@ -175,9 +183,17 @@ pub unsafe fn initialize_device(
             )
         };
         match result {
-            Ok(_) => {}
-            Err(_) => {
+            Ok(target_info) => {
+                crate::println!(
+                    "QCA9377 target info: version={:#x} type={:#x}",
+                    target_info.version,
+                    target_info.target_type
+                );
+            }
+            Err(e) => {
+                crate::println!("QCA9377 boot_firmware error: {:?}", e);
                 let _ = pci::disable_bus_master(device);
+                let _ = target_sleep(&mut registers);
                 return Err(InitError::BmiBoot);
             }
         }

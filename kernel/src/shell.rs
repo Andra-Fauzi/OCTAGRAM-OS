@@ -160,6 +160,7 @@ fn print_help() {
     crate::println!("  lsdev                  list bus devices and bound drivers");
     crate::println!("  drivers                list registered kernel drivers");
     crate::println!("  net status|dhcp        inspect interface or request an IPv4 lease");
+    crate::println!("  net wifi <scan|connect|status> scan or connect to WiFi (QCA9377)");
     crate::println!("  net udp <IP> <port> <text> send one UDP datagram");
     crate::println!("  ping <IPv4 address>    send an ICMP echo request");
     crate::println!("  mount <device> <path> [fat32|ext2]  mount a filesystem read-write");

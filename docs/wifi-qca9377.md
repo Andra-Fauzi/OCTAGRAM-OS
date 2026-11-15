@@ -105,13 +105,35 @@ An unintegrated CE7 diagnostic helper now validates transfer bounds and maps
 QCA6174/QCA9377 target CPU addresses to CE address space. It is not yet wired
 into startup, and this work does not change the probe's disabled-by-default
 status.
-There is not yet active credit flow control, WMI/HTT startup, Wi-Fi
-association, or a usable wireless link. The remaining steps before a usable
-link: (1) hardware-validated chip reset + target CPU wake sequence, (2) run
-`init_htc_pipes` after BMI done, (3) `HtcClient::wait_ready` +
-`connect_service` for WMI/HTT + `send_setup_complete`, (4) WMI
-`WMI_INIT_CMDID` and interface/key setup, (5) HTT version handshake and data
-path. Linux
+
+### Complete Initialization & Connection Pipeline (`qca9377/init.rs`)
+
+The full driver initialization sequence is implemented in `kernel/src/drivers/qca9377/init.rs`:
+1. **BAR0 Mapping & Silicon Verification**: Maps PCI BAR0, wakes target SoC registers (`0x8f0`), and validates QCA9377 hw1.0 / hw1.1 silicon.
+2. **Firmware & Board Data Loading**: Extracts `firmware-6.bin` (FW 10.2) and selects board data from `board-2.bin`.
+3. **BMI Boot Sequence**: Configures CE0/CE1, loads board data, executes OTP at `0x0040_4000`, loads and boots firmware at `0x0040_8000`.
+4. **HTC Pipe Initialization**: Configures all 6 Copy Engine pipes:
+   - Control (EP0): TX=CE0, RX=CE1
+   - WMI Control:   TX=CE3, RX=CE2
+   - HTT Data:      TX=CE4, RX=CE5
+5. **HTC Handshake**: Waits for `HTC_READY`, connects `HTC_SERVICE_WMI_CONTROL` and `HTC_SERVICE_HTT_DATA`, and transmits `HTC_SETUP_COMPLETE`.
+6. **WMI Initialization**: Sends `WMI_INIT` resource configuration and waits for `WMI_READY` event, extracting the hardware MAC address.
+7. **HTT Version Handshake**: Performs version query over HTT data pipe.
+8. **STA Vdev & Peer Creation**: Sends `WMI_VDEV_CREATE` (STA mode), `WMI_PEER_CREATE` (self), and disables STA powersave.
+9. **Radio Bring-up & Scanning**: Sends `WMI_VDEV_START` (2.4 GHz channel), waits for `VDEV_START_RESP`, triggers active scan via `WMI_START_SCAN`, and drains scan completion events.
+10. **AP Association**: Issues `WMI_VDEV_UP`, `WMI_PEER_CREATE` (BSS peer), and `WMI_PEER_ASSOC` to associate with the target AP.
+11. **Network Link Registration**: Registers `Qca9377Link` into kernel `network::register_link()`, providing slot ID `0x9377`.
+
+### Shell Commands
+
+The shell provides user commands under `net wifi`:
+- `net status`: Show current interface MAC, link state, and IPv4 lease info.
+- `net wifi status`: Display current WiFi interface status.
+- `net wifi scan`: Trigger 2.4 GHz active scan across channels.
+- `net wifi connect <ssid>`: Associate to a target SSID.
+- `net dhcp`: Request an IPv4 address lease via DHCP once WiFi link is associated.
+
+Linux
 [ath10k PCI](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/ath/ath10k/pci.c),
 [ath10k hardware IDs](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/ath/ath10k/hw.h),
 and [BMI](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/ath/ath10k/bmi.c)

@@ -31,6 +31,7 @@ pub fn scan_pci_bus() -> alloc::vec::Vec<PciDevice> {
                 continue;
             };
             print_device(&function_zero);
+            enable_bridge_bus_master(&function_zero);
             let is_multifunction = function_zero.header_type & 0x80 != 0;
             devices.push(function_zero);
 
@@ -38,6 +39,7 @@ pub fn scan_pci_bus() -> alloc::vec::Vec<PciDevice> {
                 for function in 1..8 {
                     if let Some(device) = probe_function(bus, device, function) {
                         print_device(&device);
+                        enable_bridge_bus_master(&device);
                         devices.push(device);
                     }
                 }
@@ -61,4 +63,14 @@ fn print_device(device: &PciDevice) {
         device.subclass,
         device.prog_if
     );
+}
+
+fn enable_bridge_bus_master(dev: &PciDevice) {
+    if dev.class == 0x06 && dev.subclass == 0x04 {
+        let cmd = unsafe { super::config_read_u16(dev.bus, dev.device, dev.function, 0x04) };
+        let updated = cmd | 0x0006; // CMD_MEMORY_SPACE (0x2) | CMD_BUS_MASTER (0x4)
+        if updated != cmd {
+            unsafe { super::config_write_u16(dev.bus, dev.device, dev.function, 0x04, updated) };
+        }
+    }
 }

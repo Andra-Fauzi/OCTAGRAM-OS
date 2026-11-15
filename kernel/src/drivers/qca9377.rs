@@ -366,6 +366,13 @@ pub(super) struct ResetOutcome {
 /// `ATH10K_PCI_NUM_WARM_RESET_ATTEMPTS` in ath10k.
 const ROM_READY_ATTEMPTS: u32 = 3;
 
+/// Complete chip resets (cold reset, CE rings, warm reset) attempted before the
+/// bring-up gives up, matching the loop in `ath10k_pci_qca988x_chip_reset`.
+/// A target that did not come up on one cold reset can still come up on the
+/// next one, so the retry re-drives the SOC_GLOBAL_RESET rather than only
+/// pulsing the CPU.
+pub(super) const CHIP_RESET_ATTEMPTS: u32 = 3;
+
 /// A reset step that failed, so the boot log can say where the target stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ResetFailure {

@@ -36,7 +36,7 @@ const DEFAULT_FREQ_MHZ: u32 = 2437;
 use super::{
     boot_firmware, pci_board_name, release_target_cpu, reset_target_soc, silicon_identity,
     target_sleep, wake_target_cpu, with_target_awake, SiliconIdentity, BmiBootError,
-    CHIP_ID_BAR_OFFSET, QCA_WAKE_POLL_LIMIT, PAGE_OFFSET_MASK,
+    CHIP_ID_BAR_OFFSET, CHIP_RESET_ATTEMPTS, QCA_WAKE_POLL_LIMIT, PAGE_OFFSET_MASK,
 };
 
 #[derive(Debug)]
@@ -234,99 +234,121 @@ pub unsafe fn initialize_device(
     let board = wifi_firmware::select_board_data(firmware.board_bundle, board_name.as_bytes())
         .map_err(|_| InitError::BoardDataUnavailable)?;
 
-    // ── 3b. Cold-reset the target SoC ─────────────────────────────────────
+    // ── 3b/4b. Chip reset: cold reset, CE rings, warm reset ─────────────────
     // The boot ROM only services BMI after a cold reset, but the target CPU is
     // NOT released yet: ath10k releases it only once the CE pipes exist
     // (`ath10k_pci_warm_reset_cpu` -> `ath10k_pci_init_pipes` ->
     // `ath10k_pci_wait_for_target_init`). Releasing it here left FW_INDICATOR at
     // 0 and every BMI exchange timed out with SourceTimeout.
     //
-    // The CE reset pulse also belongs to this stage: it clears the CE ring
-    // registers, which stage 4 programs immediately afterwards.
-    let target_reset = match reset_target_soc(&mut registers, QCA_WAKE_POLL_LIMIT) {
-        Ok(state) => state,
-        Err(failure) => {
-            crate::println!(
-                "QCA9377 reset failed at \"{}\": {:?}",
-                failure.step, failure.error
-            );
-            return Err(InitError::TargetReset);
-        }
-    };
-    crate::println!(
-        "QCA9377 regs before cold reset: bar0={:#010x} bar8={:#010x} local0={:#010x} local8={:#010x}",
-        target_reset.dump_before.bar0,
-        target_reset.dump_before.bar8,
-        target_reset.dump_before.local0,
-        target_reset.dump_before.local8
-    );
-    crate::println!(
-        "QCA9377 regs after cold reset:  bar0={:#010x} bar8={:#010x} local0={:#010x} local8={:#010x}",
-        target_reset.dump_after.bar0,
-        target_reset.dump_after.bar8,
-        target_reset.dump_after.local0,
-        target_reset.dump_after.local8
-    );
-    crate::println!(
-        "QCA9377 cold reset: rtc_state_in_reset={:#010x} fw_indicator={:#010x} boot_rom_ready={}",
-        target_reset.cold_reset_state,
-        target_reset.cold_indicator,
-        target_reset.cold_ready
-    );
-
-    // ── 4. BMI boot (GET_TARGET_INFO + download board/OTP/firmware) ───────────
+    // The CE reset pulse also belongs to the cold-reset stage: it clears the CE
+    // ring registers, so the BMI rings and the CE7 diagnostic pipe are
+    // programmed again on every attempt.
+    //
+    // ath10k retries the whole chip reset `ATH10K_PCI_NUM_WARM_RESET_ATTEMPTS`
+    // times (`ath10k_pci_qca988x_chip_reset`) because a target that did not come
+    // up on one cold reset can still come up on the next one. Only a running
+    // boot ROM can service BMI, so the bring-up retries the reset before it
+    // reports `TargetCrashed`.
     let mut bmi_rings = BmiCeRings::allocate().map_err(|_| InitError::DmaAlloc)?;
     let mut target_config_ce = DiagnosticCe::allocate().map_err(|_| InitError::DmaAlloc)?;
     let mut keep_rings = false;
 
-    if unsafe { bmi_rings.configure(&mut registers) }.is_err() {
-        let _ = target_sleep(&mut registers);
-        return Err(InitError::DmaAlloc);
-    }
-    if unsafe { target_config_ce.configure(&mut registers) }.is_err() {
-        let _ = target_sleep(&mut registers);
-        return Err(InitError::DmaAlloc);
-    }
+    let mut attempt = 0;
+    let (rom_ready, rom_crashed) = loop {
+        attempt += 1;
+        crate::println!("QCA9377 chip reset attempt {attempt}/{CHIP_RESET_ATTEMPTS}");
 
-    if pci::enable_bus_master(device).is_err() {
-        let _ = target_sleep(&mut registers);
-        return Err(InitError::BusMaster);
-    }
-    keep_rings = true;
+        let target_reset = match reset_target_soc(&mut registers, QCA_WAKE_POLL_LIMIT) {
+            Ok(state) => state,
+            Err(failure) => {
+                crate::println!(
+                    "QCA9377 reset failed at \"{}\": {:?}",
+                    failure.step, failure.error
+                );
+                return Err(InitError::TargetReset);
+            }
+        };
+        crate::println!(
+            "QCA9377 regs before cold reset: bar0={:#010x} bar8={:#010x} local0={:#010x} local8={:#010x}",
+            target_reset.dump_before.bar0,
+            target_reset.dump_before.bar8,
+            target_reset.dump_before.local0,
+            target_reset.dump_before.local8
+        );
+        crate::println!(
+            "QCA9377 regs after cold reset:  bar0={:#010x} bar8={:#010x} local0={:#010x} local8={:#010x}",
+            target_reset.dump_after.bar0,
+            target_reset.dump_after.bar8,
+            target_reset.dump_after.local0,
+            target_reset.dump_after.local8
+        );
+        crate::println!(
+            "QCA9377 cold reset: rtc_state_in_reset={:#010x} fw_indicator={:#010x} boot_rom_ready={}",
+            target_reset.cold_reset_state,
+            target_reset.cold_indicator,
+            target_reset.cold_ready
+        );
 
-    // ── 4b. Release the target CPU and wait for the boot ROM ────────────────
-    // ath10k finishes the whole chip reset (cold reset, warm reset and target
-    // init) *before* it writes the target CE tables, so the ROM is already
-    // running when the configuration lands; `ath10k_pci_hif_power_up` then calls
-    // `ath10k_pci_init_pipes`, `ath10k_pci_init_config` and finally
-    // `ath10k_pci_wake_target_cpu`. This stage follows that order.
-    let (rom_ready, rom_crashed) = match release_target_cpu(
-        &mut registers,
-        QCA_WAKE_POLL_LIMIT,
-        target_reset,
-    ) {
-        Ok(outcome) => {
-            crate::println!(
-                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} attempts={} crash_event={} crash_latch_cleared={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
-                outcome.indicator_before,
-                outcome.indicator_after,
-                outcome.ready,
-                outcome.attempts,
-                outcome.saw_crash,
-                outcome.crash_cleared,
-                target_reset.reset_control_before,
-                outcome.reset_control_asserted,
-                outcome.reset_control_released
-            );
-            (outcome.ready, outcome.saw_crash)
+        if unsafe { bmi_rings.configure(&mut registers) }.is_err() {
+            let _ = target_sleep(&mut registers);
+            return Err(InitError::DmaAlloc);
         }
-        Err(failure) => {
-            crate::println!(
-                "QCA9377 reset failed at \"{}\": {:?}",
-                failure.step, failure.error
-            );
-            return Err(InitError::TargetReset);
+        if unsafe { target_config_ce.configure(&mut registers) }.is_err() {
+            let _ = target_sleep(&mut registers);
+            return Err(InitError::DmaAlloc);
         }
+
+        // Bus mastering is still enabled from the previous attempt, but the
+        // global reset is re-driven every time, so confirm the bit instead of
+        // assuming PCIe configuration space kept it.
+        if pci::enable_bus_master(device).is_err() {
+            let _ = target_sleep(&mut registers);
+            return Err(InitError::BusMaster);
+        }
+        keep_rings = true;
+
+        // ── 4b. Release the target CPU and wait for the boot ROM ─────────────
+        // ath10k finishes the whole chip reset (cold reset, warm reset and target
+        // init) *before* it writes the target CE tables, so the ROM is already
+        // running when the configuration lands; `ath10k_pci_hif_power_up` then calls
+        // `ath10k_pci_init_pipes`, `ath10k_pci_init_config` and finally
+        // `ath10k_pci_wake_target_cpu`. This stage follows that order.
+        let ready_and_crash = match release_target_cpu(
+            &mut registers,
+            QCA_WAKE_POLL_LIMIT,
+            target_reset,
+        ) {
+            Ok(outcome) => {
+                crate::println!(
+                    "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} warm_reset_pulses={} crash_event={} crash_latch_cleared={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
+                    outcome.indicator_before,
+                    outcome.indicator_after,
+                    outcome.ready,
+                    outcome.attempts,
+                    outcome.saw_crash,
+                    outcome.crash_cleared,
+                    target_reset.reset_control_before,
+                    outcome.reset_control_asserted,
+                    outcome.reset_control_released
+                );
+                (outcome.ready, outcome.saw_crash)
+            }
+            Err(failure) => {
+                crate::println!(
+                    "QCA9377 reset failed at \"{}\": {:?}",
+                    failure.step, failure.error
+                );
+                return Err(InitError::TargetReset);
+            }
+        };
+
+        if ready_and_crash.0 || attempt >= CHIP_RESET_ATTEMPTS {
+            break ready_and_crash;
+        }
+        crate::println!(
+            "QCA9377 boot ROM is not running after attempt {attempt}/{CHIP_RESET_ATTEMPTS}; retrying the full chip reset"
+        );
     };
     // ath10k gives up here as well: `ath10k_pci_wait_for_target_init` returns
     // -ECOMM for `FW_IND_EVENT_PENDING` ("device has crashed during init") and

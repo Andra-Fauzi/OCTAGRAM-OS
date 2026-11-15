@@ -133,11 +133,21 @@ ath10k fails the chip reset when the target sets `FW_IND_EVENT_PENDING`
 ("device has crashed during init", `-ECOMM` in
 `ath10k_pci_wait_for_target_init`) or never sets `FW_IND_INITIALIZED`
 (`-ETIMEDOUT`), and `ath10k_pci_hif_power_up` releases the latched crash bit
-before giving up. The driver follows the same rule: `release_target_cpu` clears
-`FW_IND_EVENT_PENDING` with a read-modify-write once the attempts are exhausted
-(`crash_latch_cleared` in the boot log), and `initialize_device` returns
-`InitError::TargetCrashed` instead of writing the CE7 target tables and running
-BMI against a halted target. Everything after the reset — the pipe/service
+before giving up. The driver follows
+the same rule: `release_target_cpu` clears
+`FW_IND_EVENT_PENDING` with a read-modify-write once its warm-reset pulses are
+exhausted (`crash_latch_cleared` in the boot log), and `initialize_device`
+returns `InitError::TargetCrashed` instead of writing the CE7 target tables and
+running BMI against a halted target.
+
+Before it gives up, `initialize_device` retries the complete chip reset
+`CHIP_RESET_ATTEMPTS` (3) times, mirroring the loop in
+`ath10k_pci_qca988x_chip_reset`: each attempt re-drives `SOC_GLOBAL_RESET`,
+re-programs the CE0/CE1 BMI rings and the CE7 diagnostic pipe (the cold reset
+and the CE reset pulse clear those registers), and releases the target CPU
+again. A target that never comes up therefore spends roughly 12 s per attempt
+(`ROM_READY_ROUNDS` after the cold reset plus three warm-reset waits) and about
+36 s in total before reporting `TargetCrashed`. Everything after the reset — the pipe/service
 tables and every BMI command — depends on a running boot ROM, so continuing
 only produced a misleading `MissingPcieState` from an unpopulated
 `HOST_INTEREST`.

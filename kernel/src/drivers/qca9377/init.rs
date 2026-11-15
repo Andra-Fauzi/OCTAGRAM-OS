@@ -33,6 +33,9 @@ const VDEV_ID: u32 = 0;
 const PEER_TYPE_STA: u32 = 1;
 const WMI_VDEV_TYPE_STA: u32 = 2;
 const HTT_RING_SIZE: u16 = 32;
+/// `ATH10K_FW_WMI_OP_VERSION_TLV` (`hw.h`): commands and events are tag/length
+/// elements instead of the packed structures in `wmi.rs`.
+const WMI_OP_VERSION_TLV: u32 = 4;
 const SCAN_ID: u32 = 0x1234;
 // Default channel 6 (2437 MHz) — AP umumnya di channel 1/6/11
 const DEFAULT_FREQ_MHZ: u32 = 2437;
@@ -63,6 +66,9 @@ pub enum InitError {
     HtcConnect,
     HtcSetupComplete,
     WmiReady,
+    /// The firmware blob declares a WMI operations version this driver does not
+    /// implement (currently WMI-TLV), so no command may be sent to it.
+    WmiTlvUnsupported,
     /// A WMI command or event failed after the handshake.
     Wmi,
     HttHandshake,
@@ -306,6 +312,15 @@ pub unsafe fn initialize_device(
     // ── 3. Load firmware images ───────────────────────────────────────────────
     let firmware =
         wifi_firmware::qca9377().map_err(|_| InitError::FirmwareUnavailable)?;
+    // ath10k prints this line once the blob is loaded; the operations versions
+    // decide which command and event layouts the driver may use.
+    crate::println!(
+        "QCA9377 firmware ver {} wmi-op {} htt-op {} features {:#04x}",
+        firmware.firmware_version,
+        firmware.wmi_op_version,
+        firmware.htt_op_version,
+        firmware.features
+    );
     let board_name =
         pci_board_name(device, subsystem_vendor, subsystem_device);
     let board = wifi_firmware::select_board_data(firmware.board_bundle, board_name.as_bytes())
@@ -695,6 +710,20 @@ pub unsafe fn initialize_device(
         // is released here and WMI is addressed by the endpoint id the target
         // returned for the WMI service.
         drop(htc);
+        // `ath10k_wmi_attach` picks a whole operations table from the blob's
+        // WMI version and fails on a version it has no table for. QCA9377
+        // firmware-6 declares WMI-TLV, whose commands and events are tag/length
+        // elements; the packed codec below would send it a layout it cannot
+        // parse, so stop here instead of reporting a misleading crash.
+        if firmware.wmi_op_version == WMI_OP_VERSION_TLV {
+            crate::println!(
+                "QCA9377 firmware speaks WMI-TLV (wmi-op {}); the packed WMI codec cannot drive it",
+                firmware.wmi_op_version
+            );
+            let _ = pci::disable_bus_master(device);
+            let _ = target_sleep(&mut registers);
+            return Err(InitError::WmiTlvUnsupported);
+        }
         let mut wmi_ep = wmi::WmiEndpoint::new(
             wmi_resp.endpoint,
             wmi_resp.max_message_size,

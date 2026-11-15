@@ -449,6 +449,52 @@ all-ones and `0xdeadc0de` are reported as "unknown before the chip reset" and
 the identity is decided by the post-reset read. If that read is a valid value
 that is not a QCA9377, the driver stops instead of loading QCA9377 firmware.
 
+### The Firmware Speaks WMI-TLV
+
+Reading the information elements of the shipped `firmware-6.bin` settles which
+WMI flavour this chip runs (`QCA-ATH10K` header, then `id, len, data` elements
+padded to four bytes):
+
+| element | value | meaning |
+| --- | --- | --- |
+| 0 | `WLAN.TF.2.1-00021-QCARMSWP-1` | firmware version |
+| 4 | 24193 B segment table | OTP image |
+| 3 | 727125 B segment table | firmware image |
+| 2 | `0xc0` | features: wowlan + ignore-otp |
+| 5 | `4` | `ATH10K_FW_WMI_OP_VERSION_TLV` |
+| 6 | `3` | `ATH10K_FW_HTT_OP_VERSION_TLV` |
+
+So the firmware is **WMI-TLV**, the same thing a Linux boot prints as
+`htt-ver 3.56 wmi-op 4 htt-op 3`. `ath10k_wmi_attach` selects an entire
+operations table from that element, and for TLV the table lives in `wmi_tlv.c`:
+commands and events become nested `{tag, len, value}` elements and the event ids
+come from a different enumeration than the packed branches.
+
+Comparing our handler with `ath10k_wmi.c` therefore finds four divergences, in
+the order they matter:
+
+1. **Flavour.** `wmi.rs` encodes packed structures and uses ids such as `0x1001`
+   for READY. No ath10k header contains that value: the packed families use
+   `0x1`/`0x2` (main) or `0x8000`/`0x8001` (10.x), and TLV uses its own tags. A TLV
+   firmware would never match any of our event ids.
+2. **Order.** `ath10k_core_start` waits for `SERVICE_READY` first, sends
+   `WMI_INIT` second and waits for `READY` third. `SERVICE_READY` is what carries
+   the service bitmap (`ath10k_wmi_map_svc`) and the host-memory requests;
+   `READY` only carries the MAC address and status. We send `INIT` before any
+   service information exists and never build a service map.
+3. **Payload.** `ath10k_wmi_10_2_op_gen_init` sends `wmi_resource_config_10_2`
+   (28 words of `wmi_resource_config_10x` plus 7 words, 136 bytes) followed by
+   the host-memory chunks; ours is a 60-byte sketch that matches no ath10k
+   structure. `TARGET_10X_*` values would have to replace the guessed numbers.
+4. **Memory chunks.** `SERVICE_READY` may ask the host for DMA pools that
+   `WMI_INIT` must hand back. We answer with `count = 0` unconditionally.
+
+The driver now parses elements 2, 5 and 6, prints them next to the version, and
+refuses to send the packed `WMI_INIT` when the blob declares TLV, so the failure
+is reported as `WmiTlvUnsupported` instead of a misleading `WmiReady` timeout.
+Porting `wmi_tlv.c`'s tag parser, its `init` command and its `SERVICE_READY`
+handling is the prerequisite for anything past the HTC handshake.
+
 ### Shell Commands
 
 The shell provides user commands under `net wifi`:

@@ -5,9 +5,15 @@ const QCA9377_FIRMWARE_PATH: &[u8] = b"/boot/firmware/ath10k/QCA9377/hw1.0/firmw
 const QCA9377_BOARD_PATH: &[u8] = b"/boot/firmware/ath10k/QCA9377/hw1.0/board-2.bin";
 const ATH10K_FIRMWARE_MAGIC: &[u8] = b"QCA-ATH10K\0";
 const ATH10K_BOARD_MAGIC: &[u8] = b"QCA-ATH10K-BOARD\0";
+// `enum ath10k_fw_ie_type`. The shipped QCA9377 firmware-6.bin really carries
+// its 727125-byte segment table as element 3 and the 24193-byte one as element 4,
+// so element 3 is the firmware image on this blob.
 const FW_IE_VERSION: u32 = 0;
+const FW_IE_FEATURES: u32 = 2;
 const FW_IE_IMAGE: u32 = 3;
 const FW_IE_OTP_IMAGE: u32 = 4;
+const FW_IE_WMI_OP_VERSION: u32 = 5;
+const FW_IE_HTT_OP_VERSION: u32 = 6;
 const BOARD_IE_DATA: u32 = 0;
 const BOARD_IE_EXT_DATA: u32 = 1;
 const BOARD_ENTRY_NAME: u32 = 0;
@@ -26,12 +32,29 @@ pub struct Qca9377Firmware {
     pub otp_image: Option<&'static [u8]>,
     pub firmware_image: &'static [u8],
     pub board_bundle: &'static [u8],
+    /// `ATH10K_FW_IE_FEATURES` bits, zero when the element is absent.
+    pub features: u32,
+    /// `ATH10K_FW_IE_WMI_OP_VERSION`; zero means the blob predates the element.
+    pub wmi_op_version: u32,
+    /// `ATH10K_FW_IE_HTT_OP_VERSION`; zero means the blob predates the element.
+    pub htt_op_version: u32,
 }
 
 pub struct FirmwareImages<'a> {
     pub version: &'a str,
     pub otp_image: Option<&'a [u8]>,
     pub firmware_image: &'a [u8],
+}
+
+/// The information elements that select the driver's command layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FirmwareOperations {
+    /// `ATH10K_FW_IE_FEATURES` bits, zero when the element is absent.
+    pub features: u32,
+    /// `ATH10K_FW_IE_WMI_OP_VERSION`; zero means the blob predates the element.
+    pub wmi_op_version: u32,
+    /// `ATH10K_FW_IE_HTT_OP_VERSION`; zero means the blob predates the element.
+    pub htt_op_version: u32,
 }
 
 pub struct Qca9377BoardData<'a> {
@@ -49,12 +72,16 @@ pub fn qca9377() -> Result<Qca9377Firmware, &'static str> {
     let board_bundle = find_module(modules, QCA9377_BOARD_PATH)
         .ok_or("QCA9377 board-2.bin module is missing or empty")?;
     let images = parse_firmware(firmware)?;
+    let operations = firmware_operations(firmware)?;
     validate_board_bundle(board_bundle)?;
     Ok(Qca9377Firmware {
         firmware_version: images.version,
         otp_image: images.otp_image,
         firmware_image: images.firmware_image,
         board_bundle,
+        features: operations.features,
+        wmi_op_version: operations.wmi_op_version,
+        htt_op_version: operations.htt_op_version,
     })
 }
 
@@ -158,6 +185,46 @@ pub fn parse_firmware(firmware: &[u8]) -> Result<FirmwareImages<'_>, &'static st
         firmware_image: firmware_image
             .ok_or("QCA9377 firmware has no firmware image information element")?,
     })
+}
+
+/// Read the elements that pick the WMI and HTT command layouts.
+///
+/// ath10k stores `wmi_op_version` and `htt_op_version` while walking the same
+/// information elements, then selects an operations table from them. The
+/// shipped QCA9377 blob declares WMI-TLV here, which is why the packed codec in
+/// `qca9377/wmi.rs` must not be pointed at it.
+pub fn firmware_operations(firmware: &[u8]) -> Result<FirmwareOperations, &'static str> {
+    if !firmware.starts_with(ATH10K_FIRMWARE_MAGIC) {
+        return Err("QCA9377 firmware has an invalid ath10k magic header");
+    }
+    let mut offset =
+        align_four(ATH10K_FIRMWARE_MAGIC.len()).ok_or("QCA9377 firmware magic length overflow")?;
+    let mut operations = FirmwareOperations {
+        features: 0,
+        wmi_op_version: 0,
+        htt_op_version: 0,
+    };
+    while offset < firmware.len() {
+        let (id, data, next) = read_ie(firmware, offset, "QCA9377 firmware has an invalid element")?;
+        match id {
+            // ath10k reads this as a raw bit array; the first word holds bits 0-31.
+            FW_IE_FEATURES => {
+                let mut word = [0u8; 4];
+                let count = core::cmp::min(data.len(), 4);
+                word[..count].copy_from_slice(&data[..count]);
+                operations.features = u32::from_le_bytes(word);
+            }
+            FW_IE_WMI_OP_VERSION if data.len() == 4 => {
+                operations.wmi_op_version = u32::from_le_bytes(data.try_into().unwrap());
+            }
+            FW_IE_HTT_OP_VERSION if data.len() == 4 => {
+                operations.htt_op_version = u32::from_le_bytes(data.try_into().unwrap());
+            }
+            _ => {}
+        }
+        offset = next;
+    }
+    Ok(operations)
 }
 
 fn validate_firmware(firmware: &[u8]) -> Result<(), &'static str> {
@@ -274,7 +341,8 @@ fn find_module<'a>(modules: &'a [&limine::file::File], path: &[u8]) -> Option<&'
 #[cfg(test)]
 mod tests {
     use super::{
-        ATH10K_BOARD_MAGIC, ATH10K_FIRMWARE_MAGIC, parse_firmware, select_board_data,
+        ATH10K_BOARD_MAGIC, ATH10K_FIRMWARE_MAGIC, firmware_operations, parse_firmware,
+        select_board_data,
         validate_firmware,
     };
     use alloc::vec::Vec;
@@ -383,6 +451,22 @@ mod tests {
             parse_firmware(&firmware),
             Err("QCA9377 firmware version is not valid UTF-8")
         ));
+    }
+
+    #[test]
+    fn reads_the_wmi_and_htt_operations_versions() {
+        // The QCA9377 blob ends with features 0xc0, wmi-op 4 and htt-op 3.
+        let mut firmware = empty_firmware();
+        append_firmware_ie(&mut firmware, 0, b"WLAN.TF.2.1");
+        append_firmware_ie(&mut firmware, 3, &[0xAA]);
+        append_firmware_ie(&mut firmware, 2, &[0xC0]);
+        append_firmware_ie(&mut firmware, 5, &4u32.to_le_bytes());
+        append_firmware_ie(&mut firmware, 6, &3u32.to_le_bytes());
+
+        let operations = firmware_operations(&firmware).unwrap();
+        assert_eq!(operations.features, 0xC0);
+        assert_eq!(operations.wmi_op_version, 4, "WMI-TLV");
+        assert_eq!(operations.htt_op_version, 3, "HTT-TLV");
     }
 
     #[test]

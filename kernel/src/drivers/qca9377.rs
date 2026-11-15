@@ -245,12 +245,21 @@ pub(super) fn wait_for_target_init<R: ce::RegisterIo>(
     Ok((false, indicator))
 }
 
+/// Result of the cold reset, carried until the target CPU is released.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TargetReset {
+    pub indicator_before: u32,
+}
+
 /// Result of a completed reset attempt, for the boot log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ResetOutcome {
     pub indicator_before: u32,
     pub indicator_after: u32,
     pub ready: bool,
+    /// Live `SOC_RESET_CONTROL` (RTC_SOC + 0x0) read back right after the CPU
+    /// warm reset bit was written.
+    pub reset_control: u32,
 }
 
 /// A reset step that failed, so the boot log can say where the target stopped.
@@ -260,18 +269,19 @@ pub(super) struct ResetFailure {
     pub error: ce::CeError,
 }
 
-/// Reset the target SoC and release its CPU so the boot ROM services BMI.
+/// Cold-reset the target SoC and cycle the copy engines.
 ///
-/// ath10k always cold-resets QCA6174/QCA9377 and resets the target CPU before
-/// the first BMI command. Without it CE0's source ring is never consumed and
-/// the first exchange fails with `SourceTimeout`.
+/// This runs *before* the BMI CE rings are programmed, because the CE reset
+/// pulse clears the ring registers. The target CPU is deliberately left in
+/// reset here; `release_target_cpu` starts it once the rings exist.
 ///
-/// On success the target is left awake; the caller must keep the wake request
-/// asserted for the whole BMI transfer.
-pub(super) fn reset_for_bmi<R: ce::RegisterIo>(
+/// ath10k orders this the same way for QCA6174/QCA9377:
+/// `ath10k_pci_warm_reset_cpu` -> `ath10k_pci_init_pipes` ->
+/// `ath10k_pci_wait_for_target_init`.
+pub(super) fn reset_target_soc<R: ce::RegisterIo>(
     registers: &mut R,
     poll_limit: usize,
-) -> Result<ResetOutcome, ResetFailure> {
+) -> Result<TargetReset, ResetFailure> {
     let failed = |step, error| ResetFailure { step, error };
 
     let indicator_before = registers
@@ -281,18 +291,39 @@ pub(super) fn reset_for_bmi<R: ce::RegisterIo>(
     soc_global_reset(registers).map_err(|error| failed("SoC global reset", error))?;
     target_wake(registers, poll_limit)
         .map_err(|error| failed("wake after cold reset", error))?;
-    reset_target_cpu(registers).map_err(|error| failed("reset target CPU", error))?;
     pulse_ce_reset(registers).map_err(|error| failed("reset copy engines", error))?;
-    reset_target_cpu(registers)
-        .map_err(|error| failed("reset target CPU after CE reset", error))?;
+
+    Ok(TargetReset { indicator_before })
+}
+
+/// Release the target CPU so the boot ROM services BMI, then wait for
+/// `FW_IND_INITIALIZED`.
+///
+/// Must run after the BMI CE rings and the target pipe tables are programmed:
+/// the ROM only starts consuming CE0 after it can see a complete configuration.
+/// The `SOC_RESET_CONTROL` readback is kept for the boot log, because a warm
+/// reset bit that does not stick is the difference between "ROM never started"
+/// and "ROM started but never signalled".
+pub(super) fn release_target_cpu<R: ce::RegisterIo>(
+    registers: &mut R,
+    poll_limit: usize,
+    reset: TargetReset,
+) -> Result<ResetOutcome, ResetFailure> {
+    let failed = |step, error| ResetFailure { step, error };
+
+    reset_target_cpu(registers).map_err(|error| failed("reset target CPU", error))?;
+    let reset_control = registers
+        .read32(QCA6174_RTC_SOC_BASE)
+        .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
     let (ready, indicator_after) = wait_for_target_init(registers, poll_limit)
         .map_err(|error| failed("wait for boot ROM", error))?;
     target_wake(registers, poll_limit).map_err(|error| failed("final wake", error))?;
 
     Ok(ResetOutcome {
-        indicator_before,
+        indicator_before: reset.indicator_before,
         indicator_after,
         ready,
+        reset_control,
     })
 }
 
@@ -694,10 +725,11 @@ mod tests {
         BmiBootError, CHIP_ID_BAR_OFFSET, FW_IND_EVENT_PENDING, FW_IND_INITIALIZED,
         HOST_INTEREST_ADDRESS, QCA6174_FW_INDICATOR_ADDRESS, QCA6174_PCIE_SOC_WAKE_ADDRESS,
         QCA6174_RTC_SOC_BASE, QCA6174_RTC_SOC_TIMER_OFFSET, QCA6174_SOC_GLOBAL_RESET_ADDRESS,
-        QCA9377_TARGET_VERSION_1_0, QCA9377_TARGET_VERSION_1_1, RTC_SOC_CPU_RESET,
-        RTC_STATE_BAR_OFFSET, SiliconIdentity, download_board_data, is_ath10k_pci_candidate,
-        pci_board_name, required_register_window_size, reset_for_bmi, silicon_identity,
-        soc_global_reset, supports_qca9377_firmware, wait_for_target_init, with_target_awake,
+        QCA9377_TARGET_VERSION_1_0, QCA9377_TARGET_VERSION_1_1, RTC_SOC_CE_RESET,
+        RTC_SOC_CPU_RESET, RTC_STATE_BAR_OFFSET, SiliconIdentity, download_board_data,
+        is_ath10k_pci_candidate, pci_board_name, release_target_cpu,
+        required_register_window_size, reset_target_soc, silicon_identity, soc_global_reset,
+        supports_qca9377_firmware, wait_for_target_init, with_target_awake,
     };
     use crate::drivers::pci::PciDevice;
     use crate::drivers::wifi_firmware::FirmwareImages;
@@ -800,14 +832,12 @@ mod tests {
     }
 
     #[test]
-    fn reset_for_bmi_cold_resets_and_releases_the_target_cpu() {
+    fn cold_reset_keeps_the_cpu_in_reset_until_the_rings_exist() {
         let mut registers = MockResetRegisters::default();
-        let outcome = reset_for_bmi(&mut registers, 8).unwrap();
-        assert!(outcome.ready);
-        assert_eq!(outcome.indicator_before, 0);
-        assert_eq!(outcome.indicator_after, FW_IND_INITIALIZED);
-        assert!(registers.awake);
+        let prepared = reset_target_soc(&mut registers, 8).unwrap();
+        assert_eq!(prepared.indicator_before, 0);
 
+        // Cold reset happened...
         let global_reset: alloc::vec::Vec<u32> = registers
             .writes
             .iter()
@@ -815,28 +845,58 @@ mod tests {
             .map(|(_, value)| *value)
             .collect();
         assert_eq!(global_reset, [1, 0]);
+        assert!(registers.writes.iter().any(|(offset, value)| *offset
+            == QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET
+            && *value & 4 == 0));
 
-        let rtc_writes: alloc::vec::Vec<u32> = registers
+        // ...but the CPU warm reset was NOT asserted yet, so the ROM cannot be
+        // running and BMI rings configured afterwards are never cleared.
+        assert!(registers
             .writes
             .iter()
-            .filter(|(offset, _)| *offset == QCA6174_RTC_SOC_BASE)
-            .map(|(_, value)| *value)
-            .collect();
-        assert!(rtc_writes.iter().any(|value| value & RTC_SOC_CPU_RESET != 0));
-        assert!(rtc_writes.iter().any(|value| value & 1 != 0));
-        assert!(rtc_writes.iter().any(|value| value & 1 == 0));
+            .all(|(offset, value)| *offset != QCA6174_RTC_SOC_BASE
+                || value & RTC_SOC_CPU_RESET == 0));
+        assert_eq!(wait_for_target_init(&mut registers, 8), Ok((false, 0)));
+
+        // Releasing the CPU after the rings exists boots the ROM.
+        let outcome = release_target_cpu(&mut registers, 8, prepared).unwrap();
+        assert!(outcome.ready);
+        assert_eq!(outcome.indicator_before, 0);
+        assert_eq!(outcome.indicator_after, FW_IND_INITIALIZED);
+        assert_ne!(outcome.reset_control & RTC_SOC_CPU_RESET, 0);
+        assert!(registers.awake);
 
         assert!(registers
             .writes
             .iter()
             .any(|(offset, value)| *offset == QCA6174_FW_INDICATOR_ADDRESS && *value == 0));
-        assert!(registers.writes.iter().any(|(offset, value)| *offset
-            == QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET
-            && *value & 4 == 0));
         assert_eq!(
             registers.writes.last(),
             Some(&(QCA6174_PCIE_SOC_WAKE_ADDRESS, 1))
         );
+    }
+
+    #[test]
+    fn ce_reset_pulse_precedes_the_cpu_release() {
+        let mut registers = MockResetRegisters::default();
+        let prepared = reset_target_soc(&mut registers, 8).unwrap();
+        let _ = release_target_cpu(&mut registers, 8, prepared).unwrap();
+
+        let ce_write = registers
+            .writes
+            .iter()
+            .position(|(offset, value)| {
+                *offset == QCA6174_RTC_SOC_BASE && value & RTC_SOC_CE_RESET != 0
+            })
+            .expect("CE reset pulse missing");
+        let cpu_write = registers
+            .writes
+            .iter()
+            .position(|(offset, value)| {
+                *offset == QCA6174_RTC_SOC_BASE && value & RTC_SOC_CPU_RESET != 0
+            })
+            .expect("CPU warm reset missing");
+        assert!(ce_write < cpu_write);
     }
 
     #[test]
@@ -867,7 +927,7 @@ mod tests {
         registers
             .values
             .insert(QCA6174_SOC_GLOBAL_RESET_ADDRESS, u32::MAX);
-        let failure = reset_for_bmi(&mut registers, 8).unwrap_err();
+        let failure = reset_target_soc(&mut registers, 8).unwrap_err();
         assert_eq!(failure.step, "SoC global reset");
         assert_eq!(failure.error, CeError::DeviceUnavailable);
     }

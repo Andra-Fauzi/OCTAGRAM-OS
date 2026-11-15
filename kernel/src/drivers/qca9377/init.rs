@@ -8,8 +8,11 @@ use super::{
     bmi::BmiClient,
     ce::{
         BmiCeRings, BmiCeTransport, CeError, DiagnosticCe, MmioWindow, PipePair,
-        RegisterIo as _, RxCe, TxCe, CE_PACKET_MAX_BYTES, PIPE_EP0_RX_CE, PIPE_EP0_TX_CE,
-        PIPE_HTT_RX_CE, PIPE_HTT_TX_CE, PIPE_WMI_RX_CE, PIPE_WMI_TX_CE,
+        RegisterIo as _, RxCe, TxCe, CE0_REGISTER_BASE, CE1_REGISTER_BASE,
+        CE_DESTINATION_READ_INDEX, CE_DESTINATION_RING_BASE, CE_DESTINATION_RING_SIZE,
+        CE_DESTINATION_WRITE_INDEX, CE_PACKET_MAX_BYTES, CE_SOURCE_READ_INDEX,
+        CE_SOURCE_RING_BASE, CE_SOURCE_RING_SIZE, CE_SOURCE_WRITE_INDEX, PIPE_EP0_RX_CE,
+        PIPE_EP0_TX_CE, PIPE_HTT_RX_CE, PIPE_HTT_TX_CE, PIPE_WMI_RX_CE, PIPE_WMI_TX_CE,
     },
     htc::{HtcClient, HtcClientError, HtcError, HTC_SERVICE_HTT_DATA, HTC_SERVICE_WMI_CONTROL},
     pci::{self, PciDevice},
@@ -31,9 +34,9 @@ const DEFAULT_FREQ_MHZ: u32 = 2437;
 
 // Convenience re-exports from parent.
 use super::{
-    boot_firmware, pci_board_name, reset_for_bmi, silicon_identity, target_sleep, wake_target_cpu,
-    with_target_awake, SiliconIdentity, BmiBootError, CHIP_ID_BAR_OFFSET, QCA_WAKE_POLL_LIMIT,
-    PAGE_OFFSET_MASK,
+    boot_firmware, pci_board_name, release_target_cpu, reset_target_soc, silicon_identity,
+    target_sleep, wake_target_cpu, with_target_awake, SiliconIdentity, BmiBootError,
+    CHIP_ID_BAR_OFFSET, QCA_WAKE_POLL_LIMIT, PAGE_OFFSET_MASK,
 };
 
 #[derive(Debug)]
@@ -98,6 +101,51 @@ impl network::LinkDevice for Qca9377Link {
     }
 }
 
+/// Log the CE0/CE1 ring registers the boot ROM has to consume.
+///
+/// Captured right before the first BMI command: a zero source base means the
+/// host programming never landed, and a source write index that never advances
+/// means the ROM is not reading the ring at all (CPU still held in reset, or no
+/// clock). The boot ROM programs the read indices, so the host cannot fake them.
+fn log_bmi_ce_ring(registers: &mut MmioWindow, name: &str, base: u64) {
+    let source_base = registers
+        .read32(base + CE_SOURCE_RING_BASE)
+        .unwrap_or(u32::MAX);
+    let source_size = registers
+        .read32(base + CE_SOURCE_RING_SIZE)
+        .unwrap_or(u32::MAX);
+    let destination_base = registers
+        .read32(base + CE_DESTINATION_RING_BASE)
+        .unwrap_or(u32::MAX);
+    let destination_size = registers
+        .read32(base + CE_DESTINATION_RING_SIZE)
+        .unwrap_or(u32::MAX);
+    let source_write = registers
+        .read32(base + CE_SOURCE_WRITE_INDEX)
+        .unwrap_or(u32::MAX);
+    let source_read = registers
+        .read32(base + CE_SOURCE_READ_INDEX)
+        .unwrap_or(u32::MAX);
+    let destination_write = registers
+        .read32(base + CE_DESTINATION_WRITE_INDEX)
+        .unwrap_or(u32::MAX);
+    let destination_read = registers
+        .read32(base + CE_DESTINATION_READ_INDEX)
+        .unwrap_or(u32::MAX);
+    crate::println!(
+        "QCA9377 {} ring: src_base={:#010x} src_size={} src_wr={} src_rd={} dst_base={:#010x} dst_size={} dst_wr={} dst_rd={}",
+        name,
+        source_base,
+        source_size,
+        source_write,
+        source_read,
+        destination_base,
+        destination_size,
+        destination_write,
+        destination_read
+    );
+}
+
 /// Attempt to fully initialize the QCA9377 and register a network link.
 /// Returns `Ok(mac)` on success.
 ///
@@ -149,21 +197,17 @@ pub unsafe fn initialize_device(
     let board = wifi_firmware::select_board_data(firmware.board_bundle, board_name.as_bytes())
         .map_err(|_| InitError::BoardDataUnavailable)?;
 
-    // ── 3b. Reset the target SoC and release its CPU ─────────────────────────
-    // The boot ROM only services BMI after a cold reset and CPU release. Skipping
-    // this made the first BMI command time out with `SourceTimeout`.
-    match reset_for_bmi(&mut registers, QCA_WAKE_POLL_LIMIT) {
-        Ok(outcome) => {
-            crate::println!(
-                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={}",
-                outcome.indicator_before, outcome.indicator_after, outcome.ready
-            );
-            if !outcome.ready {
-                crate::println!(
-                    "QCA9377 boot ROM did not report FW_IND_INITIALIZED; attempting BMI anyway"
-                );
-            }
-        }
+    // ── 3b. Cold-reset the target SoC ─────────────────────────────────────
+    // The boot ROM only services BMI after a cold reset, but the target CPU is
+    // NOT released yet: ath10k releases it only once the CE pipes exist
+    // (`ath10k_pci_warm_reset_cpu` -> `ath10k_pci_init_pipes` ->
+    // `ath10k_pci_wait_for_target_init`). Releasing it here left FW_INDICATOR at
+    // 0 and every BMI exchange timed out with SourceTimeout.
+    //
+    // The CE reset pulse also belongs to this stage: it clears the CE ring
+    // registers, which stage 4 programs immediately afterwards.
+    let target_reset = match reset_target_soc(&mut registers, QCA_WAKE_POLL_LIMIT) {
+        Ok(state) => state,
         Err(failure) => {
             crate::println!(
                 "QCA9377 reset failed at \"{}\": {:?}",
@@ -171,7 +215,7 @@ pub unsafe fn initialize_device(
             );
             return Err(InitError::TargetReset);
         }
-    }
+    };
 
     // ── 4. BMI boot (GET_TARGET_INFO + download board/OTP/firmware) ───────────
     let mut bmi_rings = BmiCeRings::allocate().map_err(|_| InitError::DmaAlloc)?;
@@ -223,8 +267,39 @@ pub unsafe fn initialize_device(
         core::mem::forget(target_config_ce);
     }
 
+    // ── 4c. Release the target CPU and wait for the boot ROM ─────────────────
+    // Rings, target pipe tables and PCI bus mastering are all in place now, so
+    // the ROM has something to consume when it finally starts.
+    match release_target_cpu(&mut registers, QCA_WAKE_POLL_LIMIT, target_reset) {
+        Ok(outcome) => {
+            crate::println!(
+                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} soc_reset_control={:#010x}",
+                outcome.indicator_before,
+                outcome.indicator_after,
+                outcome.ready,
+                outcome.reset_control
+            );
+            if !outcome.ready {
+                crate::println!(
+                    "QCA9377 boot ROM did not report FW_IND_INITIALIZED; attempting BMI anyway"
+                );
+            }
+        }
+        Err(failure) => {
+            crate::println!(
+                "QCA9377 reset failed at \"{}\": {:?}",
+                failure.step, failure.error
+            );
+            return Err(InitError::TargetReset);
+        }
+    }
+
     // Wake the target CPU (trigger CPU interrupt) so it starts servicing BMI/CE
     let _ = wake_target_cpu(&mut registers);
+
+    // What the ROM is supposed to consume, captured before the first command.
+    log_bmi_ce_ring(&mut registers, "CE0", CE0_REGISTER_BASE);
+    log_bmi_ce_ring(&mut registers, "CE1", CE1_REGISTER_BASE);
 
     let mac_addr = {
         let transport = unsafe { BmiCeTransport::new(&mut bmi_rings, &mut registers) };

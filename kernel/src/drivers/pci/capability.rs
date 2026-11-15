@@ -24,6 +24,28 @@ pub struct MsixInfo {
 }
 
 /// Find a capability in the PCI linked list, bounded to avoid malformed loops.
+const PM_CSR_OFFSET: u8 = 0x04;
+const PM_CSR_POWER_STATE_MASK: u16 = 0x0003;
+
+/// Force this function into D0. Apollo Lake firmware can leave the WLAN in
+/// D3hot/D3cold, where config space still answers but the target ROM stays
+/// halted, and the ath10k report "Unable to change power state from D3cold to
+/// D0, device inaccessible" shows the same platform behaviour. Returns the PM
+/// control/status value before and after so the boot log can show the move.
+pub unsafe fn force_d0(device: &PciDevice) -> Option<(u16, u16)> {
+    let capability = unsafe { find_capability(device, CAP_ID_POWER_MGMT) }?;
+    let offset = capability + PM_CSR_OFFSET;
+    let before = unsafe { config_read_u16(device.bus, device.device, device.function, offset) };
+    let powered = before & !PM_CSR_POWER_STATE_MASK;
+    if powered != before {
+        unsafe {
+            config_write_u16(device.bus, device.device, device.function, offset, powered)
+        };
+    }
+    let after = unsafe { config_read_u16(device.bus, device.device, device.function, offset) };
+    Some((before, after))
+}
+
 const PCIE_LINK_CONTROL_OFFSET: u8 = 0x10;
 const PCIE_LINK_CONTROL_ASPMC: u16 = 0x0003;
 

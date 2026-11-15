@@ -15,9 +15,9 @@ pub use bar::{
 };
 pub use capability::{
     CAP_ID_MSI, CAP_ID_MSIX, CAP_ID_PCIE, CAP_ID_POWER_MGMT, MsixInfo, disable_aspm, enable_msi,
-    find_capability, get_msix_info, set_msix_enable,
+    find_capability, force_d0, get_msix_info, set_msix_enable,
 };
-pub use enumeration::scan_pci_bus;
+pub use enumeration::{find_parent_bridge, scan_pci_bus};
 
 use config::{
     config_read_u8, config_read_u16, config_read_u32, config_write_u16, config_write_u32,

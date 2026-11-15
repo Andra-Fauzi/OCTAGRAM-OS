@@ -21,6 +21,30 @@ fn probe_function(bus: u8, device: u8, function: u8) -> Option<PciDevice> {
 }
 
 /// Enumerate PCI functions once and return a reusable snapshot for drivers.
+/// Find the PCI-to-PCI bridge that owns `target_bus`, without printing anything.
+///
+/// Used to reach the root port of a slot: ASPM has to be disabled on both ends
+/// of the link, and the QCA9377 is known to raise PCIe errors on this platform
+/// family when the root port keeps requesting L1.
+pub fn find_parent_bridge(target_bus: u8) -> Option<PciDevice> {
+    for bus in 0..=u8::MAX {
+        for device in 0..32 {
+            let Some(function) = probe_function(bus, device, 0) else {
+                continue;
+            };
+            if function.class != 0x06 || function.subclass != 0x04 {
+                continue;
+            }
+            // Configuration Space header byte 0x19 is the secondary bus number.
+            let secondary = unsafe { super::config_read_u8(bus, device, 0, 0x19) };
+            if secondary == target_bus {
+                return Some(function);
+            }
+        }
+    }
+    None
+}
+
 pub fn scan_pci_bus() -> alloc::vec::Vec<PciDevice> {
     println!("=== PCI SCAN START ===");
     let mut devices = alloc::vec::Vec::new();

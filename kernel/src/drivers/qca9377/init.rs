@@ -168,6 +168,16 @@ pub unsafe fn initialize_device(
     if bar_size < min_size {
         return Err(InitError::BarTooSmall);
     }
+    // Apollo Lake firmware on this laptop family can leave the WLAN in D3hot or
+    // D3cold; config space still answers there, but the target ROM stays halted.
+    match unsafe { pci::force_d0(device) } {
+        Some((before, after)) => crate::println!(
+            "QCA9377 power state: PM_CSR {:#06x} -> {:#06x} (D0 asserted)",
+            before, after
+        ),
+        None => crate::println!("QCA9377 has no PCI power-management capability"),
+    }
+
     pci::enable_mmio_only(device).map_err(|_| InitError::MmioSetup)?;
 
     // ASPM has to go before the target is exercised: an endpoint allowed to
@@ -179,6 +189,19 @@ pub unsafe fn initialize_device(
             before, after
         ),
         None => crate::println!("QCA9377 PCIe capability missing; ASPM left unchanged"),
+    }
+    // ASPM needs both ends of the link: the root port keeps requesting L1 even
+    // when the endpoint is configured otherwise. The QCA9377 is known to raise
+    // PCIe AER errors on this platform family with ASPM enabled.
+    match pci::find_parent_bridge(device.bus) {
+        Some(bridge) => match unsafe { pci::disable_aspm(&bridge) } {
+            Some((before, after)) => crate::println!(
+                "QCA9377 root port {:02x}:{:02x}.{} link control: {:#06x} -> {:#06x} (ASPM off)",
+                bridge.bus, bridge.device, bridge.function, before, after
+            ),
+            None => crate::println!("QCA9377 root port is not PCIe-capable; ASPM unchanged"),
+        },
+        None => crate::println!("QCA9377 parent bridge not found; root-port ASPM unchanged"),
     }
 
     let page_off = bar.address & PAGE_OFFSET_MASK;

@@ -387,6 +387,10 @@ pub(super) struct ResetOutcome {
     pub reset_control_asserted: u32,
     /// The same register after the warm reset bit was released again.
     pub reset_control_released: u32,
+    /// True when the CPU warm reset bit was still set when it was read back.
+    /// QCA9377 clears it immediately (see the release comment below), so a live
+    /// unit reports `false` here and the write is only an edge.
+    pub cpu_warm_reset_visible: bool,
     /// How many warm-reset phases (1 or 2) ran before the ROM answered.
     pub attempts: u32,
     /// True if the ROM ever reported `FW_IND_EVENT_PENDING`, which ath10k
@@ -492,6 +496,7 @@ where
     let mut indicator_after = 0;
     let mut reset_control_asserted = 0;
     let mut reset_control_released = 0;
+    let mut cpu_warm_reset_visible = false;
     let mut attempts = 0;
     let mut saw_crash = false;
 
@@ -507,6 +512,7 @@ where
         reset_control_asserted = registers
             .read32(QCA6174_RTC_SOC_BASE)
             .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
+        cpu_warm_reset_visible = reset_control_asserted & RTC_SOC_CPU_RESET != 0;
 
         // QCA9377 does not retain the warm reset bit: it reads back cleared, so
         // the CPU only sees an edge if the release is written explicitly. Pulse
@@ -550,6 +556,7 @@ where
         ready,
         reset_control_asserted,
         reset_control_released,
+        cpu_warm_reset_visible,
         attempts,
         saw_crash,
         crash_cleared,
@@ -870,6 +877,15 @@ pub(crate) fn report_pci_candidates(devices: &[PciDevice]) {
                 crate::println!(
                     "Qualcomm target registers: RTC_STATE={rtc_state:#010x} SOC_CHIP_ID@{CHIP_ID_BAR_OFFSET:#x}={chip_id:#010x}"
                 );
+                if chip_id == 0 || chip_id == u32::MAX {
+                    // Linux ath10k reads this same register as 0x003821ff on the
+                    // laptops that boot this device, so an all-zero window means
+                    // the RTC_SOC block is not answering yet and no identity or
+                    // reset write through it can be trusted.
+                    crate::println!(
+                        "Qualcomm warning: RTC_SOC window at {CHIP_ID_BAR_OFFSET:#x} answered {chip_id:#010x}; chip identity and chip-reset registers live in that window"
+                    );
+                }
                 match silicon_identity(chip_id) {
                     SiliconIdentity::Qca9377Hw10 => {
                         crate::println!("Qualcomm silicon identity: QCA9377 hw1.0");

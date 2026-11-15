@@ -78,6 +78,23 @@ impl XhciCapRegs {
         unsafe { (self.base.add(0x04) as *const u32).read_volatile() }
     }
 
+    pub unsafe fn hcsparams2(&self) -> u32 {
+        unsafe { (self.base.add(0x08) as *const u32).read_volatile() }
+    }
+
+    /// Jumlah scratchpad buffer yang diminta controller (field NSS).
+    ///
+    /// NSS dipecah di HCSPARAMS2: bit 21-25 = nilai low 5 bit, bit 27-31 =
+    /// nilai high 5 bit. Controller yang meminta NSS > 0 mewajibkan
+    /// `DCBAA[0]` menunjuk ke array alamat halaman scratchpad, kalau tidak
+    /// setiap command gagal dengan Host Controller Error.
+    pub unsafe fn scratchpad_buffers(&self) -> usize {
+        let params = unsafe { self.hcsparams2() };
+        let low = ((params >> 21) & 0x1F) as usize;
+        let high = ((params >> 27) & 0x1F) as usize;
+        (high << 5) | low
+    }
+
     pub unsafe fn max_slots(&self) -> u8 {
         unsafe { (self.hcsparams1() & 0xFF) as u8 } // bit 0-7
     }
@@ -449,6 +466,29 @@ impl XHCI {
         }
     }
 
+    /// Pastikan `slots` TRB berikutnya masih muat sebelum slot Link TRB.
+    ///
+    /// Satu control transfer harus tetap kontigu, jadi kalau sisa ruang tidak
+    /// cukup seluruh transfer digeser ke awal ring: Link TRB ditulis di slot
+    /// terakhir dengan cycle state sekarang, lalu enqueue kembali ke 0 dengan
+    /// cycle state yang sudah di-toggle. Tanpa Link TRB fisik, controller
+    /// berhenti di slot kosong dan endpoint control membeku permanen.
+    pub unsafe fn ep0_make_room(&mut self, slots: usize) {
+        let capacity = CONTROL_RING_SIZE - 1;
+        if self.ep0_enqueue_index + slots > capacity {
+            unsafe {
+                write_link_trb(
+                    self.ep0_ring_virt,
+                    self.ep0_ring_phys,
+                    CONTROL_RING_SIZE,
+                    self.ep0_cycle_state,
+                );
+            }
+            self.ep0_enqueue_index = 0;
+            self.ep0_cycle_state = !self.ep0_cycle_state;
+        }
+    }
+
     pub unsafe fn ep0_enqueue_trb(&mut self, parameter: u64, status: u32, control_no_cycle: u32) {
         unsafe {
             let trbs = self.ep0_ring_virt as *mut Trb;
@@ -461,16 +501,9 @@ impl XHCI {
             };
             write_trb_cycle_last(trbs.add(self.ep0_enqueue_index), trb);
 
+            // Wrap-around ditangani `ep0_make_room()` sebelum transfer dimulai,
+            // supaya TRB satu transfer tidak pernah terpotong Link TRB.
             self.ep0_enqueue_index += 1;
-            if self.ep0_enqueue_index >= CONTROL_RING_SIZE - 1 {
-                self.ep0_enqueue_index = 0;
-                self.ep0_cycle_state = !self.ep0_cycle_state;
-                // CATATAN: belum ada Link TRB di akhir ring, jadi wrap-around ini
-                // cuma toggle cycle state software-side tanpa TRB Link fisik.
-                // Aman untuk sekarang karena tiap control transfer cuma 3 TRB dan
-                // ring size 16 (jarang wrap), tapi kalau kirim banyak transfer
-                // beruntun ini WAJIB diperbaiki dengan Link TRB asli.
-            }
         }
     }
 
@@ -485,18 +518,27 @@ impl XHCI {
             let trbs = self.cmd_ring_virt as *mut Trb;
             let control = (trb_type << 10) | (self.cmd_cycle_state as u32) | (slot_id << 24);
 
+            // Command ring butuh Link TRB fisik di slot terakhir. Tanpa ini
+            // controller berhenti di slot kosong setelah 31 command dan setiap
+            // Enable Slot / Address Device sesudahnya timeout.
+            if self.cmd_enqueue_index >= COMMAND_RING_SIZE - 1 {
+                write_link_trb(
+                    self.cmd_ring_virt,
+                    self.cmd_ring_phys,
+                    COMMAND_RING_SIZE,
+                    self.cmd_cycle_state,
+                );
+                self.cmd_enqueue_index = 0;
+                self.cmd_cycle_state = !self.cmd_cycle_state;
+            }
+
             let trb = Trb {
                 parameter,
                 status,
                 control,
             };
             write_trb_cycle_last(trbs.add(self.cmd_enqueue_index), trb);
-
             self.cmd_enqueue_index += 1;
-            if self.cmd_enqueue_index >= COMMAND_RING_SIZE - 1 {
-                self.cmd_enqueue_index = 0;
-                self.cmd_cycle_state = !self.cmd_cycle_state;
-            }
 
             self.ring_doorbell(0, 0);
         }
@@ -685,13 +727,49 @@ pub unsafe fn init_xhci(xhci: &mut XHCI, enable_interrupts: bool) {
         let mut cmd = xhci_op_regs.read_usbcmd();
         cmd &= !USBCMD_RUN_OR_STOP;
         xhci_op_regs.write_usbcmd(cmd);
-        while xhci_op_regs.read_usbsts() & USBSTS_HCH == 0 {}
+
+        // Setiap tunggu MMIO di bawah dibatasi: controller yang tidak halt atau
+        // tidak selesai reset harus dilaporkan, bukan membuat boot hang tanpa
+        // pesan sama sekali.
+        let mut spins = 1_000_000u32;
+        while xhci_op_regs.read_usbsts() & USBSTS_HCH == 0 {
+            if spins == 0 {
+                println!(
+                    "xHCI reset gagal: controller tidak halt (USBSTS={:#010x})",
+                    xhci_op_regs.read_usbsts()
+                );
+                return;
+            }
+            spins -= 1;
+            core::hint::spin_loop();
+        }
 
         cmd = xhci_op_regs.read_usbcmd();
         cmd |= USBCMD_HCRST; // FIXED: set, bukan clear
         xhci_op_regs.write_usbcmd(cmd);
-        while xhci_op_regs.read_usbcmd() & USBCMD_HCRST != 0 {}
-        while xhci_op_regs.read_usbsts() & USBSTS_CNR != 0 {}
+
+        let mut spins = 1_000_000u32;
+        while xhci_op_regs.read_usbcmd() & USBCMD_HCRST != 0 {
+            if spins == 0 {
+                println!("xHCI reset gagal: HCRST tidak pernah clear");
+                return;
+            }
+            spins -= 1;
+            core::hint::spin_loop();
+        }
+
+        let mut spins = 10_000_000u32;
+        while xhci_op_regs.read_usbsts() & USBSTS_CNR != 0 {
+            if spins == 0 {
+                println!(
+                    "xHCI reset gagal: controller tidak ready (CNR, USBSTS={:#010x})",
+                    xhci_op_regs.read_usbsts()
+                );
+                return;
+            }
+            spins -= 1;
+            core::hint::spin_loop();
+        }
 
         println!("XHCI RESET DONE");
 
@@ -706,6 +784,13 @@ pub unsafe fn init_xhci(xhci: &mut XHCI, enable_interrupts: bool) {
         let dcbaa_phys = memory::virtual_to_physical(dcbaa_virt as usize).unwrap();
         xhci_op_regs.write_dcbaap(dcbaa_phys as u64);
         println!("DCBAA phys={:#x}", dcbaa_phys);
+
+        // --- Scratchpad buffers ---
+        let nss = xhci_cap_regs.scratchpad_buffers();
+        println!("xHCI scratchpad buffers (NSS): {}", nss);
+        if nss > 0 {
+            setup_scratchpads(dcbaa_virt, nss);
+        }
 
         // --- Command Ring ---
         let cmd_ring_box: Box<CommandRing> = Box::new(CommandRing::new());
@@ -794,6 +879,58 @@ unsafe fn power_root_ports(cap: &XhciCapRegs, op: &XhciOpRegs) {
     }
 }
 
+/// Batas jumlah scratchpad yang bisa dilayani driver ini (NSS maksimum 1023).
+const SCRATCHPAD_MAX: usize = 1024;
+
+#[repr(C, align(64))]
+struct ScratchpadArray {
+    entries: [u64; SCRATCHPAD_MAX],
+}
+
+/// Alokasi scratchpad buffer sesuai `HCSPARAMS2.NSS` lalu pasang di `DCBAA[0]`.
+unsafe fn setup_scratchpads(dcbaa_virt: u64, count: usize) {
+    unsafe {
+        if count > SCRATCHPAD_MAX {
+            println!(
+                "xHCI scratchpad: NSS {} melebihi batas driver {}",
+                count, SCRATCHPAD_MAX
+            );
+            return;
+        }
+
+        let array_box: Box<ScratchpadArray> = Box::new(ScratchpadArray {
+            entries: [0u64; SCRATCHPAD_MAX],
+        });
+        let array_virt = Box::into_raw(array_box) as u64;
+        let Some(array_phys) = memory::virtual_to_physical(array_virt as usize) else {
+            println!("xHCI scratchpad: gagal translate array");
+            return;
+        };
+        let entries = array_virt as *mut u64;
+
+        for index in 0..count {
+            let Some(frame) = memory::allocate_dma32_frame() else {
+                println!(
+                    "xHCI scratchpad: gagal alokasi halaman {}/{}",
+                    index, count
+                );
+                return;
+            };
+            if let Some(virt) = memory::physical_to_virtual(frame) {
+                core::ptr::write_bytes(virt as *mut u8, 0, 4096);
+            }
+            entries.add(index).write_volatile(frame as u64);
+        }
+
+        // DCBAA[0] bukan slot device: isinya menunjuk ke scratchpad array.
+        (dcbaa_virt as *mut u64).write_volatile(array_phys as u64);
+        println!(
+            "xHCI scratchpad: {} halaman, array phys={:#x}",
+            count, array_phys
+        );
+    }
+}
+
 const EVENT_RING_SIZE: usize = 32;
 
 #[repr(C, align(64))]
@@ -864,11 +1001,11 @@ pub unsafe fn setup_event_ring(xhci: &mut XHCI, enable_interrupts: bool) -> u64 
 
         let ir0 = xhci.interrupter0();
 
+        // Urutan wajib: ERSTSZ -> ERSTBA -> ERDP. ERDP ditulis terakhir karena
+        // menulisnya memberi tahu controller bahwa tabel ERST sudah valid.
         ir0.write_erstsz(1);
-
-        ir0.write_erdp(segment_phys);
-
         ir0.write_erstba(erst_phys);
+        ir0.write_erdp(segment_phys);
 
         let mut iman = ir0.read_iman();
         if enable_interrupts {
@@ -1394,6 +1531,10 @@ pub unsafe fn get_device_descriptor(slot_id: u32) -> Result<DeviceDescriptor, &'
         {
             let mut guard = XHCI_INSTANCE.get().unwrap().lock();
 
+            // Satu control transfer = setup + data + status (3 TRB) dan harus
+            // kontigu, jadi pastikan ruangnya dulu sebelum menulis apa pun.
+            guard.ep0_make_room(3);
+
             // --- Setup Stage TRB ---
             // IDT=1 (Immediate Data, parameter berisi data langsung bukan pointer)
             // TRT=3 (IN Data Stage, karena GET_DESCRIPTOR = device-to-host)
@@ -1491,6 +1632,7 @@ pub unsafe fn control_transfer_in(
         core::arch::asm!("cli");
         {
             let mut guard = XHCI_INSTANCE.get().unwrap().lock();
+            guard.ep0_make_room(3);
 
             let setup_control = setup_stage_control(3);
             guard.ep0_enqueue_trb(setup_parameter, 8, setup_control);
@@ -1552,6 +1694,7 @@ pub unsafe fn control_transfer_out(
         core::arch::asm!("cli");
         {
             let mut guard = XHCI_INSTANCE.get().unwrap().lock();
+            guard.ep0_make_room(3);
             let setup_control = setup_stage_control(2);
             guard.ep0_enqueue_trb(setup_parameter, 8, setup_control);
 
@@ -1745,6 +1888,9 @@ pub unsafe fn control_transfer_no_data(
         core::arch::asm!("cli");
         {
             let mut guard = XHCI_INSTANCE.get().unwrap().lock();
+
+            // Setup + status saja (2 TRB), tapi tetap harus kontigu.
+            guard.ep0_make_room(2);
 
             let setup_control = setup_stage_control(0);
             guard.ep0_enqueue_trb(setup_parameter, 8, setup_control);

@@ -314,15 +314,6 @@ pub unsafe fn initialize_device(
             target_reset.cold_ready
         );
 
-        if unsafe { bmi_rings.configure(&mut registers) }.is_err() {
-            let _ = target_sleep(&mut registers);
-            return Err(InitError::DmaAlloc);
-        }
-        if unsafe { target_config_ce.configure(&mut registers) }.is_err() {
-            let _ = target_sleep(&mut registers);
-            return Err(InitError::DmaAlloc);
-        }
-
         // Bus mastering is still enabled from the previous attempt, but the
         // global reset is re-driven every time, so confirm the bit instead of
         // assuming PCIe configuration space kept it.
@@ -332,20 +323,27 @@ pub unsafe fn initialize_device(
         }
         keep_rings = true;
 
-        // ── 4b. Release the target CPU and wait for the boot ROM ─────────────
-        // ath10k finishes the whole chip reset (cold reset, warm reset and target
-        // init) *before* it writes the target CE tables, so the ROM is already
-        // running when the configuration lands; `ath10k_pci_hif_power_up` then calls
-        // `ath10k_pci_init_pipes`, `ath10k_pci_init_config` and finally
-        // `ath10k_pci_wake_target_cpu`. This stage follows that order.
+        // ── 4b. Warm reset, with the CE pipes programmed between the waits ────
+        // `ath10k_pci_warm_reset` resets the target CPU, runs
+        // `ath10k_pci_init_pipes`, waits for the boot ROM, then clears the
+        // low-frequency timer, pulses the CE reset, resets the CPU again,
+        // re-programs the pipes and waits a second time. The pipes are passed in
+        // as a callback so they are programmed in exactly those two places and
+        // the ROM never runs against a CE layout that has already been
+        // invalidated.
         let ready_and_crash = match release_target_cpu(
             &mut registers,
             QCA_WAKE_POLL_LIMIT,
             target_reset,
+            |registers| {
+                unsafe { bmi_rings.configure(registers)? };
+                unsafe { target_config_ce.configure(registers)? };
+                Ok(())
+            },
         ) {
             Ok(outcome) => {
                 crate::println!(
-                    "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} warm_reset_pulses={} crash_event={} crash_latch_cleared={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
+                    "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} warm_reset_phases={} crash_event={} crash_latch_cleared={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
                     outcome.indicator_before,
                     outcome.indicator_after,
                     outcome.ready,

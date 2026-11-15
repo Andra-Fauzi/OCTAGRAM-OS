@@ -373,7 +373,7 @@ pub(super) struct ResetOutcome {
     pub reset_control_asserted: u32,
     /// The same register after the warm reset bit was released again.
     pub reset_control_released: u32,
-    /// How many reset/release attempts it took for the ROM to answer.
+    /// How many warm-reset phases (1 or 2) ran before the ROM answered.
     pub attempts: u32,
     /// True if the ROM ever reported `FW_IND_EVENT_PENDING`, which ath10k
     /// treats as "device crashed during init".
@@ -382,9 +382,10 @@ pub(super) struct ResetOutcome {
     pub crash_cleared: bool,
 }
 
-/// Warm reset attempts before giving up, matching
-/// `ATH10K_PCI_NUM_WARM_RESET_ATTEMPTS` in ath10k.
-const ROM_READY_ATTEMPTS: u32 = 3;
+/// Phases of one warm reset, matching `ath10k_pci_warm_reset`: the first resets
+/// the target CPU and lets the boot ROM pick up the CE pipes, the second repeats
+/// it after the low-frequency timer and the copy-engine reset.
+const WARM_RESET_PHASES: u32 = 2;
 
 /// Complete chip resets (cold reset, CE rings, warm reset) attempted before the
 /// bring-up gives up, matching the loop in `ath10k_pci_qca988x_chip_reset`.
@@ -451,16 +452,26 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
 /// Release the target CPU so the boot ROM services BMI, then wait for
 /// `FW_IND_INITIALIZED`.
 ///
-/// Must run after the BMI CE rings and the target pipe tables are programmed:
-/// the ROM only starts consuming CE0 after it can see a complete configuration.
+/// Runs ath10k's `ath10k_pci_warm_reset` in its two phases and in its order:
+/// reset the CPU warm-reset line and program the CE pipes, wait for the boot
+/// ROM; then clear the low-frequency timer, pulse the copy-engine reset (which
+/// wipes the ring registers), reset the CPU again, program the pipes a second
+/// time and wait again. `program_pipes` is invoked in exactly those two places,
+/// because the ROM only services CE0 once it can see a complete configuration.
+///
 /// The `SOC_RESET_CONTROL` readback is kept for the boot log, because a warm
 /// reset bit that does not stick is the difference between "ROM never started"
 /// and "ROM started but never signalled".
-pub(super) fn release_target_cpu<R: ce::RegisterIo>(
+pub(super) fn release_target_cpu<R, F>(
     registers: &mut R,
     poll_limit: usize,
     reset: TargetReset,
-) -> Result<ResetOutcome, ResetFailure> {
+    mut program_pipes: F,
+) -> Result<ResetOutcome, ResetFailure>
+where
+    R: ce::RegisterIo,
+    F: FnMut(&mut R) -> Result<(), ce::CeError>,
+{
     let failed = |step, error| ResetFailure { step, error };
 
     let mut ready = false;
@@ -470,11 +481,14 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
     let mut attempts = 0;
     let mut saw_crash = false;
 
-    // ath10k retries the warm reset `ATH10K_PCI_NUM_WARM_RESET_ATTEMPTS` times
-    // because the first attempt does not always reach the target. Do the same:
-    // each attempt clears FW_INDICATOR, pulses the CPU warm reset and polls.
-    for _ in 0..ROM_READY_ATTEMPTS {
+    for phase in 0..WARM_RESET_PHASES {
         attempts += 1;
+        if phase > 0 {
+            // `ath10k_pci_warm_reset_clear_lf` plus `ath10k_pci_warm_reset_ce`:
+            // the CE reset pulse clears the ring registers, so the pipes below
+            // have to be programmed again afterwards.
+            pulse_ce_reset(registers).map_err(|error| failed("pulse CE reset", error))?;
+        }
         reset_target_cpu(registers).map_err(|error| failed("reset target CPU", error))?;
         reset_control_asserted = registers
             .read32(QCA6174_RTC_SOC_BASE)
@@ -495,9 +509,11 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
             .read32(QCA6174_RTC_SOC_BASE)
             .map_err(|error| failed("read SOC_RESET_CONTROL after release", error))?;
 
-        let (attempt_ready, value) = wait_for_target_init(registers, poll_limit)
+        program_pipes(registers).map_err(|error| failed("program CE pipes", error))?;
+
+        let (phase_ready, value) = wait_for_target_init(registers, poll_limit)
             .map_err(|error| failed("wait for boot ROM", error))?;
-        ready = attempt_ready;
+        ready = phase_ready;
         indicator_after = value;
         saw_crash |= value & FW_IND_EVENT_PENDING != 0;
         if ready {
@@ -1059,7 +1075,8 @@ mod tests {
         assert_eq!(wait_for_target_init(&mut registers, 8), Ok((false, 0)));
 
         // Releasing the CPU after the rings exists boots the ROM.
-        let outcome = release_target_cpu(&mut registers, 8, prepared).unwrap();
+        let outcome =
+            release_target_cpu(&mut registers, 8, prepared, |_| Ok(())).unwrap();
         assert!(outcome.ready);
         assert_eq!(outcome.indicator_before, 0);
         assert_eq!(outcome.indicator_after, FW_IND_INITIALIZED);
@@ -1083,7 +1100,7 @@ mod tests {
     fn ce_reset_pulse_precedes_the_cpu_release() {
         let mut registers = MockResetRegisters::default();
         let prepared = reset_target_soc(&mut registers, 8).unwrap();
-        let _ = release_target_cpu(&mut registers, 8, prepared).unwrap();
+        let _ = release_target_cpu(&mut registers, 8, prepared, |_| Ok(())).unwrap();
 
         let ce_write = registers
             .writes

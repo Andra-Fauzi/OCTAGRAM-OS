@@ -119,7 +119,13 @@ stage 4c write the target CE pipe/service tables via CE7 — the same order as
 before the device is touched, matching `ath10k_pci_aspm_disable`. Stage 4 then programs the CE0/CE1 BMI rings,
 enables PCI bus mastering and writes the target pipe tables, and only after
 that stage 4c clears the stale `FW_INDICATOR`, asserts the CPU warm reset
-(`RTC_SOC` bit 6) and waits, bounded, for `FW_IND_INITIALIZED`. Releasing the
+(`RTC_SOC` bit 6) and waits, bounded, for `FW_IND_INITIALIZED`. The warm reset
+itself now follows `ath10k_pci_warm_reset` in two phases instead of pulsing the
+CPU three times: CPU warm reset -> program the CE pipes -> wait; then clear the
+low-frequency timer, pulse the CE reset (which wipes the ring registers), reset
+the CPU again -> program the pipes again -> second wait. The pipes are passed to
+`release_target_cpu` as a callback so they are only ever programmed in those two
+places. Releasing the
 CPU before the rings existed left `FW_INDICATOR` at 0 and made every BMI
 exchange fail with `SourceTimeout`. The boot log also prints the live
 `SOC_RESET_CONTROL` readback and the CE0/CE1 ring registers before the first

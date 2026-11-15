@@ -612,7 +612,8 @@ pub unsafe fn initialize_device(
         // message for the HTT endpoint on CE4, and the version confirmation
         // comes back on CE5. ath10k sends it from `ath10k_htt_h2t_ver_req_msg`.
         let mut htt_ep = htt::HttEndpoint::new(htt_resp.endpoint, htt_resp.max_message_size);
-        let mut htt_frame = [0u8; 64];
+        // Large enough for an RX indication carrying many MSDU descriptors.
+        let mut htt_frame = [0u8; 512];
         crate::println!(
             "QCA9377 HTT endpoint {} (max {} bytes), framed as HTC data messages",
             htt_ep.endpoint(),
@@ -636,7 +637,7 @@ pub unsafe fn initialize_device(
         // DMA received MSDUs into. The firmware keeps writing into those buffers
         // for the whole device lifetime, so the ring is leaked rather than dropped
         // by a later error path.
-        match htt::HttRxRing::allocate(htt::HTT_RX_RING_SIZE) {
+        let mut htt_rx_ring = match htt::HttRxRing::allocate(htt::HTT_RX_RING_SIZE) {
             Ok(ring) => {
                 let ring: &'static mut htt::HttRxRing = Box::leak(Box::new(ring));
                 let mut config_frame = [0u8; 128];
@@ -652,9 +653,13 @@ pub unsafe fn initialize_device(
                         crate::println!("QCA9377 HTT RX ring config failed: {error:?}");
                     }
                 }
+                Some(ring)
             }
-            Err(error) => crate::println!("QCA9377 HTT RX ring allocation failed: {error:?}"),
-        }
+            Err(error) => {
+                crate::println!("QCA9377 HTT RX ring allocation failed: {error:?}");
+                None
+            }
+        };
 
         // ── 9. Create STA vdev ────────────────────────────────────────────────
         {
@@ -797,6 +802,33 @@ pub unsafe fn initialize_device(
             }
         }
 
+        // ── 17. Drain received frames ─────────────────────────────────────────
+        // HTT reports the MSDUs it placed in the RX ring as in-order paddr
+        // indications. Offloaded indications already carry a complete Ethernet
+        // frame, which is exactly what the kernel network stack consumes.
+        if let Some(ring) = htt_rx_ring.as_deref_mut() {
+            let mut delivered = 0usize;
+            let mut dropped = 0usize;
+            for _ in 0..32 {
+                let message =
+                    match unsafe { htt_ep.receive(&mut htt_rx, &mut registers, &mut htt_frame) } {
+                        Ok(message) => message,
+                        // No indication pending (or the target stopped answering).
+                        Err(_) => break,
+                    };
+                match unsafe { process_htt_rx(ring, message) } {
+                    RxOutcome::Delivered => delivered += 1,
+                    RxOutcome::Dropped => dropped += 1,
+                    RxOutcome::Skipped => {}
+                }
+            }
+            crate::println!(
+                "QCA9377 HTT RX: {} frame(s) delivered, {} dropped",
+                delivered,
+                dropped
+            );
+        }
+
         keep_rings = false;
         mac
     };
@@ -822,6 +854,55 @@ pub unsafe fn initialize_device(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+enum RxOutcome {
+    /// At least one Ethernet frame reached the network stack.
+    Delivered,
+    /// An RX indication arrived but nothing usable could be delivered.
+    Dropped,
+    /// The message was not an RX indication.
+    Skipped,
+}
+
+/// Turn one HTT T2H message into frames for the network stack.
+///
+/// # Safety
+/// `ring` must describe buffers that are currently posted to the firmware.
+unsafe fn process_htt_rx(ring: &mut htt::HttRxRing, message: &[u8]) -> RxOutcome {
+    let indication = match htt::parse_rx_indication(message) {
+        Ok(indication) => indication,
+        // TX completions, credit updates and other T2H traffic pass through.
+        Err(_) => return RxOutcome::Skipped,
+    };
+    if !indication.offload {
+        // Non-offloaded buffers start with an rx descriptor and hold an 802.11
+        // frame; turning those into Ethernet frames is not implemented here.
+        return RxOutcome::Dropped;
+    }
+
+    let mut buffer = alloc::vec![0u8; htt::HTT_RX_BUF_SIZE];
+    let mut delivered = false;
+    for msdu in &indication.msdus {
+        let Some(index) = ring.index_of(msdu.paddr) else {
+            continue;
+        };
+        let length = usize::from(msdu.len).min(htt::HTT_RX_BUF_SIZE);
+        if !ring.read_buffer(index, &mut buffer[..length]) {
+            continue;
+        }
+        if let Some(frame) = htt::offload_frame(&buffer[..length]) {
+            network::receive_ethernet(frame);
+            delivered = true;
+        }
+        ring.release(index);
+    }
+
+    if delivered {
+        RxOutcome::Delivered
+    } else {
+        RxOutcome::Dropped
+    }
+}
 
 /// Drain WMI scan events until SCAN_COMPLETED or error.
 /// Returns the first BSSID seen in a PEER_STA or SCAN event (if any).

@@ -34,6 +34,20 @@ pub const HTT_RX_BUF_SIZE: usize = 2048;
 pub const HTT_RX_RING_SIZE: usize = 64;
 /// Every `HTT_RX_RING_FLAGS_*` bit, as `ath10k_htt_send_rx_ring_cfg` sets them.
 pub const HTT_RX_RING_FLAGS: u16 = 0xffff;
+/// TLV firmware (`htt-op 3`) message type for in-order paddr indications.
+pub const HTT_TLV_T2H_MSG_TYPE_RX_IN_ORD_PADDR_IND: u8 = 0x12;
+/// `htt_resp_hdr` (msg_type) + the fixed part of `htt_rx_in_ord_ind`
+/// (`info`, `peer_id`, `vdev_id`, `reserved`, `msdu_count`); the MSDU
+/// descriptors follow at this offset.
+const RX_IN_ORD_IND_HEADER_LEN: usize = 1 + 1 + 2 + 1 + 1 + 2;
+/// `struct htt_rx_in_ord_msdu_desc`.
+const RX_IN_ORD_MSDU_DESC_LEN: usize = 8;
+/// `HTT_RX_IN_ORD_IND_INFO_OFFLOAD_MASK`.
+const RX_IN_ORD_IND_INFO_OFFLOAD_MASK: u8 = 0x20;
+/// `HTT_RX_IN_ORD_IND_INFO_TID_MASK`.
+const RX_IN_ORD_IND_INFO_TID_MASK: u8 = 0x1f;
+/// `struct htt_rx_offload_msdu` in front of an offloaded Ethernet frame.
+pub const HTT_RX_OFFLOAD_MSDU_HEADER_LEN: usize = 7;
 /// `htt_cmd_hdr` + `htt_rx_ring_setup_32` + one `htt_rx_ring_setup_ring32`.
 const HTT_RX_RING_CFG_LEN: usize = 1 + 3 + 36;
 const HTT_VERSION_ATTEMPTS: usize = 8;
@@ -175,6 +189,8 @@ pub struct HttRxRing {
     /// Word the firmware stores its next free buffer index in.
     allocation_index: DmaPage,
     buffers: Vec<DmaPage>,
+    /// Software copy of the addresses in `paddrs`, for paddr → index lookups.
+    addresses: Vec<u32>,
 }
 
 impl HttRxRing {
@@ -193,20 +209,51 @@ impl HttRxRing {
         // allocating at 0 as well.
         allocation_index.write(&0u32.to_le_bytes());
 
-        let mut addresses = Vec::with_capacity(size * 4);
+        let mut encoded = Vec::with_capacity(size * 4);
+        let mut addresses = Vec::with_capacity(size);
         let mut buffers = Vec::with_capacity(size);
         for _ in 0..size {
             let buffer = DmaPage::allocate().map_err(|_| HttError::OutOfMemory)?;
-            addresses.extend_from_slice(&buffer.physical_address().to_le_bytes());
+            let address = buffer.physical_address();
+            encoded.extend_from_slice(&address.to_le_bytes());
+            addresses.push(address);
             buffers.push(buffer);
         }
-        paddrs.write(&addresses);
+        paddrs.write(&encoded);
 
         Ok(Self {
             paddrs,
             allocation_index,
             buffers,
+            addresses,
         })
+    }
+
+    /// Ring index whose buffer starts at `paddr`, if any.
+    pub fn index_of(&self, paddr: u32) -> Option<usize> {
+        self.addresses.iter().position(|address| *address == paddr)
+    }
+
+    /// Copy up to `out.len()` bytes of buffer `index` into `out`.
+    pub fn read_buffer(&self, index: usize, out: &mut [u8]) -> bool {
+        let Some(buffer) = self.buffers.get(index) else {
+            return false;
+        };
+        if out.len() > HTT_RX_BUF_SIZE {
+            return false;
+        }
+        buffer.read(out);
+        true
+    }
+
+    /// Hand buffer `index` back to the firmware, the way ath10k advances
+    /// `rx_ring.alloc_idx` after posting a buffer again.
+    pub fn release(&mut self, index: usize) {
+        if self.buffers.is_empty() {
+            return;
+        }
+        let next = (index + 1) % self.buffers.len();
+        self.allocation_index.write(&(next as u32).to_le_bytes());
     }
 
     pub fn size(&self) -> u16 {
@@ -241,6 +288,90 @@ impl HttRxRing {
     }
 }
 
+/// One MSDU the firmware placed in the RX ring (`htt_rx_in_ord_msdu_desc`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RxMsdu {
+    /// Physical address of the ring buffer holding the frame.
+    pub paddr: u32,
+    /// Bytes the firmware wrote into that buffer.
+    pub len: u16,
+    pub fw_desc: u8,
+}
+
+/// A parsed `htt_rx_in_ord_ind` (`HTT_TLV_T2H_MSG_TYPE_RX_IN_ORD_PADDR_IND`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RxIndication {
+    pub vdev_id: u8,
+    pub peer_id: u16,
+    pub tid: u8,
+    /// Offloaded indications hold complete Ethernet frames, decapsulated by the
+    /// firmware; non-offloaded ones hold the rx descriptor plus an 802.11 frame.
+    pub offload: bool,
+    pub msdus: Vec<RxMsdu>,
+}
+
+/// Parse an in-order RX paddr indication.
+///
+/// Layout (`struct htt_resp` + `struct htt_rx_in_ord_ind`):
+/// `msg_type(1) | info(1) | peer_id(2) | vdev_id(1) | rsvd(1) | count(2)` then
+/// `count` × `{ paddr(4) | len(2) | fw_desc(1) | rsvd(1) }`.
+pub fn parse_rx_indication(message: &[u8]) -> Result<RxIndication, HttError> {
+    if message.len() < RX_IN_ORD_IND_HEADER_LEN {
+        return Err(HttError::FrameTooShort);
+    }
+    if message[0] != HTT_TLV_T2H_MSG_TYPE_RX_IN_ORD_PADDR_IND {
+        return Err(HttError::UnexpectedMessage);
+    }
+    let info = message[1];
+    let peer_id = u16::from_le_bytes([message[2], message[3]]);
+    let vdev_id = message[4];
+    let count = usize::from(u16::from_le_bytes([message[6], message[7]]));
+    let needed = RX_IN_ORD_IND_HEADER_LEN
+        .checked_add(count * RX_IN_ORD_MSDU_DESC_LEN)
+        .ok_or(HttError::FrameTooShort)?;
+    if message.len() < needed {
+        return Err(HttError::FrameTooShort);
+    }
+
+    let mut msdus = Vec::with_capacity(count);
+    for index in 0..count {
+        let start = RX_IN_ORD_IND_HEADER_LEN + index * RX_IN_ORD_MSDU_DESC_LEN;
+        let descriptor = &message[start..start + RX_IN_ORD_MSDU_DESC_LEN];
+        msdus.push(RxMsdu {
+            paddr: u32::from_le_bytes([
+                descriptor[0],
+                descriptor[1],
+                descriptor[2],
+                descriptor[3],
+            ]),
+            len: u16::from_le_bytes([descriptor[4], descriptor[5]]),
+            fw_desc: descriptor[6],
+        });
+    }
+
+    Ok(RxIndication {
+        vdev_id,
+        peer_id,
+        tid: info & RX_IN_ORD_IND_INFO_TID_MASK,
+        offload: info & RX_IN_ORD_IND_INFO_OFFLOAD_MASK != 0,
+        msdus,
+    })
+}
+
+/// Extract the Ethernet frame from an offloaded MSDU buffer
+/// (`struct htt_rx_offload_msdu` followed by the frame).
+pub fn offload_frame(buffer: &[u8]) -> Option<&[u8]> {
+    if buffer.len() < HTT_RX_OFFLOAD_MSDU_HEADER_LEN {
+        return None;
+    }
+    let frame_len = usize::from(u16::from_le_bytes([buffer[0], buffer[1]]));
+    let start = HTT_RX_OFFLOAD_MSDU_HEADER_LEN;
+    if frame_len == 0 || start + frame_len > buffer.len() {
+        return None;
+    }
+    Some(&buffer[start..start + frame_len])
+}
+
 struct RxRingLayout {
     index_shadow: u32,
     ring_base: u32,
@@ -271,9 +402,86 @@ fn encode_rx_ring_cfg(layout: &RxRingLayout) -> [u8; HTT_RX_RING_CFG_LEN] {
 #[cfg(test)]
 mod tests {
     use super::{
-        HTT_RX_BUF_SIZE, HTT_RX_RING_CFG_LEN, HTT_RX_RING_FLAGS, HTT_VERSION_REQ_LEN, HttError,
-        HttVersion, RxRingLayout, encode_rx_ring_cfg, parse_version_conf,
+        HTT_RX_BUF_SIZE, HTT_RX_OFFLOAD_MSDU_HEADER_LEN, HTT_RX_RING_CFG_LEN, HTT_RX_RING_FLAGS,
+        HTT_VERSION_REQ_LEN, HttError, HttVersion, RxIndication, RxMsdu, RxRingLayout,
+        encode_rx_ring_cfg, offload_frame, parse_rx_indication, parse_version_conf,
     };
+
+    /// One offloaded MSDU descriptor: paddr 0xdead_beef, 32 bytes, fw_desc 0.
+    fn offload_indication(count: u8) -> [u8; 16] {
+        let mut message = [0u8; 16];
+        message[0] = 0x12; // HTT_TLV_T2H_MSG_TYPE_RX_IN_ORD_PADDR_IND
+        message[1] = 0x20 | 0x05; // offload + tid 5
+        message[2..4].copy_from_slice(&7u16.to_le_bytes()); // peer_id
+        message[4] = 2; // vdev_id
+        message[6..8].copy_from_slice(&u16::from(count).to_le_bytes());
+        message[8..12].copy_from_slice(&0xdead_beefu32.to_le_bytes());
+        message[12..14].copy_from_slice(&32u16.to_le_bytes());
+        message
+    }
+
+    #[test]
+    fn in_order_indication_is_parsed_into_msdus() {
+        let message = offload_indication(1);
+        let indication = parse_rx_indication(&message).expect("parses");
+        assert_eq!(
+            indication,
+            RxIndication {
+                vdev_id: 2,
+                peer_id: 7,
+                tid: 5,
+                offload: true,
+                msdus: alloc::vec![RxMsdu {
+                    paddr: 0xdead_beef,
+                    len: 32,
+                    fw_desc: 0,
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn in_order_indication_rejects_other_messages_and_short_bodies() {
+        let mut message = offload_indication(1);
+        message[0] = 0x07; // TX completion, not an RX indication
+        assert_eq!(
+            parse_rx_indication(&message),
+            Err(HttError::UnexpectedMessage)
+        );
+
+        // Claims two MSDU descriptors but only one fits in the message.
+        let mut truncated = offload_indication(2);
+        truncated[0] = 0x12;
+        assert_eq!(
+            parse_rx_indication(&truncated),
+            Err(HttError::FrameTooShort)
+        );
+    }
+
+    #[test]
+    fn offloaded_msdu_header_prefixes_the_ethernet_frame() {
+        let mut buffer = [0u8; 32];
+        buffer[0..2].copy_from_slice(&20u16.to_le_bytes()); // frame length
+        buffer[2..4].copy_from_slice(&7u16.to_le_bytes()); // peer_id
+        buffer[4] = 2; // vdev_id
+        buffer[5] = 5; // tid
+        buffer[6] = 0; // fw_desc
+        for (index, byte) in buffer[HTT_RX_OFFLOAD_MSDU_HEADER_LEN..][..20]
+            .iter_mut()
+            .enumerate()
+        {
+            *byte = index as u8;
+        }
+
+        let frame = offload_frame(&buffer).expect("frame inside the buffer");
+        assert_eq!(frame.len(), 20);
+        assert_eq!(frame[0], 0);
+        assert_eq!(frame[19], 19);
+
+        // A length that runs past the buffer is rejected instead of over-read.
+        buffer[0..2].copy_from_slice(&60u16.to_le_bytes());
+        assert_eq!(offload_frame(&buffer), None);
+    }
 
     #[test]
     fn version_req_header_is_a_padded_word() {

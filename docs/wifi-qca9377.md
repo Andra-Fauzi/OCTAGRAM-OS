@@ -270,6 +270,24 @@ padded to a word, and the response is `msg_type = 0` followed by
 `struct htt_ver_resp { minor, major, rsvd0 }`. The driver previously expected
 `msg_type = 1` and read major before minor.
 
+### HTT RX indications (`qca9377/htt.rs`, `qca9377/init.rs`)
+
+Received frames arrive as in-order paddr indications: TLV firmware (`htt-op 3`)
+sends `HTT_TLV_T2H_MSG_TYPE_RX_IN_ORD_PADDR_IND` (0x12) on the HTT HTC endpoint,
+with `struct htt_rx_in_ord_ind` — `info`, `peer_id`, `vdev_id`, `msdu_count` and
+one `htt_rx_in_ord_msdu_desc { msdu_paddr, msdu_len, fw_desc }` per MSDU. The
+driver looks each `msdu_paddr` up in the RX ring it described, copies the buffer
+out, and hands the frame to `network::receive_ethernet`. After copying it calls
+`HttRxRing::release`, which advances the ring's allocation index the way ath10k
+does when it re-posts a buffer.
+
+Offloaded indications (`HTT_RX_IN_ORD_IND_INFO_OFFLOAD_MASK`) hold a
+`struct htt_rx_offload_msdu` header followed by a complete Ethernet frame, so
+they go straight to the stack. Non-offloaded buffers hold an rx descriptor plus
+an 802.11 frame; those are counted as dropped, because 802.11 decapsulation is
+not implemented here. After association the bring-up drains up to 32 HTT
+messages and logs `QCA9377 HTT RX: <n> frame(s) delivered, <m> dropped`.
+
 ### Shell Commands
 
 The shell provides user commands under `net wifi`:

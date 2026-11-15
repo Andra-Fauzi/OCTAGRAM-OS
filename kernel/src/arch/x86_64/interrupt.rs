@@ -139,6 +139,11 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
             keyboard::handle_ps2_irq();
             frame as *mut InterruptFrame
         }
+        // Vector 45: QCA9377 MSI (`drivers::qca9377::QCA9377_MSI_VECTOR`).
+        45 => {
+            let _ = crate::drivers::qca9377::handle_irq();
+            frame as *mut InterruptFrame
+        }
         44 => {
             if let Some(xhci_mutex) = crate::drivers::usb::xhci::XHCI_INSTANCE.get() {
                 let mut xhci = xhci_mutex.lock();
@@ -191,7 +196,8 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
             loop {}
         }
     };
-    if matches!(frame.vector, 32 | 33 | 44) {
+    // Vector 45 is the QCA9377 MSI; it needs the same LAPIC EOI as the others.
+    if matches!(frame.vector, 32 | 33 | 44 | 45) {
         if let Some(lapic) = apic::LAPIC.get() {
             unsafe {
                 lapic.send_eoi();
@@ -239,6 +245,7 @@ seq!(N in 33..255 {
 });
 
 interrupt_stub!(xhci_irq_stub, 44, no_error_code);
+interrupt_stub!(qca9377_irq_stub, 45, no_error_code);
 interrupt_stub!(syscall_stub, 128, no_error_code);
 
 #[cfg(test)]

@@ -8,6 +8,12 @@ use core::{
 
 const DMA_PAGE_SIZE: usize = 4096;
 const CE_POLL_LIMIT: usize = 10_000_000;
+/// Spin iterations the interrupt-driven wait tolerates before it gives up.
+/// Roughly ten seconds on this class of hardware, matching the old poll budget.
+const CE_WAIT_SPINS: usize = 2_000_000_000;
+/// Fallback samples of the ring index, counted in spins, taken only so a target
+/// that never raises the PCIe interrupt cannot hang the wait.
+const CE_FALLBACK_POLL_INTERVAL: usize = 65_536;
 
 pub const CE0_SOURCE_RING_ENTRIES: usize = 16;
 pub const CE1_DESTINATION_RING_ENTRIES: usize = 512;
@@ -51,6 +57,7 @@ const CE_CONTROL_DESTINATION_BYTE_SWAP: u32 = 1 << 17;
 const CE_REGISTER_WINDOW_END: u64 = CE7_REGISTER_BASE + CE_DESTINATION_WATERMARK + 4;
 pub const QCA6174_CORE_CTRL_ADDRESS: u64 = 0x0003_a000;
 pub const CORE_CTRL_CPU_INTR_MASK: u32 = 0x0000_2000;
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CeError {
@@ -378,6 +385,7 @@ impl BmiCeRings {
 
         let sent = wait_for_completion(
             registers,
+            PIPE_EP0_TX_CE,
             CE0_REGISTER_BASE + CE_SOURCE_READ_INDEX,
             &mut self.source,
         )
@@ -394,6 +402,7 @@ impl BmiCeRings {
         };
         let received = wait_for_completion(
             registers,
+            PIPE_EP0_RX_CE,
             CE1_REGISTER_BASE + CE_DESTINATION_READ_INDEX,
             &mut self.destination,
         )
@@ -559,6 +568,7 @@ impl DiagnosticCe {
 
         let sent = wait_for_completion(
             registers,
+            7,
             CE7_REGISTER_BASE + CE_SOURCE_READ_INDEX,
             &mut self.source,
         )?;
@@ -567,6 +577,7 @@ impl DiagnosticCe {
         }
         let received = wait_for_completion(
             registers,
+            7,
             CE7_REGISTER_BASE + CE_DESTINATION_READ_INDEX,
             &mut self.destination,
         )?;
@@ -601,7 +612,7 @@ impl<R: RegisterIo> BmiTransport for BmiCeTransport<'_, R> {
 }
 
 pub struct PacketCe {
-    pipe_index: usize,
+    ce_index: usize,
     max_packet_bytes: usize,
     source: DescriptorRing,
     destination: DescriptorRing,
@@ -619,7 +630,7 @@ impl PacketCe {
             return Err(CeError::TransferTooLarge);
         }
         Ok(Self {
-            pipe_index,
+            ce_index: pipe_index,
             max_packet_bytes,
             source: DescriptorRing::allocate(CE_PACKET_RING_ENTRIES)?,
             destination: DescriptorRing::allocate(CE_PACKET_RING_ENTRIES)?,
@@ -630,7 +641,7 @@ impl PacketCe {
     }
 
     fn register_base(&self) -> u64 {
-        CE0_REGISTER_BASE + self.pipe_index as u64 * CE_REGISTER_STRIDE
+        CE0_REGISTER_BASE + self.ce_index as u64 * CE_REGISTER_STRIDE
     }
 
     /// Configure one CE as a polled bidirectional packet pipe.
@@ -703,6 +714,7 @@ impl PacketCe {
 
         let sent = wait_for_completion(
             registers,
+            self.ce_index,
             self.register_base() + CE_SOURCE_READ_INDEX,
             &mut self.source,
         )
@@ -732,6 +744,7 @@ impl PacketCe {
         self.poisoned = true;
         let received = wait_for_completion(
             registers,
+            self.ce_index,
             self.register_base() + CE_DESTINATION_READ_INDEX,
             &mut self.destination,
         )
@@ -870,6 +883,7 @@ impl TxCe {
         )?;
         let sent = wait_for_completion(
             registers,
+            self.ce_index,
             self.register_base() + CE_SOURCE_READ_INDEX,
             &mut self.source,
         )
@@ -956,6 +970,7 @@ impl RxCe {
         self.poisoned = true;
         let received = wait_for_completion(
             registers,
+            self.ce_index,
             self.register_base() + CE_DESTINATION_READ_INDEX,
             &mut self.destination,
         )
@@ -1020,21 +1035,77 @@ fn validate_bmi_request(request: &[u8]) -> Result<(), CeError> {
     Ok(())
 }
 
-fn wait_for_completion(
+fn read_completion(
     registers: &mut impl RegisterIo,
     read_index_register: u64,
     ring: &mut DescriptorRing,
+) -> Result<Option<Descriptor>, CeError> {
+    let hardware_index = registers.read32(read_index_register)?;
+    if hardware_index == u32::MAX {
+        return Err(CeError::DeviceUnavailable);
+    }
+    ring.complete(hardware_index as usize)
+}
+
+/// Wait until the engine hands back one descriptor.
+///
+/// With PCIe interrupts armed this is event driven: the handler parks the engine
+/// in `interrupt::PENDING` when the target writes the ring, and the ring index is
+/// only read after that wake-up (`ath10k` reads it from its NAPI poll for the same
+/// reason). A periodic sample remains as a safety net, counted in
+/// `interrupt::fallback_reads()`, so a target that never raises the interrupt
+/// cannot hang the wait. Without armed interrupts the original polling loop runs
+/// unchanged.
+fn wait_for_completion(
+    registers: &mut impl RegisterIo,
+    ce_index: usize,
+    read_index_register: u64,
+    ring: &mut DescriptorRing,
 ) -> Result<Descriptor, CeError> {
-    for _ in 0..CE_POLL_LIMIT {
-        let hardware_index = registers.read32(read_index_register)?;
-        if hardware_index == u32::MAX {
-            return Err(CeError::DeviceUnavailable);
+    // Fast path: the handler may have parked the engine after more than one
+    // descriptor landed, so the completion is often visible immediately.
+    if let Some(descriptor) = read_completion(registers, read_index_register, ring)? {
+        return Ok(descriptor);
+    }
+
+    if !interrupt::is_armed() {
+        for _ in 0..CE_POLL_LIMIT {
+            if let Some(descriptor) = read_completion(registers, read_index_register, ring)? {
+                return Ok(descriptor);
+            }
+            core::hint::spin_loop();
         }
-        if let Some(descriptor) = ring.complete(hardware_index as usize)? {
-            return Ok(descriptor);
+        return Err(CeError::Timeout);
+    }
+
+    let mut spins = 0usize;
+    let mut spins_since_sample = 0usize;
+    while spins < CE_WAIT_SPINS {
+        if interrupt::take(ce_index) {
+            if let Some(descriptor) = read_completion(registers, read_index_register, ring)? {
+                // The handler masked this engine to keep the line quiet while the
+                // descriptor was copied out; unmask it for the next frame.
+                interrupt::enable(registers, ce_index)?;
+                return Ok(descriptor);
+            }
+            // Spurious wake-up: another engine moved. Keep waiting for ours.
+            continue;
         }
+        spins_since_sample += 1;
+        if spins_since_sample >= CE_FALLBACK_POLL_INTERVAL {
+            spins_since_sample = 0;
+            interrupt::note_fallback_read();
+            if let Some(descriptor) = read_completion(registers, read_index_register, ring)? {
+                // Fallback completions arrive with the engine still unmasked, so
+                // no re-arm is needed here.
+                return Ok(descriptor);
+            }
+        }
+        spins += 1;
         core::hint::spin_loop();
     }
+    // Timeout: leave the engine unmasked so a later wait can still be woken.
+    let _ = interrupt::enable(registers, ce_index);
     Err(CeError::Timeout)
 }
 
@@ -1496,6 +1567,14 @@ impl MmioWindow {
         Ok(Self { base, length })
     }
 
+    pub fn base_address(&self) -> usize {
+        self.base.as_ptr() as usize
+    }
+
+    pub fn length(&self) -> u64 {
+        self.length
+    }
+
     fn register(&self, offset: u64) -> Result<*mut u32, CeError> {
         if offset & 3 != 0 || offset.checked_add(4).is_none_or(|end| end > self.length) {
             return Err(CeError::RegisterOutOfRange);
@@ -1515,6 +1594,184 @@ impl RegisterIo for MmioWindow {
         let register = self.register(offset)?;
         unsafe { register.write_volatile(value.to_le()) };
         Ok(())
+    }
+}
+
+/// PCIe interrupt plumbing for the copy engines.
+///
+/// The target raises one PCIe interrupt for the whole chip. `SOC_CORE +
+/// PCIE_INTR_ENABLE` selects which causes may raise it, the per-engine
+/// `CE_HOST_INTERRUPT_ENABLE` bit unmasks copy complete for one pipe, and the CE
+/// wrapper summary says which engines moved. This mirrors
+/// `ath10k_pci_interrupt_handler()` plus
+/// `ath10k_ce_per_engine_service_any()`: the handler acknowledges the PCIe cause
+/// and parks the engines it saw in `PENDING`, and task context copies the frames
+/// out and unmasks the engine again.
+pub mod interrupt {
+    use super::*;
+    use core::sync::atomic::{AtomicU32, AtomicU64};
+
+    /// `CE_WRAPPER_BASE_ADDRESS` (qca6174/qca9377, `ce0_base_address - 0x400`).
+    pub const CE_WRAPPER_REGISTER_BASE: u64 = 0x0003_4000;
+    /// `CE_WRAPPER_INTERRUPT_SUMMARY_ADDRESS`; one bit per engine.
+    pub const CE_WRAPPER_INTERRUPT_SUMMARY: u64 = 0x0000;
+    /// `wm_regs.cc_mask`: copy-complete interrupt enable/status bit.
+    pub const CE_HOST_COPY_COMPLETE: u32 = 0x0000_0001;
+    /// `wm_regs.wm_mask`: watermark interrupt bits (cleared, never enabled).
+    pub const CE_HOST_WATERMARK: u32 = 0x0000_001e;
+
+    /// `PCIE_INTR_ENABLE_ADDRESS`, `PCIE_INTR_CAUSE_ADDRESS` and
+    /// `PCIE_INTR_CLR_ADDRESS`, relative to `SOC_CORE_BASE_ADDRESS`.
+    pub const PCIE_INTR_ENABLE_ADDRESS: u64 = QCA6174_CORE_CTRL_ADDRESS + 0x0008;
+    pub const PCIE_INTR_CAUSE_ADDRESS: u64 = QCA6174_CORE_CTRL_ADDRESS + 0x000c;
+    pub const PCIE_INTR_CLR_ADDRESS: u64 = QCA6174_CORE_CTRL_ADDRESS + 0x0014;
+    /// `pcie_intr_fw_mask` and `pcie_intr_ce_mask_all` (`ath10k_hw.c`).
+    pub const PCIE_INTR_FIRMWARE_MASK: u32 = 0x0000_0400;
+    pub const PCIE_INTR_CE_MASK_ALL: u32 = 0x0007_f800;
+    pub const PCIE_INTR_MASK: u32 = PCIE_INTR_FIRMWARE_MASK | PCIE_INTR_CE_MASK_ALL;
+
+    /// Engines the handler has seen signalling since they were last serviced.
+    static PENDING: AtomicU32 = AtomicU32::new(0);
+    static INTERRUPTS: AtomicU32 = AtomicU32::new(0);
+    static FALLBACK_READS: AtomicU32 = AtomicU32::new(0);
+    static ARMED: AtomicU32 = AtomicU32::new(0);
+    static WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
+    static WINDOW_LENGTH: AtomicU64 = AtomicU64::new(0);
+
+    /// Hand the handler the register window it may touch.
+    ///
+    /// The window must cover both the CE registers and `SOC_CORE`, and the caller
+    /// keeps it mapped for the lifetime of the device.
+    pub fn register_window(window: &MmioWindow) {
+        WINDOW_BASE.store(window.base_address() as u64, Ordering::SeqCst);
+        WINDOW_LENGTH.store(window.length(), Ordering::SeqCst);
+    }
+
+    /// Whether the target's PCIe interrupt output is enabled.
+    pub fn is_armed() -> bool {
+        ARMED.load(Ordering::SeqCst) != 0
+    }
+
+    /// Enable the target's interrupt output for firmware and CE causes.
+    ///
+    /// The extra read is the posted-write flush ath10k needs before the enable
+    /// takes effect (`ath10k_pci_enable_intx_irq`).
+    pub fn arm(registers: &mut impl RegisterIo) -> Result<(), CeError> {
+        registers.write32(PCIE_INTR_ENABLE_ADDRESS, PCIE_INTR_MASK)?;
+        let _ = registers.read32(PCIE_INTR_ENABLE_ADDRESS)?;
+        ARMED.store(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Mask and acknowledge the PCIe causes.
+    ///
+    /// `INTR_CLR` only latches once `INTR_ENABLE` is zero, which is why ath10k
+    /// clears in this order, and why the handler follows it exactly.
+    pub fn disarm_and_clear(registers: &mut impl RegisterIo) -> Result<(), CeError> {
+        registers.write32(PCIE_INTR_ENABLE_ADDRESS, 0)?;
+        registers.write32(PCIE_INTR_CLR_ADDRESS, PCIE_INTR_MASK)?;
+        let _ = registers.read32(PCIE_INTR_ENABLE_ADDRESS)?;
+        ARMED.store(0, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn engine_base(ce_index: usize) -> Result<u64, CeError> {
+        if ce_index >= CE_PIPE_COUNT {
+            return Err(CeError::InvalidPipe);
+        }
+        Ok(CE0_REGISTER_BASE + ce_index as u64 * CE_REGISTER_STRIDE)
+    }
+
+    /// `ath10k_ce_copy_complete_inter_enable`: unmask copy complete for a pipe.
+    pub fn enable(registers: &mut impl RegisterIo, ce_index: usize) -> Result<(), CeError> {
+        let base = engine_base(ce_index)?;
+        let host_ie = registers.read32(base + CE_HOST_INTERRUPT_ENABLE)?;
+        registers.write32(
+            base + CE_HOST_INTERRUPT_ENABLE,
+            (host_ie | CE_HOST_COPY_COMPLETE) & !CE_HOST_WATERMARK,
+        )
+    }
+
+    /// `ath10k_ce_copy_complete_intr_disable`.
+    pub fn disable(registers: &mut impl RegisterIo, ce_index: usize) -> Result<(), CeError> {
+        let base = engine_base(ce_index)?;
+        let host_ie = registers.read32(base + CE_HOST_INTERRUPT_ENABLE)?;
+        registers.write32(
+            base + CE_HOST_INTERRUPT_ENABLE,
+            host_ie & !(CE_HOST_COPY_COMPLETE | CE_HOST_WATERMARK),
+        )
+    }
+
+    /// Acknowledge the PCIe cause and clear the engines it reported.
+    ///
+    /// Returns the engines that signalled (one bit per CE index) so the caller
+    /// can park them; zero means the interrupt was not ours.
+    pub fn handle_window(registers: &mut impl RegisterIo) -> Result<u32, CeError> {
+        let cause = registers.read32(PCIE_INTR_CAUSE_ADDRESS)?;
+        if cause & PCIE_INTR_MASK == 0 {
+            return Ok(0);
+        }
+        disarm_and_clear(registers)?;
+
+        let summary = registers.read32(CE_WRAPPER_REGISTER_BASE + CE_WRAPPER_INTERRUPT_SUMMARY)?;
+        let mut engines = 0u32;
+        for ce_index in 0..CE_PIPE_COUNT {
+            if summary & (1 << ce_index) == 0 {
+                continue;
+            }
+            // Clear before servicing, like ath10k: the engine stays masked until
+            // task context has copied the descriptor out.
+            disable(registers, ce_index)?;
+            engines |= 1 << ce_index;
+        }
+        Ok(engines)
+    }
+
+    /// Top-level handler, called from the IDT. `false` when the interrupt did not
+    /// come from the target or the window is not registered yet.
+    pub fn handle() -> bool {
+        let base = WINDOW_BASE.load(Ordering::SeqCst);
+        let length = WINDOW_LENGTH.load(Ordering::SeqCst);
+        if base == 0 || length == 0 {
+            return false;
+        }
+        let Ok(base) = usize::try_from(base) else {
+            return false;
+        };
+        let Ok(mut window) = (unsafe { MmioWindow::new(base, length) }) else {
+            return false;
+        };
+        match handle_window(&mut window) {
+            Ok(0) | Err(_) => false,
+            Ok(engines) => {
+                PENDING.fetch_or(engines, Ordering::SeqCst);
+                INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+        }
+    }
+
+    /// Take the pending wake-up for one engine.
+    pub fn take(ce_index: usize) -> bool {
+        if ce_index >= 32 {
+            return false;
+        }
+        let bit = 1u32 << ce_index;
+        PENDING.fetch_and(!bit, Ordering::SeqCst) & bit != 0
+    }
+
+    pub fn interrupts() -> u32 {
+        INTERRUPTS.load(Ordering::Relaxed)
+    }
+
+    /// Count a ring sample taken by the fallback path, i.e. a completion the
+    /// interrupt did not wake us for.
+    pub fn note_fallback_read() {
+        FALLBACK_READS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn fallback_reads() -> u32 {
+        FALLBACK_READS.load(Ordering::Relaxed)
     }
 }
 
@@ -1617,14 +1874,81 @@ mod tests {
         CE_HOST_INTERRUPT_ENABLE, CE_MISC_INTERRUPT_ENABLE, CE_SOURCE_READ_INDEX,
         CE_SOURCE_RING_BASE, CE_SOURCE_RING_SIZE, CE_SOURCE_WATERMARK, CE0_REGISTER_BASE,
         CE0_SOURCE_RING_ENTRIES, CE1_DESTINATION_RING_ENTRIES, CE1_REGISTER_BASE,
-        CE7_REGISTER_BASE, CE_PACKET_MAX_BYTES, CE_PACKET_RING_ENTRIES, CeError, Descriptor,
-        RegisterIo, RingIndices, clear_bmi_registers, clear_pipe_registers, completion_error,
-        configure_bmi_registers, configure_packet_registers,
-        configure_diagnostic_registers, is_dma32_range, target_cpu_to_ce_address,
+        CE7_REGISTER_BASE, CE_PACKET_MAX_BYTES, CE_PACKET_RING_ENTRIES, CE_REGISTER_STRIDE,
+        CeError, Descriptor, RegisterIo, RingIndices, clear_bmi_registers, clear_pipe_registers,
+        completion_error, configure_bmi_registers, configure_packet_registers,
+        configure_diagnostic_registers, interrupt, is_dma32_range, target_cpu_to_ce_address,
         validate_bmi_request, validate_diagnostic_transfer,
     };
     use core::mem::size_of;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn interrupt_handler_acks_the_cause_and_parks_the_engines() {
+        let mut registers = MockRegisters::default();
+        // A CE cause bit plus a wrapper summary naming engine 2 (the WMI RX pipe).
+        registers
+            .values
+            .insert(interrupt::PCIE_INTR_CAUSE_ADDRESS, 0x0000_0800);
+        registers.values.insert(
+            interrupt::CE_WRAPPER_REGISTER_BASE + interrupt::CE_WRAPPER_INTERRUPT_SUMMARY,
+            1 << 2,
+        );
+        registers.values.insert(
+            CE0_REGISTER_BASE + 2 * CE_REGISTER_STRIDE + CE_HOST_INTERRUPT_ENABLE,
+            interrupt::CE_HOST_COPY_COMPLETE,
+        );
+
+        assert_eq!(interrupt::handle_window(&mut registers), Ok(1 << 2));
+
+        // Cause is masked before it is cleared, or the write does not latch.
+        let enable_write = registers
+            .writes
+            .iter()
+            .position(|(offset, value)| {
+                *offset == interrupt::PCIE_INTR_ENABLE_ADDRESS && *value == 0
+            })
+            .expect("enable cleared");
+        assert!(
+            registers.writes[enable_write..].iter().any(|(offset, value)| {
+                *offset == interrupt::PCIE_INTR_CLR_ADDRESS && *value == interrupt::PCIE_INTR_MASK
+            })
+        );
+        // The engine is masked until task context copies the descriptor out.
+        assert_eq!(
+            registers.values[&(CE0_REGISTER_BASE
+                + 2 * CE_REGISTER_STRIDE
+                + CE_HOST_INTERRUPT_ENABLE)],
+            0
+        );
+    }
+
+    #[test]
+    fn interrupt_handler_ignores_causes_that_are_not_the_targets() {
+        let mut registers = MockRegisters::default();
+        assert_eq!(interrupt::handle_window(&mut registers), Ok(0));
+        registers
+            .values
+            .insert(interrupt::PCIE_INTR_CAUSE_ADDRESS, 0x0000_0002);
+        assert_eq!(interrupt::handle_window(&mut registers), Ok(0));
+        assert!(registers.writes.is_empty());
+    }
+
+    #[test]
+    fn enabling_an_engine_unmasks_only_copy_complete() {
+        let mut registers = MockRegisters::default();
+        registers.values.insert(
+            CE0_REGISTER_BASE + 3 * CE_REGISTER_STRIDE + CE_HOST_INTERRUPT_ENABLE,
+            interrupt::CE_HOST_WATERMARK,
+        );
+        interrupt::enable(&mut registers, 3).expect("enable");
+        assert_eq!(
+            registers.values[&(CE0_REGISTER_BASE
+                + 3 * CE_REGISTER_STRIDE
+                + CE_HOST_INTERRUPT_ENABLE)],
+            interrupt::CE_HOST_COPY_COMPLETE
+        );
+    }
 
     #[derive(Default)]
     struct MockRegisters {

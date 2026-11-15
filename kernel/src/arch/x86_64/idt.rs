@@ -3,7 +3,7 @@
 //! spesifik, sisanya (vector 33..255) dengan stub generik dari
 //! `interrupt.rs`, lalu load lewat `lidt`.
 
-use super::interrupt::{self, syscall_stub, timer_irq_stub, xhci_irq_stub};
+use super::interrupt::{self, qca9377_irq_stub, syscall_stub, timer_irq_stub, xhci_irq_stub};
 use super::interrupt::{
     breakpoint_stub, debug_stub, divide_error_stub, double_fault_stub,
     general_protection_fault_stub, nmi_stub, page_fault_stub,
@@ -106,6 +106,7 @@ pub unsafe fn load_idt() {
             IDT[N] = IdtEntry::new(interrupt::irq~N as u64, 0x08);
         });
         IDT[44] = IdtEntry::new(xhci_irq_stub as u64, 0x08);
+        IDT[45] = IdtEntry::new(qca9377_irq_stub as u64, 0x08);
         IDT[128] = IdtEntry::new_user_callable(syscall_stub as u64, 0x08);
 
         let descriptor = IdtDescriptor {

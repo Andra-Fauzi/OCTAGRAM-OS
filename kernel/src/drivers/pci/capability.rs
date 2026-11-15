@@ -98,8 +98,10 @@ pub unsafe fn find_capability(device: &PciDevice, cap_id: u8) -> Option<u8> {
 }
 
 /// Enable legacy MSI for a device.
-#[allow(dead_code)]
-pub unsafe fn enable_msi(device: &PciDevice, vector: u8, apic_id: u8) {
+///
+/// Returns `false` when the device has no MSI capability, so the caller can fall
+/// back to polling instead of waiting for an interrupt that never arrives.
+pub unsafe fn enable_msi(device: &PciDevice, vector: u8, apic_id: u8) -> bool {
     if let Some(offset) = unsafe { find_capability(device, CAP_ID_MSI) } {
         let message_address = 0xFEE0_0000u32 | ((apic_id as u32) << 12);
         unsafe {
@@ -127,8 +129,10 @@ pub unsafe fn enable_msi(device: &PciDevice, vector: u8, apic_id: u8) {
             );
         }
         crate::println!("MSI enabled: vector={} apic_id={}", vector, apic_id);
+        true
     } else {
         crate::println!("WARNING: device does not support MSI");
+        false
     }
 }
 

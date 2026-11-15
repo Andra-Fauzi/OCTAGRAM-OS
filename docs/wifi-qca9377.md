@@ -277,6 +277,34 @@ padded to a word, and the response is `msg_type = 0` followed by
 `struct htt_ver_resp { minor, major, rsvd0 }`. The driver previously expected
 `msg_type = 1` and read major before minor.
 
+### PCIe interrupts (`qca9377/ce.rs`, `arch/x86_64/interrupt.rs`)
+
+ath10k does not poll the copy engines: the target raises one MSI
+(`pci irq msi oper_irq_mode 2`) and `ath10k_pci_interrupt_handler()` acknowledges
+`SOC_CORE + PCIE_INTR_CAUSE (0x000c)` after masking `PCIE_INTR_ENABLE (0x0008)`
+and writing `PCIE_INTR_CLR (0x0014)` — the clear only latches with the enable at
+zero. Work is deferred: `ath10k_ce_per_engine_service_any()` reads
+`CE_WRAPPER_INTERRUPT_SUMMARY` (0x34000), clears the per-engine copy-complete
+status (`host_ie_addr 0x2c`, `cc_mask 0x1`, `wm_mask 0x1e`) and the pipe is only
+unmasked again once its descriptors have been reaped.
+
+This driver now follows the same split. `initialize_device` enables MSI on
+vector `QCA9377_MSI_VECTOR` (45) through `pci::enable_msi()`, unmasks copy
+complete on the six EP0/WMI/HTT pipes and arms the chip's interrupt output with
+`pcie_intr_fw_mask | pcie_intr_ce_mask_all` (`0x400 | 0x7f800`, qca6174/qca9377
+values). The IDT handler (`common_interrupt_handler` → `qca9377::handle_irq`) only
+acknowledges the cause, clears the engines it saw and parks them in
+`ce::interrupt::PENDING`; `wait_for_completion()` sleeps on that bit and reads the
+ring index only after the wake-up, then unmasks its engine again. Firmware and
+CE causes are both kept enabled, so WMI and HTT events are delivered the moment
+the target posts them.
+
+Two honest limits. The pipe still samples the ring index every 65 536 spins as a
+safety net, counted as `QCA9377 PCIe interrupts serviced: <n> (fallback ring
+samples: <m>)` — a non-zero `m` means the interrupt did not wake the wait. And if
+interrupts are not armed (`ce::interrupt::is_armed()`), the original bounded
+polling loop runs unchanged, so a boot without MSI cannot hang.
+
 ### HTC credit flow control (`qca9377/htc.rs`)
 
 HTC READY advertises `credit_size` and `credit_count`, and every send then costs

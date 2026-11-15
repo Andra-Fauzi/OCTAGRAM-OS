@@ -16,6 +16,20 @@ use crate::memory;
 use bmi::{BmiClient, BmiClientError, BmiTransport, TargetInfo};
 use ce::RegisterIo;
 
+/// IDT vector the target's MSI is routed to. ath10k takes the single MSI vector
+/// `pci_enable_msi()` hands out; this kernel owns the IDT, so the vector is
+/// fixed here and enabled with `pci::enable_msi()`.
+pub const QCA9377_MSI_VECTOR: u8 = 45;
+
+/// Service a target interrupt from the IDT vector above.
+///
+/// The handler only acknowledges the PCIe cause and records which copy engines
+/// signalled (`ath10k_pci_interrupt_handler` + `ath10k_ce_per_engine_service_any`);
+/// the frames themselves are copied out in task context.
+pub fn handle_irq() -> bool {
+    ce::interrupt::handle()
+}
+
 const QUALCOMM_ATHEROS_VENDOR_ID: u16 = 0x168c;
 const QCA9377_PCI_DEVICE_ID: u16 = 0x0042;
 const QCA6174_RTC_SOC_BASE: u64 = 0x0000_0800;

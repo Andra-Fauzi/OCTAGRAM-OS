@@ -12,7 +12,7 @@ use super::{
         CE_DESTINATION_READ_INDEX, CE_DESTINATION_RING_BASE, CE_DESTINATION_RING_SIZE,
         CE_DESTINATION_WRITE_INDEX, CE_PACKET_MAX_BYTES, CE_SOURCE_READ_INDEX,
         CE_SOURCE_RING_BASE, CE_SOURCE_RING_SIZE, CE_SOURCE_WRITE_INDEX, PIPE_EP0_RX_CE,
-        clear_all_pipe_registers,
+        clear_all_pipe_registers, interrupt as ce_interrupt,
         PIPE_EP0_TX_CE, PIPE_HTT_RX_CE, PIPE_HTT_TX_CE, PIPE_WMI_RX_CE, PIPE_WMI_TX_CE,
     },
     htc::{
@@ -515,6 +515,37 @@ pub unsafe fn initialize_device(
             htt_rx.configure(&mut registers)?;
         }
 
+        // ── 5b. PCIe interrupts ──────────────────────────────────────────────
+        // ath10k runs the target on MSI (`pci irq msi oper_irq_mode 2`) and only
+        // then enables the chip's interrupt output, so every completion below is
+        // signalled by an IRQ instead of a register poll. `ath10k_pci_enable_intx_irq`
+        // enables both firmware and copy-engine causes; the per-engine copy
+        // complete bit is what unmasks one pipe.
+        let msi = super::QCA9377_MSI_VECTOR;
+        let msi_enabled = unsafe { pci::enable_msi(device, msi, 0) };
+        if msi_enabled {
+            unsafe {
+                ce_interrupt::register_window(&registers);
+                for ce_index in [
+                    PIPE_EP0_TX_CE,
+                    PIPE_EP0_RX_CE,
+                    PIPE_WMI_TX_CE,
+                    PIPE_WMI_RX_CE,
+                    PIPE_HTT_TX_CE,
+                    PIPE_HTT_RX_CE,
+                ] {
+                    ce_interrupt::enable(&mut registers, ce_index)?;
+                }
+                ce_interrupt::arm(&mut registers)?;
+            }
+            crate::println!(
+                "QCA9377 PCIe interrupts armed: MSI vector {}, CE copy-complete on EP0/WMI/HTT pipes",
+                msi
+            );
+        } else {
+            crate::println!("QCA9377 has no MSI; copy engines stay in register polling mode");
+        }
+
         // ── 6. HTC handshake (EP0 pair) ───────────────────────────────────────
         let ep0_pair = unsafe { PipePair::new(&mut ep0_tx, &mut ep0_rx, &mut registers) };
         let mut htc = HtcClient::new(ep0_pair);
@@ -846,6 +877,11 @@ pub unsafe fn initialize_device(
             wmi_ep.credits().credit_size(),
             htt_ep.credits().available(),
             htt_ep.credits().credit_size()
+        );
+        crate::println!(
+            "QCA9377 PCIe interrupts serviced: {} (fallback ring samples: {})",
+            ce_interrupt::interrupts(),
+            ce_interrupt::fallback_reads()
         );
 
         keep_rings = false;

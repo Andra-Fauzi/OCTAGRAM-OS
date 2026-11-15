@@ -259,10 +259,17 @@ buffer is a whole 4 KiB DMA frame), `rx_ring_bufsize` = `HTT_RX_BUF_SIZE`
 (2048), every `HTT_RX_RING_FLAGS_*` bit in `flags`, and `fw_idx_init_val` = 0
 because the host posted buffers from index 0. The message goes out as
 `HTT_H2T_MSG_TYPE_RX_RING_CFG` on the HTT HTC endpoint, and the ring is leaked
-on purpose: the firmware keeps DMA-ing into those buffers. The
-`htt_rx_ring_rx_desc_offsets` field is still zero — ath10k's HL variant
-(`ath10k_htt_send_rx_ring_cfg_hl`) zeroes it too, and this driver does not parse
-HTT RX descriptors yet.
+on purpose: the firmware keeps DMA-ing into those buffers.
+
+The `htt_rx_ring_rx_desc_offsets` field carries the v1 rx descriptor layout that
+QCA9377 shares with QCA6174/QCA988x/QCA99x0. `qca99x0_rx_desc_ops` gives no
+`rx_desc_get_offsets`, so ath10k falls back to
+`offsetof(struct htt_rx_desc_v1, field) / 4`: `mac80211_hdr` 59, `msdu_payload`
+75, `ppdu_start` 21, `ppdu_end` 31, `mpdu_start` 3, `mpdu_end` 20, `msdu_start`
+6, `msdu_end` 10, `rx_attention` 1, `frag_info` 2. Those come from the byte
+offsets 4, 8, 12, 24, 40, 80, 84, 124, 236 and 300 in the packed descriptor
+(`rx_desc.h`), which makes `sizeof(struct htt_rx_desc_v1)` 300 bytes — the MSDU
+payload starts right after it.
 
 The message contents now match `ath10k_htt_h2t_ver_req_msg` and
 `ath10k_htt_t2h_version_conf`: the request is `htt_cmd_hdr { msg_type = 0 }`

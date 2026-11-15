@@ -50,6 +50,16 @@ const RX_IN_ORD_IND_INFO_TID_MASK: u8 = 0x1f;
 pub const HTT_RX_OFFLOAD_MSDU_HEADER_LEN: usize = 7;
 /// `htt_cmd_hdr` + `htt_rx_ring_setup_32` + one `htt_rx_ring_setup_ring32`.
 const HTT_RX_RING_CFG_LEN: usize = 1 + 3 + 36;
+/// `offsetof(struct htt_rx_desc_v1, field) / 4` in `htt_rx_ring_rx_desc_offsets`
+/// order: mac80211_hdr, msdu_payload, ppdu_start, ppdu_end, mpdu_start,
+/// mpdu_end, msdu_start, msdu_end, rx_attention, frag_info.
+///
+/// QCA9377 uses the v1 rx descriptor it shares with QCA6174/QCA988x/QCA99x0, and
+/// `ath10k_htt_rx_desc_get_offsets` falls back to exactly these `offsetof`
+/// values because `qca99x0_rx_desc_ops` does not provide `rx_desc_get_offsets`.
+/// Byte offsets in the descriptor are 4, 8, 12, 24, 40, 80, 84, 124, 236 and
+/// 300 (`rx_hdr_status` + `RX_HTT_HDR_STATUS_LEN`), all four-byte aligned.
+pub const HTT_RX_DESC_V1_OFFSETS_WORDS: [u16; 10] = [59, 75, 21, 31, 3, 20, 6, 10, 1, 2];
 const HTT_VERSION_ATTEMPTS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,19 +403,22 @@ fn encode_rx_ring_cfg(layout: &RxRingLayout) -> [u8; HTT_RX_RING_CFG_LEN] {
     out[14..16].copy_from_slice(&layout.buffer_size.to_le_bytes());
     out[16..18].copy_from_slice(&layout.flags.to_le_bytes());
     out[18..20].copy_from_slice(&layout.first_index.to_le_bytes());
-    // `htt_rx_ring_rx_desc_offsets` stay zero: this driver does not parse HTT RX
-    // descriptors yet, and ath10k's HL variant (`ath10k_htt_send_rx_ring_cfg_hl`)
-    // sends them zeroed as well.
+    for (index, offset) in HTT_RX_DESC_V1_OFFSETS_WORDS.iter().enumerate() {
+        let start = 20 + index * 2;
+        out[start..start + 2].copy_from_slice(&offset.to_le_bytes());
+    }
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        HTT_RX_BUF_SIZE, HTT_RX_OFFLOAD_MSDU_HEADER_LEN, HTT_RX_RING_CFG_LEN, HTT_RX_RING_FLAGS,
-        HTT_VERSION_REQ_LEN, HttError, HttVersion, RxIndication, RxMsdu, RxRingLayout,
-        encode_rx_ring_cfg, offload_frame, parse_rx_indication, parse_version_conf,
+        HTT_RX_BUF_SIZE, HTT_RX_DESC_V1_OFFSETS_WORDS, HTT_RX_OFFLOAD_MSDU_HEADER_LEN,
+        HTT_RX_RING_CFG_LEN, HTT_RX_RING_FLAGS, HTT_VERSION_REQ_LEN, HttError, HttVersion,
+        RxIndication, RxMsdu, RxRingLayout, encode_rx_ring_cfg, offload_frame, parse_rx_indication,
+        parse_version_conf,
     };
+    use alloc::vec::Vec;
 
     /// One offloaded MSDU descriptor: paddr 0xdead_beef, 32 bytes, fw_desc 0.
     fn offload_indication(count: u8) -> [u8; 16] {
@@ -534,6 +547,22 @@ mod tests {
         assert_eq!(u16::from_le_bytes([message[14], message[15]]), 2048);
         assert_eq!(u16::from_le_bytes([message[16], message[17]]), 0xffff);
         assert_eq!(u16::from_le_bytes([message[18], message[19]]), 0);
-        assert_eq!(&message[20..], &[0u8; 20], "descriptor offsets");
+
+        // htt_rx_ring_rx_desc_offsets: one little-endian word offset each.
+        let offsets: Vec<u16> = message[20..]
+            .chunks_exact(2)
+            .map(|word| u16::from_le_bytes([word[0], word[1]]))
+            .collect();
+        assert_eq!(offsets, HTT_RX_DESC_V1_OFFSETS_WORDS);
+        assert_eq!(offsets[0], 59, "mac80211_hdr_offset");
+        assert_eq!(offsets[1], 75, "msdu_payload_offset");
+        assert_eq!(offsets[4], 3, "mpdu_start_offset");
+        assert_eq!(offsets[8], 1, "rx_attention_offset");
+        assert_eq!(offsets[9], 2, "frag_info_offset");
+        assert_eq!(
+            usize::from(offsets[1]) * 4,
+            300,
+            "the payload follows the whole 300-byte v1 descriptor"
+        );
     }
 }

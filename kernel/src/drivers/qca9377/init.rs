@@ -372,21 +372,23 @@ pub unsafe fn initialize_device(
             target_reset.dump_after.local8
         );
         crate::println!(
-            "QCA9377 cold reset: rtc_state_in_reset={:#010x} fw_indicator={:#010x} boot_rom_ready={}",
+            "QCA9377 cold reset: rtc_state_in_reset={:#010x} fw_indicator={:#010x} boot_rom_ready={} fw_ind_writable={}",
             target_reset.cold_reset_state,
             target_reset.cold_indicator,
-            target_reset.cold_ready
+            target_reset.cold_ready,
+            target_reset.fw_indicator_writable
         );
         for sample in target_reset.chip_id_timeline.samples() {
             crate::println!(
-                "QCA9377 window +{}ms wake={} local0={:#010x} local8={:#010x} bar0={:#010x} chip_id={:#010x} fw_ind={:#010x}",
+                "QCA9377 window +{}ms wake={} local0={:#010x} local8={:#010x} bar0={:#010x} chip_id={:#010x} fw_ind={:#010x} soc_reset_control={:#010x}",
                 sample.elapsed_ms,
                 sample.awake,
                 sample.rtc_state,
                 sample.soc_global_reset,
                 sample.bar0,
                 sample.chip_id,
-                sample.fw_indicator
+                sample.fw_indicator,
+                sample.soc_reset_control
             );
         }
         match target_reset.chip_id_timeline.first_valid_ms {

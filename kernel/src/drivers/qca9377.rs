@@ -257,6 +257,21 @@ pub(super) fn soc_global_reset<R: ce::RegisterIo>(
     Ok(held)
 }
 
+/// Check that `FW_INDICATOR` is the writable register the driver believes it
+/// is: write zero and read it back.
+///
+/// A target that keeps reporting `FW_IND_EVENT_PENDING` right after every reset
+/// looks crashed, but the same log shows the chip id answering at +1 ms, so
+/// before blaming the boot ROM the driver has to know whether the indicator
+/// write lands at all. ath10k never checks this because its address comes from
+/// `ar->regs->fw_indicator_address`; a bare-metal driver hardcodes it.
+fn fw_indicator_accepts_zero<R: ce::RegisterIo>(
+    registers: &mut R,
+) -> Result<bool, ce::CeError> {
+    registers.write32(QCA6174_FW_INDICATOR_ADDRESS, 0)?;
+    Ok(registers.read32(QCA6174_FW_INDICATOR_ADDRESS)? == 0)
+}
+
 /// Clear the stale firmware indicator and put the target CPU through reset,
 /// matching `ath10k_pci_reset_cpu`. The boot ROM rewrites the indicator once
 /// it is ready to service BMI.
@@ -384,6 +399,9 @@ pub(super) struct TimelineSample {
     /// laptops that boot this device.
     pub chip_id: u32,
     pub fw_indicator: u32,
+    /// `SOC_RESET_CONTROL` (RTC_SOC + 0x0), so a warm reset bit that stays set
+    /// after the pulse is visible in the same line as the rest.
+    pub soc_reset_control: u32,
     pub awake: bool,
 }
 
@@ -395,6 +413,7 @@ impl TimelineSample {
         bar0: 0,
         chip_id: 0,
         fw_indicator: 0,
+        soc_reset_control: 0,
         awake: false,
     };
 }
@@ -463,6 +482,7 @@ pub(super) fn sample_chip_id_timeline<R: ce::RegisterIo>(
             fw_indicator: registers
                 .read32(QCA6174_FW_INDICATOR_ADDRESS)
                 .unwrap_or(u32::MAX),
+            soc_reset_control: registers.read32(QCA6174_RTC_SOC_BASE).unwrap_or(u32::MAX),
         };
         timeline.samples[timeline.len] = sample;
         timeline.len += 1;
@@ -489,6 +509,9 @@ pub(super) struct TargetReset {
     /// ROM did not come back after the cold reset.
     pub cold_indicator: u32,
     pub cold_ready: bool,
+    /// True when writing zero to `FW_INDICATOR` reads back as zero, so the
+    /// indicator address and its write path are confirmed.
+    pub fw_indicator_writable: bool,
     /// Raw registers sampled immediately before the cold reset.
     pub dump_before: ResetRegisterDump,
     /// The same registers sampled immediately after the cold reset.
@@ -586,6 +609,8 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
     let reset_control_before = registers
         .read32(QCA6174_RTC_SOC_BASE)
         .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
+    let fw_indicator_writable = fw_indicator_accepts_zero(registers)
+        .map_err(|error| failed("verify FW_INDICATOR write", error))?;
     target_wake(registers, poll_limit).map_err(|error| failed("wake target", error))?;
     let dump_before = ResetRegisterDump::capture(registers);
     let cold_reset_state =
@@ -610,6 +635,7 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         cold_reset_state,
         cold_indicator,
         cold_ready,
+        fw_indicator_writable,
         dump_before,
         dump_after,
         chip_id_timeline,

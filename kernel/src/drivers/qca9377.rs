@@ -650,7 +650,9 @@ fn read_target_registers(device: &PciDevice) -> Result<(u32, u32), &'static str>
         .ok_or("QCA9377 MMIO mapping size overflow")?;
     let mmio = unsafe { memory::paging::map_mmio_range(bar.address, mapping_size) };
     let bar_virt = mmio + page_offset;
-    let mut registers = unsafe { ce::MmioWindow::new(bar_virt as usize, bar_size) }
+    // Only `required_size` bytes are mapped past the page-aligned base, so the
+    // window must refuse accesses beyond that even though BAR0 is larger.
+    let mut registers = unsafe { ce::MmioWindow::new(bar_virt as usize, required_size) }
         .map_err(|_| "QCA9377 MMIO window is unavailable")?;
     with_target_awake(&mut registers, QCA_WAKE_POLL_LIMIT, |registers| {
         let rtc_state = registers.read32(RTC_STATE_BAR_OFFSET)?;
@@ -683,7 +685,8 @@ fn probe_bmi_target_info(device: &PciDevice) -> Result<TargetInfo, BmiProbeError
         .ok_or(BmiProbeError::Setup("MMIO mapping size overflow"))?;
     let mmio = unsafe { memory::paging::map_mmio_range(bar.address, mapping_size) };
     let bar_virt = mmio + page_offset;
-    let mut registers = unsafe { ce::MmioWindow::new(bar_virt as usize, bar_size) }
+    // Bounded by what was actually mapped, not by the whole BAR.
+    let mut registers = unsafe { ce::MmioWindow::new(bar_virt as usize, required_size) }
         .map_err(|_| BmiProbeError::Setup("MMIO window is unavailable"))?;
     let mut rings = ce::BmiCeRings::allocate()
         .map_err(|_| BmiProbeError::Setup("BMI DMA ring allocation failed"))?;

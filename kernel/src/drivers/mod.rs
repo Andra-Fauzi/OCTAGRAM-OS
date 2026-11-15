@@ -41,8 +41,12 @@ pub(crate) unsafe fn initialize() {
         }
     }
 
-    if let Err(error) = unsafe { device_model::register_driver(&usb::XHCI_DRIVER) } {
-        crate::println!("driver xhci registration failed: {error}");
+    if usb::XHCI_ENABLED {
+        if let Err(error) = unsafe { device_model::register_driver(&usb::XHCI_DRIVER) } {
+            crate::println!("driver xhci registration failed: {error}");
+        }
+    } else {
+        crate::println!("xHCI dinonaktifkan sementara (usb::XHCI_ENABLED = false)");
     }
     if let Err(error) = unsafe { device_model::register_driver(&usb::EHCI_DRIVER) } {
         crate::println!("driver ehci registration failed: {error}");
@@ -57,7 +61,9 @@ pub(crate) unsafe fn initialize() {
 /// # Safety
 /// Must be called from the idle loop after interrupt handlers have returned.
 pub(crate) unsafe fn poll_deferred() {
-    usb::xhci::poll_manual_events();
+    if usb::XHCI_ENABLED {
+        usb::xhci::poll_manual_events();
+    }
     unsafe { usb::poll_hotplug() };
     unsafe { usb::rndis::poll() };
 }

@@ -28,6 +28,7 @@ pub mod elf;
 pub mod fs;
 mod graphics;
 mod memory;
+pub mod network;
 mod rsdp;
 mod shell;
 pub mod storage;
@@ -123,5 +124,6 @@ fn hcf() -> ! {
 
         // Deferred driver work runs after interrupt completion.
         unsafe { drivers::poll_deferred() };
+        crate::network::poll_tcp();
     }
 }

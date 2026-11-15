@@ -1,8 +1,8 @@
 //! Alokasi page frame fisik 4 KiB via linked free-list.
 //!
 //! [`FrameAllocator`] di-build lazy dari memory map Limine pada panggilan
-//! [`allocate`][FrameAllocator::allocate] pertama. Setelah itu, alokasi
-//! adalah O(1) pop dari head linked list, dan deallokasi adalah O(1) push.
+//! alokasi pertama. Frame di bawah 4 GiB dan frame lainnya disimpan dalam
+//! free-list terpisah agar alokasi DMA32 tetap O(1).
 //!
 //! **Thread safety**: struct ini tidak thread-safe sendiri; bungkus dengan
 //! [`spin::Mutex`] sebelum dipakai dari banyak konteks (lihat
@@ -13,6 +13,7 @@ use core::ptr;
 use limine::memory_map::EntryType;
 
 const FRAME_SIZE: usize = 4096;
+const DMA32_LIMIT: usize = 1 << 32;
 
 /// Sentinel "next = None" di linked list.
 const NULL_MARK: usize = usize::MAX;
@@ -23,7 +24,8 @@ const NULL_MARK: usize = usize::MAX;
 /// (lewat HHDM). Ini tidak memerlukan alokasi metadata terpisah —
 /// metadata-nya ada di dalam frame itu sendiri.
 pub struct FrameAllocator {
-    head: Option<usize>,
+    low_head: Option<usize>,
+    high_head: Option<usize>,
     initialized: bool,
 }
 
@@ -31,7 +33,8 @@ impl FrameAllocator {
     /// Buat instance baru (belum diinisialisasi — lazy init).
     pub const fn new() -> Self {
         Self {
-            head: None,
+            low_head: None,
+            high_head: None,
             initialized: false,
         }
     }
@@ -59,14 +62,19 @@ impl FrameAllocator {
         self.initialized = true;
     }
 
-    /// Tambahkan frame (alamat fisik) ke head free-list.
+    /// Tambahkan frame (alamat fisik) ke free-list dengan batas alamat sesuai.
     fn push_free(&mut self, frame: usize) {
         let virt = physical_to_virtual_internal(frame).expect("push_free: HHDM belum tersedia");
+        let head = if is_dma32_frame(frame) {
+            &mut self.low_head
+        } else {
+            &mut self.high_head
+        };
         // Safety: virt adalah alamat valid di HHDM, frame belum dipakai.
         unsafe {
-            ptr::write(virt as *mut usize, self.head.unwrap_or(NULL_MARK));
+            ptr::write(virt as *mut usize, head.unwrap_or(NULL_MARK));
         }
-        self.head = Some(frame);
+        *head = Some(frame);
     }
 
     /// Alokasi satu frame fisik (4 KiB), sudah di-zero.
@@ -77,17 +85,16 @@ impl FrameAllocator {
             self.init();
         }
 
-        let frame = self.head?;
-        let virt = physical_to_virtual_internal(frame)?;
+        Self::pop(&mut self.high_head).or_else(|| Self::pop(&mut self.low_head))
+    }
 
-        // Baca "next" dari dalam frame, jadikan head baru.
-        let next = unsafe { ptr::read(virt as *const usize) };
-        self.head = if next == NULL_MARK { None } else { Some(next) };
+    /// Alokasi satu page frame yang seluruhnya dapat dialamati dengan DMA 32-bit.
+    pub fn allocate_dma32(&mut self) -> Option<usize> {
+        if !self.initialized {
+            self.init();
+        }
 
-        // Zero-kan frame sebelum dikembalikan.
-        unsafe { ptr::write_bytes(virt as *mut u8, 0, FRAME_SIZE) };
-
-        Some(frame)
+        Self::pop(&mut self.low_head)
     }
 
     /// Bebaskan satu frame fisik (dikembalikan ke free-list).
@@ -101,6 +108,20 @@ impl FrameAllocator {
         }
         self.push_free(frame);
     }
+
+    fn pop(head: &mut Option<usize>) -> Option<usize> {
+        let frame = (*head)?;
+        let virt = physical_to_virtual_internal(frame)?;
+
+        // Safety: free-list node contains the next physical frame or sentinel.
+        let next = unsafe { ptr::read(virt as *const usize) };
+        *head = if next == NULL_MARK { None } else { Some(next) };
+
+        // Safety: the popped frame is exclusively owned by the caller.
+        unsafe { ptr::write_bytes(virt as *mut u8, 0, FRAME_SIZE) };
+
+        Some(frame)
+    }
 }
 
 // Helper internal agar tidak circular-import dengan memory::mod
@@ -112,4 +133,19 @@ fn physical_to_virtual_internal(phys: usize) -> Option<usize> {
 #[inline]
 fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
+}
+
+const fn is_dma32_frame(frame: usize) -> bool {
+    frame < DMA32_LIMIT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DMA32_LIMIT, is_dma32_frame};
+
+    #[test]
+    fn classifies_frames_by_their_full_dma_address_range() {
+        assert!(is_dma32_frame(DMA32_LIMIT - 4096));
+        assert!(!is_dma32_frame(DMA32_LIMIT));
+    }
 }

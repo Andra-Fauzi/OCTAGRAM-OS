@@ -50,6 +50,7 @@ struct MouseState {
 }
 
 static MOUSE_STATE: Mutex<Option<MouseState>> = Mutex::new(None);
+static PERIODIC_INPUT_STATE: Mutex<(u8, i32, i32)> = Mutex::new((0, 0, 0));
 
 const HID_SET_PROTOCOL: u8 = 0x0B;
 const HID_BOOT_PROTOCOL: u16 = 0;
@@ -171,12 +172,45 @@ fn handle_report(report: &MouseReport) {
         None => return,
     };
 
-    state.pos_x += report.x as i32;
-    state.pos_y += report.y as i32;
+    handle_report_with_state(
+        report,
+        &mut state.last_buttons,
+        &mut state.pos_x,
+        &mut state.pos_y,
+    );
+}
+
+pub(super) fn process_periodic_report(bytes: &[u8]) {
+    if bytes.len() < 3 {
+        return;
+    }
+    let report = MouseReport {
+        buttons: bytes[0],
+        x: bytes[1] as i8,
+        y: bytes[2] as i8,
+        wheel: bytes.get(3).copied().unwrap_or(0) as i8,
+    };
+    let mut state = PERIODIC_INPUT_STATE.lock();
+    let (last_buttons, pos_x, pos_y) = &mut *state;
+    handle_report_with_state(&report, last_buttons, pos_x, pos_y);
+}
+
+pub(super) fn reset_periodic_state() {
+    *PERIODIC_INPUT_STATE.lock() = (0, 0, 0);
+}
+
+fn handle_report_with_state(
+    report: &MouseReport,
+    last_buttons: &mut u8,
+    pos_x: &mut i32,
+    pos_y: &mut i32,
+) {
+    *pos_x += report.x as i32;
+    *pos_y += report.y as i32;
 
     // Deteksi klik/lepas per bit dibanding report sebelumnya, biar tidak
     // spam log tiap report walau tombol masih ditahan.
-    let changed = report.buttons ^ state.last_buttons;
+    let changed = report.buttons ^ *last_buttons;
     if changed != 0 {
         for (bit, name) in [(0u8, "left"), (1u8, "right"), (2u8, "middle")] {
             if changed & (1 << bit) != 0 {
@@ -185,8 +219,8 @@ fn handle_report(report: &MouseReport) {
                     "Mouse {} {} @ ({}, {})",
                     name,
                     if pressed { "pressed" } else { "released" },
-                    state.pos_x,
-                    state.pos_y
+                    *pos_x,
+                    *pos_y
                 );
             }
         }
@@ -197,10 +231,10 @@ fn handle_report(report: &MouseReport) {
             "Mouse move dx={} dy={} pos=({}, {})",
             report.x,
             report.y,
-            state.pos_x,
-            state.pos_y
+            *pos_x,
+            *pos_y
         );
     }
 
-    state.last_buttons = report.buttons;
+    *last_buttons = report.buttons;
 }

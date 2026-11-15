@@ -82,6 +82,10 @@ edit /mnt/NEW.TXT
 umount /mnt
 ```
 
+Format media kosong sebagai FAT32 superfloppy dengan `mkfs.fat usb0 --yes`
+sebelum mount. Formatting mengganti filesystem yang ada dan menghilangkan akses
+ke file lama; gunakan hanya pada media uji atau setelah backup.
+
 Example ext2 mount: `mount sata0 /mnt ext2`. Ext2 supports read/write on
 primary MBR partitions and superfloppies when the volume uses supported
 features; journaled ext3 and ext4 features are rejected.

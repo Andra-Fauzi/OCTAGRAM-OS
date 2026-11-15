@@ -1,9 +1,12 @@
 #![no_std]
 
+#[cfg(not(test))]
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::{c_char, CStr};
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(test))]
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 pub const STDIN: u64 = 0;
 pub const STDOUT: u64 = 1;
@@ -35,6 +38,20 @@ unsafe fn syscall1(number: u64, arg1: u64) -> i64 {
             "int 0x80",
             inlateout("rax") number as i64 => result,
             in("rdi") arg1,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+    result
+}
+
+unsafe fn syscall0(number: u64) -> i64 {
+    let result: i64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") number as i64 => result,
             lateout("rcx") _,
             lateout("r11") _,
             options(nostack)
@@ -183,6 +200,264 @@ pub fn close(fd: u64) -> Result<(), i64> {
     }
 }
 
+pub fn yield_to_kernel() -> Result<(), i64> {
+    let result = unsafe { syscall0(65) };
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(())
+    }
+}
+
+pub fn udp_socket() -> Result<u64, i64> {
+    let result = unsafe { syscall0(66) };
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(result as u64)
+    }
+}
+
+pub fn udp_bind(fd: u64, port: u16) -> Result<u16, i64> {
+    let result = unsafe { syscall2(67, fd, port as u64) };
+    if result < 0 {
+        Err(result)
+    } else {
+        u16::try_from(result).map_err(|_| -22)
+    }
+}
+
+pub fn udp_sendto(fd: u64, destination: [u8; 4], port: u16, payload: &[u8]) -> Result<usize, i64> {
+    let result = unsafe {
+        syscall6(
+            68,
+            fd,
+            u32::from_be_bytes(destination) as u64,
+            port as u64,
+            payload.as_ptr() as usize as u64,
+            payload.len() as u64,
+            0,
+        )
+    };
+    checked_result(result)
+}
+
+pub fn udp_recvfrom(fd: u64, buffer: &mut [u8]) -> Result<(usize, [u8; 4], u16), i64> {
+    let mut source_ip = [0; 4];
+    let mut source_port = 0u16;
+    let result = unsafe {
+        syscall6(
+            69,
+            fd,
+            buffer.as_mut_ptr() as usize as u64,
+            buffer.len() as u64,
+            source_ip.as_mut_ptr() as usize as u64,
+            &mut source_port as *mut u16 as usize as u64,
+            0,
+        )
+    };
+    checked_result(result).map(|count| (count, source_ip, source_port))
+}
+
+pub fn dns_server() -> Result<[u8; 4], i64> {
+    let mut address = [0; 4];
+    let result = unsafe { syscall1(70, address.as_mut_ptr() as usize as u64) };
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(address)
+    }
+}
+
+static NEXT_DNS_TRANSACTION_ID: AtomicU16 = AtomicU16::new(1);
+const DNS_POLL_LIMIT: usize = 1000;
+const DNS_SERVER_PORT: u16 = 53;
+const EAGAIN: i64 = -11;
+const EIO: i64 = -5;
+const EINVAL: i64 = -22;
+const ENOENT: i64 = -2;
+const ETIMEDOUT: i64 = -110;
+
+pub fn dns_lookup(hostname: &CStr) -> Result<[u8; 4], i64> {
+    let server = dns_server()?;
+    let hostname = hostname.to_bytes();
+    let transaction_id = NEXT_DNS_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed);
+    let mut query = [0; 512];
+    let query_length = build_dns_query(hostname, transaction_id, &mut query)?;
+    let socket = udp_socket()?;
+    let result = (|| {
+        udp_bind(socket, 0)?;
+        let mut sent = false;
+        for _ in 0..DNS_POLL_LIMIT {
+            match udp_sendto(socket, server, DNS_SERVER_PORT, &query[..query_length]) {
+                Ok(length) if length == query_length => {
+                    sent = true;
+                    break;
+                }
+                Ok(_) => return Err(EIO),
+                Err(EAGAIN) => yield_to_kernel()?,
+                Err(error) => return Err(error),
+            }
+        }
+        if !sent {
+            return Err(ETIMEDOUT);
+        }
+
+        let mut response = [0; 512];
+        for _ in 0..DNS_POLL_LIMIT {
+            match udp_recvfrom(socket, &mut response) {
+                Ok((length, source, port)) => {
+                    if source != server || port != DNS_SERVER_PORT {
+                        continue;
+                    }
+                    if let Some(address) = parse_dns_response(&response[..length], transaction_id)?
+                    {
+                        return Ok(address);
+                    }
+                }
+                Err(EAGAIN) => yield_to_kernel()?,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(ETIMEDOUT)
+    })();
+    let close_result = close(socket);
+    match result {
+        Err(error) => Err(error),
+        Ok(address) => close_result.map(|()| address),
+    }
+}
+
+fn build_dns_query(hostname: &[u8], id: u16, output: &mut [u8; 512]) -> Result<usize, i64> {
+    if hostname.is_empty() || hostname.len() > 254 {
+        return Err(EINVAL);
+    }
+    let name = hostname.strip_suffix(b".").unwrap_or(hostname);
+    if name.is_empty() || name.len() > 253 {
+        return Err(EINVAL);
+    }
+    output[..12].fill(0);
+    output[..2].copy_from_slice(&id.to_be_bytes());
+    output[2..4].copy_from_slice(&0x0100u16.to_be_bytes());
+    output[4..6].copy_from_slice(&1u16.to_be_bytes());
+
+    let mut cursor = 12;
+    for label in name.split(|byte| *byte == b'.') {
+        if label.is_empty() || label.len() > 63 {
+            return Err(EINVAL);
+        }
+        if label
+            .iter()
+            .any(|byte| !byte.is_ascii_alphanumeric() && *byte != b'-')
+            || label[0] == b'-'
+            || label[label.len() - 1] == b'-'
+        {
+            return Err(EINVAL);
+        }
+        output[cursor] = label.len() as u8;
+        cursor += 1;
+        output[cursor..cursor + label.len()].copy_from_slice(label);
+        cursor += label.len();
+    }
+    output[cursor] = 0;
+    cursor += 1;
+    output[cursor..cursor + 4].copy_from_slice(&[0, 1, 0, 1]);
+    Ok(cursor + 4)
+}
+
+fn parse_dns_response(packet: &[u8], id: u16) -> Result<Option<[u8; 4]>, i64> {
+    if packet.len() < 12 || u16::from_be_bytes([packet[0], packet[1]]) != id {
+        return Ok(None);
+    }
+    let flags = u16::from_be_bytes([packet[2], packet[3]]);
+    if flags & 0x8000 == 0 || flags & 0x7800 != 0 {
+        return Ok(None);
+    }
+    if flags & 0x0200 != 0 {
+        return Err(EIO);
+    }
+    match flags & 0x000f {
+        0 => {}
+        3 => return Err(ENOENT),
+        _ => return Err(EIO),
+    }
+    let question_count = u16::from_be_bytes([packet[4], packet[5]]) as usize;
+    let answer_count = u16::from_be_bytes([packet[6], packet[7]]) as usize;
+    if question_count != 1 {
+        return Err(EIO);
+    }
+    let mut cursor = 12;
+    for _ in 0..question_count {
+        cursor = skip_dns_name(packet, cursor).ok_or(EIO)?;
+        cursor = cursor
+            .checked_add(4)
+            .filter(|end| *end <= packet.len())
+            .ok_or(EIO)?;
+    }
+    for _ in 0..answer_count {
+        cursor = skip_dns_name(packet, cursor).ok_or(EIO)?;
+        let fixed_end = cursor
+            .checked_add(10)
+            .filter(|end| *end <= packet.len())
+            .ok_or(EIO)?;
+        let record_type = u16::from_be_bytes([packet[cursor], packet[cursor + 1]]);
+        let record_class = u16::from_be_bytes([packet[cursor + 2], packet[cursor + 3]]);
+        let data_length = u16::from_be_bytes([packet[cursor + 8], packet[cursor + 9]]) as usize;
+        let data_start = fixed_end;
+        let data_end = data_start
+            .checked_add(data_length)
+            .filter(|end| *end <= packet.len())
+            .ok_or(EIO)?;
+        if record_type == 1 && record_class == 1 && data_length == 4 {
+            return Ok(Some(
+                packet[data_start..data_end].try_into().map_err(|_| EIO)?,
+            ));
+        }
+        cursor = data_end;
+    }
+    Err(ENOENT)
+}
+
+fn skip_dns_name(packet: &[u8], offset: usize) -> Option<usize> {
+    let mut cursor = offset;
+    let mut next = None;
+    let mut expanded_length = 0usize;
+    let mut pointer_count = 0usize;
+    loop {
+        let length = *packet.get(cursor)?;
+        if length == 0 {
+            if expanded_length == 255 {
+                return None;
+            }
+            return Some(next.unwrap_or(cursor + 1));
+        }
+        if length & 0xc0 == 0xc0 {
+            let second = *packet.get(cursor + 1)?;
+            let target = (((length & 0x3f) as usize) << 8) | second as usize;
+            if target >= packet.len() {
+                return None;
+            }
+            next.get_or_insert(cursor.checked_add(2)?);
+            cursor = target;
+            pointer_count += 1;
+            if pointer_count > 16 {
+                return None;
+            }
+            continue;
+        }
+        if length & 0xc0 != 0 {
+            return None;
+        }
+        let label_length = length as usize;
+        expanded_length = expanded_length.checked_add(label_length + 1)?;
+        if expanded_length > 255 {
+            return None;
+        }
+        cursor = cursor.checked_add(label_length + 1)?;
+        packet.get(cursor - label_length..cursor)?;
+    }
+}
+
 pub fn fork() -> Result<u64, i64> {
     let result = unsafe { syscall1(48, 0) };
     if result < 0 {
@@ -223,10 +498,13 @@ pub fn exit(status: i32) -> ! {
     }
 }
 
+#[cfg(not(test))]
 struct HeapGuard;
 
+#[cfg(not(test))]
 static HEAP_LOCKED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(not(test))]
 impl HeapGuard {
     fn acquire() -> Self {
         while HEAP_LOCKED
@@ -239,17 +517,22 @@ impl HeapGuard {
     }
 }
 
+#[cfg(not(test))]
 impl Drop for HeapGuard {
     fn drop(&mut self) {
         HEAP_LOCKED.store(false, Ordering::Release);
     }
 }
 
+#[cfg(not(test))]
 struct MmapAllocator;
 
+#[cfg(not(test))]
 static mut HEAP_NEXT: usize = 0;
+#[cfg(not(test))]
 static mut HEAP_END: usize = 0;
 
+#[cfg(not(test))]
 unsafe impl GlobalAlloc for MmapAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if layout.size() == 0 {
@@ -315,5 +598,66 @@ unsafe impl GlobalAlloc for MmapAllocator {
     unsafe fn dealloc(&self, _pointer: *mut u8, _layout: Layout) {}
 }
 
-#[global_allocator]
+#[cfg(not(test))]
+#[cfg_attr(not(test), global_allocator)]
 static ALLOCATOR: MmapAllocator = MmapAllocator;
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::{build_dns_query, parse_dns_response, skip_dns_name};
+
+    #[test]
+    fn dns_query_encodes_labels_and_accepts_trailing_dot() {
+        let mut query = [0; 512];
+        let length = build_dns_query(b"example.com.", 0x1234, &mut query).unwrap();
+        assert_eq!(&query[..12], &[0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            &query[12..length],
+            &[7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0, 0, 1, 0, 1]
+        );
+        assert_eq!(build_dns_query(b"bad..name", 0x1234, &mut query), Err(-22));
+    }
+
+    #[test]
+    fn dns_response_reads_compressed_ipv4_answer() {
+        let mut packet = [0; 45];
+        packet[..12].copy_from_slice(&[0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0]);
+        packet[12..25].copy_from_slice(&[
+            7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0,
+        ]);
+        packet[25..29].copy_from_slice(&[0, 1, 0, 1]);
+        packet[29..41].copy_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+        packet[41..45].copy_from_slice(&[93, 184, 216, 34]);
+        assert_eq!(
+            parse_dns_response(&packet, 0x1234),
+            Ok(Some([93, 184, 216, 34]))
+        );
+    }
+
+    #[test]
+    fn dns_response_rejects_bad_compression_and_reports_nxdomain() {
+        let mut cyclic_name = [0; 14];
+        cyclic_name[12..14].copy_from_slice(&[0xc0, 0x0c]);
+        assert_eq!(skip_dns_name(&cyclic_name, 12), None);
+
+        let mut response = [0; 12];
+        response[..4].copy_from_slice(&[0x12, 0x34, 0x81, 0x83]);
+        assert_eq!(parse_dns_response(&response, 0x1234), Err(-2));
+    }
+
+    #[test]
+    fn dns_response_reports_no_a_record_and_truncation() {
+        let mut response = [0; 29];
+        response[..12].copy_from_slice(&[0x12, 0x34, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0]);
+        response[12..25].copy_from_slice(&[
+            7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0,
+        ]);
+        response[25..29].copy_from_slice(&[0, 1, 0, 1]);
+        assert_eq!(parse_dns_response(&response, 0x1234), Err(-2));
+
+        response[2] |= 0x02;
+        assert_eq!(parse_dns_response(&response, 0x1234), Err(-5));
+    }
+}

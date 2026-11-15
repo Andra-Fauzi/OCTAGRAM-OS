@@ -13,6 +13,100 @@ pub struct BarInfo {
     pub is_prefetchable: bool,
 }
 
+/// Enable MMIO decoding while leaving PCI bus mastering disabled.
+pub unsafe fn enable_mmio_only(device: &PciDevice) -> Result<(), &'static str> {
+    let command =
+        unsafe { config_read_u16(device.bus, device.device, device.function, PCI_COMMAND) };
+    let updated = mmio_only_command(command);
+    if updated != command {
+        unsafe {
+            config_write_u16(
+                device.bus,
+                device.device,
+                device.function,
+                PCI_COMMAND,
+                updated,
+            );
+        }
+    }
+
+    unsafe { disable_bus_master(device)? };
+    let verify =
+        unsafe { config_read_u16(device.bus, device.device, device.function, PCI_COMMAND) };
+    if verify & CMD_MEMORY_SPACE == 0 {
+        return Err("PCI command register did not enable MMIO decoding");
+    }
+    Ok(())
+}
+
+/// Enable PCI bus mastering after DMA memory and device rings are prepared.
+pub unsafe fn enable_bus_master(device: &PciDevice) -> Result<(), &'static str> {
+    let command =
+        unsafe { config_read_u16(device.bus, device.device, device.function, PCI_COMMAND) };
+    let Some(updated) = bus_master_command(command) else {
+        return Err("PCI MMIO decoding must be enabled before bus mastering");
+    };
+    if updated != command {
+        unsafe {
+            config_write_u16(
+                device.bus,
+                device.device,
+                device.function,
+                PCI_COMMAND,
+                updated,
+            );
+        }
+    }
+
+    let verify =
+        unsafe { config_read_u16(device.bus, device.device, device.function, PCI_COMMAND) };
+    if verify & (CMD_MEMORY_SPACE | CMD_BUS_MASTER) != (CMD_MEMORY_SPACE | CMD_BUS_MASTER) {
+        return Err("PCI command register did not enable bus mastering");
+    }
+    Ok(())
+}
+
+/// Disable PCI bus mastering and verify that the device cannot initiate DMA.
+pub(crate) unsafe fn disable_bus_master(device: &PciDevice) -> Result<(), &'static str> {
+    let command =
+        unsafe { config_read_u16(device.bus, device.device, device.function, PCI_COMMAND) };
+    let updated = without_bus_master(command);
+    if updated != command {
+        unsafe {
+            config_write_u16(
+                device.bus,
+                device.device,
+                device.function,
+                PCI_COMMAND,
+                updated,
+            );
+        }
+    }
+
+    let verify =
+        unsafe { config_read_u16(device.bus, device.device, device.function, PCI_COMMAND) };
+    if verify & CMD_BUS_MASTER != 0 {
+        return Err("PCI command register did not disable bus mastering");
+    }
+    Ok(())
+}
+
+const fn mmio_only_command(command: u16) -> u16 {
+    (command | CMD_MEMORY_SPACE) & !CMD_BUS_MASTER
+}
+
+const fn bus_master_command(command: u16) -> Option<u16> {
+    if command & CMD_MEMORY_SPACE == 0 {
+        None
+    } else {
+        Some(command | CMD_BUS_MASTER)
+    }
+}
+
+const fn without_bus_master(command: u16) -> u16 {
+    command & !CMD_BUS_MASTER
+}
+
 /// Enable memory space access and bus mastering on a PCI device.
 pub unsafe fn enable_device(device: &PciDevice) {
     let mut command =
@@ -66,6 +160,47 @@ pub unsafe fn get_bar(device: &PciDevice, index: u8) -> BarInfo {
         address,
         is_64bit,
         is_prefetchable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CMD_BUS_MASTER, CMD_MEMORY_SPACE, bus_master_command, mmio_only_command, without_bus_master,
+    };
+
+    #[test]
+    fn mmio_probe_enables_decode_without_bus_mastering() {
+        let command = 0x0141 | CMD_BUS_MASTER;
+        let updated = mmio_only_command(command);
+
+        assert_ne!(updated & CMD_MEMORY_SPACE, 0);
+        assert_eq!(updated & CMD_BUS_MASTER, 0);
+        assert_eq!(
+            updated & !(CMD_MEMORY_SPACE | CMD_BUS_MASTER),
+            command & !(CMD_MEMORY_SPACE | CMD_BUS_MASTER)
+        );
+    }
+
+    #[test]
+    fn bus_master_enable_requires_memory_decoding_and_preserves_other_bits() {
+        let command = 0x0141 | CMD_MEMORY_SPACE;
+        let updated = bus_master_command(command).unwrap();
+        assert_ne!(updated & CMD_BUS_MASTER, 0);
+        assert_eq!(
+            updated & !(CMD_MEMORY_SPACE | CMD_BUS_MASTER),
+            command & !(CMD_MEMORY_SPACE | CMD_BUS_MASTER)
+        );
+        assert_eq!(bus_master_command(0x0141), None);
+    }
+
+    #[test]
+    fn bus_master_disable_preserves_memory_decoding_and_other_bits() {
+        let command = 0x0141 | CMD_MEMORY_SPACE | CMD_BUS_MASTER;
+        let updated = without_bus_master(command);
+        assert_eq!(updated & CMD_BUS_MASTER, 0);
+        assert_ne!(updated & CMD_MEMORY_SPACE, 0);
+        assert_eq!(updated & !CMD_BUS_MASTER, command & !CMD_BUS_MASTER);
     }
 }
 

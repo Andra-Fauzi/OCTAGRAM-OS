@@ -11,11 +11,13 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <netinet/in.h>
 
 struct octagram_FILE {
     int fd;
@@ -32,6 +34,8 @@ _Static_assert(offsetof(struct dirent, d_name) == 19,
                "OCTAGRAM dirent name offset must match the syscall ABI");
 _Static_assert(sizeof(struct dirent) == 280,
                "OCTAGRAM dirent size must match the syscall ABI");
+_Static_assert(sizeof(struct sockaddr_in) == 16,
+               "OCTAGRAM sockaddr_in must match the syscall ABI");
 
 enum {
     STREAM_READABLE = 1u << 0,
@@ -696,9 +700,11 @@ char *strerror(int error)
     case ENOENT: return "no such file or directory";
     case ENOMEM: return "out of memory";
     case ENOSPC: return "no space left";
+    case ENOSYS: return "function not implemented";
     case ENOTDIR: return "not a directory";
     case EROFS: return "read-only filesystem";
     case ESPIPE: return "invalid seek";
+    case ENOTSUP: return "operation not supported";
     default: return "unknown error";
     }
 }
@@ -1120,6 +1126,123 @@ int close(int fd)
     return (int)posix_result(oct_close(fd));
 }
 
+int socket(int domain, int type, int protocol)
+{
+    return (int)posix_result(oct_socket(domain, type, protocol));
+}
+
+int bind(int socket_fd, const struct sockaddr *address, socklen_t address_length)
+{
+    return (int)posix_result(oct_bind(socket_fd, address, address_length));
+}
+
+int listen(int socket_fd, int backlog)
+{
+    return (int)posix_result(oct_listen(socket_fd, backlog));
+}
+
+int accept(int socket_fd, struct sockaddr *address, socklen_t *address_length)
+{
+    for (;;) {
+        int64_t result = oct_accept(socket_fd, address, address_length);
+        if (result != -EAGAIN) {
+            return (int)posix_result(result);
+        }
+        int64_t yield_result = oct_yield();
+        if (yield_result < 0) {
+            return (int)posix_result(yield_result);
+        }
+    }
+}
+
+int connect(int socket_fd, const struct sockaddr *address,
+            socklen_t address_length)
+{
+    for (;;) {
+        int64_t result = oct_connect(socket_fd, address, address_length);
+        if (result != -EAGAIN) {
+            return (int)posix_result(result);
+        }
+        int64_t yield_result = oct_yield();
+        if (yield_result < 0) {
+            return (int)posix_result(yield_result);
+        }
+    }
+}
+
+ssize_t send(int socket_fd, const void *buffer, size_t length, int flags)
+{
+    if (length > OCT_MAX_SYSCALL_IO) {
+        length = OCT_MAX_SYSCALL_IO;
+    }
+    for (;;) {
+        int64_t result = oct_send(socket_fd, buffer, length, flags);
+        if (result != -EAGAIN || (flags & MSG_DONTWAIT) != 0) {
+            return (ssize_t)posix_result(result);
+        }
+        int64_t yield_result = oct_yield();
+        if (yield_result < 0) {
+            return (ssize_t)posix_result(yield_result);
+        }
+    }
+}
+
+static ssize_t recv_once(int socket_fd, void *buffer, size_t length, int flags)
+{
+    for (;;) {
+        int64_t result = oct_recv(socket_fd, buffer, length, flags);
+        if (result != -EAGAIN || (flags & MSG_DONTWAIT) != 0) {
+            return (ssize_t)posix_result(result);
+        }
+        int64_t yield_result = oct_yield();
+        if (yield_result < 0) {
+            return (ssize_t)posix_result(yield_result);
+        }
+    }
+}
+
+ssize_t recv(int socket_fd, void *buffer, size_t length, int flags)
+{
+    if (length > OCT_MAX_SYSCALL_IO) {
+        length = OCT_MAX_SYSCALL_IO;
+    }
+    if ((flags & MSG_WAITALL) == 0 || (flags & MSG_PEEK) != 0) {
+        return recv_once(socket_fd, buffer, length, flags);
+    }
+
+    size_t received = 0;
+    while (received < length) {
+        ssize_t result = recv_once(
+            socket_fd, (unsigned char *)buffer + received,
+            length - received, flags & ~MSG_WAITALL);
+        if (result < 0) {
+            return received == 0 ? -1 : (ssize_t)received;
+        }
+        if (result == 0) {
+            break;
+        }
+        received += (size_t)result;
+    }
+    return (ssize_t)received;
+}
+
+int shutdown(int socket_fd, int how)
+{
+    return (int)posix_result(oct_shutdown(socket_fd, how));
+}
+
+int getsockname(int socket_fd, struct sockaddr *address,
+                socklen_t *address_length)
+{
+    return (int)posix_result(oct_getsockname(socket_fd, address, address_length));
+}
+
+int getpeername(int socket_fd, struct sockaddr *address,
+                socklen_t *address_length)
+{
+    return (int)posix_result(oct_getpeername(socket_fd, address, address_length));
+}
+
 DIR *opendir(const char *path)
 {
     int fd = (int)posix_result(oct_opendir(path));
@@ -1177,7 +1300,16 @@ ssize_t read(int fd, void *buffer, size_t count)
     if (count > OCT_MAX_SYSCALL_IO) {
         count = OCT_MAX_SYSCALL_IO;
     }
-    return (ssize_t)posix_result(oct_read(fd, buffer, count));
+    for (;;) {
+        int64_t result = oct_read(fd, buffer, count);
+        if (result != -EAGAIN) {
+            return (ssize_t)posix_result(result);
+        }
+        int64_t yield_result = oct_yield();
+        if (yield_result < 0) {
+            return (ssize_t)posix_result(yield_result);
+        }
+    }
 }
 
 ssize_t write(int fd, const void *buffer, size_t count)
@@ -1185,7 +1317,16 @@ ssize_t write(int fd, const void *buffer, size_t count)
     if (count > OCT_MAX_SYSCALL_IO) {
         count = OCT_MAX_SYSCALL_IO;
     }
-    return (ssize_t)posix_result(oct_write(fd, buffer, count));
+    for (;;) {
+        int64_t result = oct_write(fd, buffer, count);
+        if (result != -EAGAIN) {
+            return (ssize_t)posix_result(result);
+        }
+        int64_t yield_result = oct_yield();
+        if (yield_result < 0) {
+            return (ssize_t)posix_result(yield_result);
+        }
+    }
 }
 
 off_t lseek(int fd, off_t offset, int whence)

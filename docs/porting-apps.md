@@ -86,13 +86,23 @@ Pada build statis, `errno` dan allocator free-list memakai TLS per thread;
 5. Allocator libc memakai `mmap(MAP_PRIVATE | MAP_ANONYMOUS)` dan mengulang
    penggunaan blok yang dibebaskan; ia belum menggabungkan blok bersebelahan
    atau mengembalikan heap ke OS.
-6. API proses POSIX `fork`, `execve`, `waitpid`, dan subset `posix_spawn`
+6. `oct_yield()` mengembalikan eksekusi sementara ke loop kernel agar pekerjaan
+   driver tertunda dapat diproses, lalu melanjutkan program pada instruksi
+   berikutnya. Gunakan untuk menunggu I/O yang belum memiliki syscall blocking.
+7. API proses POSIX `fork`, `execve`, `waitpid`, dan subset `posix_spawn`
    tersedia. `fork` memakai eager copy; subset thread tersedia melalui
-   `<pthread.h>`. Signals dan sockets belum tersedia. Dynamic executable
-   dengan `PT_INTERP` dapat memakai loader terbatas yang dijelaskan di atas.
-7. `clock_gettime(CLOCK_REALTIME)` dan `time()` membaca RTC dengan resolusi
+   `<pthread.h>`. Signals belum tersedia. Socket IPv4 TCP `SOCK_STREAM` tersedia
+   melalui `<sys/socket.h>` dan `<netinet/in.h>`; UDP datagram tersedia melalui
+   API OCTAGRAM (`oct_udp_socket`, `oct_udp_bind`, `oct_udp_sendto`, dan
+   `oct_udp_recvfrom`) di `octagram.h`. API socket masih terbatas: tidak ada
+   IPv6, UDP POSIX, atau mode nonblocking. Operasi socket blocking mengulang
+   `-EAGAIN` setelah `oct_yield()`. `oct_dns_server()` mengambil alamat DNS dari
+   DHCP; runtime Rust menyediakan `dns_lookup()` untuk hostname dengan hasil
+   IPv4 A-record. Dynamic executable dengan `PT_INTERP` dapat memakai loader
+   terbatas yang dijelaskan di atas.
+8. `clock_gettime(CLOCK_REALTIME)` dan `time()` membaca RTC dengan resolusi
    satu detik. Zona waktu dan `CLOCK_MONOTONIC` belum tersedia.
-8. `<sys/mman.h>` menyediakan pemetaan anonim/file-backed, `MAP_SHARED`/
+9. `<sys/mman.h>` menyediakan pemetaan anonim/file-backed, `MAP_SHARED`/
    `MAP_PRIVATE`, dan API pengelolaan pemetaan POSIX. Batas ruang alamat dan
    operasi yang tidak didukung dijelaskan di
    [`docs/syscall-abi.md`](syscall-abi.md).

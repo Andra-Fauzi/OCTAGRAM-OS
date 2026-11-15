@@ -129,6 +129,10 @@ pub unsafe fn enter_user_mode(entry: u64, user_stack: u64) -> u64 {
     }
 }
 
+pub unsafe fn resume_user_frame(frame: *mut u8) -> u64 {
+    unsafe { resume_user(frame) }
+}
+
 #[unsafe(naked)]
 unsafe extern "C" fn enter_user(entry: u64, user_stack: u64) -> u64 {
     naked_asm!(
@@ -151,6 +155,42 @@ unsafe extern "C" fn enter_user(entry: u64, user_stack: u64) -> u64 {
         saved_rsp = sym USER_KERNEL_RSP,
         user_data = const USER_DATA_SELECTOR,
         user_code = const USER_CODE_SELECTOR,
+    );
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn resume_user(frame: *mut u8) -> u64 {
+    naked_asm!(
+        "push rbx",
+        "push rbp",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        "mov qword ptr [rip + {saved_rsp}], rsp",
+        "mov ax, {user_data}",
+        "mov ds, ax",
+        "mov es, ax",
+        "mov rsp, rdi",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rbp",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rax",
+        "add rsp, 16",
+        "iretq",
+        saved_rsp = sym USER_KERNEL_RSP,
+        user_data = const USER_DATA_SELECTOR,
     );
 }
 

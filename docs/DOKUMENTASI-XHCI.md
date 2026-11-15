@@ -100,6 +100,7 @@ Ring tempat **xHC menulis hasil/notifikasi** ke software — kebalikan arah dari
 ### d. Device Context & Input Context
 - **Device Context** = "rapor" device menurut xHC (read oleh software, ditulis oleh xHC).
 - **Input Context** = "formulir permintaan perubahan" yang kamu isi lalu kirim lewat command `Address Device` / `Configure Endpoint`. Isinya mirror dari Device Context tapi ditambah `InputControlContext` (bilang field mana saja yang mau diubah).
+- Stride tiap context mengikuti bit `CSZ` pada `HCCPARAMS1`: 32 atau 64 byte. Semua context dalam Input/Device Context harus memakai stride itu; jangan mengasumsikan ukuran struct Rust menentukan layout DMA.
 
 ### e. Transfer Ring (satu per endpoint)
 Ring tempat kamu kirim TRB data untuk endpoint tertentu (bukan command global). EP0 (control endpoint) selalu ada satu, dan tiap endpoint tambahan yang di-configure (misalnya endpoint interrupt keyboard) punya ring sendiri.
@@ -135,6 +136,10 @@ if trb_cycle_bit != self.cycle_state {
 }
 ```
 
+Saat software menulis TRB baru, field parameter dan status harus ditulis lebih dulu, lalu lakukan release/compiler barrier, dan tulis dword control yang memuat Cycle bit paling akhir. Setelah itu baru ring doorbell. Dengan urutan ini xHC tidak melihat TRB sebagai valid sebelum seluruh payload-nya siap.
+
+Untuk control transfer EP0, Setup/Data/Status adalah tahapan satu transaksi: Setup dan Data TRB tidak memakai Chain bit untuk transfer satu data-stage; Data Stage IN mengaktifkan Interrupt-on-Short-Packet, dan arah Status Stage berlawanan dengan arah data (atau IN bila tidak ada data).
+
 ### Kenapa butuh Link TRB?
 
 Ring di memori itu **array linear biasa**, bukan struktur melingkar beneran. Waktu producer (software) sudah mengisi TRB terakhir dan mau "muter balik" ke index 0, **hardware yang membaca TRB satu-satu secara linear gak otomatis tahu itu**. Kalau tidak diberi tahu secara eksplisit, hardware akan lanjut baca alamat memori setelah TRB terakhir — yang isinya bukan bagian dari ring, alias sampah/undefined.
@@ -159,12 +164,13 @@ Ring yang **wajib** punya Link TRB kalau dipakai berkali-kali sampai wrap: Comma
 
 Fungsi utamanya `init_xhci()` di `xhci.rs`, dipanggil dari `main.rs`. Urutannya:
 
-1. **Reset controller** — clear bit Run/Stop di `USBCMD`, tunggu `USBSTS.HCH` (Halted) jadi 1, lalu set bit `HCRST` (Host Controller Reset), tunggu sampai reset selesai dan `USBSTS.CNR` (Controller Not Ready) jadi 0.
-2. **Baca MaxSlots** dari `HCSPARAMS1`, tulis ke register `CONFIG` — ini bilang ke controller berapa banyak device yang mau kamu dukung sekaligus.
-3. **Alokasi & daftarkan DCBAA** — alokasi array 256 pointer, terjemahkan ke alamat fisik, tulis ke register `DCBAAP`.
-4. **Alokasi & daftarkan Command Ring** — sama pola: alokasi, translate fisik, tulis ke register `CRCR` (bit paling bawah = cycle state awal, selalu 1).
-5. **Setup Event Ring** (`setup_event_ring`) — alokasi segmen event ring + ERST (1 entry), tulis `ERSTSZ`, `ERDP`, `ERSTBA` ke Interrupter 0, dan set bit interrupt enable (`IMAN`).
-6. **Start controller** (`start_controller`) — set bit `INTE` (Interrupt Enable) dan `Run/Stop` di `USBCMD`, tunggu `USBSTS.HCH` jadi 0 (artinya controller sudah benar-benar jalan).
+1. **Ambil alih dari firmware** — telusuri extended capability dan minta ownership lewat USB Legacy Support capability, lalu nonaktifkan SMI legacy USB agar firmware tidak bersaing dengan driver.
+2. **Reset controller** — clear bit Run/Stop di `USBCMD`, tunggu `USBSTS.HCH` (Halted) jadi 1, lalu set bit `HCRST` (Host Controller Reset), tunggu sampai reset selesai dan `USBSTS.CNR` (Controller Not Ready) jadi 0.
+3. **Baca MaxSlots** dari `HCSPARAMS1`, tulis ke register `CONFIG` — ini bilang ke controller berapa banyak device yang mau kamu dukung sekaligus.
+4. **Alokasi & daftarkan DCBAA** — alokasi array 256 pointer, terjemahkan ke alamat fisik, tulis ke register `DCBAAP`.
+5. **Alokasi & daftarkan Command Ring** — sama pola: alokasi, translate fisik, tulis ke register `CRCR` (bit paling bawah = cycle state awal, selalu 1).
+6. **Setup Event Ring** (`setup_event_ring`) — alokasi segmen event ring + ERST (1 entry), tulis `ERSTSZ`, `ERDP`, `ERSTBA` ke Interrupter 0, dan set bit interrupt enable (`IMAN`).
+7. **Start & nyalakan port** (`start_controller`) — set bit `INTE` (Interrupt Enable) dan `Run/Stop` di `USBCMD`, tunggu `USBSTS.HCH` jadi 0, lalu set `PORTSC.PP` pada semua port bila controller mendukung port power switching.
 
 Setelah tahap ini, controller sudah "hidup" tapi belum ada device yang dikenali — itu baru terjadi di tahap enumerasi.
 
@@ -176,15 +182,16 @@ Ini yang terjadi tiap kali ada device USB baru yang mau dipakai (misalnya keyboa
 
 | # | Langkah | Fungsi | Penjelasan |
 |---|---|---|---|
-| 1 | Scan port | `scan_ports` | Baca `PORTSC` tiap port, cek bit "connected". Log kamu menunjukkan `Port 4 CONNECTED, speed=3`. |
-| 2 | Minta slot baru | `enable_slot` | Kirim command `Enable Slot` lewat Command Ring, xHC balas dengan Slot ID (di log: `slot_id=1`). |
-| 3 | Alamatkan device | `address_device` | Isi Input Context (info port, speed, EP0), kirim command `Address Device`. xHC sekarang menganggap device "punya alamat" dan EP0 siap dipakai. |
-| 4 | Ambil Device Descriptor | `get_device_descriptor` | Control transfer standar `GET_DESCRIPTOR` lewat EP0 — hasilnya vendor ID, product ID, class, max packet size EP0, dst. |
-| 5 | Ambil Configuration Descriptor | `get_configuration_descriptor_and_find_interrupt_in` | Ambil deskriptor konfigurasi (berisi info semua interface & endpoint), parse manual byte-per-byte, cari endpoint interrupt IN (yang dipakai keyboard kirim laporan tombol). |
-| 6 | Set Configuration | `control_transfer_no_data(..., 0x09, 1, 0)` | Request standar `SET_CONFIGURATION` — device resmi "aktif" pakai konfigurasi nomor 1. |
-| 7 | Configure Endpoint | `configure_endpoint` | Isi Input Context Full (slot + endpoint context untuk endpoint interrupt yang ditemukan), kirim command `Configure Endpoint`. Ini yang bikin xHC benar-benar menyiapkan Transfer Ring untuk endpoint tersebut. |
-| 8 | Set Boot Protocol (khusus HID) | `init_keyboard` → `control_transfer_no_data` dengan `bRequest=0x0B` | Request class-specific HID `SET_PROTOCOL` supaya device kirim laporan dalam format "Boot Protocol" yang seragam (8 byte tetap), bukan format custom vendor. |
-| 9 | Mulai polling | `init_keyboard` → `arm_next_report` | Kirim TRB pertama ke Transfer Ring endpoint interrupt, nunggu device kirim laporan tombol. |
+| 1 | Scan port | `scan_ports` | Baca `PORTSC` tiap port, cek bit "connected". Jika daya port dikendalikan xHC, port lebih dulu dinyalakan saat inisialisasi. |
+| 2 | Reset port | `reset_port` | Selalu reset perangkat yang terhubung, termasuk bila `PORTSC.PED` sudah aktif setelah firmware menginisialisasi port. USB 3.x memakai Warm Reset. |
+| 3 | Minta slot baru | `enable_slot` | Kirim command `Enable Slot` lewat Command Ring, xHC balas dengan Slot ID (di log: `slot_id=1`). |
+| 4 | Alamatkan device | `address_device` | Isi Input Context (info port, speed, EP0), kirim command `Address Device`. xHC sekarang menganggap device "punya alamat" dan EP0 siap dipakai. |
+| 5 | Ambil Device Descriptor | `get_device_descriptor` | Control transfer standar `GET_DESCRIPTOR` lewat EP0 — hasilnya vendor ID, product ID, class, max packet size EP0, dst. |
+| 6 | Ambil Configuration Descriptor | `get_configuration_descriptor_endpoints` | Ambil deskriptor konfigurasi (berisi info semua interface & endpoint), lalu parse descriptor interface dan endpoint. |
+| 7 | Set Configuration | `control_transfer_no_data(..., 0x09, 1, 0)` | Request standar `SET_CONFIGURATION` — device resmi "aktif" pakai konfigurasi nomor 1. |
+| 8 | Configure Endpoint | `configure_endpoint` | Isi Input Context Full (slot + endpoint context untuk endpoint yang ditemukan), kirim command `Configure Endpoint`. Ini yang bikin xHC benar-benar menyiapkan Transfer Ring untuk endpoint tersebut. |
+| 9 | Set Boot Protocol (khusus HID) | `init_keyboard` → `control_transfer_no_data` dengan `bRequest=0x0B` | Request class-specific HID `SET_PROTOCOL` supaya device kirim laporan dalam format "Boot Protocol" yang seragam (8 byte tetap), bukan format custom vendor. |
+| 10 | Mulai polling | `init_keyboard` → `arm_next_report` | Kirim TRB pertama ke Transfer Ring endpoint interrupt, nunggu device kirim laporan tombol. |
 
 ### Kenapa semua step ini harus lewat command/control transfer, bukan langsung tulis field?
 
@@ -272,7 +279,7 @@ core::arch::asm!("sti");
 
 ## 11. Riwayat bug yang pernah terjadi
 
-Dua bug besar yang sudah ditemukan dan diperbaiki dalam pengembangan ini, dicatat supaya jadi referensi kalau muncul gejala serupa lagi:
+Perbaikan dan koreksi xHCI yang dicatat supaya jadi referensi kalau muncul gejala serupa lagi:
 
 ### Bug #1 — Status Stage TRB hilang di `control_transfer_no_data`
 **Gejala:** panic `Timeout control transfer no data` saat memanggil `SET_CONFIGURATION`.
@@ -285,6 +292,13 @@ Dua bug besar yang sudah ditemukan dan diperbaiki dalam pengembangan ini, dicata
 **Perbaikan:** tulis Link TRB asli (`TRB_TYPE_LINK`, dengan bit Toggle Cycle) di slot terakhir tiap ring saat dialokasikan, dan refresh cycle bit-nya tiap kali producer software melewati titik wrap.
 
 > Catatan: Command Ring dan Transfer Ring EP0 punya potensi bug yang sama (belum ada Link TRB), tapi belum kejadian karena jumlah command/control-transfer yang dikirim masih sedikit dan belum sampai wrap. Kalau nanti fitur bertambah (banyak device, banyak request), pola perbaikan yang sama perlu diterapkan di situ juga.
+
+### Koreksi #3 — Publikasikan TRB setelah payload siap
+**Risiko:** menulis seluruh struct TRB sekaligus tidak menjamin field payload terlihat oleh xHC sebelum Cycle bit. Cycle bit adalah penanda ownership yang memberitahu xHC bahwa TRB siap diproses.
+**Perbaikan:** tulis tiga dword pertama secara volatile, lakukan release/compiler barrier, lalu tulis dword control (termasuk Cycle bit) terakhir. Terapkan pada command, transfer, dan Link TRB.
+
+### Koreksi #4 — Selaraskan field control transfer EP0
+Linux tidak memasang Chain bit pada Setup/Data stage control transfer biasa, dan memasang Interrupt-on-Short-Packet pada Data Stage IN. Kode mengikuti pola tersebut; arah Status Stage tetap berlawanan dengan arah data (atau IN bila tidak ada data).
 
 ---
 

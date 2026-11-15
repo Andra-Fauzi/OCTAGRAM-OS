@@ -67,6 +67,22 @@ menyediakan inline wrappers.
 | 62 | `thread_exit` | `RDI=result` | Tidak kembali |
 | 63 | `thread_join` | `RDI=thread_id`, `RSI=result*` (0 untuk abaikan) | 0 |
 | 64 | `thread_self` | — | Thread ID saat ini |
+| 65 | `kernel_yield` | — | 0; jalankan driver tertunda lalu lanjutkan proses |
+| 66 | `udp_socket` | — | Descriptor socket UDP |
+| 67 | `udp_bind` | `RDI=fd`, `RSI=port` (0 untuk ephemeral) | Port lokal yang terikat |
+| 68 | `udp_sendto` | `RDI=fd`, `RSI=IPv4`, `RDX=port`, `R10=buffer`, `R8=count` | Byte terkirim |
+| 69 | `udp_recvfrom` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=source_ip[4]` (0 untuk abaikan), `R8=source_port*` (0 untuk abaikan) | Byte diterima |
+| 70 | `network_dns` | `RDI=IPv4[4]` | 0; `-ENETDOWN` jika DNS belum dikonfigurasi |
+| 71 | `socket` | `RDI=domain`, `RSI=type`, `RDX=protocol` | Descriptor socket |
+| 72 | `bind` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=length` | 0 |
+| 73 | `listen` | `RDI=fd`, `RSI=backlog` | 0 |
+| 74 | `accept` | `RDI=fd`, `RSI=sockaddr_in*` (0 untuk abaikan), `RDX=socklen_t*` | Descriptor koneksi baru |
+| 75 | `connect` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=length` | 0 |
+| 76 | `send` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=flags` | Byte diterima untuk dikirim |
+| 77 | `recv` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=flags` | Byte yang dibaca |
+| 78 | `shutdown` | `RDI=fd`, `RSI=how` (`SHUT_RD/WR/RDWR`) | 0 |
+| 79 | `getsockname` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=socklen_t*` | 0 |
+| 80 | `getpeername` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=socklen_t*` | 0 |
 
 Nomor 10, 15, 18, 19, 23, 24, 26, dan 49 sudah dicabut dan tetap
 dicadangkan agar nomor syscall berikutnya tidak bergeser; pemanggilannya
@@ -89,13 +105,41 @@ menunggu thread dalam proses yang sama dan hanya satu kali. `thread_exit` membaw
 nilai pointer hasil yang disimpan oleh `thread_join`. `getpid` tetap mengembalikan
 ID proses; `thread_self` mengembalikan ID thread.
 
+`oct_udp_socket`, `oct_udp_bind`, `oct_udp_sendto`, dan `oct_udp_recvfrom`
+menyediakan datagram IPv4 UDP sederhana. Alamat tujuan pada `oct_udp_sendto`
+memakai nilai `OCT_IPV4(a,b,c,d)`. Bind port 0 memilih port ephemeral dan
+mengembalikan port yang dipakai. `recvfrom` menyalin alamat sumber sebagai empat
+oktet dan port sumber sebagai `uint16_t` host-order. Antrean dibatasi delapan
+datagram per socket; `-EAGAIN` berarti belum ada data, atau pengiriman menunggu
+resolusi ARP. Datagram yang datang saat antrean penuh dibuang. Ulangi operasi
+setelah `oct_yield()` agar loop kernel dapat memproses event USB tertunda. Jika
+tidak ada task user lain yang siap, `oct_yield()` juga menunggu interrupt
+berikutnya sebelum melanjutkan, sehingga retry I/O tidak terus-menerus memutar
+CPU.
+
+API C `<sys/socket.h>` dan `<netinet/in.h>` menyediakan IPv4 TCP `SOCK_STREAM`:
+`socket`, `bind`, `listen`, `accept`, `connect`, `send`, `recv`, `shutdown`,
+`getsockname`, dan `getpeername`. `sockaddr_in.sin_port` memakai byte order
+jaringan (`htons`/`ntohs`), sedangkan `sin_addr.s_addr` dapat diisi dengan
+`htonl`. `socket` saat ini hanya menerima `AF_INET`, `SOCK_STREAM`, dan protocol
+0 atau `IPPROTO_TCP`; datagram POSIX, IPv6, socket options, dan mode nonblocking
+belum didukung. Operasi `accept`, `connect`, `send`, dan `recv` yang blocking
+mengulang `-EAGAIN` setelah `oct_yield`; `MSG_DONTWAIT` pada `send`/`recv`
+mengembalikan `EAGAIN`. `MSG_PEEK` dan `MSG_WAITALL` tersedia terbatas pada
+`recv`. TCP memakai satu segmen outstanding per koneksi, buffer terima 8192
+byte, dan MSS hingga 1460 byte; ini fondasi awal, belum implementasi TCP penuh.
+`oct_dns_server()` mengambil alamat DNS yang diterima dari DHCP; Rust runtime
+menyediakan `dns_server()` dan resolver IPv4 A-record `dns_lookup()`.
+
 `open` menerima mode akses `OCT_O_RDONLY=0`, `OCT_O_WRONLY=1`,
 `OCT_O_RDWR=2` dan flag `OCT_O_CREAT`, `OCT_O_TRUNC`, `OCT_O_APPEND` dari
 header. Argumen `mode` hanya dipakai saat membuat file dan dikurangi dengan
 umask proses; nilai awal umask adalah `022`. `mkdir` juga menerima mode dan
-menerapkan umask. Wrapper `oct_open()` memakai `0644`, sedangkan `open()` C
-memakai argumen mode variadik saat `O_CREAT` diberikan. Mode create/truncate
-memerlukan akses tulis. Path boleh absolute atau relatif terhadap cwd proses, harus
+menerapkan umask. Jika filesystem tidak mendukung permission per-file, mode saat
+pembuatan diabaikan dan file dibuat dengan permission default filesystem;
+operasi `chmod` eksplisit tetap melaporkan `ENOSYS`. Wrapper `oct_open()` memakai
+`0644`, sedangkan `open()` C memakai argumen mode variadik saat `O_CREAT`
+diberikan. Mode create/truncate memerlukan akses tulis. Path boleh absolute atau relatif terhadap cwd proses, harus
 NUL-terminated, dan maksimal 255 byte.
 
 `lseek` memakai `OCT_SEEK_SET`, `OCT_SEEK_CUR`, atau `OCT_SEEK_END`.
@@ -259,7 +303,7 @@ meliputi `-2` (not found), `-9` (bad descriptor),
 `-28` (no space), `-29` (TTY tidak dapat di-seek), `-34` (buffer terlalu
 kecil), dan `-38` (syscall tidak dikenal).
 
-ABI ini sengaja bukan Linux ABI dan belum mencakup signal, socket,
+ABI ini sengaja bukan Linux ABI dan belum mencakup signal, IPv6, UDP POSIX,
 `CLOCK_MONOTONIC`, atau dynamic linking penuh. Interpreter `PT_INTERP` awal
 tersedia untuk executable PIE dan batas formatnya dijelaskan di
 [`docs/porting-apps.md`](porting-apps.md). Setiap proses ELF memiliki address space privat dan dapat dipreempt ketika

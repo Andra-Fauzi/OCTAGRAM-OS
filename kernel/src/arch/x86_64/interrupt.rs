@@ -12,7 +12,7 @@
 // sengaja tak terpakai.
 #[allow(dead_code)]
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct InterruptStackFrame {
     pub instruction_pointer: u64,
     pub code_segment: u64,

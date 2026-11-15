@@ -6,18 +6,27 @@ use core::any::Any;
 use spin::Mutex;
 
 use super::pci::PciDevice;
-use super::usb::xhci::EndpointInfo;
+use super::usb::{EndpointInfo, UsbControllerId};
 
 pub type DriverState = Arc<dyn Any + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceKey {
-    Pci { bus: u8, device: u8, function: u8 },
-    UsbInterface { slot_id: u32, interface_number: u8 },
+    Pci {
+        bus: u8,
+        device: u8,
+        function: u8,
+    },
+    UsbInterface {
+        controller: UsbControllerId,
+        slot_id: u32,
+        interface_number: u8,
+    },
 }
 
 #[derive(Clone)]
 pub struct UsbInterfaceInfo {
+    pub controller: UsbControllerId,
     pub slot_id: u32,
     pub root_port: u8,
     pub number: u8,
@@ -25,6 +34,7 @@ pub struct UsbInterfaceInfo {
     pub subclass: u8,
     pub protocol: u8,
     pub endpoints: Vec<EndpointInfo>,
+    pub configuration_endpoints: Vec<EndpointInfo>,
 }
 
 #[derive(Clone)]
@@ -42,6 +52,7 @@ impl DeviceInfo {
                 function: device.function,
             },
             Self::UsbInterface(interface) => DeviceKey::UsbInterface {
+                controller: interface.controller,
                 slot_id: interface.slot_id,
                 interface_number: interface.number,
             },

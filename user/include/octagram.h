@@ -34,6 +34,9 @@ char *getenv(const char *name);
 #define OCT_MAX_SYSCALL_IO 4096
 #define OCT_WAIT_ANY UINT64_MAX
 #define OCT_WNOHANG 1u
+#define OCT_IPV4(a, b, c, d) \
+    ((((uint32_t)(a) & 0xffu) << 24) | (((uint32_t)(b) & 0xffu) << 16) | \
+     (((uint32_t)(c) & 0xffu) << 8) | ((uint32_t)(d) & 0xffu))
 
 struct oct_stat {
     uint64_t size;
@@ -367,6 +370,110 @@ static inline int64_t oct_thread_join(uint64_t thread_id, void **result)
 static inline int64_t oct_thread_self(void)
 {
     return oct_syscall0(64);
+}
+
+static inline int64_t oct_yield(void)
+{
+    return oct_syscall0(65);
+}
+
+static inline int64_t oct_udp_socket(void)
+{
+    return oct_syscall0(66);
+}
+
+static inline int64_t oct_udp_bind(int fd, uint16_t port)
+{
+    return oct_syscall2(67, (uint64_t)fd, port);
+}
+
+static inline int64_t oct_udp_sendto(int fd, uint32_t destination,
+                                     uint16_t port, const void *buffer,
+                                     size_t length)
+{
+    return oct_syscall6(68, (uint64_t)fd, destination, port,
+                        (uint64_t)(uintptr_t)buffer, length, 0);
+}
+
+static inline int64_t oct_udp_recvfrom(int fd, void *buffer, size_t length,
+                                       uint8_t source_ip[4],
+                                       uint16_t *source_port)
+{
+    return oct_syscall6(69, (uint64_t)fd,
+                        (uint64_t)(uintptr_t)buffer, length,
+                        (uint64_t)(uintptr_t)source_ip,
+                        (uint64_t)(uintptr_t)source_port, 0);
+}
+
+static inline int64_t oct_dns_server(uint8_t address[4])
+{
+    return oct_syscall1(70, (uint64_t)(uintptr_t)address);
+}
+
+static inline int64_t oct_socket(int domain, int type, int protocol)
+{
+    return oct_syscall3(71, (uint64_t)(int64_t)domain,
+                        (uint64_t)(int64_t)type,
+                        (uint64_t)(int64_t)protocol);
+}
+
+static inline int64_t oct_bind(int fd, const void *address, uint32_t length)
+{
+    return oct_syscall3(72, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)address, length);
+}
+
+static inline int64_t oct_listen(int fd, int backlog)
+{
+    return oct_syscall2(73, (uint64_t)(int64_t)fd,
+                        (uint64_t)(int64_t)backlog);
+}
+
+static inline int64_t oct_accept(int fd, void *address, uint32_t *length)
+{
+    return oct_syscall3(74, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)address,
+                        (uint64_t)(uintptr_t)length);
+}
+
+static inline int64_t oct_connect(int fd, const void *address, uint32_t length)
+{
+    return oct_syscall3(75, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)address, length);
+}
+
+static inline int64_t oct_send(int fd, const void *buffer, size_t length, int flags)
+{
+    return oct_syscall4(76, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)buffer, length,
+                        (uint64_t)(unsigned int)flags);
+}
+
+static inline int64_t oct_recv(int fd, void *buffer, size_t length, int flags)
+{
+    return oct_syscall4(77, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)buffer, length,
+                        (uint64_t)(unsigned int)flags);
+}
+
+static inline int64_t oct_shutdown(int fd, int how)
+{
+    return oct_syscall2(78, (uint64_t)(int64_t)fd,
+                        (uint64_t)(int64_t)how);
+}
+
+static inline int64_t oct_getsockname(int fd, void *address, uint32_t *length)
+{
+    return oct_syscall3(79, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)address,
+                        (uint64_t)(uintptr_t)length);
+}
+
+static inline int64_t oct_getpeername(int fd, void *address, uint32_t *length)
+{
+    return oct_syscall3(80, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)address,
+                        (uint64_t)(uintptr_t)length);
 }
 
 static inline int64_t oct_clock_gettime(int clock_id, void *time_value)

@@ -5,3 +5,4 @@
 /user/build/
 /user/rust/build/
 /user/rust/target/
+qemu.log

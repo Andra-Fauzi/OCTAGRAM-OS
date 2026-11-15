@@ -49,6 +49,7 @@ struct KeyboardState {
 }
 
 static KBD_STATE: Mutex<Option<KeyboardState>> = Mutex::new(None);
+static PERIODIC_INPUT_STATE: Mutex<([u8; 6], bool)> = Mutex::new(([0; 6], false));
 
 const HID_SET_PROTOCOL: u8 = 0x0B;
 const HID_BOOT_PROTOCOL: u16 = 0;
@@ -176,8 +177,34 @@ fn handle_report(report: &KeyboardReport) {
         None => return,
     };
 
+    handle_report_with_state(report, &mut state.last_keycodes, &mut state.caps_lock);
+}
+
+pub(super) fn process_periodic_report(bytes: &[u8]) {
+    if bytes.len() < REPORT_LEN {
+        return;
+    }
+    let report = KeyboardReport {
+        modifier: bytes[0],
+        reserved: bytes[1],
+        keycodes: [bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]],
+    };
+    let mut state = PERIODIC_INPUT_STATE.lock();
+    let (last_keycodes, caps_lock) = &mut *state;
+    handle_report_with_state(&report, last_keycodes, caps_lock);
+}
+
+pub(super) fn reset_periodic_state() {
+    *PERIODIC_INPUT_STATE.lock() = ([0; 6], false);
+}
+
+fn handle_report_with_state(
+    report: &KeyboardReport,
+    last_keycodes: &mut [u8; 6],
+    caps_lock: &mut bool,
+) {
     for &keycode in &report.keycodes {
-        if keycode == 0 || state.last_keycodes.contains(&keycode) {
+        if keycode == 0 || last_keycodes.contains(&keycode) {
             continue;
         }
         if (0x3A..=0x3D).contains(&keycode)
@@ -188,7 +215,7 @@ fn handle_report(report: &KeyboardReport) {
             continue;
         }
         if keycode == 0x39 {
-            state.caps_lock = !state.caps_lock;
+            *caps_lock = !*caps_lock;
             continue;
         }
         match keycode {
@@ -205,15 +232,14 @@ fn handle_report(report: &KeyboardReport) {
                 let _ = keyboard::push_event(keyboard::KeyEvent::Up);
             }
             _ => {
-                if let Some(character) =
-                    hid_keycode_to_ascii(keycode, report.modifier, state.caps_lock)
+                if let Some(character) = hid_keycode_to_ascii(keycode, report.modifier, *caps_lock)
                 {
                     let _ = keyboard::push_char(character);
                 }
             }
         }
     }
-    state.last_keycodes = report.keycodes;
+    *last_keycodes = report.keycodes;
 }
 
 fn hid_keycode_to_ascii(keycode: u8, modifier: u8, caps_lock: bool) -> Option<char> {

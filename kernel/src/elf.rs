@@ -106,6 +106,22 @@ const SYSCALL_THREAD_CREATE: u64 = 61;
 const SYSCALL_THREAD_EXIT: u64 = 62;
 const SYSCALL_THREAD_JOIN: u64 = 63;
 const SYSCALL_THREAD_SELF: u64 = 64;
+const SYSCALL_KERNEL_YIELD: u64 = 65;
+const SYSCALL_UDP_SOCKET: u64 = 66;
+const SYSCALL_UDP_BIND: u64 = 67;
+const SYSCALL_UDP_SENDTO: u64 = 68;
+const SYSCALL_UDP_RECVFROM: u64 = 69;
+const SYSCALL_NETWORK_DNS: u64 = 70;
+const SYSCALL_SOCKET: u64 = 71;
+const SYSCALL_BIND: u64 = 72;
+const SYSCALL_LISTEN: u64 = 73;
+const SYSCALL_ACCEPT: u64 = 74;
+const SYSCALL_CONNECT: u64 = 75;
+const SYSCALL_SEND: u64 = 76;
+const SYSCALL_RECV: u64 = 77;
+const SYSCALL_SHUTDOWN: u64 = 78;
+const SYSCALL_GETSOCKNAME: u64 = 79;
+const SYSCALL_GETPEERNAME: u64 = 80;
 const AT_FDCWD: i64 = -100;
 const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
 const AT_REMOVEDIR: u64 = 0x200;
@@ -167,7 +183,19 @@ const EPIPE: i32 = 32;
 const EDEADLK: i32 = 35;
 const ESRCH: i32 = 3;
 const EOVERFLOW: i32 = 75;
+const ENOTSOCK: i32 = 88;
 const ENOTSUP: i32 = 95;
+const EMSGSIZE: i32 = 90;
+const EADDRINUSE: i32 = 98;
+const ENETDOWN: i32 = 100;
+const EHOSTUNREACH: i32 = 113;
+const EAFNOSUPPORT: i32 = 97;
+const EADDRNOTAVAIL: i32 = 99;
+const ECONNRESET: i32 = 104;
+const ENOTCONN: i32 = 107;
+const EISCONN: i32 = 106;
+const ETIMEDOUT: i32 = 110;
+const ECONNREFUSED: i32 = 111;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElfError {
@@ -203,7 +231,13 @@ fn syscall_fstat(fd: u64, stat_address: u64) -> Result<u64, i32> {
         match process.descriptors.get(fd).and_then(Option::as_ref) {
             Some(UserDescriptor::File(file)) => file.lock().path.clone(),
             Some(UserDescriptor::Directory(directory)) => directory.lock().path.clone(),
-            Some(UserDescriptor::Pipe(_)) => return Err(ENOTSUP),
+            Some(
+                UserDescriptor::Pipe(_)
+                | UserDescriptor::UdpSocket(_)
+                | UserDescriptor::TcpSocket(_),
+            ) => {
+                return Err(ENOTSUP);
+            }
             Some(
                 UserDescriptor::ConsoleInput
                 | UserDescriptor::ConsoleOutput
@@ -507,6 +541,8 @@ enum UserDescriptor {
     File(Arc<Mutex<OpenFile>>),
     Directory(Arc<Mutex<DirectoryStream>>),
     Pipe(PipeEnd),
+    UdpSocket(Arc<Mutex<crate::network::UdpSocket>>),
+    TcpSocket(Arc<Mutex<crate::network::TcpSocket>>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -577,8 +613,15 @@ struct ScheduledProcess {
     tid: u64,
     thread_mapping: Option<(u64, u64)>,
     waiting_for: Option<ProcessWait>,
+    resume_context: Option<UserResumeContext>,
     wait_status_pointer: u64,
     reaped: bool,
+}
+
+#[derive(Clone, Copy)]
+struct UserResumeContext {
+    accumulator: u64,
+    stack_frame: InterruptStackFrame,
 }
 
 struct UserScheduler {
@@ -632,6 +675,15 @@ struct UserStat {
 struct UserTimespec {
     seconds: i64,
     nanoseconds: i64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserSockAddrIn {
+    family: u16,
+    port: u16,
+    address: u32,
+    zero: [u8; 8],
 }
 
 static USER_PROCESS: Mutex<UserProcess> = Mutex::new(UserProcess::new());
@@ -713,7 +765,6 @@ impl LoadedElf {
             memory: Arc::clone(&self.memory),
         })
     }
-
 }
 
 pub fn load(bytes: &[u8]) -> Result<LoadedElf, ElfError> {
@@ -966,9 +1017,7 @@ fn apply_load_bias(parsed: &mut ParsedElf, load_bias: u64) -> Result<(), ElfErro
             .virtual_address
             .checked_add(segment.memory_size)
             .ok_or(ElfError::AddressRange)?;
-        if segment.virtual_address < paging::USER_ADDRESS_MIN
-            || end > paging::USER_ADDRESS_MAX
-        {
+        if segment.virtual_address < paging::USER_ADDRESS_MIN || end > paging::USER_ADDRESS_MAX {
             return Err(ElfError::AddressRange);
         }
     }
@@ -1152,6 +1201,7 @@ fn run_loaded_processes(
             tid: index as u64 + 1,
             thread_mapping: None,
             waiting_for: None,
+            resume_context: None,
             wait_status_pointer: 0,
             reaped: false,
         });
@@ -1177,9 +1227,80 @@ fn run_loaded_processes(
         let first = &scheduler.processes[0].image;
         (first.entry, first.user_stack)
     };
-    thread_pointer::write(0);
-    restore_current_user_fpu();
-    let _last_status = unsafe { gdt::enter_user_mode(entry, user_stack) };
+    let mut first_entry = true;
+    loop {
+        if first_entry {
+            thread_pointer::write(0);
+            restore_current_user_fpu();
+            let _last_status = unsafe { gdt::enter_user_mode(entry, user_stack) };
+            first_entry = false;
+        } else {
+            if let Some(first) = USER_SCHEDULER.lock().processes.first() {
+                unsafe { first.image.memory.address_space.activate_kernel() };
+            }
+            unsafe { crate::drivers::poll_deferred() };
+            crate::network::poll_tcp();
+            let only_current_process_runnable = {
+                let scheduler = USER_SCHEDULER.lock();
+                is_process_runnable(&scheduler.processes[scheduler.current])
+                    && scheduler
+                        .processes
+                        .iter()
+                        .filter(|process| is_process_runnable(process))
+                        .count()
+                        == 1
+            };
+            if only_current_process_runnable {
+                unsafe {
+                    core::arch::asm!("sti; hlt; cli");
+                }
+                unsafe { crate::drivers::poll_deferred() };
+                crate::network::poll_tcp();
+            }
+
+            let next = {
+                let mut scheduler = USER_SCHEDULER.lock();
+                if scheduler
+                    .processes
+                    .iter()
+                    .all(|process| process.exit_status.is_some())
+                {
+                    break;
+                }
+                next_runnable(scheduler.processes.len(), scheduler.current, |index| {
+                    is_process_runnable(&scheduler.processes[index])
+                })
+                .map(|next| {
+                    let frame_pointer = scheduler.processes[next].frame_pointer;
+                    if let Some(context) = scheduler.processes[next].resume_context.take() {
+                        let frame = unsafe { &mut *(frame_pointer as *mut InterruptFrame) };
+                        frame.rax = context.accumulator;
+                        frame.stack_frame = context.stack_frame;
+                    }
+                    let mut active_process = USER_PROCESS.lock();
+                    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
+                    scheduler.current = next;
+                    let process = &scheduler.processes[next];
+                    unsafe {
+                        process.image.memory.address_space.activate();
+                        gdt::set_ring0_stack_top(process.kernel_stack_top);
+                    }
+                    (frame_pointer, process.state.thread_pointer)
+                })
+            };
+
+            let Some((frame_pointer, thread_pointer_value)) = next else {
+                unsafe {
+                    core::arch::asm!("sti; hlt");
+                }
+                continue;
+            };
+            thread_pointer::write(thread_pointer_value);
+            restore_current_user_fpu();
+            let _last_status = unsafe { gdt::resume_user_frame(frame_pointer as *mut u8) };
+        }
+    }
+
     thread_pointer::write(0);
     restore_current_user_fpu();
 
@@ -1209,7 +1330,9 @@ fn run_loaded_processes(
         } else {
             missing_status = true;
         }
-        if let Err(error) = process.image.unload() && cleanup_error.is_none() {
+        if let Err(error) = process.image.unload()
+            && cleanup_error.is_none()
+        {
             cleanup_error = Some(error);
         }
     }
@@ -1459,6 +1582,7 @@ fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
     match frame.rax {
         SYSCALL_EXIT => terminate_user_inner(frame, frame.rdi),
+        SYSCALL_KERNEL_YIELD => yield_user_to_kernel(frame),
         SYSCALL_WAITPID => syscall_waitpid(frame),
         SYSCALL_EXECVE => syscall_execve(frame),
         SYSCALL_FORK => syscall_fork(frame),
@@ -1486,6 +1610,39 @@ fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
             frame_pointer
         }
     }
+}
+
+fn yield_user_to_kernel(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    if !scheduler.active || current >= scheduler.processes.len() {
+        frame.rax = (-(EINTR as i64)) as u64;
+        return frame_pointer;
+    }
+
+    scheduler.processes[current].frame_pointer = frame_pointer as usize;
+    let mut active_process = USER_PROCESS.lock();
+    if !active_process.active {
+        frame.rax = (-(EINTR as i64)) as u64;
+        return frame_pointer;
+    }
+    scheduler.processes[current].resume_context = Some(UserResumeContext {
+        accumulator: 0,
+        stack_frame: frame.stack_frame,
+    });
+    core::mem::swap(
+        &mut *active_process,
+        &mut scheduler.processes[current].state,
+    );
+
+    frame.rax = 0;
+    frame.stack_frame.instruction_pointer = gdt::user_exit_address();
+    frame.stack_frame.code_segment = gdt::KERNEL_CODE_SELECTOR as u64;
+    frame.stack_frame.stack_pointer = gdt::user_kernel_stack_top();
+    frame.stack_frame.stack_segment = gdt::KERNEL_DATA_SELECTOR as u64;
+    gdt::record_user_exit(0);
+    frame_pointer
 }
 
 pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
@@ -1630,6 +1787,21 @@ fn dispatch_syscall(
         SYSCALL_POSIX_MADVISE => syscall_posix_madvise(arg1, arg2, arg3),
         SYSCALL_SET_THREAD_POINTER => syscall_set_thread_pointer(arg1),
         SYSCALL_GET_THREAD_POINTER => syscall_get_thread_pointer(),
+        SYSCALL_UDP_SOCKET => syscall_udp_socket(),
+        SYSCALL_UDP_BIND => syscall_udp_bind(arg1, arg2),
+        SYSCALL_UDP_SENDTO => syscall_udp_sendto(arg1, arg2, arg3, arg4, arg5),
+        SYSCALL_UDP_RECVFROM => syscall_udp_recvfrom(arg1, arg2, arg3, arg4, arg5),
+        SYSCALL_NETWORK_DNS => syscall_network_dns(arg1),
+        SYSCALL_SOCKET => syscall_socket(arg1, arg2, arg3),
+        SYSCALL_BIND => syscall_bind(arg1, arg2, arg3),
+        SYSCALL_LISTEN => syscall_listen(arg1, arg2),
+        SYSCALL_ACCEPT => syscall_accept(arg1, arg2, arg3),
+        SYSCALL_CONNECT => syscall_connect(arg1, arg2, arg3),
+        SYSCALL_SEND => syscall_send(arg1, arg2, arg3, arg4),
+        SYSCALL_RECV => syscall_recv(arg1, arg2, arg3, arg4),
+        SYSCALL_SHUTDOWN => syscall_shutdown(arg1, arg2),
+        SYSCALL_GETSOCKNAME => syscall_socket_name(arg1, arg2, arg3, false),
+        SYSCALL_GETPEERNAME => syscall_socket_name(arg1, arg2, arg3, true),
         SYSCALL_THREAD_SELF => {
             let scheduler = USER_SCHEDULER.lock();
             scheduler
@@ -1654,7 +1826,11 @@ fn dispatch_syscall(
                 Some(UserDescriptor::File(file)) if fs::is_tty_path(&file.lock().path) => Ok(1),
                 Some(UserDescriptor::File(_)) => Err(ENOTTY),
                 Some(UserDescriptor::Directory(_)) => Err(ENOTTY),
-                Some(UserDescriptor::Pipe(_)) => Err(ENOTTY),
+                Some(
+                    UserDescriptor::Pipe(_)
+                    | UserDescriptor::UdpSocket(_)
+                    | UserDescriptor::TcpSocket(_),
+                ) => Err(ENOTTY),
                 None => Err(EBADF),
             }
         }
@@ -1713,9 +1889,9 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         || mapping_length == 0
         || mapping_length % PAGE_SIZE != 0
         || validate_mapping_range(mapping_base, mapping_length).is_err()
-        || usize::try_from(mapping_length).ok().is_none_or(|length| {
-            paging::validate_user_range(mapping_base, length, true).is_err()
-        })
+        || usize::try_from(mapping_length)
+            .ok()
+            .is_none_or(|length| paging::validate_user_range(mapping_base, length, true).is_err())
         || stack_top <= mapping_base
         || stack_top > mapping_base.saturating_add(mapping_length)
         || (thread_pointer != 0
@@ -1794,12 +1970,7 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         }
     };
     let kernel_stack_top = kernel_stack.top();
-    let thread_frame = match initialize_thread_frame(
-        entry,
-        argument,
-        stack_top,
-        kernel_stack_top,
-    ) {
+    let thread_frame = match initialize_thread_frame(entry, argument, stack_top, kernel_stack_top) {
         Ok(frame) => frame,
         Err(error) => {
             frame.rax = (-(error as i64)) as u64;
@@ -1821,6 +1992,7 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         tid,
         thread_mapping: Some((mapping_base, mapping_length)),
         waiting_for: None,
+        resume_context: None,
         wait_status_pointer: 0,
         reaped: false,
     });
@@ -1837,8 +2009,7 @@ fn initialize_thread_frame(
     let user_stack = stack_top.checked_sub(8).ok_or(EFAULT)?;
     paging::validate_user_range(user_stack, 8, true).map_err(|_| EFAULT)?;
     unsafe { (user_stack as *mut u64).write_unaligned(0) };
-    let frame_pointer =
-        (kernel_stack_top as usize - core::mem::size_of::<InterruptFrame>()) & !0xF;
+    let frame_pointer = (kernel_stack_top as usize - core::mem::size_of::<InterruptFrame>()) & !0xF;
     let frame = InterruptFrame {
         r15: 0,
         r14: 0,
@@ -1874,8 +2045,7 @@ fn syscall_thread_join(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let target_tid = frame.rdi;
     let result_pointer = frame.rsi;
     if target_tid == 0
-        || (result_pointer != 0
-            && paging::validate_user_range(result_pointer, 8, true).is_err())
+        || (result_pointer != 0 && paging::validate_user_range(result_pointer, 8, true).is_err())
     {
         frame.rax = (-(EINVAL as i64)) as u64;
         return frame_pointer;
@@ -2007,7 +2177,10 @@ fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         return next_frame;
     }
 
-    scheduler.active = false;
+    scheduler.active = scheduler
+        .processes
+        .iter()
+        .any(|process| process.exit_status.is_none());
     drop(active_process);
     drop(scheduler);
     gdt::record_user_exit(frame.rdi);
@@ -2061,7 +2234,10 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
         let mut user_pages = Vec::new();
         let mapped_pages = parent.image.memory.mapped_pages.lock();
         let mmap_pages = parent.image.memory.mmap_pages.lock();
-        let page_count = mapped_pages.len().checked_add(mmap_pages.len()).ok_or(ENOMEM)?;
+        let page_count = mapped_pages
+            .len()
+            .checked_add(mmap_pages.len())
+            .ok_or(ENOMEM)?;
         user_pages
             .try_reserve_exact(page_count)
             .map_err(|_| ENOMEM)?;
@@ -2126,6 +2302,7 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
         tid: child_pid,
         thread_mapping: None,
         waiting_for: None,
+        resume_context: None,
         wait_status_pointer: 0,
         reaped: false,
     });
@@ -2182,9 +2359,12 @@ fn execve_current(
     };
 
     let _restore_address_space = RestoreUserAddressSpace(pid);
-    if USER_SCHEDULER.lock().processes.iter().any(|process| {
-        process.pid == pid && process.is_thread && process.exit_status.is_none()
-    }) {
+    if USER_SCHEDULER
+        .lock()
+        .processes
+        .iter()
+        .any(|process| process.pid == pid && process.is_thread && process.exit_status.is_none())
+    {
         return Err(EBUSY);
     }
     let bytes = read_executable_file(&path).map_err(errno_from_elf)?;
@@ -2803,7 +2983,12 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
             pipe_id = Some(pipe.id);
             Ok(count as u64)
         }
-        UserDescriptor::ConsoleInput | UserDescriptor::Directory(_) => Err(EBADF),
+        UserDescriptor::TcpSocket(socket) => crate::network::send_tcp_socket(socket, bytes)
+            .map(|count| count as u64)
+            .map_err(errno_from_network),
+        UserDescriptor::ConsoleInput
+        | UserDescriptor::Directory(_)
+        | UserDescriptor::UdpSocket(_) => Err(EBADF),
     };
     drop(process);
     if let Some(pipe_id) = pipe_id {
@@ -3185,6 +3370,14 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
             pipe_id = Some(pipe.id);
             Ok(count as u64)
         }
+        UserDescriptor::UdpSocket(socket) => crate::network::receive_udp_socket(socket, output)
+            .map(|(count, _, _)| count as u64)
+            .map_err(|_| EAGAIN),
+        UserDescriptor::TcpSocket(socket) => {
+            crate::network::receive_tcp_socket(socket, output, false)
+                .map(|count| count as u64)
+                .map_err(errno_from_network)
+        }
         UserDescriptor::ConsoleOutput | UserDescriptor::ConsoleError => Err(EBADF),
         UserDescriptor::Directory(_) => Err(EBADF),
     };
@@ -3193,6 +3386,361 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
         wake_pipe_waiters(pipe_id, false, true);
     }
     result
+}
+
+fn syscall_udp_socket() -> Result<u64, i32> {
+    let socket = crate::network::create_udp_socket();
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let fd = reserve_descriptor_slot(&mut process.descriptors)?;
+    let descriptor_count = process.descriptors.len();
+    process.descriptor_flags.resize(descriptor_count, 0);
+    process.descriptors[fd] = Some(UserDescriptor::UdpSocket(socket));
+    Ok(fd as u64)
+}
+
+fn udp_socket_for_fd(fd: u64) -> Result<Arc<Mutex<crate::network::UdpSocket>>, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    match process.descriptors.get(fd).and_then(Option::as_ref) {
+        Some(UserDescriptor::UdpSocket(socket)) => Ok(Arc::clone(socket)),
+        Some(_) => Err(ENOTSOCK),
+        None => Err(EBADF),
+    }
+}
+
+fn syscall_udp_bind(fd: u64, port: u64) -> Result<u64, i32> {
+    let port = u16::try_from(port).map_err(|_| EINVAL)?;
+    let socket = udp_socket_for_fd(fd)?;
+    crate::network::bind_udp_socket(&socket, port)
+        .map(|bound_port| bound_port as u64)
+        .map_err(errno_from_network)
+}
+
+fn syscall_udp_sendto(
+    fd: u64,
+    destination: u64,
+    port: u64,
+    address: u64,
+    length: u64,
+) -> Result<u64, i32> {
+    let destination = u32::try_from(destination)
+        .map_err(|_| EINVAL)?
+        .to_be_bytes();
+    let port = u16::try_from(port).map_err(|_| EINVAL)?;
+    let length = usize::try_from(length).map_err(|_| EINVAL)?;
+    if length > MAX_SYSCALL_IO {
+        return Err(EINVAL);
+    }
+    let payload = if length == 0 {
+        &[]
+    } else {
+        paging::validate_user_range(address, length, false).map_err(|_| EFAULT)?;
+        unsafe { core::slice::from_raw_parts(address as *const u8, length) }
+    };
+    let socket = udp_socket_for_fd(fd)?;
+    crate::network::send_udp_socket(&socket, destination, port, payload)
+        .map(|()| length as u64)
+        .map_err(errno_from_network)
+}
+
+fn syscall_udp_recvfrom(
+    fd: u64,
+    address: u64,
+    length: u64,
+    source_ip_address: u64,
+    source_port_address: u64,
+) -> Result<u64, i32> {
+    let length = usize::try_from(length).map_err(|_| EINVAL)?;
+    if length > MAX_SYSCALL_IO {
+        return Err(EINVAL);
+    }
+    if length != 0 {
+        paging::validate_user_range(address, length, true).map_err(|_| EFAULT)?;
+    }
+    if source_ip_address != 0 {
+        paging::validate_user_range(source_ip_address, 4, true).map_err(|_| EFAULT)?;
+    }
+    if source_port_address != 0 {
+        paging::validate_user_range(source_port_address, 2, true).map_err(|_| EFAULT)?;
+    }
+    let socket = udp_socket_for_fd(fd)?;
+    let output = if length == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(address as *mut u8, length) }
+    };
+    let (received, source_ip, source_port) =
+        crate::network::receive_udp_socket(&socket, output).map_err(errno_from_network)?;
+    if source_ip_address != 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                source_ip.as_ptr(),
+                source_ip_address as *mut u8,
+                source_ip.len(),
+            );
+        }
+    }
+    if source_port_address != 0 {
+        unsafe { (source_port_address as *mut u16).write_unaligned(source_port) };
+    }
+    Ok(received as u64)
+}
+
+fn syscall_network_dns(address: u64) -> Result<u64, i32> {
+    paging::validate_user_range(address, 4, true).map_err(|_| EFAULT)?;
+    let config = crate::network::config();
+    if !config.configured || config.dns == [0; 4] {
+        return Err(ENETDOWN);
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(config.dns.as_ptr(), address as *mut u8, 4);
+    }
+    Ok(0)
+}
+
+fn tcp_socket_for_fd(fd: u64) -> Result<Arc<Mutex<crate::network::TcpSocket>>, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    match process.descriptors.get(fd).and_then(Option::as_ref) {
+        Some(UserDescriptor::TcpSocket(socket)) => Ok(Arc::clone(socket)),
+        Some(_) => Err(ENOTSOCK),
+        None => Err(EBADF),
+    }
+}
+
+fn syscall_socket(domain: u64, socket_type: u64, protocol: u64) -> Result<u64, i32> {
+    if domain != 2 {
+        return Err(EAFNOSUPPORT);
+    }
+    if socket_type != 1 || (protocol != 0 && protocol != 6) {
+        return Err(ENOTSUP);
+    }
+    let socket = crate::network::create_tcp_socket();
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let fd = reserve_descriptor_slot(&mut process.descriptors)?;
+    let descriptor_count = process.descriptors.len();
+    process.descriptor_flags.resize(descriptor_count, 0);
+    process.descriptors[fd] = Some(UserDescriptor::TcpSocket(socket));
+    Ok(fd as u64)
+}
+
+fn copy_user_sockaddr(address: u64, length: u64) -> Result<([u8; 4], u16), i32> {
+    let length = usize::try_from(length).map_err(|_| EINVAL)?;
+    if length < core::mem::size_of::<UserSockAddrIn>() {
+        return Err(EINVAL);
+    }
+    paging::validate_user_range(address, core::mem::size_of::<UserSockAddrIn>(), false)
+        .map_err(|_| EFAULT)?;
+    let address = unsafe { (address as *const UserSockAddrIn).read_unaligned() };
+    if address.family != 2 {
+        return Err(EAFNOSUPPORT);
+    }
+    Ok((address.address.to_ne_bytes(), u16::from_be(address.port)))
+}
+
+fn validate_sockaddr_output(address: u64, length_address: u64) -> Result<(), i32> {
+    if address == 0 {
+        return Ok(());
+    }
+    if length_address == 0 {
+        return Err(EFAULT);
+    }
+    paging::validate_user_range(length_address, core::mem::size_of::<u32>(), true)
+        .map_err(|_| EFAULT)?;
+    let capacity = unsafe { (length_address as *const u32).read_unaligned() as usize };
+    let copy_length = capacity.min(core::mem::size_of::<UserSockAddrIn>());
+    if copy_length != 0 {
+        paging::validate_user_range(address, copy_length, true).map_err(|_| EFAULT)?;
+    }
+    Ok(())
+}
+
+fn write_user_sockaddr(
+    address: u64,
+    length_address: u64,
+    peer_address: [u8; 4],
+    peer_port: u16,
+) -> Result<(), i32> {
+    if address == 0 {
+        return Ok(());
+    }
+    validate_sockaddr_output(address, length_address)?;
+    let capacity = unsafe { (length_address as *const u32).read_unaligned() as usize };
+    let socket_address = UserSockAddrIn {
+        family: 2,
+        port: peer_port.to_be(),
+        address: u32::from_ne_bytes(peer_address),
+        zero: [0; 8],
+    };
+    let copy_length = capacity.min(core::mem::size_of::<UserSockAddrIn>());
+    if copy_length != 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                &socket_address as *const UserSockAddrIn as *const u8,
+                address as *mut u8,
+                copy_length,
+            );
+        }
+    }
+    unsafe {
+        (length_address as *mut u32).write_unaligned(core::mem::size_of::<UserSockAddrIn>() as u32);
+    }
+    Ok(())
+}
+
+fn syscall_bind(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
+    let (local_address, local_port) = copy_user_sockaddr(address, length)?;
+    crate::network::bind_tcp_socket(&tcp_socket_for_fd(fd)?, local_address, local_port)
+        .map(|_| 0)
+        .map_err(errno_from_network)
+}
+
+fn syscall_listen(fd: u64, backlog: u64) -> Result<u64, i32> {
+    if backlog == 0 || backlog > i32::MAX as u64 {
+        return Err(EINVAL);
+    }
+    crate::network::listen_tcp_socket(&tcp_socket_for_fd(fd)?, backlog as usize)
+        .map(|()| 0)
+        .map_err(errno_from_network)
+}
+
+fn syscall_accept(fd: u64, address: u64, length_address: u64) -> Result<u64, i32> {
+    validate_sockaddr_output(address, length_address)?;
+    let listener = tcp_socket_for_fd(fd)?;
+    let accepted_fd = {
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        let fd = reserve_descriptor_slot(&mut process.descriptors)?;
+        let descriptor_count = process.descriptors.len();
+        process.descriptor_flags.resize(descriptor_count, 0);
+        fd
+    };
+    let (socket, peer_address, peer_port) = match crate::network::accept_tcp_socket(&listener) {
+        Ok(accepted) => accepted,
+        Err(error) => return Err(errno_from_network(error)),
+    };
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    process.descriptors[accepted_fd] = Some(UserDescriptor::TcpSocket(socket));
+    drop(process);
+    if let Err(error) = write_user_sockaddr(address, length_address, peer_address, peer_port) {
+        let _ = syscall_close(accepted_fd as u64);
+        return Err(error);
+    }
+    Ok(accepted_fd as u64)
+}
+
+fn syscall_connect(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
+    let (remote_address, remote_port) = copy_user_sockaddr(address, length)?;
+    crate::network::connect_tcp_socket(&tcp_socket_for_fd(fd)?, remote_address, remote_port)
+        .map(|()| 0)
+        .map_err(errno_from_network)
+}
+
+fn syscall_send(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i32> {
+    if flags & !0x4040 != 0 {
+        return Err(EINVAL);
+    }
+    let length = usize::try_from(length).map_err(|_| EINVAL)?;
+    if length > MAX_SYSCALL_IO {
+        return Err(EINVAL);
+    }
+    let payload = if length == 0 {
+        &[]
+    } else {
+        paging::validate_user_range(address, length, false).map_err(|_| EFAULT)?;
+        unsafe { core::slice::from_raw_parts(address as *const u8, length) }
+    };
+    crate::network::send_tcp_socket(&tcp_socket_for_fd(fd)?, payload)
+        .map(|length| length as u64)
+        .map_err(errno_from_network)
+}
+
+fn syscall_recv(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i32> {
+    if flags & !0x42 != 0 {
+        return Err(EINVAL);
+    }
+    let length = usize::try_from(length).map_err(|_| EINVAL)?;
+    if length > MAX_SYSCALL_IO {
+        return Err(EINVAL);
+    }
+    if length != 0 {
+        paging::validate_user_range(address, length, true).map_err(|_| EFAULT)?;
+    }
+    let mut empty = [];
+    let output = if length == 0 {
+        &mut empty[..]
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(address as *mut u8, length) }
+    };
+    crate::network::receive_tcp_socket(&tcp_socket_for_fd(fd)?, output, flags & 0x02 != 0)
+        .map(|length| length as u64)
+        .map_err(errno_from_network)
+}
+
+fn syscall_shutdown(fd: u64, how: u64) -> Result<u64, i32> {
+    crate::network::shutdown_tcp_socket(&tcp_socket_for_fd(fd)?, how)
+        .map(|()| 0)
+        .map_err(errno_from_network)
+}
+
+fn syscall_socket_name(fd: u64, address: u64, length_address: u64, peer: bool) -> Result<u64, i32> {
+    validate_sockaddr_output(address, length_address)?;
+    let (socket_address, port) = crate::network::tcp_socket_name(&tcp_socket_for_fd(fd)?, peer)
+        .map_err(errno_from_network)?;
+    write_user_sockaddr(address, length_address, socket_address, port)?;
+    Ok(0)
+}
+
+fn errno_from_network(error: &'static str) -> i32 {
+    match error {
+        "no network interface" => ENODEV,
+        "network interface has no IPv4 address" | "network interface is not ready" => ENETDOWN,
+        "UDP socket would block" => EAGAIN,
+        "UDP port is already in use" => EADDRINUSE,
+        "UDP socket is already bound" => EINVAL,
+        "UDP payload exceeds the IPv4 MTU" | "IPv4 payload exceeds the MTU" => EMSGSIZE,
+        "no route to destination" => EHOSTUNREACH,
+        "TCP accept would block"
+        | "TCP connection is in progress"
+        | "TCP send would block"
+        | "TCP receive would block"
+        | "ARP request sent; retry after the neighbor responds" => EAGAIN,
+        "TCP port is already in use" => EADDRINUSE,
+        "local IPv4 address is not assigned to this interface" => EADDRNOTAVAIL,
+        "TCP socket is not connected" => ENOTCONN,
+        "TCP connection refused" => ECONNREFUSED,
+        "TCP connection reset" => ECONNRESET,
+        "TCP connection timed out" => ETIMEDOUT,
+        "TCP write side is shut down" => EPIPE,
+        "TCP socket is closed" => ENOTCONN,
+        "invalid TCP shutdown mode" | "invalid TCP peer address" => EINVAL,
+        "TCP socket is already connected" => EISCONN,
+        "TCP socket cannot listen in its current state"
+        | "TCP socket cannot connect in its current state"
+        | "TCP socket is not listening" => EINVAL,
+        "TCP socket is already bound" => EINVAL,
+        "no ephemeral TCP ports available" => EADDRINUSE,
+        "TCP payload exceeds the IPv4 MTU" => EMSGSIZE,
+        "TCP socket cannot be bound in its current state" => EINVAL,
+        _ => EIO,
+    }
 }
 
 fn syscall_open(address: u64, flags: u64, mode: u64) -> Result<u64, i32> {
@@ -3274,7 +3822,7 @@ fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32
                 vfs.create_file(&path)?;
                 created = true;
                 if mode != 0o644 {
-                    vfs.set_permissions(&path, mode)?;
+                    apply_creation_mode(|| vfs.set_permissions(&path, mode))?;
                 }
                 vfs.metadata(&path)?
             }
@@ -3514,6 +4062,14 @@ fn syscall_close(fd: u64) -> Result<u64, i32> {
         UserDescriptor::Pipe(endpoint) => Some(endpoint.pipe.lock().id),
         _ => None,
     });
+    let tcp_socket_to_close = descriptor.as_ref().and_then(|descriptor| match descriptor {
+        UserDescriptor::TcpSocket(socket)
+            if crate::network::tcp_socket_is_last_descriptor(socket) =>
+        {
+            Some(Arc::clone(socket))
+        }
+        _ => None,
+    });
     *descriptor = None;
     if let Some(flags) = process.descriptor_flags.get_mut(fd) {
         *flags = 0;
@@ -3521,6 +4077,9 @@ fn syscall_close(fd: u64) -> Result<u64, i32> {
     drop(process);
     if let Some(pipe_id) = pipe_id {
         wake_pipe_waiters(pipe_id, true, true);
+    }
+    if let Some(socket) = tcp_socket_to_close {
+        crate::network::close_tcp_socket(&socket);
     }
     Ok(0)
 }
@@ -3533,7 +4092,12 @@ fn syscall_lseek(fd: u64, offset: i64, whence: u64) -> Result<u64, i32> {
     }
     let file = match process.descriptors.get(fd).and_then(Option::as_ref) {
         Some(UserDescriptor::File(file)) => Arc::clone(file),
-        Some(UserDescriptor::Pipe(_) | UserDescriptor::Directory(_)) => return Err(ESPIPE),
+        Some(
+            UserDescriptor::Pipe(_)
+            | UserDescriptor::Directory(_)
+            | UserDescriptor::UdpSocket(_)
+            | UserDescriptor::TcpSocket(_),
+        ) => return Err(ESPIPE),
         _ => return Err(EBADF),
     };
     let mut file = file.lock();
@@ -3709,7 +4273,7 @@ fn syscall_mkdir_path(path: String, mode: u64) -> Result<u64, i32> {
     fs::with_vfs(|vfs| {
         vfs.create_dir(&path)?;
         if mode != 0o755 {
-            vfs.set_permissions(&path, mode)?;
+            apply_creation_mode(|| vfs.set_permissions(&path, mode))?;
         }
         Ok(())
     })
@@ -3926,8 +4490,7 @@ fn syscall_mmap(
             match shared_mapping_page(file_path.as_deref(), file_offset, file_length) {
                 Ok(backing) => Some(backing),
                 Err(error) => {
-                    let cleanup =
-                        release_mmap_pages_from(&mut mappings, initial_page_count);
+                    let cleanup = release_mmap_pages_from(&mut mappings, initial_page_count);
                     return Err(if cleanup.is_err() { EIO } else { error });
                 }
             }
@@ -3940,8 +4503,7 @@ fn syscall_mmap(
             match allocate_mapping_frame(file_path.as_deref().map(|path| (path, file_offset))) {
                 Ok((physical, _)) => physical,
                 Err(error) => {
-                    let cleanup =
-                        release_mmap_pages_from(&mut mappings, initial_page_count);
+                    let cleanup = release_mmap_pages_from(&mut mappings, initial_page_count);
                     return Err(if cleanup.is_err() { EIO } else { error });
                 }
             }
@@ -4577,7 +5139,13 @@ fn syscall_fchmod(fd: u64, mode: u64) -> Result<u64, i32> {
         match process.descriptors.get(fd).and_then(Option::as_ref) {
             Some(UserDescriptor::File(file)) => file.lock().path.clone(),
             Some(UserDescriptor::Directory(directory)) => directory.lock().path.clone(),
-            Some(UserDescriptor::Pipe(_)) => return Err(ENOTSUP),
+            Some(
+                UserDescriptor::Pipe(_)
+                | UserDescriptor::UdpSocket(_)
+                | UserDescriptor::TcpSocket(_),
+            ) => {
+                return Err(ENOTSUP);
+            }
             Some(
                 UserDescriptor::ConsoleInput
                 | UserDescriptor::ConsoleOutput
@@ -4806,6 +5374,15 @@ fn errno_from_fs(error: FsError) -> i32 {
     }
 }
 
+fn apply_creation_mode(
+    set_permissions: impl FnOnce() -> Result<(), FsError>,
+) -> Result<(), FsError> {
+    match set_permissions() {
+        Err(FsError::Unsupported) => Ok(()),
+        result => result,
+    }
+}
+
 fn stat_mode(path: &str, node_type: NodeType, permissions: u16) -> u32 {
     let node_mode = if fs::is_tty_path(path) {
         0o020000
@@ -4859,10 +5436,7 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
             let child_pid = scheduler.processes[current].pid;
             let parent_pid = scheduler.processes[current].parent_pid;
             for (index, process) in scheduler.processes.iter_mut().enumerate() {
-                if index != current
-                    && process.pid == child_pid
-                    && process.exit_status.is_none()
-                {
+                if index != current && process.pid == child_pid && process.exit_status.is_none() {
                     process.exit_status = Some(status);
                     process.reaped = true;
                     process.waiting_for = None;
@@ -4882,9 +5456,20 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
                     UserDescriptor::Pipe(endpoint) => Some(endpoint.pipe.lock().id),
                     _ => None,
                 });
+                let socket_to_close = descriptor.as_ref().and_then(|descriptor| match descriptor {
+                    UserDescriptor::TcpSocket(socket)
+                        if crate::network::tcp_socket_is_last_descriptor(socket) =>
+                    {
+                        Some(Arc::clone(socket))
+                    }
+                    _ => None,
+                });
                 drop(descriptor);
                 if let Some(pipe_id) = pipe_id {
                     wake_pipe_waiters_in_scheduler(&mut scheduler, pipe_id, true, true);
+                }
+                if let Some(socket) = socket_to_close {
+                    crate::network::close_tcp_socket(&socket);
                 }
             }
 
@@ -4943,7 +5528,10 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
                 }
                 return next_frame;
             }
-            scheduler.active = false;
+            scheduler.active = scheduler
+                .processes
+                .iter()
+                .any(|process| process.exit_status.is_none());
             drop(active_process);
             drop(scheduler);
             gdt::record_user_exit(status);
@@ -5223,12 +5811,21 @@ mod tests {
         EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPIPE, ElfError,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
         PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, SYSCALL_MMAP, SYSCALL_MUNMAP, UserDescriptor,
-        UserDirent, WAIT_ANY_PID, build_initial_stack, create_pipe, dispatch_syscall,
-        apply_load_bias, errno_from_fs, install_pipe_descriptors, mapping_flags, mapping_size,
-        next_runnable, paging, parse, resolve_user_path, stat_mode, user_dirent,
+        UserDirent, WAIT_ANY_PID, apply_creation_mode, apply_load_bias, build_initial_stack,
+        create_pipe, dispatch_syscall, errno_from_fs, install_pipe_descriptors, mapping_flags,
+        mapping_size, next_runnable, paging, parse, resolve_user_path, stat_mode, user_dirent,
         validate_mapping_range, wait_target_matches,
     };
     use crate::fs::{DirectoryEntry, FsError, Metadata};
+
+    #[test]
+    fn creation_mode_is_advisory_when_filesystem_lacks_permissions() {
+        assert_eq!(apply_creation_mode(|| Err(FsError::Unsupported)), Ok(()));
+        assert_eq!(
+            apply_creation_mode(|| Err(FsError::IoError)),
+            Err(FsError::IoError)
+        );
+    }
 
     #[test]
     fn encodes_directory_entries_in_the_user_abi_layout() {

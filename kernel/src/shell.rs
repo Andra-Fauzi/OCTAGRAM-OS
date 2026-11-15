@@ -111,8 +111,11 @@ async fn execute(
         "devices" => list_block_devices(),
         "lsdev" => list_kernel_devices(),
         "drivers" => list_kernel_drivers(),
+        "net" => run_network_command(arguments),
+        "ping" => run_ping_command(arguments),
         "mount" => mount_device(current_dir, arguments),
         "umount" => unmount_device(current_dir, arguments),
+        "mkfs.fat" => format_fat32_device(arguments),
         "as" => run_toolchain_command("as", current_dir, arguments),
         "ld" => run_toolchain_command("ld", current_dir, arguments),
         "cc" => run_toolchain_command("cc", current_dir, arguments),
@@ -156,8 +159,12 @@ fn print_help() {
     crate::println!("  devices                list detected storage devices");
     crate::println!("  lsdev                  list bus devices and bound drivers");
     crate::println!("  drivers                list registered kernel drivers");
+    crate::println!("  net status|dhcp        inspect interface or request an IPv4 lease");
+    crate::println!("  net udp <IP> <port> <text> send one UDP datagram");
+    crate::println!("  ping <IPv4 address>    send an ICMP echo request");
     crate::println!("  mount <device> <path> [fat32|ext2]  mount a filesystem read-write");
     crate::println!("  umount <path>          unmount a filesystem");
+    crate::println!("  mkfs.fat <device> --yes  format a FAT32 superfloppy (erases data)");
     crate::println!("  as <input.s> -o <out.o> assemble supported x86_64 source");
     crate::println!("  ld <input.o> -o <out.elf> link a native toolchain object");
     crate::println!("  cc <input.c> -o <out.elf> compile the kernel C subset");
@@ -188,6 +195,64 @@ fn shutdown() {
     if let Err(error) = crate::drivers::acpi::power_off() {
         crate::println!("shutdown: power-off failed: {error:?}");
     }
+}
+
+fn run_network_command(arguments: &str) {
+    match arguments.split_whitespace().next() {
+        None | Some("status") => crate::network::print_status(),
+        Some("dhcp") => {
+            if let Err(error) = crate::network::start_dhcp() {
+                crate::println!("net dhcp: {error}");
+            }
+        }
+        Some("udp") => run_network_udp_command(arguments),
+        Some(_) => crate::println!("usage: net [status|dhcp|udp <IPv4> <port> <text>]"),
+    }
+}
+
+fn run_network_udp_command(arguments: &str) {
+    let mut fields = arguments.split_whitespace();
+    let _ = fields.next();
+    let (Some(address), Some(port)) = (fields.next(), fields.next()) else {
+        crate::println!("usage: net udp <IPv4> <port> <text>");
+        return;
+    };
+    let payload = fields.collect::<Vec<_>>().join(" ");
+    if payload.is_empty() {
+        crate::println!("usage: net udp <IPv4> <port> <text>");
+        return;
+    }
+    let Some(address) = parse_ipv4_address(address) else {
+        crate::println!("net udp: invalid IPv4 address");
+        return;
+    };
+    let Ok(port) = port.parse::<u16>() else {
+        crate::println!("net udp: invalid port");
+        return;
+    };
+    match crate::network::send_udp_ipv4(address, 49152, port, payload.as_bytes()) {
+        Ok(()) => crate::println!("UDP datagram sent ({} bytes)", payload.len()),
+        Err(error) => crate::println!("net udp: {error}"),
+    }
+}
+
+fn run_ping_command(arguments: &str) {
+    let Some(address) = parse_ipv4_address(arguments) else {
+        crate::println!("usage: ping <IPv4 address>");
+        return;
+    };
+    if let Err(error) = crate::network::ping(address) {
+        crate::println!("ping: {error}");
+    }
+}
+
+fn parse_ipv4_address(value: &str) -> Option<[u8; 4]> {
+    let mut octets = [0u8; 4];
+    let mut parts = value.split('.');
+    for octet in &mut octets {
+        *octet = parts.next()?.parse().ok()?;
+    }
+    parts.next().is_none().then_some(octets)
 }
 
 fn change_directory(current_dir: &mut String, arguments: &str) {
@@ -855,6 +920,7 @@ fn list_kernel_devices() {
         crate::println!("no bus devices registered");
         return;
     }
+
     for device in devices {
         let driver = device.driver_name.unwrap_or("unbound");
         match device.key {
@@ -870,15 +936,42 @@ fn list_kernel_devices() {
                 driver
             ),
             crate::drivers::device_model::DeviceKey::UsbInterface {
+                controller,
                 slot_id,
                 interface_number,
             } => crate::println!(
-                "usb slot={} interface={}  driver={}",
+                "usb {:?}#{} slot={} interface={}  driver={}",
+                controller.kind,
+                controller.instance,
                 slot_id,
                 interface_number,
                 driver
             ),
         }
+    }
+}
+
+fn format_fat32_device(arguments: &str) {
+    let mut parts = arguments.split_whitespace();
+    let (Some(device_name), Some(confirmation), None) = (parts.next(), parts.next(), parts.next())
+    else {
+        crate::println!("usage: mkfs.fat <device> --yes");
+        return;
+    };
+    if confirmation != "--yes" {
+        crate::println!("mkfs.fat: formatting erases existing filesystem data");
+        crate::println!("rerun with `mkfs.fat {device_name} --yes` to confirm");
+        return;
+    }
+    let Some(device) = block::get(device_name) else {
+        crate::println!("mkfs.fat: storage device `{device_name}` not found (try `devices`)");
+        return;
+    };
+
+    crate::println!("Formatting {device_name} as FAT32 superfloppy...");
+    match Fat32::format(device.as_ref()) {
+        Ok(()) => crate::println!("Formatted {device_name} as FAT32"),
+        Err(error) => crate::println!("mkfs.fat: {device_name}: {error:?}"),
     }
 }
 
@@ -1106,6 +1199,13 @@ async fn edit_file(current_dir: &str, arguments: &str, terminal: usize) {
                 status.clear();
                 confirming_discard = false;
             }
+            keyboard::KeyEvent::Character('\t') => {
+                if insert_editor_text(&mut text, &mut cursor, "\t") {
+                    dirty = true;
+                }
+                status.clear();
+                confirming_discard = false;
+            }
             keyboard::KeyEvent::Character('\n' | '\r') => {
                 if text.len() < MAX_FILE_OPERATION && text.try_reserve(1).is_ok() {
                     text.insert(cursor, '\n');
@@ -1228,19 +1328,12 @@ fn render_editor(
     let mut lines = text.split('\n').skip(viewport.top_line);
     for row in 0..visible_rows {
         if let Some(line) = lines.next() {
-            let line_cursor = (cursor_line == viewport.top_line + row).then_some(cursor_column);
-            render_editor_line(
-                terminal,
-                row + 1,
-                line,
-                line_cursor,
-                viewport.left_column,
-                columns,
-            );
+            render_editor_line(terminal, row + 1, line, viewport.left_column, columns);
         }
     }
+    render_editor_caret(text, cursor, terminal, viewport, true);
 
-    let help = "Ctrl+S Save   Ctrl+Q Quit   Arrow keys move";
+    let help = "Ctrl+S Save   Ctrl+Q Quit   Tab Insert   Arrow keys move";
     let help_row = visible_rows + 1;
     if status.is_empty() {
         render_editor_text_at(terminal, help_row, 0, help, columns);
@@ -1283,35 +1376,15 @@ fn render_editor_line(
     terminal: usize,
     screen_row: usize,
     line: &str,
-    cursor_column: Option<usize>,
     left_column: usize,
     width: usize,
 ) {
-    let line_length = line.chars().count();
-    for (screen_column, (column, character)) in line
-        .chars()
-        .enumerate()
-        .skip(left_column)
-        .take(width)
-        .enumerate()
-    {
-        let character = if cursor_column == Some(column) {
-            '|'
-        } else {
-            character
-        };
-        crate::terminal::terminal_put_char_at(terminal, screen_row, screen_column, character);
-    }
-    if let Some(cursor_column) = cursor_column
-        && cursor_column == line_length
-        && cursor_column >= left_column
-        && cursor_column - left_column < width
-    {
+    for (screen_column, character) in line.chars().skip(left_column).take(width).enumerate() {
         crate::terminal::terminal_put_char_at(
             terminal,
             screen_row,
-            cursor_column - left_column,
-            '|',
+            screen_column,
+            editor_display_character(character),
         );
     }
 }
@@ -1332,15 +1405,38 @@ fn render_editor_caret(
     let (line, column) = editor_cursor_position(text, cursor);
     let screen_row = line.saturating_sub(viewport.top_line) + 1;
     let screen_column = column.saturating_sub(viewport.left_column);
-    let character = if visible {
-        '|'
+    let character = text
+        .split('\n')
+        .nth(line)
+        .and_then(|line_text| line_text.chars().nth(column))
+        .unwrap_or(' ');
+    let character = editor_display_character(character);
+    if visible {
+        crate::terminal::terminal_put_char_at_highlighted(
+            terminal,
+            screen_row,
+            screen_column,
+            character,
+        );
     } else {
-        text.split('\n')
-            .nth(line)
-            .and_then(|line_text| line_text.chars().nth(column))
-            .unwrap_or(' ')
+        crate::terminal::terminal_put_char_at(terminal, screen_row, screen_column, character);
+    }
+}
+
+fn editor_display_character(character: char) -> char {
+    if character == '\t' { '>' } else { character }
+}
+
+fn insert_editor_text(text: &mut String, cursor: &mut usize, inserted: &str) -> bool {
+    let Some(new_length) = text.len().checked_add(inserted.len()) else {
+        return false;
     };
-    crate::terminal::terminal_put_char_at(terminal, screen_row, screen_column, character);
+    if new_length > MAX_FILE_OPERATION || text.try_reserve(inserted.len()).is_err() {
+        return false;
+    }
+    text.insert_str(*cursor, inserted);
+    *cursor += inserted.len();
+    true
 }
 
 fn previous_char_boundary(text: &str, cursor: usize) -> Option<usize> {
@@ -1469,8 +1565,9 @@ fn print_fs_error(command: &str, path: &str, error: FsError) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EditorViewport, editor_cursor_position, matching_lines, move_vertical, next_char_boundary,
-        parse_grep_arguments, parse_line_selection_arguments, previous_char_boundary,
+        EditorViewport, editor_cursor_position, editor_display_character, insert_editor_text,
+        matching_lines, move_vertical, next_char_boundary, parse_grep_arguments,
+        parse_ipv4_address, parse_line_selection_arguments, previous_char_boundary,
         program_candidates, resolve_path, selected_line_range, split_shell_words, text_counts,
         update_editor_viewport,
     };
@@ -1569,6 +1666,14 @@ mod tests {
     }
 
     #[test]
+    fn parses_only_four_valid_ipv4_octets() {
+        assert_eq!(parse_ipv4_address("192.168.42.1"), Some([192, 168, 42, 1]));
+        assert_eq!(parse_ipv4_address("192.168.42.256"), None);
+        assert_eq!(parse_ipv4_address("192.168.42"), None);
+        assert_eq!(parse_ipv4_address("192.168.42.1.extra"), None);
+    }
+
+    #[test]
     fn editor_cursor_moves_between_lines_and_utf8_characters() {
         let text = "aé\nxy";
         assert_eq!(previous_char_boundary(text, 3), Some(1));
@@ -1576,6 +1681,17 @@ mod tests {
         assert_eq!(move_vertical(text, 3, true), 6);
         assert_eq!(move_vertical(text, 5, false), 1);
         assert_eq!(editor_cursor_position("alpha\néx", 8), (1, 1));
+    }
+
+    #[test]
+    fn editor_tab_inserts_a_literal_tab_at_the_cursor() {
+        let mut text = String::from("make");
+        let mut cursor = 2;
+
+        assert!(insert_editor_text(&mut text, &mut cursor, "\t"));
+        assert_eq!(text, "ma\tke");
+        assert_eq!(cursor, 3);
+        assert_eq!(editor_display_character('\t'), '>');
     }
 
     #[test]

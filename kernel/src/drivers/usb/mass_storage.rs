@@ -6,7 +6,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
-use crate::drivers::usb::xhci::{self, EndpointHandle};
+use crate::drivers::usb::xhci::EndpointHandle;
+use crate::drivers::usb::{EndpointInfo, UsbControllerId, UsbControllerKind, ehci, ohci, xhci};
 use crate::memory;
 use crate::storage::block::{self, BlockDevice, BlockDeviceRef, BlockError, SECTOR_SIZE};
 
@@ -20,10 +21,87 @@ const MAX_BLOCKS_PER_TRANSFER: usize = MAX_TRANSFER_SIZE / SECTOR_SIZE;
 #[repr(C, align(4096))]
 struct DmaBuffer([u8; MAX_TRANSFER_SIZE]);
 
+#[derive(Clone, Copy)]
+enum BulkEndpoint {
+    Xhci(EndpointHandle),
+    Ehci {
+        controller_instance: u8,
+        device_address: u8,
+        endpoint_address: u8,
+        max_packet_size: u16,
+        data_toggle: bool,
+    },
+    Ohci {
+        controller_instance: u8,
+        device_address: u8,
+        endpoint_address: u8,
+        max_packet_size: u16,
+        data_toggle: bool,
+    },
+}
+
+impl BulkEndpoint {
+    unsafe fn transfer(
+        &mut self,
+        slot_id: u32,
+        buffer_phys: u64,
+        length: u32,
+    ) -> Result<u32, &'static str> {
+        match self {
+            Self::Xhci(endpoint) => unsafe {
+                xhci::bulk_transfer(slot_id, endpoint, buffer_phys, length)
+            },
+            Self::Ehci {
+                controller_instance,
+                device_address,
+                endpoint_address,
+                max_packet_size,
+                data_toggle,
+            } => {
+                let mut controllers = ehci::EHCI_CONTROLLERS.lock();
+                let controller = controllers
+                    .get_mut(usize::from(*controller_instance))
+                    .ok_or("EHCI controller instance is unavailable")?;
+                let transferred = controller.bulk_transfer(
+                    *device_address,
+                    *endpoint_address & 0x0f,
+                    *max_packet_size,
+                    *endpoint_address & 0x80 != 0,
+                    buffer_phys,
+                    length as usize,
+                    data_toggle,
+                )?;
+                u32::try_from(transferred).map_err(|_| "EHCI transfer length overflow")
+            }
+            Self::Ohci {
+                controller_instance,
+                device_address,
+                endpoint_address,
+                max_packet_size,
+                data_toggle,
+            } => {
+                let mut controllers = ohci::OHCI_CONTROLLERS.lock();
+                let controller = controllers
+                    .get_mut(usize::from(*controller_instance))
+                    .ok_or("OHCI controller instance is unavailable")?;
+                let transferred = controller.bulk_transfer(
+                    *device_address,
+                    *endpoint_address,
+                    *max_packet_size,
+                    buffer_phys,
+                    length as usize,
+                    data_toggle,
+                )?;
+                u32::try_from(transferred).map_err(|_| "OHCI transfer length overflow")
+            }
+        }
+    }
+}
+
 struct MassStorageState {
     slot_id: u32,
-    bulk_in: EndpointHandle,
-    bulk_out: EndpointHandle,
+    bulk_in: BulkEndpoint,
+    bulk_out: BulkEndpoint,
     tag: u32,
     sector_count: u64,
     block_size: u32,
@@ -55,12 +133,8 @@ impl MassStorageState {
 
         let cbw_phys = physical_address(self.cbw.0.as_ptr() as usize)?;
         let sent = unsafe {
-            xhci::bulk_transfer(
-                self.slot_id,
-                &mut self.bulk_out,
-                cbw_phys,
-                BOT_CBW_SIZE as u32,
-            )
+            self.bulk_out
+                .transfer(self.slot_id, cbw_phys, BOT_CBW_SIZE as u32)
         }
         .map_err(|_| BlockError::Io)?;
         if sent != BOT_CBW_SIZE as u32 {
@@ -71,21 +145,13 @@ impl MassStorageState {
             let data_phys = physical_address(self.data.0.as_ptr() as usize)?;
             let actual = if data_in {
                 unsafe {
-                    xhci::bulk_transfer(
-                        self.slot_id,
-                        &mut self.bulk_in,
-                        data_phys,
-                        data_length as u32,
-                    )
+                    self.bulk_in
+                        .transfer(self.slot_id, data_phys, data_length as u32)
                 }
             } else {
                 unsafe {
-                    xhci::bulk_transfer(
-                        self.slot_id,
-                        &mut self.bulk_out,
-                        data_phys,
-                        data_length as u32,
-                    )
+                    self.bulk_out
+                        .transfer(self.slot_id, data_phys, data_length as u32)
                 }
             }
             .map_err(|_| BlockError::Io)?;
@@ -97,18 +163,20 @@ impl MassStorageState {
         self.csw.0[..BOT_CSW_SIZE].fill(0);
         let csw_phys = physical_address(self.csw.0.as_ptr() as usize)?;
         let received = unsafe {
-            xhci::bulk_transfer(
-                self.slot_id,
-                &mut self.bulk_in,
-                csw_phys,
-                BOT_CSW_SIZE as u32,
-            )
+            self.bulk_in
+                .transfer(self.slot_id, csw_phys, BOT_CSW_SIZE as u32)
         }
         .map_err(|_| BlockError::Io)?;
-        if received != BOT_CSW_SIZE as u32
-            || u32::from_le_bytes(self.csw.0[0..4].try_into().unwrap()) != BOT_CSW_SIGNATURE
-            || u32::from_le_bytes(self.csw.0[4..8].try_into().unwrap()) != self.tag
-            || self.csw.0[12] != 0
+        if received != BOT_CSW_SIZE as u32 {
+            return Err(BlockError::Io);
+        }
+        let mut csw = [0; BOT_CSW_SIZE];
+        unsafe {
+            copy_dma_to_slice(self.csw.0.as_ptr(), &mut csw);
+        }
+        if u32::from_le_bytes(csw[0..4].try_into().unwrap()) != BOT_CSW_SIGNATURE
+            || u32::from_le_bytes(csw[4..8].try_into().unwrap()) != self.tag
+            || csw[12] != 0
         {
             return Err(BlockError::Io);
         }
@@ -146,7 +214,9 @@ impl MassStorageState {
             }
             unsafe { self.scsi_command(&cdb, chunk.len(), !write) }?;
             if !write {
-                chunk.copy_from_slice(&self.data.0[..chunk.len()]);
+                unsafe {
+                    copy_dma_to_slice(self.data.0.as_ptr(), chunk);
+                }
             }
         }
         Ok(())
@@ -156,6 +226,7 @@ impl MassStorageState {
 struct UsbMassStorageDevice {
     name: String,
     slot_id: u32,
+    controller: UsbControllerId,
     online: core::sync::atomic::AtomicBool,
     state: Mutex<MassStorageState>,
 }
@@ -204,6 +275,80 @@ pub unsafe fn init_storage(
     bulk_in: EndpointHandle,
     bulk_out: EndpointHandle,
 ) -> Result<BlockDeviceRef, BlockError> {
+    unsafe {
+        init_storage_with_endpoints(
+            UsbControllerId::XHCI,
+            slot_id,
+            BulkEndpoint::Xhci(bulk_in),
+            BulkEndpoint::Xhci(bulk_out),
+        )
+    }
+}
+
+pub unsafe fn init_ehci_storage(
+    controller: UsbControllerId,
+    device_address: u8,
+    bulk_in: EndpointInfo,
+    bulk_out: EndpointInfo,
+) -> Result<BlockDeviceRef, BlockError> {
+    let UsbControllerKind::Ehci = controller.kind else {
+        return Err(BlockError::Unsupported);
+    };
+    if bulk_in.address & 0x80 == 0 || bulk_out.address & 0x80 != 0 {
+        return Err(BlockError::InvalidBuffer);
+    }
+    let make_endpoint = |endpoint: EndpointInfo| BulkEndpoint::Ehci {
+        controller_instance: controller.instance,
+        device_address,
+        endpoint_address: endpoint.address,
+        max_packet_size: endpoint.max_packet_size & 0x07ff,
+        data_toggle: false,
+    };
+    unsafe {
+        init_storage_with_endpoints(
+            controller,
+            u32::from(device_address),
+            make_endpoint(bulk_in),
+            make_endpoint(bulk_out),
+        )
+    }
+}
+
+pub unsafe fn init_ohci_storage(
+    controller: UsbControllerId,
+    device_address: u8,
+    bulk_in: EndpointInfo,
+    bulk_out: EndpointInfo,
+) -> Result<BlockDeviceRef, BlockError> {
+    let UsbControllerKind::Ohci = controller.kind else {
+        return Err(BlockError::Unsupported);
+    };
+    if bulk_in.address & 0x80 == 0 || bulk_out.address & 0x80 != 0 {
+        return Err(BlockError::InvalidBuffer);
+    }
+    let make_endpoint = |endpoint: EndpointInfo| BulkEndpoint::Ohci {
+        controller_instance: controller.instance,
+        device_address,
+        endpoint_address: endpoint.address,
+        max_packet_size: endpoint.max_packet_size & 0x07ff,
+        data_toggle: false,
+    };
+    unsafe {
+        init_storage_with_endpoints(
+            controller,
+            u32::from(device_address),
+            make_endpoint(bulk_in),
+            make_endpoint(bulk_out),
+        )
+    }
+}
+
+unsafe fn init_storage_with_endpoints(
+    controller: UsbControllerId,
+    slot_id: u32,
+    bulk_in: BulkEndpoint,
+    bulk_out: BulkEndpoint,
+) -> Result<BlockDeviceRef, BlockError> {
     let name = format!("usb{}", NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed));
     let mut state = MassStorageState {
         slot_id,
@@ -227,8 +372,10 @@ pub unsafe fn init_storage(
     let mut capacity_cdb = [0u8; 10];
     capacity_cdb[0] = 0x25;
     unsafe { state.scsi_command(&capacity_cdb, 8, true) }?;
-    let last_lba = u32::from_be_bytes(state.data.0[0..4].try_into().unwrap());
-    state.block_size = u32::from_be_bytes(state.data.0[4..8].try_into().unwrap());
+    let mut capacity = [0; 8];
+    copy_dma_to_slice(state.data.0.as_ptr(), &mut capacity);
+    let last_lba = u32::from_be_bytes(capacity[0..4].try_into().unwrap());
+    state.block_size = u32::from_be_bytes(capacity[4..8].try_into().unwrap());
     state.sector_count = last_lba as u64 + 1;
     if state.block_size != SECTOR_SIZE as u32 || state.sector_count == 0 {
         return Err(BlockError::Unsupported);
@@ -237,6 +384,7 @@ pub unsafe fn init_storage(
     let device = Arc::new(UsbMassStorageDevice {
         name: name.clone(),
         slot_id,
+        controller,
         online: core::sync::atomic::AtomicBool::new(true),
         state: Mutex::new(state),
     });
@@ -251,17 +399,24 @@ pub unsafe fn init_storage(
     Ok(block_device)
 }
 
-pub fn shutdown(slot_id: u32) {
+pub fn shutdown(controller: UsbControllerId, slot_id: u32) {
     let mut devices = ACTIVE_DEVICES.lock();
     let mut index = 0;
     while index < devices.len() {
-        if devices[index].slot_id != slot_id {
+        if devices[index].slot_id != slot_id || devices[index].controller != controller {
             index += 1;
             continue;
         }
         let device = devices.remove(index);
         device.online.store(false, Ordering::Release);
         let _ = block::unregister(&device.name);
+    }
+}
+
+fn copy_dma_to_slice(source: *const u8, destination: &mut [u8]) {
+    core::sync::atomic::compiler_fence(Ordering::Acquire);
+    for (index, byte) in destination.iter_mut().enumerate() {
+        *byte = unsafe { source.add(index).read_volatile() };
     }
 }
 

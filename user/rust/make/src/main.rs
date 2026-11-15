@@ -179,6 +179,13 @@ fn parse_makefile(source: &str) -> Result<Makefile, String> {
             continue;
         }
 
+        if active_rule.is_some() && line.starts_with(' ') && !line.trim().is_empty() {
+            return Err(format!(
+                "Makefile:{}: recipe must start with a tab, not spaces",
+                line_number + 1
+            ));
+        }
+
         active_rule = None;
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {

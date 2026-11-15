@@ -25,6 +25,19 @@ mendukung baca/tulis file, truncate, pembuatan file/direktori, penghapusan,
 nama panjang, FAT mirroring, dan FSInfo yang valid. GPT, exFAT, NTFS, dan UASP
 belum didukung.
 
+Shell menyediakan formatter native untuk membuat FAT32 superfloppy langsung
+pada seluruh block device:
+
+```text
+mkfs.fat usb0 --yes
+mount usb0 /mnt
+```
+
+`mkfs.fat` mengganti metadata filesystem yang ada; gunakan hanya pada media
+kosong atau setelah mencadangkan data, dan unmount volume sebelum memformatnya.
+Opsi `--yes` adalah konfirmasi wajib. Formatter menolak ukuran media yang tidak
+cocok untuk FAT32.
+
 Ext2 dapat dipasang eksplisit dari primary MBR partition bertipe `0x83` atau
 superfloppy:
 

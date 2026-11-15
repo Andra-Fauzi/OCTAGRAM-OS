@@ -123,6 +123,109 @@ pub struct Fat32 {
 }
 
 impl Fat32 {
+    pub fn format(device: &dyn BlockDevice) -> Result<(), FsError> {
+        const RESERVED_SECTORS: u32 = 32;
+        const FAT_COUNT: u64 = 2;
+        const MIN_FAT32_CLUSTERS: u64 = 65_525;
+        const TARGET_MAX_CLUSTERS: u64 = 1_000_000;
+
+        let total_sectors = device.sector_count();
+        if total_sectors > u32::MAX as u64 {
+            return Err(FsError::Unsupported);
+        }
+
+        let mut sectors_per_cluster = 1u32;
+        while total_sectors.div_ceil(sectors_per_cluster as u64) > TARGET_MAX_CLUSTERS
+            && sectors_per_cluster < 64
+        {
+            sectors_per_cluster *= 2;
+        }
+
+        let fat_bytes = total_sectors.checked_mul(4).ok_or(FsError::Unsupported)?;
+        let sectors_per_fat = fat_bytes.div_ceil(sectors_per_cluster as u64 * SECTOR_SIZE as u64);
+        let data_start = RESERVED_SECTORS as u64 + FAT_COUNT * sectors_per_fat;
+        if data_start >= total_sectors {
+            return Err(FsError::Unsupported);
+        }
+        let cluster_count = (total_sectors - data_start) / sectors_per_cluster as u64;
+        let fat_entries = sectors_per_fat
+            .checked_mul((SECTOR_SIZE / 4) as u64)
+            .ok_or(FsError::Unsupported)?;
+        if cluster_count < MIN_FAT32_CLUSTERS
+            || cluster_count > 0x0FFF_FFF5
+            || fat_entries < cluster_count + 2
+            || sectors_per_fat > u32::MAX as u64
+        {
+            return Err(FsError::Unsupported);
+        }
+
+        let clear_end = data_start + sectors_per_cluster as u64;
+        let zeroes = [0u8; SECTOR_SIZE * 8];
+        let mut lba = 0;
+        while lba < clear_end {
+            let count = (clear_end - lba).min(8) as usize;
+            device
+                .write_sectors(lba, &zeroes[..count * SECTOR_SIZE])
+                .map_err(|_| FsError::IoError)?;
+            lba += count as u64;
+        }
+
+        let mut boot = [0u8; SECTOR_SIZE];
+        boot[..3].copy_from_slice(&[0xEB, 0x58, 0x90]);
+        boot[3..11].copy_from_slice(b"OCTAGOS ");
+        boot[11..13].copy_from_slice(&(SECTOR_SIZE as u16).to_le_bytes());
+        boot[13] = sectors_per_cluster as u8;
+        boot[14..16].copy_from_slice(&(RESERVED_SECTORS as u16).to_le_bytes());
+        boot[16] = FAT_COUNT as u8;
+        boot[21] = 0xF8;
+        boot[24..26].copy_from_slice(&63u16.to_le_bytes());
+        boot[26..28].copy_from_slice(&255u16.to_le_bytes());
+        boot[32..36].copy_from_slice(&(total_sectors as u32).to_le_bytes());
+        boot[36..40].copy_from_slice(&(sectors_per_fat as u32).to_le_bytes());
+        boot[44..48].copy_from_slice(&2u32.to_le_bytes());
+        boot[48..50].copy_from_slice(&1u16.to_le_bytes());
+        boot[50..52].copy_from_slice(&6u16.to_le_bytes());
+        boot[64] = 0x80;
+        boot[66] = 0x29;
+        boot[67..71].copy_from_slice(&0x4F43_5447u32.to_le_bytes());
+        boot[71..82].copy_from_slice(b"OCTAGRAMOS ");
+        boot[82..90].copy_from_slice(b"FAT32   ");
+        boot[510..512].copy_from_slice(&0xAA55u16.to_le_bytes());
+
+        let mut fsinfo = [0u8; SECTOR_SIZE];
+        fsinfo[..4].copy_from_slice(&FSINFO_LEAD_SIGNATURE.to_le_bytes());
+        fsinfo[484..488].copy_from_slice(&FSINFO_STRUCT_SIGNATURE.to_le_bytes());
+        fsinfo[488..492].copy_from_slice(&((cluster_count - 1) as u32).to_le_bytes());
+        fsinfo[492..496].copy_from_slice(&3u32.to_le_bytes());
+        fsinfo[508..512].copy_from_slice(&FSINFO_TRAIL_SIGNATURE.to_le_bytes());
+
+        let mut first_fat_sector = [0u8; SECTOR_SIZE];
+        first_fat_sector[..4].copy_from_slice(&0x0FFF_FFF8u32.to_le_bytes());
+        first_fat_sector[4..8].copy_from_slice(&FAT32_EOC.to_le_bytes());
+        first_fat_sector[8..12].copy_from_slice(&FAT32_EOC.to_le_bytes());
+
+        let second_fat_start = RESERVED_SECTORS as u64 + sectors_per_fat;
+        device
+            .write_sectors(0, &boot)
+            .map_err(|_| FsError::IoError)?;
+        device
+            .write_sectors(1, &fsinfo)
+            .map_err(|_| FsError::IoError)?;
+        device
+            .write_sectors(6, &boot)
+            .map_err(|_| FsError::IoError)?;
+        device
+            .write_sectors(7, &fsinfo)
+            .map_err(|_| FsError::IoError)?;
+        device
+            .write_sectors(RESERVED_SECTORS as u64, &first_fat_sector)
+            .map_err(|_| FsError::IoError)?;
+        device
+            .write_sectors(second_fat_start, &first_fat_sector)
+            .map_err(|_| FsError::IoError)?;
+        Ok(())
+    }
+
     pub fn mount(device: BlockDeviceRef) -> Result<Self, FsError> {
         let geometry = find_geometry(device.as_ref())?;
         let (free_cluster_count, next_free_cluster) = read_fsinfo(device.as_ref(), &geometry)?;
@@ -1359,6 +1462,32 @@ mod tests {
         assert_eq!(record_permissions(&record("program.elf", 0x20)), 0o755);
         assert_eq!(record_permissions(&record("read-only.ELF", 0x21)), 0o555);
         assert_eq!(record_permissions(&record("notes.txt", 0x20)), 0o644);
+    }
+
+    #[test]
+    fn formats_and_mounts_fat32_superfloppy() {
+        let disk = Arc::new(MemoryDisk {
+            sectors: Mutex::new(alloc::vec![[0u8; SECTOR_SIZE]; 131_072]),
+        });
+
+        Fat32::format(disk.as_ref()).unwrap();
+        let filesystem = Fat32::mount(disk).unwrap();
+        assert!(filesystem.read_dir("/").unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_too_small_device_before_writing() {
+        let disk = Arc::new(MemoryDisk {
+            sectors: Mutex::new(alloc::vec![[0u8; SECTOR_SIZE]; 2048]),
+        });
+
+        assert_eq!(Fat32::format(disk.as_ref()), Err(FsError::Unsupported));
+        assert!(
+            disk.sectors
+                .lock()
+                .iter()
+                .all(|sector| sector.iter().all(|b| *b == 0))
+        );
     }
 
     impl BlockDevice for MemoryDisk {

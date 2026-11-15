@@ -9,10 +9,22 @@ extern int errno;
 
 #define EACCES 13
 #define EAGAIN 11
+#define EAFNOSUPPORT 97
+#define EADDRINUSE 98
+#define EADDRNOTAVAIL 99
 #define EBADF 9
 #define E2BIG 7
 #define EBUSY 16
 #define ECHILD 10
+#define ECONNRESET 104
+#define ECONNREFUSED 111
+#define EHOSTUNREACH 113
+#define EISCONN 106
+#define EMSGSIZE 90
+#define ENETDOWN 100
+#define ENOTCONN 107
+#define ENOTSOCK 88
+#define ETIMEDOUT 110
 #define EDEADLK 35
 #define EEXIST 17
 #define EFAULT 14

@@ -100,7 +100,9 @@ run /share/octagram/hello.elf
 assignment `NAME += value`, opsi `-f`, `-C`, `-B`, dan automatic variables
 `$@`, `$<`, `$^`. Dependensi dibangun berurutan dan resep dijalankan satu
 program per baris; shell operator, implicit rules, timestamp, dan build
-incremental belum didukung, jadi target selalu dibangun ulang. Gunakan
+incremental belum didukung, jadi target selalu dibangun ulang. Baris recipe
+harus diawali karakter Tab sebenarnya, bukan spasi; tombol Tab di editor
+bawaan kini memasukkan karakter tersebut. Gunakan
 `make` memakai TCC secara default. Header OCTAGRAM tersedia di `/include`, dan
 runtime TCC di `/lib/tcc`.
 
@@ -392,3 +394,6 @@ Build bersama contoh lain dengan `make -C user`.
 
 Lihat [ABI syscall](syscall-abi.md) dan [panduan port aplikasi](porting-apps.md)
 untuk batasan aplikasi.
+
+Untuk driver jaringan tethering Android via USB RNDIS dan batasan stack
+jaringannya, lihat [Android USB tethering](android-usb-tethering.md).

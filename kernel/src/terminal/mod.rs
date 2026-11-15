@@ -1,6 +1,6 @@
 //! Framebuffer-backed virtual terminals.
 
-use crate::graphics::Framebuffer;
+use crate::graphics::{Color, Framebuffer};
 use crate::terminal::font::FONT8X16;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
@@ -166,6 +166,26 @@ pub fn terminal_clear_for(terminal: usize) {
 
 /// Draw one character cell without changing the terminal's output cursor.
 pub fn terminal_put_char_at(terminal: usize, row: usize, column: usize, character: char) {
+    terminal_put_char_at_with_style(terminal, row, column, character, false);
+}
+
+/// Draw one highlighted character cell without changing the terminal's output cursor.
+pub fn terminal_put_char_at_highlighted(
+    terminal: usize,
+    row: usize,
+    column: usize,
+    character: char,
+) {
+    terminal_put_char_at_with_style(terminal, row, column, character, true);
+}
+
+fn terminal_put_char_at_with_style(
+    terminal: usize,
+    row: usize,
+    column: usize,
+    character: char,
+    highlighted: bool,
+) {
     let Some(state) = TERMINALS.get(terminal) else {
         return;
     };
@@ -185,12 +205,19 @@ pub fn terminal_put_char_at(terminal: usize, row: usize, column: usize, characte
     if terminal == active_terminal()
         && let Some(framebuffer) = framebuffer.as_ref()
     {
-        draw_character(
-            framebuffer,
-            column,
-            row,
-            u8::try_from(glyph).unwrap_or(b' '),
-        );
+        let character = u8::try_from(glyph).unwrap_or(b' ');
+        if highlighted {
+            draw_character_with_colors(
+                framebuffer,
+                column,
+                row,
+                character,
+                Color::BLACK,
+                Color::WHITE,
+            );
+        } else {
+            draw_character(framebuffer, column, row, character);
+        }
     }
 }
 
@@ -277,9 +304,27 @@ fn scroll_pixel_rows(pixels: &mut [u8], pitch: usize, height: usize, line_height
 }
 
 fn draw_character(framebuffer: &Framebuffer, column: usize, row: usize, character: u8) {
+    draw_character_with_colors(
+        framebuffer,
+        column,
+        row,
+        character,
+        Color::WHITE,
+        Color::BLACK,
+    );
+}
+
+fn draw_character_with_colors(
+    framebuffer: &Framebuffer,
+    column: usize,
+    row: usize,
+    character: u8,
+    foreground: Color,
+    background: Color,
+) {
     let x = column as u64 * CHAR_W;
     let y = row as u64 * CHAR_H;
-    framebuffer.fill_rect(x, y, x + CHAR_W, y + CHAR_H, crate::graphics::Color::BLACK);
+    framebuffer.fill_rect(x, y, x + CHAR_W, y + CHAR_H, background);
     let glyph = &FONT8X16[character as usize];
     for (row_offset, bits) in glyph.iter().enumerate() {
         for column_offset in 0..CHAR_W as usize {
@@ -287,7 +332,7 @@ fn draw_character(framebuffer: &Framebuffer, column: usize, row: usize, characte
                 framebuffer.write_pixel(
                     x + column_offset as u64,
                     y + row_offset as u64,
-                    crate::graphics::Color::WHITE,
+                    foreground,
                 );
             }
         }
@@ -326,12 +371,18 @@ macro_rules! println {
 
 #[cfg(test)]
 mod tests {
-    use super::scroll_pixel_rows;
+    use super::{TERMINALS, scroll_pixel_rows, terminal_put_char_at_highlighted};
 
     #[test]
     fn scrolls_pixel_rows_and_clears_only_the_viewport_bottom() {
         let mut pixels = [1, 1, 2, 2, 3, 3, 9, 9];
         scroll_pixel_rows(&mut pixels, 2, 3, 1);
         assert_eq!(pixels, [2, 2, 3, 3, 0, 0, 9, 9]);
+    }
+
+    #[test]
+    fn highlighted_cell_keeps_its_original_character() {
+        terminal_put_char_at_highlighted(0, 0, 0, '>');
+        assert_eq!(TERMINALS[0].lock().cells[0][0], b'>' as u16);
     }
 }

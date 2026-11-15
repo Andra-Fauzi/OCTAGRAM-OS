@@ -75,6 +75,15 @@ terminal control job, window system, atau filesystem terisolasi per proses.
   dan ext2.
 - `drivers/`: driver PCI, AHCI, keyboard, USB, serial COM1 untuk log kernel,
   RTC CMOS untuk perintah `date`, dan ACPI untuk shutdown.
+- `drivers/qca9377.rs`: deteksi PCI Qualcomm, wake/sleep MMIO terbatas untuk
+  membaca register target. Probe laptop menunjukkan RTC ON (`0x73`), tetapi
+  chip-ID sebelumnya dibaca dari offset yang keliru dan revisi belum
+  terkonfirmasi. Driver memilih board data QCA9377. Alokator frame menyediakan
+  halaman DMA32 dan modul CE menyediakan ring BMI serta pertukaran polling.
+  Probe BMI yang mengaktifkan DMA tersedia sebagai feature eksperimen dan
+  dinonaktifkan secara default sampai reset PCI, konfigurasi CE target, serta
+  wake CPU target mengikuti urutan upstream. Upload board data, OTP, firmware,
+  dan koneksi Wi-Fi belum berjalan.
 - `task.rs`: executor kooperatif.
 
 Sebelum mengubah subsystem, baca implementasi modul dan tesnya; jangan

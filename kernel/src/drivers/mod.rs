@@ -5,9 +5,11 @@ pub mod ahci;
 pub mod device_model;
 pub mod keyboard;
 pub mod pci;
+pub mod qca9377;
 pub mod rtc;
 pub mod serial;
 pub mod usb;
+pub mod wifi_firmware;
 
 /// Enable early boot diagnostics before the framebuffer and bus drivers start.
 pub(crate) fn early_init() {
@@ -30,6 +32,7 @@ pub(crate) unsafe fn initialize() {
     unsafe { usb::register_class_drivers() };
 
     let pci_devices = pci::scan_pci_bus();
+    qca9377::report_pci_candidates(&pci_devices);
     for device in pci_devices {
         let result =
             unsafe { device_model::register_device(device_model::DeviceInfo::Pci(device)) };
@@ -41,6 +44,12 @@ pub(crate) unsafe fn initialize() {
     if let Err(error) = unsafe { device_model::register_driver(&usb::XHCI_DRIVER) } {
         crate::println!("driver xhci registration failed: {error}");
     }
+    if let Err(error) = unsafe { device_model::register_driver(&usb::EHCI_DRIVER) } {
+        crate::println!("driver ehci registration failed: {error}");
+    }
+    if let Err(error) = unsafe { device_model::register_driver(&usb::OHCI_DRIVER) } {
+        crate::println!("driver ohci registration failed: {error}");
+    }
 }
 
 /// Process deferred driver work that must run outside interrupt handlers.
@@ -48,5 +57,7 @@ pub(crate) unsafe fn initialize() {
 /// # Safety
 /// Must be called from the idle loop after interrupt handlers have returned.
 pub(crate) unsafe fn poll_deferred() {
+    usb::xhci::poll_manual_events();
     unsafe { usb::poll_hotplug() };
+    unsafe { usb::rndis::poll() };
 }

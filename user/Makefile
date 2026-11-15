@@ -14,7 +14,7 @@ CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
 LDFLAGS := -m elf_x86_64 -static -nostdlib -T linker.ld
 PROGRAMS := hello file_demo runtime_demo tty_demo argv_demo spawn_demo pipe_demo env_demo posix_demo stdio_demo posix_spawn_demo file_api_demo path_api_demo at_api_demo execve_demo fork_demo time_demo mmap_demo scanf_demo tls_demo thread_demo
 BINARIES := $(addprefix build/,$(addsuffix .elf,$(PROGRAMS)))
-HEADERS := $(wildcard include/*.h include/sys/*.h)
+HEADERS := $(wildcard include/*.h include/sys/*.h include/netinet/*.h)
 TCC_SOURCES := tcc libtcc tccpp tccgen tccdbg tccelf tccasm tccrun \
 	x86_64-gen x86_64-link i386-asm
 TCC_OBJECTS := $(addprefix build/tcc_,$(addsuffix .o,$(TCC_SOURCES)))

@@ -85,6 +85,14 @@ pub fn allocate_frame() -> Option<usize> {
     FRAME_ALLOCATOR.lock().allocate()
 }
 
+/// Alokasi satu page frame fisik di bawah batas 4 GiB untuk perangkat DMA 32-bit.
+///
+/// Mengembalikan **alamat fisik** frame yang seluruh rentang 4 KiB-nya dapat
+/// direpresentasikan sebagai alamat DMA 32-bit, atau `None` jika tidak tersedia.
+pub fn allocate_dma32_frame() -> Option<usize> {
+    FRAME_ALLOCATOR.lock().allocate_dma32()
+}
+
 /// Bebaskan satu page frame fisik.
 ///
 /// `frame` harus **alamat fisik** yang sebelumnya dikembalikan oleh

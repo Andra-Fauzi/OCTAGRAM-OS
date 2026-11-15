@@ -14,6 +14,7 @@ seq-macro = "0.3"
 [features]
 default = ["debug-output"]
 debug-output = []
+qca9377-bmi-probe = []
 
 [profile.dev]
 opt-level = 0

@@ -11,7 +11,10 @@ $(call USER_VARIABLE,KARCH,x86_64)
 # Default user QEMU flags. These are appended to the QEMU command calls.
 $(call USER_VARIABLE,QEMUFLAGS,-m 2G)
 
-override IMAGE_NAME := template-$(KARCH)
+override IMAGE_NAME := OCTAGRAM-$(KARCH)
+
+# Optional, user-supplied ath10k firmware. Firmware blobs are not vendored.
+ATH10K_FIRMWARE_DIR ?= firmware/ath10k/QCA9377/hw1.0
 
 .PHONY: all
 all: $(IMAGE_NAME).iso
@@ -157,6 +160,13 @@ $(IMAGE_NAME).iso: limine/limine kernel
 	rm -rf iso_root
 	mkdir -p iso_root/boot
 	cp -v kernel/kernel iso_root/boot/
+	if [ -f "$(ATH10K_FIRMWARE_DIR)/firmware-6.bin" ] || [ -f "$(ATH10K_FIRMWARE_DIR)/board-2.bin" ]; then \
+		mkdir -p iso_root/boot/firmware/ath10k/QCA9377/hw1.0; \
+		if [ -f "$(ATH10K_FIRMWARE_DIR)/firmware-6.bin" ]; then cp -v "$(ATH10K_FIRMWARE_DIR)/firmware-6.bin" iso_root/boot/firmware/ath10k/QCA9377/hw1.0/; fi; \
+		if [ -f "$(ATH10K_FIRMWARE_DIR)/board-2.bin" ]; then cp -v "$(ATH10K_FIRMWARE_DIR)/board-2.bin" iso_root/boot/firmware/ath10k/QCA9377/hw1.0/; fi; \
+		if [ -f "$(ATH10K_FIRMWARE_DIR)/LICENSE.QualcommAtheros_ath10k" ]; then cp -v "$(ATH10K_FIRMWARE_DIR)/LICENSE.QualcommAtheros_ath10k" iso_root/boot/firmware/ath10k/QCA9377/hw1.0/; fi; \
+		if [ -f "$(ATH10K_FIRMWARE_DIR)/notice_ath10k_firmware-6.txt" ]; then cp -v "$(ATH10K_FIRMWARE_DIR)/notice_ath10k_firmware-6.txt" iso_root/boot/firmware/ath10k/QCA9377/hw1.0/; fi; \
+	fi
 	mkdir -p iso_root/boot/limine
 	cp -v limine.conf iso_root/boot/limine/
 	mkdir -p iso_root/EFI/BOOT
@@ -210,6 +220,13 @@ endif
 	mformat -i $(IMAGE_NAME).hdd@@2M
 	mmd -i $(IMAGE_NAME).hdd@@2M ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
 	mcopy -i $(IMAGE_NAME).hdd@@2M kernel/kernel ::/boot
+	if [ -f "$(ATH10K_FIRMWARE_DIR)/firmware-6.bin" ] || [ -f "$(ATH10K_FIRMWARE_DIR)/board-2.bin" ]; then \
+		mmd -i $(IMAGE_NAME).hdd@@2M ::/boot/firmware ::/boot/firmware/ath10k ::/boot/firmware/ath10k/QCA9377 ::/boot/firmware/ath10k/QCA9377/hw1.0; \
+		if [ -f "$(ATH10K_FIRMWARE_DIR)/firmware-6.bin" ]; then mcopy -i $(IMAGE_NAME).hdd@@2M "$(ATH10K_FIRMWARE_DIR)/firmware-6.bin" ::/boot/firmware/ath10k/QCA9377/hw1.0/; fi; \
+		if [ -f "$(ATH10K_FIRMWARE_DIR)/board-2.bin" ]; then mcopy -i $(IMAGE_NAME).hdd@@2M "$(ATH10K_FIRMWARE_DIR)/board-2.bin" ::/boot/firmware/ath10k/QCA9377/hw1.0/; fi; \
+		if [ -f "$(ATH10K_FIRMWARE_DIR)/LICENSE.QualcommAtheros_ath10k" ]; then mcopy -i $(IMAGE_NAME).hdd@@2M "$(ATH10K_FIRMWARE_DIR)/LICENSE.QualcommAtheros_ath10k" ::/boot/firmware/ath10k/QCA9377/hw1.0/; fi; \
+		if [ -f "$(ATH10K_FIRMWARE_DIR)/notice_ath10k_firmware-6.txt" ]; then mcopy -i $(IMAGE_NAME).hdd@@2M "$(ATH10K_FIRMWARE_DIR)/notice_ath10k_firmware-6.txt" ::/boot/firmware/ath10k/QCA9377/hw1.0/; fi; \
+	fi
 	mcopy -i $(IMAGE_NAME).hdd@@2M limine.conf ::/boot/limine
 ifeq ($(KARCH),x86_64)
 	mcopy -i $(IMAGE_NAME).hdd@@2M limine/limine-bios.sys ::/boot/limine

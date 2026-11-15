@@ -314,6 +314,7 @@ mod tests {
             ps2_keycode_to_ascii(0x0E, false, false, false),
             Some('\x08')
         );
+        assert_eq!(ps2_keycode_to_ascii(0x0F, false, false, false), Some('\t'));
         assert_eq!(ps2_keycode_to_ascii(0x02, true, false, false), Some('!'));
         assert_eq!(ps2_keycode_to_ascii(0x35, false, false, false), Some('/'));
         assert_eq!(ps2_keycode_to_ascii(0x35, true, false, false), Some('?'));

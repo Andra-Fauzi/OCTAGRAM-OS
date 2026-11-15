@@ -206,7 +206,40 @@ fn run_network_command(arguments: &str) {
             }
         }
         Some("udp") => run_network_udp_command(arguments),
-        Some(_) => crate::println!("usage: net [status|dhcp|udp <IPv4> <port> <text>]"),
+        Some("wifi") => run_wifi_command(arguments),
+        Some(_) => crate::println!("usage: net [status|dhcp|udp <IPv4> <port> <text>|wifi <scan|connect <ssid>>]"),
+    }
+}
+
+fn run_wifi_command(arguments: &str) {
+    let mut parts = arguments.split_whitespace();
+    let _ = parts.next(); // "wifi"
+    match parts.next() {
+        None | Some("help") => {
+            crate::println!("wifi subcommands:");
+            crate::println!("  net wifi scan              - scan all 2.4 GHz channels");
+            crate::println!("  net wifi connect <ssid>    - connect to AP by SSID");
+            crate::println!("  net wifi status            - show current link state");
+        }
+        Some("status") => {
+            crate::network::print_status();
+        }
+        Some("scan") => {
+            crate::println!("Starting WiFi scan on 2.4 GHz channels...");
+            crate::network::wifi_scan();
+        }
+        Some("connect") => {
+            let ssid = parts.next().unwrap_or("").trim();
+            if ssid.is_empty() {
+                crate::println!("usage: net wifi connect <ssid>");
+                return;
+            }
+            crate::println!("Connecting to SSID: {}", ssid);
+            crate::network::wifi_connect(ssid);
+        }
+        Some(sub) => {
+            crate::println!("net wifi: unknown subcommand '{sub}'. Try: scan, connect, status");
+        }
     }
 }
 

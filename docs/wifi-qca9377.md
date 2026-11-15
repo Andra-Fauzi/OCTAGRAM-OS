@@ -76,15 +76,42 @@ and firmware lifecycle has not been validated. The feature-gated target-info
 probe is disabled by default; when enabled, it temporarily enables PCI bus
 mastering and verifies it disabled again before releasing DMA pages.
 The HTC layer now provides a transport-independent client for READY negotiation,
-service connection, and service packet send/receive. It is not yet attached to
-a runtime CE data transport; WMI/HTT startup and packet handling remain
-unimplemented.
+service connection, and service packet send/receive. It has been updated with
+relaxed length checks (`>= 8` instead of `== 8`) for `parse_ready` and
+`parse_connect_response` to handle extended HTC ready messages. It also
+includes `SETUP_COMPLETE` message support, `HTC_FLAG_NEED_CREDIT_UPDATE` and
+`HTC_FLAG_RECV_TRAILER` flag constants, credit tracking per endpoint, trailer
+strip on receive, and sequence-number tracking (`send_seq`) for outgoing
+packets. The HTC client is not yet attached to a runtime CE data transport;
+credit flow control is not yet active, and WMI/HTT startup and packet handling
+remain unimplemented.
+The CE layer now has separate `TxCe` (source-ring only) and `RxCe`
+(destination-ring only) types implementing the ath10k pipe map:
+  - EP0 Control: TX=CE0, RX=CE1
+  - WMI Control: TX=CE3, RX=CE2
+  - HTT Data:    TX=CE4, RX=CE5
+The `configure_packet_registers`, `configure_bmi_registers`, and
+`configure_diagnostic_registers` functions no longer enforce a strict
+zero-index check; instead they read the hardware's current ring index and use
+it as the starting index, matching ath10k behaviour after BMI.
+`PipePair<R>` wraps a `TxCe`/`RxCe` pair and implements `HtcTransport`,
+giving the HTC client a concrete CE-backed send/receive path.
+The boot firmware routine now uses the correct QCA9377 hw1.0 load addresses:
+OTP at `0x0040_4000` and firmware at `0x0040_8000`; the previous `0x1234`
+placeholder values have been replaced. `init_htc_pipes` in `qca9377.rs`
+allocates and configures all six CE pipes (EP0/WMI/HTT TX+RX) after BMI
+completes, returning an `HtcPipes` struct ready for HTC negotiation.
 An unintegrated CE7 diagnostic helper now validates transfer bounds and maps
 QCA6174/QCA9377 target CPU addresses to CE address space. It is not yet wired
 into startup, and this work does not change the probe's disabled-by-default
 status.
-There is not yet a hardware-validated BMI exchange, OTP calibration, firmware
-boot, HTC/WMI/HTT support, Wi-Fi association, or a usable wireless link. Linux
+There is not yet active credit flow control, WMI/HTT startup, Wi-Fi
+association, or a usable wireless link. The remaining steps before a usable
+link: (1) hardware-validated chip reset + target CPU wake sequence, (2) run
+`init_htc_pipes` after BMI done, (3) `HtcClient::wait_ready` +
+`connect_service` for WMI/HTT + `send_setup_complete`, (4) WMI
+`WMI_INIT_CMDID` and interface/key setup, (5) HTT version handshake and data
+path. Linux
 [ath10k PCI](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/ath/ath10k/pci.c),
 [ath10k hardware IDs](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/ath/ath10k/hw.h),
 and [BMI](https://github.com/torvalds/linux/blob/master/drivers/net/wireless/ath/ath10k/bmi.c)

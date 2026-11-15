@@ -1,9 +1,19 @@
-const HTC_HEADER_LENGTH: usize = 8;
+pub(crate) const HTC_HEADER_LENGTH: usize = 8;
 const HTC_CONTROL_ENDPOINT: u8 = 0;
 const HTC_MAX_SERVICE_ENDPOINTS: usize = 7;
 const HTC_READY_MESSAGE_ID: u16 = 1;
 const HTC_CONNECT_SERVICE_MESSAGE_ID: u16 = 2;
 const HTC_CONNECT_SERVICE_RESPONSE_ID: u16 = 3;
+const HTC_SETUP_COMPLETE_MESSAGE_ID: u16 = 4;
+// Extended setup complete (used when credit flow control info is needed)
+const HTC_SETUP_COMPLETE_EX_MESSAGE_ID: u16 = 5;
+
+// HTC header flags
+pub const HTC_FLAG_NEED_CREDIT_UPDATE: u8 = 0x01;
+pub const HTC_FLAG_RECV_TRAILER: u8 = 0x02;
+
+// HTC trailer item tags
+const HTC_TRAILER_TAG_CREDIT_REPORT: u8 = 1;
 
 pub const HTC_SERVICE_WMI_CONTROL: u16 = 0x0100;
 pub const HTC_SERVICE_WMI_DATA_BEST_EFFORT: u16 = 0x0101;
@@ -110,11 +120,19 @@ pub struct HtcReady {
     pub max_endpoints: u8,
 }
 
+/// Parse an HTC READY message from the target.
+///
+/// The HTC spec requires a minimum payload of 8 bytes; extended versions of the
+/// ready message may append additional fields that this driver does not yet use.
+/// We therefore accept `payload.len() >= 8` rather than `== 8` and silently
+/// ignore any trailing bytes.
 pub fn parse_ready(packet: HtcPacket<'_>) -> Result<HtcReady, HtcError> {
     if packet.header.endpoint != HTC_CONTROL_ENDPOINT {
         return Err(HtcError::UnexpectedEndpoint);
     }
-    if packet.payload.len() != 8
+    // Require at least 8 bytes; ath10k only mandates the minimum length.
+    // Extended ready messages may carry additional fields — ignore them.
+    if packet.payload.len() < 8
         || u16::from_le_bytes([packet.payload[0], packet.payload[1]]) != HTC_READY_MESSAGE_ID
     {
         return Err(HtcError::UnexpectedMessage);
@@ -155,6 +173,11 @@ pub struct HtcConnectResponse {
     pub max_message_size: u16,
 }
 
+/// Parse an HTC CONNECT_SERVICE_RESPONSE from the target.
+///
+/// The response payload is at least 8 bytes; extended responses may append
+/// additional fields. We accept `payload.len() >= 8` and ignore any trailing
+/// bytes, matching the ath10k minimum-length requirement.
 pub fn parse_connect_response(
     packet: HtcPacket<'_>,
     expected_service: u16,
@@ -162,7 +185,8 @@ pub fn parse_connect_response(
     if packet.header.endpoint != HTC_CONTROL_ENDPOINT {
         return Err(HtcError::UnexpectedEndpoint);
     }
-    if packet.payload.len() != 8
+    // Require at least 8 bytes; ignore any extra bytes in extended responses.
+    if packet.payload.len() < 8
         || u16::from_le_bytes([packet.payload[0], packet.payload[1]])
             != HTC_CONNECT_SERVICE_RESPONSE_ID
     {
@@ -184,6 +208,23 @@ pub fn parse_connect_response(
     })
 }
 
+/// Build a SETUP_COMPLETE frame (HTC message ID 4) addressed to EP0.
+///
+/// The host must send this after all services have been connected, before WMI
+/// commands can flow.  The payload is two bytes: the message ID in little-endian.
+pub fn setup_complete_request() -> [u8; HTC_HEADER_LENGTH + 2] {
+    let payload = HTC_SETUP_COMPLETE_MESSAGE_ID.to_le_bytes();
+    let packet = HtcPacket {
+        header: HtcHeader::new(HTC_CONTROL_ENDPOINT, 0, [0; 4]),
+        payload: &payload,
+    };
+    let mut output = [0u8; HTC_HEADER_LENGTH + 2];
+    // encode_into can only fail if the buffer is too small or payload is too
+    // large; neither applies to this fixed-size buffer.
+    let _ = packet.encode_into(&mut output);
+    output
+}
+
 pub trait HtcTransport {
     type Error;
 
@@ -191,11 +232,20 @@ pub trait HtcTransport {
     fn receive(&mut self, frame: &mut [u8]) -> Result<usize, Self::Error>;
 }
 
+/// Extension to access the underlying transport from `HtcClient`.
+/// Used by WMI and HTT layers that need to receive raw frames.
+pub trait HtcClientTransportExt {
+    type T: HtcTransport;
+    fn transport_mut(&mut self) -> &mut Self::T;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HtcServiceEndpoint {
     service_id: u16,
     endpoint: u8,
     max_message_size: u16,
+    /// Available send credits for this endpoint.
+    credits: u16,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -208,6 +258,8 @@ pub struct HtcClient<T> {
     transport: T,
     ready: Option<HtcReady>,
     endpoints: [Option<HtcServiceEndpoint>; HTC_MAX_SERVICE_ENDPOINTS],
+    /// Outgoing sequence number, incremented with each sent data frame.
+    send_seq: u8,
 }
 
 impl<T: HtcTransport> HtcClient<T> {
@@ -216,6 +268,7 @@ impl<T: HtcTransport> HtcClient<T> {
             transport,
             ready: None,
             endpoints: [None; HTC_MAX_SERVICE_ENDPOINTS],
+            send_seq: 0,
         }
     }
 
@@ -241,9 +294,9 @@ impl<T: HtcTransport> HtcClient<T> {
         flags: u16,
         frame: &mut [u8],
     ) -> Result<HtcConnectResponse, HtcClientError<T::Error>> {
-        if self.ready.is_none() {
-            return Err(HtcClientError::Protocol(HtcError::NotReady));
-        }
+        let ready = self
+            .ready
+            .ok_or(HtcClientError::Protocol(HtcError::NotReady))?;
         if self
             .endpoints
             .iter()
@@ -261,7 +314,6 @@ impl<T: HtcTransport> HtcClient<T> {
         let packet = self.receive_packet(frame)?;
         let response =
             parse_connect_response(packet, service_id).map_err(HtcClientError::Protocol)?;
-        let ready = self.ready.ok_or(HtcClientError::Protocol(HtcError::NotReady))?;
         if response.endpoint == HTC_CONTROL_ENDPOINT
             || response.endpoint >= ready.max_endpoints
             || response.max_message_size == 0
@@ -273,6 +325,14 @@ impl<T: HtcTransport> HtcClient<T> {
         }) {
             return Err(HtcClientError::Protocol(HtcError::InvalidEndpoint));
         }
+        // Determine initial credits before taking a mutable borrow on endpoints.
+        // The first connected endpoint gets the full credit count from the ready
+        // message; subsequent ones start at 0 and earn credits via trailers.
+        let initial_credits = if self.endpoints.iter().all(|e| e.is_none()) {
+            ready.credit_count
+        } else {
+            0
+        };
         let slot = self
             .endpoints
             .iter_mut()
@@ -282,6 +342,7 @@ impl<T: HtcTransport> HtcClient<T> {
             service_id,
             endpoint: response.endpoint,
             max_message_size: response.max_message_size,
+            credits: initial_credits,
         });
         Ok(response)
     }
@@ -303,8 +364,16 @@ impl<T: HtcTransport> HtcClient<T> {
             return Err(HtcClientError::Protocol(HtcError::MessageTooLarge));
         }
 
+        // Stamp the outgoing sequence number into control[0].
+        let seq = self.send_seq;
+        self.send_seq = self.send_seq.wrapping_add(1);
+
+        let mut control = [0u8; 4];
+        control[0] = seq;
+
+        let ep_id = endpoint.endpoint;
         let packet = HtcPacket {
-            header: HtcHeader::new(endpoint.endpoint, flags, [0; 4]),
+            header: HtcHeader::new(ep_id, flags, control),
             payload,
         };
         let length = packet
@@ -312,6 +381,28 @@ impl<T: HtcTransport> HtcClient<T> {
             .map_err(HtcClientError::Protocol)?;
         self.transport
             .send(&frame[..length])
+            .map_err(HtcClientError::Transport)
+    }
+
+    /// Send an HTC SETUP_COMPLETE message to EP0.
+    ///
+    /// Must be called after all services are connected and before any WMI
+    /// commands are issued.  Returns `NotReady` if `wait_ready` has not yet
+    /// been called.
+    pub fn send_setup_complete(
+        &mut self,
+        frame: &mut [u8],
+    ) -> Result<(), HtcClientError<T::Error>> {
+        if self.ready.is_none() {
+            return Err(HtcClientError::Protocol(HtcError::NotReady));
+        }
+        let msg = setup_complete_request();
+        if frame.len() < msg.len() {
+            return Err(HtcClientError::Protocol(HtcError::OutputBufferTooSmall));
+        }
+        frame[..msg.len()].copy_from_slice(&msg);
+        self.transport
+            .send(&frame[..msg.len()])
             .map_err(HtcClientError::Transport)
     }
 
@@ -337,6 +428,12 @@ impl<T: HtcTransport> HtcClient<T> {
         self.transport
     }
 
+    /// Borrow the underlying transport mutably (used by WMI/HTT to receive
+    /// raw frames outside the HTC framing path, e.g. after the handshake).
+    pub fn transport_mut(&mut self) -> &mut T {
+        &mut self.transport
+    }
+
     fn receive_packet<'a>(
         &mut self,
         frame: &'a mut [u8],
@@ -348,15 +445,36 @@ impl<T: HtcTransport> HtcClient<T> {
         let received = frame
             .get(..length)
             .ok_or(HtcClientError::Protocol(HtcError::OutputBufferTooSmall))?;
-        HtcPacket::parse(received).map_err(HtcClientError::Protocol)
+        let mut packet = HtcPacket::parse(received).map_err(HtcClientError::Protocol)?;
+
+        // Fix 5: strip trailer if HTC_FLAG_RECV_TRAILER is set.
+        // Trailer format: items..., last_byte = total trailer length in bytes.
+        // We strip the trailer from the payload so callers never see it.
+        if packet.header.flags & HTC_FLAG_RECV_TRAILER != 0 {
+            let payload = packet.payload;
+            if payload.is_empty() {
+                return Err(HtcClientError::Protocol(HtcError::UnexpectedMessage));
+            }
+            let trailer_len = usize::from(*payload.last().unwrap());
+            // trailer_len counts itself, so must be >= 1; must not exceed payload.
+            if trailer_len == 0 || trailer_len > payload.len() {
+                return Err(HtcClientError::Protocol(HtcError::UnexpectedMessage));
+            }
+            let stripped_len = payload.len() - trailer_len;
+            packet.payload = &payload[..stripped_len];
+        }
+
+        Ok(packet)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        HTC_SERVICE_WMI_CONTROL, HtcClient, HtcClientError, HtcError, HtcHeader, HtcPacket,
+        HTC_FLAG_RECV_TRAILER, HTC_HEADER_LENGTH, HTC_SERVICE_WMI_CONTROL,
+        HTC_SETUP_COMPLETE_MESSAGE_ID, HtcClient, HtcClientError, HtcError, HtcHeader, HtcPacket,
         HtcTransport, connect_service_request, parse_connect_response, parse_ready,
+        setup_complete_request,
     };
     use alloc::vec::Vec;
 
@@ -422,6 +540,7 @@ mod tests {
         let request = connect_service_request(HTC_SERVICE_WMI_CONTROL, 0).unwrap();
         assert_eq!(&request[8..12], &[2, 0, 0, 1]);
 
+        // Existing test: exact 8-byte payload still works (>= 8 accepts 8).
         let ready = HtcPacket::parse(&[0, 0, 8, 0, 0, 0, 0, 0, 1, 0, 32, 0, 64, 0, 8, 0])
             .unwrap();
         assert_eq!(
@@ -436,6 +555,7 @@ mod tests {
 
     #[test]
     fn parses_service_connection_response() {
+        // Existing test: exact 8-byte payload still works (>= 8 accepts 8).
         let response = HtcPacket::parse(&[0, 0, 8, 0, 0, 0, 0, 0, 3, 0, 0, 1, 0, 2, 0, 8])
             .unwrap();
         assert_eq!(
@@ -473,6 +593,7 @@ mod tests {
 
         let transport = client.into_transport();
         assert_eq!(&transport.sent[0][8..12], &[2, 0, 0, 1]);
+        // seq_no is now in control[0]; data byte is still at offset 8.
         assert_eq!(&transport.sent[1][..9], &[2, 0, 1, 0, 0, 0, 0, 0, 0xaa]);
     }
 
@@ -499,5 +620,188 @@ mod tests {
             client.connect_service(HTC_SERVICE_WMI_CONTROL, 0, &mut frame),
             Err(HtcClientError::Protocol(HtcError::InvalidEndpoint))
         );
+    }
+
+    // --- New tests ---
+
+    /// parse_ready accepts a payload longer than 8 bytes (extended ready message).
+    #[test]
+    fn parse_ready_accepts_extended_payload() {
+        // 10-byte payload: standard 8 bytes + 2 extra (ignored extension bytes)
+        let frame: [u8; HTC_HEADER_LENGTH + 10] = [
+            0, 0,       // endpoint=0, flags=0
+            10, 0,      // payload_length = 10 (LE)
+            0, 0, 0, 0, // control
+            // payload (10 bytes):
+            1, 0,       // message_id = HTC_READY_MESSAGE_ID
+            16, 0,      // credit_count = 16
+            128, 0,     // credit_size = 128
+            4,          // max_endpoints = 4
+            0,          // reserved (payload[7])
+            0xAB, 0xCD, // extension bytes – must be silently ignored
+        ];
+        let packet = HtcPacket::parse(&frame).unwrap();
+        assert_eq!(
+            parse_ready(packet),
+            Ok(super::HtcReady {
+                credit_count: 16,
+                credit_size: 128,
+                max_endpoints: 4,
+            })
+        );
+    }
+
+    /// parse_connect_response accepts a payload longer than 8 bytes.
+    #[test]
+    fn parse_connect_response_accepts_extended_payload() {
+        // 10-byte payload: standard 8 bytes + 2 extra (ignored extension bytes)
+        let frame: [u8; HTC_HEADER_LENGTH + 10] = [
+            0, 0,       // endpoint=0, flags=0
+            10, 0,      // payload_length = 10 (LE)
+            0, 0, 0, 0, // control
+            // payload (10 bytes):
+            3, 0,       // message_id = HTC_CONNECT_SERVICE_RESPONSE_ID
+            0, 1,       // service_id = HTC_SERVICE_WMI_CONTROL (0x0100)
+            0,          // status = 0 (success)
+            3,          // assigned endpoint = 3
+            0, 8,       // max_message_size = 2048 (LE: 0x0800)
+            0xDE, 0xAD, // extension bytes – must be silently ignored
+        ];
+        let packet = HtcPacket::parse(&frame).unwrap();
+        assert_eq!(
+            parse_connect_response(packet, HTC_SERVICE_WMI_CONTROL),
+            Ok(super::HtcConnectResponse {
+                endpoint: 3,
+                max_message_size: 2048,
+            })
+        );
+    }
+
+    /// setup_complete_request encodes the correct message ID on EP0.
+    #[test]
+    fn setup_complete_request_encodes_correctly() {
+        let frame = setup_complete_request();
+        // Frame layout: [endpoint, flags, payload_len_lo, payload_len_hi,
+        //                ctrl0, ctrl1, ctrl2, ctrl3, msg_id_lo, msg_id_hi]
+        assert_eq!(frame[0], 0, "must target EP0");
+        assert_eq!(frame[1], 0, "flags must be 0");
+        assert_eq!(u16::from_le_bytes([frame[2], frame[3]]), 2, "payload_len must be 2");
+        let msg_id = u16::from_le_bytes([frame[8], frame[9]]);
+        assert_eq!(msg_id, HTC_SETUP_COMPLETE_MESSAGE_ID);
+    }
+
+    /// send_setup_complete transmits the correct frame to EP0 via the transport.
+    #[test]
+    fn send_setup_complete_sends_to_ep0() {
+        // We need a ready message so that send_setup_complete does not bail out.
+        let transport = MockTransport {
+            received: alloc::vec![
+                alloc::vec![0, 0, 8, 0, 0, 0, 0, 0, 1, 0, 32, 0, 64, 0, 8, 0],
+            ],
+            ..MockTransport::default()
+        };
+        let mut client = HtcClient::new(transport);
+        let mut frame = [0u8; 32];
+        client.wait_ready(&mut frame).unwrap();
+        assert_eq!(client.send_setup_complete(&mut frame), Ok(()));
+
+        let transport = client.into_transport();
+        assert_eq!(transport.sent.len(), 1);
+        let sent = &transport.sent[0];
+        assert_eq!(sent[0], 0, "must be addressed to EP0");
+        let msg_id = u16::from_le_bytes([sent[8], sent[9]]);
+        assert_eq!(msg_id, HTC_SETUP_COMPLETE_MESSAGE_ID);
+    }
+
+    /// send_setup_complete returns NotReady when called before wait_ready.
+    #[test]
+    fn send_setup_complete_requires_ready() {
+        let transport = MockTransport::default();
+        let mut client = HtcClient::new(transport);
+        let mut frame = [0u8; 32];
+        assert_eq!(
+            client.send_setup_complete(&mut frame),
+            Err(HtcClientError::Protocol(HtcError::NotReady))
+        );
+    }
+
+    /// receive_packet strips a trailer when HTC_FLAG_RECV_TRAILER is set.
+    #[test]
+    fn receive_strips_trailer() {
+        // Build a frame with 5-byte raw payload: [data, data, data, trailer_item, trailer_len]
+        // trailer_len = 2 (the last byte plus 1 item byte), data = [0xAA, 0xBB, 0xCC]
+        // So stripped payload should be [0xAA, 0xBB, 0xCC].
+        let raw_payload: &[u8] = &[0xAA, 0xBB, 0xCC, 0x01, 0x02];
+        let payload_len = raw_payload.len() as u16;
+        let mut raw_frame = alloc::vec![0u8; HTC_HEADER_LENGTH + raw_payload.len()];
+        raw_frame[0] = 0;                       // endpoint = 0
+        raw_frame[1] = HTC_FLAG_RECV_TRAILER;   // flags
+        raw_frame[2..4].copy_from_slice(&payload_len.to_le_bytes());
+        // control bytes [4..8] = 0
+        raw_frame[HTC_HEADER_LENGTH..].copy_from_slice(raw_payload);
+
+        let transport = MockTransport {
+            received: alloc::vec![raw_frame],
+            ..MockTransport::default()
+        };
+        let mut client = HtcClient::new(transport);
+        let mut frame = [0u8; 32];
+        // We call receive_packet indirectly via wait_ready which will fail (wrong msg_id),
+        // but the trailer stripping happens before that, so test the lower-level path
+        // through receive() after the client is ready. Instead, test via a data receive
+        // by using receive() with appropriate setup.
+        //
+        // For simplicity, test via the parse path: build a ready frame first.
+        // Actually, let us re-queue the frame and use a client that is already ready.
+        let transport2 = MockTransport {
+            received: alloc::vec![
+                alloc::vec![0, 0, 8, 0, 0, 0, 0, 0, 1, 0, 32, 0, 64, 0, 8, 0], // ready
+                // A data frame on EP0 with trailer flag set, payload=[0xAA,0xBB,0xCC, item, len=2]
+                {
+                    let raw_payload: &[u8] = &[0xAA, 0xBB, 0xCC, 0x01, 0x02];
+                    let payload_len = raw_payload.len() as u16;
+                    let mut f = alloc::vec![0u8; HTC_HEADER_LENGTH + raw_payload.len()];
+                    f[0] = 0;
+                    f[1] = HTC_FLAG_RECV_TRAILER;
+                    f[2..4].copy_from_slice(&payload_len.to_le_bytes());
+                    f[HTC_HEADER_LENGTH..].copy_from_slice(raw_payload);
+                    f
+                },
+            ],
+            ..MockTransport::default()
+        };
+        let mut client2 = HtcClient::new(transport2);
+        let mut buf = [0u8; 64];
+        client2.wait_ready(&mut buf).unwrap();
+        // receive() on EP0 (control endpoint) is allowed without endpoint registration.
+        let packet = client2.receive(&mut buf).unwrap();
+        assert_eq!(packet.payload, &[0xAA, 0xBB, 0xCC]);
+    }
+
+    /// seq_no increments with each send_service call.
+    #[test]
+    fn send_service_increments_seq_no() {
+        let transport = MockTransport {
+            received: alloc::vec![
+                alloc::vec![0, 0, 8, 0, 0, 0, 0, 0, 1, 0, 32, 0, 64, 0, 8, 0],
+                alloc::vec![0, 0, 8, 0, 0, 0, 0, 0, 3, 0, 0, 1, 0, 2, 0, 8],
+            ],
+            ..MockTransport::default()
+        };
+        let mut client = HtcClient::new(transport);
+        let mut frame = [0u8; 64];
+        client.wait_ready(&mut frame).unwrap();
+        client.connect_service(HTC_SERVICE_WMI_CONTROL, 0, &mut frame).unwrap();
+
+        client.send_service(HTC_SERVICE_WMI_CONTROL, 0, &[1], &mut frame).unwrap();
+        client.send_service(HTC_SERVICE_WMI_CONTROL, 0, &[2], &mut frame).unwrap();
+        client.send_service(HTC_SERVICE_WMI_CONTROL, 0, &[3], &mut frame).unwrap();
+
+        let transport = client.into_transport();
+        // sent[0] is the connect_service_request; sent[1..] are the data frames.
+        // control[0] = seq_no is at byte offset 4 of the frame.
+        assert_eq!(transport.sent[1][4], 0, "first data frame seq=0");
+        assert_eq!(transport.sent[2][4], 1, "second data frame seq=1");
+        assert_eq!(transport.sent[3][4], 2, "third data frame seq=2");
     }
 }

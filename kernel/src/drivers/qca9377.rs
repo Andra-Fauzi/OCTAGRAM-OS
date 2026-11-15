@@ -3,6 +3,9 @@
 pub mod bmi;
 pub mod ce;
 pub mod htc;
+pub mod htt;
+pub mod init;
+pub mod wmi;
 
 use super::{
     pci::{self, PciDevice},
@@ -18,23 +21,25 @@ const QCA6174_RTC_SOC_BASE: u64 = 0x0000_0800;
 const QCA6174_SOC_CHIP_ID_OFFSET: u64 = 0x0000_00f0;
 const QCA6174_PCIE_LOCAL_BASE: u64 = 0x0008_0000;
 const QCA6174_RTC_STATE_ADDRESS: u64 = 0;
-const QCA6174_PCIE_SOC_WAKE_ADDRESS: u64 = QCA6174_PCIE_LOCAL_BASE + 0x4;
-const CHIP_ID_BAR_OFFSET: u64 = QCA6174_RTC_SOC_BASE + QCA6174_SOC_CHIP_ID_OFFSET;
-const RTC_STATE_BAR_OFFSET: u64 = QCA6174_PCIE_LOCAL_BASE + QCA6174_RTC_STATE_ADDRESS;
+pub(super) const QCA6174_PCIE_SOC_WAKE_ADDRESS: u64 = QCA6174_PCIE_LOCAL_BASE + 0x4;
+pub(super) const CHIP_ID_BAR_OFFSET: u64 = QCA6174_RTC_SOC_BASE + QCA6174_SOC_CHIP_ID_OFFSET;
+pub(super) const RTC_STATE_BAR_OFFSET: u64 = QCA6174_PCIE_LOCAL_BASE + QCA6174_RTC_STATE_ADDRESS;
 const RTC_STATE_V_MASK: u32 = 0x7;
 const RTC_STATE_V_ON: u32 = 3;
 const PCIE_SOC_WAKE_V_MASK: u32 = 1;
 const SOC_CHIP_ID_REV_LSB: u32 = 8;
 const SOC_CHIP_ID_REV_MASK: u32 = 0x0000_0f00;
 const MMIO_READ_SIZE: u64 = core::mem::size_of::<u32>() as u64;
-const PAGE_OFFSET_MASK: u64 = 0xfff;
-const QCA_WAKE_POLL_LIMIT: usize = 10_000_000;
+pub(super) const PAGE_OFFSET_MASK: u64 = 0xfff;
+pub(super) const QCA_WAKE_POLL_LIMIT: usize = 10_000_000;
 const QCA9377_TARGET_VERSION_1_0: u32 = 0x0502_0000;
 const QCA9377_TARGET_VERSION_1_1: u32 = 0x0502_0001;
 const HOST_INTEREST_ADDRESS: u32 = 0x0040_0800;
 const HOST_INTEREST_BOARD_DATA_OFFSET: u32 = 0x54;
 const HOST_INTEREST_BOARD_DATA_INITIALIZED_OFFSET: u32 = 0x58;
 const QCA9377_BOARD_DATA_MAX_SIZE: usize = 8192;
+pub(super) const QCA9377_OTP_LOAD_ADDRESS: u32 = 0x0040_4000;
+pub(super) const QCA9377_FIRMWARE_LOAD_ADDRESS: u32 = 0x0040_8000;
 
 const fn required_register_window_size() -> u64 {
     let chip_id_end = CHIP_ID_BAR_OFFSET + MMIO_READ_SIZE;
@@ -63,7 +68,7 @@ pub enum BmiBootError<E> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SiliconIdentity {
+pub(super) enum SiliconIdentity {
     Qca9377Hw10,
     Qca9377Hw11,
     Qca6174Hw32,
@@ -91,7 +96,7 @@ fn supports_qca9377_firmware(target_info: TargetInfo) -> bool {
     )
 }
 
-fn silicon_identity(chip_id: u32) -> SiliconIdentity {
+pub(super) fn silicon_identity(chip_id: u32) -> SiliconIdentity {
     let revision = ((chip_id & SOC_CHIP_ID_REV_MASK) >> SOC_CHIP_ID_REV_LSB) as u8;
     match revision {
         0 => SiliconIdentity::Qca9377Hw10,
@@ -101,7 +106,7 @@ fn silicon_identity(chip_id: u32) -> SiliconIdentity {
     }
 }
 
-fn with_target_awake<R: ce::RegisterIo, T>(
+pub(super) fn with_target_awake<R: ce::RegisterIo, T>(
     registers: &mut R,
     poll_limit: usize,
     operation: impl FnOnce(&mut R) -> Result<T, ce::CeError>,
@@ -192,19 +197,79 @@ pub unsafe fn boot_firmware<T: BmiTransport>(
     download_board_data(client, board_data)?;
     if let Some(otp_image) = firmware.otp_image {
         let result = client
-            .download_and_run_otp(0x1234, 0, otp_image)
+            .download_and_run_otp(QCA9377_OTP_LOAD_ADDRESS, 0, otp_image)
             .map_err(BmiBootError::Transport)?;
         if result != 0 {
             return Err(BmiBootError::OtpExecutionFailed(result));
         }
     }
     client
-        .download_and_start_firmware(0x1234, firmware.firmware_image)
+        .download_and_start_firmware(QCA9377_FIRMWARE_LOAD_ADDRESS, firmware.firmware_image)
         .map_err(BmiBootError::Transport)?;
     Ok(target_info)
 }
 
-fn pci_board_name(
+/// Configured CE pipe pairs for HTC endpoints.
+///
+/// Pipe map (from ath10k pci.c):
+///   EP0 Control: TX=CE0, RX=CE1
+///   WMI Control: TX=CE3, RX=CE2
+///   HTT Data:    TX=CE4, RX=CE5
+pub struct HtcPipes {
+    /// EP0 Control TX pipe (CE0)
+    pub ep0_tx: ce::TxCe,
+    /// EP0 Control RX pipe (CE1)
+    pub ep0_rx: ce::RxCe,
+    /// WMI Control TX pipe (CE3)
+    pub wmi_tx: ce::TxCe,
+    /// WMI Control RX pipe (CE2)
+    pub wmi_rx: ce::RxCe,
+    /// HTT Data TX pipe (CE4)
+    pub htt_tx: ce::TxCe,
+    /// HTT Data RX pipe (CE5)
+    pub htt_rx: ce::RxCe,
+}
+
+/// Configure the HTC CE pipe pairs after BMI completes.
+///
+/// Pipe map (from ath10k pci.c):
+///   EP0 Control: TX=CE0, RX=CE1
+///   WMI Control: TX=CE3, RX=CE2
+///   HTT Data:    TX=CE4, RX=CE5
+///
+/// # Safety
+/// BMI must be complete, PCI bus mastering must be enabled, and the register
+/// window referenced by `registers` must be valid for all CE offsets.
+pub unsafe fn init_htc_pipes<R: ce::RegisterIo>(
+    registers: &mut R,
+) -> Result<HtcPipes, ce::CeError> {
+    let max = ce::CE_PACKET_MAX_BYTES;
+
+    let mut ep0_tx = ce::TxCe::allocate(ce::PIPE_EP0_TX_CE, max)?;
+    let mut ep0_rx = ce::RxCe::allocate(ce::PIPE_EP0_RX_CE, max)?;
+    let mut wmi_tx = ce::TxCe::allocate(ce::PIPE_WMI_TX_CE, max)?;
+    let mut wmi_rx = ce::RxCe::allocate(ce::PIPE_WMI_RX_CE, max)?;
+    let mut htt_tx = ce::TxCe::allocate(ce::PIPE_HTT_TX_CE, max)?;
+    let mut htt_rx = ce::RxCe::allocate(ce::PIPE_HTT_RX_CE, max)?;
+
+    ep0_tx.configure(registers)?;
+    ep0_rx.configure(registers)?;
+    wmi_tx.configure(registers)?;
+    wmi_rx.configure(registers)?;
+    htt_tx.configure(registers)?;
+    htt_rx.configure(registers)?;
+
+    Ok(HtcPipes {
+        ep0_tx,
+        ep0_rx,
+        wmi_tx,
+        wmi_rx,
+        htt_tx,
+        htt_rx,
+    })
+}
+
+pub(super) fn pci_board_name(
     device: &PciDevice,
     subsystem_vendor: u16,
     subsystem_device: u16,
@@ -461,9 +526,23 @@ pub(crate) fn report_pci_candidates(devices: &[PciDevice]) {
             }
             Err(error) => crate::println!("QCA9377 firmware unavailable: {error}"),
         }
-        crate::println!(
-            "QCA9377 Wi-Fi is not active: the BMI target-info probe does not upload board data or run OTP/firmware; HTC has no CE data transport, and WMI/HTT startup is not implemented"
-        );
+
+        // ── Full initialization attempt ───────────────────────────────────────
+        if qca9377_revision {
+            match unsafe { init::initialize_device(device, subsystem_vendor, subsystem_device) } {
+                Ok(mac) => {
+                    crate::println!(
+                        "QCA9377 Wi-Fi active: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                    );
+                }
+                Err(e) => {
+                    crate::println!("QCA9377 initialization failed: {e:?}");
+                }
+            }
+        } else {
+            crate::println!("QCA9377 Wi-Fi skipped: silicon not identified as QCA9377");
+        }
     }
 
     if !found {

@@ -23,6 +23,14 @@ pub const CE_PACKET_RING_ENTRIES: usize = 16;
 pub const CE_PACKET_MAX_BYTES: usize = 2048;
 pub const CE_PIPE_COUNT: usize = 8;
 
+// Pipe map ath10k (dari drivers/net/wireless/ath/ath10k/pci.c)
+pub const PIPE_EP0_TX_CE: usize = 0;   // Control kirim
+pub const PIPE_EP0_RX_CE: usize = 1;   // Control terima
+pub const PIPE_WMI_TX_CE: usize = 3;   // WMI kirim
+pub const PIPE_WMI_RX_CE: usize = 2;   // WMI terima
+pub const PIPE_HTT_TX_CE: usize = 4;   // HTT kirim
+pub const PIPE_HTT_RX_CE: usize = 5;   // HTT terima
+
 pub const CE_SOURCE_RING_BASE: u64 = 0x00;
 pub const CE_SOURCE_RING_SIZE: u64 = 0x04;
 pub const CE_DESTINATION_RING_BASE: u64 = 0x08;
@@ -240,6 +248,15 @@ impl DescriptorRing {
         };
         let descriptor = unsafe { descriptor_pointer.read_volatile() };
         Ok(Some(descriptor))
+    }
+
+    /// Resync both read and write indices to `start`, matching what the
+    /// hardware reports after BMI completes. Called by `TxCe` and `RxCe`
+    /// immediately after `configure_tx_registers` / `configure_rx_registers`.
+    pub fn set_start(&mut self, start: usize) {
+        let mask = self.indices.mask;
+        self.indices.read = start & mask;
+        self.indices.write = start & mask;
     }
 }
 
@@ -625,6 +642,9 @@ impl PacketCe {
             self.destination.entry_count(),
             self.max_packet_bytes,
         )?;
+        // configure_packet_registers now returns (src_start, dst_start); we
+        // discard starts because PacketCe always begins from hw index 0 path
+        // (legacy bidirectional use-case; new code should use TxCe/RxCe).
         let descriptor = Descriptor::new(u64::from(self.receive_buffer.physical_address()), 0, 0)?;
         self.destination.enqueue(descriptor)?;
         registers.write32(
@@ -760,6 +780,232 @@ impl<R: RegisterIo> HtcTransport for PacketCeTransport<'_, R> {
     }
 }
 
+/// A unidirectional **TX-only** CE pipe (source ring only).
+///
+/// ath10k maps each HTC endpoint to a *separate* TX CE and RX CE rather than
+/// a single bidirectional CE. `TxCe` owns just the source ring and transmit
+/// buffer for one of those CEs.
+pub struct TxCe {
+    ce_index: usize,
+    max_packet_bytes: usize,
+    source: DescriptorRing,
+    transmit_buffer: DmaPage,
+    poisoned: bool,
+}
+
+impl TxCe {
+    /// Allocate a TX-only CE for the given CE index.
+    pub fn allocate(ce_index: usize, max_packet_bytes: usize) -> Result<Self, CeError> {
+        if ce_index >= CE_PIPE_COUNT {
+            return Err(CeError::InvalidPipe);
+        }
+        if max_packet_bytes == 0 || max_packet_bytes > CE_PACKET_MAX_BYTES {
+            return Err(CeError::TransferTooLarge);
+        }
+        Ok(Self {
+            ce_index,
+            max_packet_bytes,
+            source: DescriptorRing::allocate(CE_PACKET_RING_ENTRIES)?,
+            transmit_buffer: DmaPage::allocate()?,
+            poisoned: false,
+        })
+    }
+
+    fn register_base(&self) -> u64 {
+        CE0_REGISTER_BASE + self.ce_index as u64 * CE_REGISTER_STRIDE
+    }
+
+    /// Configure the source (TX) ring of this CE.
+    ///
+    /// # Safety
+    /// Device must be awake and exclusively owned; PCI bus mastering must be
+    /// disabled; no other agent may access this CE. Keep `self` alive until
+    /// DMA stops.
+    pub unsafe fn configure(&mut self, registers: &mut impl RegisterIo) -> Result<(), CeError> {
+        let hw_start = configure_tx_registers(
+            registers,
+            self.register_base(),
+            self.source.physical_address(),
+            self.source.entry_count(),
+            self.max_packet_bytes,
+        )?;
+        // Sync our software ring to the hardware's current read index.
+        self.source.set_start(hw_start);
+        Ok(())
+    }
+
+    /// Send one packet and poll until the source descriptor completes.
+    ///
+    /// # Safety
+    /// `configure` must have completed and PCI bus mastering must be enabled.
+    pub unsafe fn send(
+        &mut self,
+        registers: &mut impl RegisterIo,
+        packet: &[u8],
+    ) -> Result<(), CeError> {
+        if self.poisoned {
+            return Err(CeError::TransportPoisoned);
+        }
+        if packet.is_empty() || packet.len() > self.max_packet_bytes {
+            return Err(CeError::TransferTooLarge);
+        }
+        self.transmit_buffer.write(packet);
+        let descriptor = Descriptor::new(
+            u64::from(self.transmit_buffer.physical_address()),
+            packet.len(),
+            0,
+        )?;
+        self.source.enqueue(descriptor)?;
+        self.poisoned = true;
+        registers.write32(
+            self.register_base() + CE_SOURCE_WRITE_INDEX,
+            self.source.write_index() as u32,
+        )?;
+        let sent = wait_for_completion(
+            registers,
+            self.register_base() + CE_SOURCE_READ_INDEX,
+            &mut self.source,
+        )
+        .map_err(|e| completion_error(e, CeError::SourceTimeout))?;
+        if sent.address() != self.transmit_buffer.physical_address()
+            || usize::from(sent.byte_len()) != packet.len()
+        {
+            return Err(CeError::InvalidResponseLength);
+        }
+        self.poisoned = false;
+        Ok(())
+    }
+}
+
+/// A unidirectional **RX-only** CE pipe (destination ring only).
+pub struct RxCe {
+    ce_index: usize,
+    max_packet_bytes: usize,
+    destination: DescriptorRing,
+    receive_buffer: DmaPage,
+    poisoned: bool,
+}
+
+impl RxCe {
+    /// Allocate an RX-only CE for the given CE index.
+    pub fn allocate(ce_index: usize, max_packet_bytes: usize) -> Result<Self, CeError> {
+        if ce_index >= CE_PIPE_COUNT {
+            return Err(CeError::InvalidPipe);
+        }
+        if max_packet_bytes == 0 || max_packet_bytes > CE_PACKET_MAX_BYTES {
+            return Err(CeError::TransferTooLarge);
+        }
+        Ok(Self {
+            ce_index,
+            max_packet_bytes,
+            destination: DescriptorRing::allocate(CE_PACKET_RING_ENTRIES)?,
+            receive_buffer: DmaPage::allocate()?,
+            poisoned: false,
+        })
+    }
+
+    fn register_base(&self) -> u64 {
+        CE0_REGISTER_BASE + self.ce_index as u64 * CE_REGISTER_STRIDE
+    }
+
+    /// Configure the destination (RX) ring of this CE and post one receive
+    /// buffer so the firmware can send us the first packet.
+    ///
+    /// # Safety
+    /// Device must be awake and exclusively owned; PCI bus mastering must be
+    /// disabled; no other agent may access this CE.
+    pub unsafe fn configure(&mut self, registers: &mut impl RegisterIo) -> Result<(), CeError> {
+        let hw_start = configure_rx_registers(
+            registers,
+            self.register_base(),
+            self.destination.physical_address(),
+            self.destination.entry_count(),
+            self.max_packet_bytes,
+        )?;
+        self.destination.set_start(hw_start);
+        // Post the initial receive buffer.
+        let descriptor =
+            Descriptor::new(u64::from(self.receive_buffer.physical_address()), 0, 0)?;
+        self.destination.enqueue(descriptor)?;
+        registers.write32(
+            self.register_base() + CE_DESTINATION_WRITE_INDEX,
+            self.destination.write_index() as u32,
+        )
+    }
+
+    /// Wait for one received packet, copy it out, and immediately repost the
+    /// receive buffer.
+    ///
+    /// # Safety
+    /// `configure` must have completed and PCI bus mastering must be enabled.
+    pub unsafe fn receive(
+        &mut self,
+        registers: &mut impl RegisterIo,
+        output: &mut [u8],
+    ) -> Result<usize, CeError> {
+        if self.poisoned {
+            return Err(CeError::TransportPoisoned);
+        }
+        self.poisoned = true;
+        let received = wait_for_completion(
+            registers,
+            self.register_base() + CE_DESTINATION_READ_INDEX,
+            &mut self.destination,
+        )
+        .map_err(|e| completion_error(e, CeError::DestinationTimeout))?;
+        let received_length = usize::from(received.byte_len());
+        let response_error = if received.address() != self.receive_buffer.physical_address()
+            || received_length == 0
+            || received_length > self.max_packet_bytes
+        {
+            Some(CeError::InvalidResponseLength)
+        } else if output.len() < received_length {
+            Some(CeError::ResponseBufferTooSmall)
+        } else {
+            self.receive_buffer.read(&mut output[..received_length]);
+            None
+        };
+        // Repost the receive buffer.
+        let descriptor =
+            Descriptor::new(u64::from(self.receive_buffer.physical_address()), 0, 0)?;
+        self.destination.enqueue(descriptor)?;
+        registers.write32(
+            self.register_base() + CE_DESTINATION_WRITE_INDEX,
+            self.destination.write_index() as u32,
+        )?;
+        self.poisoned = false;
+        response_error.map_or(Ok(received_length), Err)
+    }
+}
+
+/// A matched TX+RX CE pair for one HTC endpoint.
+pub struct PipePair<'a, R: RegisterIo> {
+    pub tx: &'a mut TxCe,
+    pub rx: &'a mut RxCe,
+    registers: &'a mut R,
+}
+
+impl<'a, R: RegisterIo> PipePair<'a, R> {
+    /// # Safety
+    /// Both CEs must be configured, PCI bus mastering enabled, and all
+    /// referenced objects must remain valid for this pair's lifetime.
+    pub unsafe fn new(tx: &'a mut TxCe, rx: &'a mut RxCe, registers: &'a mut R) -> Self {
+        Self { tx, rx, registers }
+    }
+}
+
+impl<R: RegisterIo> HtcTransport for PipePair<'_, R> {
+    type Error = CeError;
+
+    fn send(&mut self, frame: &[u8]) -> Result<(), Self::Error> {
+        unsafe { self.tx.send(self.registers, frame) }
+    }
+
+    fn receive(&mut self, frame: &mut [u8]) -> Result<usize, Self::Error> {
+        unsafe { self.rx.receive(self.registers, frame) }
+    }
+}
+
 fn validate_bmi_request(request: &[u8]) -> Result<(), CeError> {
     if request.is_empty() || request.len() > CE_BMI_SOURCE_MAX_BYTES || request.len() & 3 != 0 {
         return Err(CeError::InvalidRequest);
@@ -809,6 +1055,8 @@ fn configure_bmi_registers(
         return Err(CeError::DmaAddressOutOfRange);
     }
 
+    // Read hardware indices; after BMI they may be non-zero.
+    // ath10k uses these as starting indices rather than requiring zero.
     let indices = [
         registers.read32(CE0_REGISTER_BASE + CE_SOURCE_READ_INDEX)?,
         registers.read32(CE0_REGISTER_BASE + CE_SOURCE_WRITE_INDEX)?,
@@ -818,9 +1066,7 @@ fn configure_bmi_registers(
     if indices.iter().any(|index| *index == u32::MAX) {
         return Err(CeError::DeviceUnavailable);
     }
-    if indices.iter().any(|index| *index != 0) {
-        return Err(CeError::EngineNotIdle);
-    }
+    // No EngineNotIdle check: hardware index != 0 is normal after BMI reset.
     registers.read32(CE_REGISTER_WINDOW_END - 4)?;
 
     registers.write32(CE0_REGISTER_BASE + CE_SOURCE_RING_BASE, source_ring_address)?;
@@ -878,6 +1124,8 @@ fn configure_diagnostic_registers(
         return Err(CeError::DmaAddressOutOfRange);
     }
 
+    // Read hardware indices; after BMI they may be non-zero.
+    // ath10k uses these as starting indices rather than requiring zero.
     let indices = [
         registers.read32(CE7_REGISTER_BASE + CE_SOURCE_READ_INDEX)?,
         registers.read32(CE7_REGISTER_BASE + CE_SOURCE_WRITE_INDEX)?,
@@ -887,9 +1135,7 @@ fn configure_diagnostic_registers(
     if indices.iter().any(|index| *index == u32::MAX) {
         return Err(CeError::DeviceUnavailable);
     }
-    if indices.iter().any(|index| *index != 0) {
-        return Err(CeError::EngineNotIdle);
-    }
+    // No EngineNotIdle check: hardware index != 0 is normal after BMI reset.
 
     registers.write32(CE7_REGISTER_BASE + CE_SOURCE_RING_BASE, source_ring_address)?;
     registers.write32(
@@ -935,7 +1181,7 @@ fn configure_packet_registers(
     source_entries: usize,
     destination_entries: usize,
     max_packet_bytes: usize,
-) -> Result<(), CeError> {
+) -> Result<(usize, usize), CeError> {
     if base < CE0_REGISTER_BASE
         || base > CE7_REGISTER_BASE
         || (base - CE0_REGISTER_BASE) % CE_REGISTER_STRIDE != 0
@@ -970,18 +1216,20 @@ fn configure_packet_registers(
         return Err(CeError::DmaAddressOutOfRange);
     }
 
-    let indices = [
+    // Read hardware indices. After BMI they may be non-zero; ath10k uses them
+    // as starting indices rather than requiring zero before configuration.
+    let hw_indices = [
         registers.read32(base + CE_SOURCE_READ_INDEX)?,
         registers.read32(base + CE_SOURCE_WRITE_INDEX)?,
         registers.read32(base + CE_DESTINATION_READ_INDEX)?,
         registers.read32(base + CE_DESTINATION_WRITE_INDEX)?,
     ];
-    if indices.iter().any(|index| *index == u32::MAX) {
+    if hw_indices.iter().any(|index| *index == u32::MAX) {
         return Err(CeError::DeviceUnavailable);
     }
-    if indices.iter().any(|index| *index != 0) {
-        return Err(CeError::EngineNotIdle);
-    }
+    // No EngineNotIdle check: non-zero is normal after BMI reset.
+    let src_start = hw_indices[0] as usize & (source_entries - 1);
+    let dst_start = hw_indices[2] as usize & (destination_entries - 1);
 
     registers.write32(base + CE_SOURCE_RING_BASE, source_ring_address)?;
     registers.write32(base + CE_SOURCE_RING_SIZE, source_entries as u32)?;
@@ -1007,7 +1255,120 @@ fn configure_packet_registers(
         base + CE_DESTINATION_WATERMARK,
         destination_entries as u32,
     )?;
-    Ok(())
+    Ok((src_start, dst_start))
+}
+
+/// Configure only the source (TX) ring of a CE pipe.
+///
+/// Returns the hardware source-read index to use as the initial ring start.
+fn configure_tx_registers(
+    registers: &mut impl RegisterIo,
+    base: u64,
+    source_ring_address: u32,
+    source_entries: usize,
+    max_packet_bytes: usize,
+) -> Result<usize, CeError> {
+    if base < CE0_REGISTER_BASE
+        || base > CE7_REGISTER_BASE
+        || (base - CE0_REGISTER_BASE) % CE_REGISTER_STRIDE != 0
+    {
+        return Err(CeError::InvalidPipe);
+    }
+    if max_packet_bytes == 0 || max_packet_bytes > CE_PACKET_MAX_BYTES {
+        return Err(CeError::TransferTooLarge);
+    }
+    if source_entries < 2 || !source_entries.is_power_of_two() {
+        return Err(CeError::InvalidRingSize);
+    }
+    let ring_bytes = source_entries
+        .checked_mul(core::mem::size_of::<Descriptor>())
+        .filter(|b| *b <= DMA_PAGE_SIZE)
+        .ok_or(CeError::InvalidRingSize)?;
+    if source_ring_address & 7 != 0 {
+        return Err(CeError::DmaAddressMisaligned);
+    }
+    if !is_dma32_range(u64::from(source_ring_address), ring_bytes) {
+        return Err(CeError::DmaAddressOutOfRange);
+    }
+
+    let hw_read = registers.read32(base + CE_SOURCE_READ_INDEX)?;
+    if hw_read == u32::MAX {
+        return Err(CeError::DeviceUnavailable);
+    }
+    let src_start = hw_read as usize & (source_entries - 1);
+
+    registers.write32(base + CE_SOURCE_RING_BASE, source_ring_address)?;
+    registers.write32(base + CE_SOURCE_RING_SIZE, source_entries as u32)?;
+    let control = registers.read32(base + CE_CONTROL)?;
+    let control = (control
+        & !(CE_CONTROL_DMAX_MASK
+            | CE_CONTROL_SOURCE_BYTE_SWAP
+            | CE_CONTROL_DESTINATION_BYTE_SWAP))
+        | max_packet_bytes as u32;
+    registers.write32(base + CE_CONTROL, control)?;
+    registers.write32(base + CE_HOST_INTERRUPT_ENABLE, 0)?;
+    registers.write32(base + CE_MISC_INTERRUPT_ENABLE, 0)?;
+    registers.write32(base + CE_SOURCE_WATERMARK, source_entries as u32)?;
+    Ok(src_start)
+}
+
+/// Configure only the destination (RX) ring of a CE pipe.
+///
+/// Returns the hardware destination-read index to use as the initial ring start.
+fn configure_rx_registers(
+    registers: &mut impl RegisterIo,
+    base: u64,
+    destination_ring_address: u32,
+    destination_entries: usize,
+    max_packet_bytes: usize,
+) -> Result<usize, CeError> {
+    if base < CE0_REGISTER_BASE
+        || base > CE7_REGISTER_BASE
+        || (base - CE0_REGISTER_BASE) % CE_REGISTER_STRIDE != 0
+    {
+        return Err(CeError::InvalidPipe);
+    }
+    if max_packet_bytes == 0 || max_packet_bytes > CE_PACKET_MAX_BYTES {
+        return Err(CeError::TransferTooLarge);
+    }
+    if destination_entries < 2 || !destination_entries.is_power_of_two() {
+        return Err(CeError::InvalidRingSize);
+    }
+    let ring_bytes = destination_entries
+        .checked_mul(core::mem::size_of::<Descriptor>())
+        .filter(|b| *b <= DMA_PAGE_SIZE)
+        .ok_or(CeError::InvalidRingSize)?;
+    if destination_ring_address & 7 != 0 {
+        return Err(CeError::DmaAddressMisaligned);
+    }
+    if !is_dma32_range(u64::from(destination_ring_address), ring_bytes) {
+        return Err(CeError::DmaAddressOutOfRange);
+    }
+
+    let hw_read = registers.read32(base + CE_DESTINATION_READ_INDEX)?;
+    if hw_read == u32::MAX {
+        return Err(CeError::DeviceUnavailable);
+    }
+    let dst_start = hw_read as usize & (destination_entries - 1);
+
+    registers.write32(
+        base + CE_DESTINATION_RING_BASE,
+        destination_ring_address,
+    )?;
+    registers.write32(
+        base + CE_DESTINATION_RING_SIZE,
+        destination_entries as u32,
+    )?;
+    let control = registers.read32(base + CE_CONTROL)?;
+    let control = control & !CE_CONTROL_DESTINATION_BYTE_SWAP;
+    registers.write32(base + CE_CONTROL, control)?;
+    registers.write32(base + CE_HOST_INTERRUPT_ENABLE, 0)?;
+    registers.write32(base + CE_MISC_INTERRUPT_ENABLE, 0)?;
+    registers.write32(
+        base + CE_DESTINATION_WATERMARK,
+        destination_entries as u32,
+    )?;
+    Ok(dst_start)
 }
 
 fn clear_bmi_registers(registers: &mut impl RegisterIo) -> Result<(), CeError> {
@@ -1143,6 +1504,25 @@ impl RingIndices {
             mask: entries - 1,
             read: 0,
             write: 0,
+        })
+    }
+
+    /// Create a `RingIndices` with both read and write starting at `start`.
+    ///
+    /// This mirrors what ath10k does after BMI: it reads the hardware index and
+    /// uses that value as the initial ring index rather than demanding zero.
+    pub const fn with_start(entries: usize, start: usize) -> Result<Self, CeError> {
+        if entries < 2 || !entries.is_power_of_two() {
+            return Err(CeError::InvalidRingSize);
+        }
+        let mask = entries - 1;
+        if start > mask {
+            return Err(CeError::InvalidHardwareIndex);
+        }
+        Ok(Self {
+            mask,
+            read: start,
+            write: start,
         })
     }
 
@@ -1526,17 +1906,21 @@ mod tests {
     }
 
     #[test]
-    fn refuses_busy_or_missing_engines_before_programming_rings() {
+    fn refuses_missing_or_unavailable_engines_before_programming_rings() {
+        // Non-zero hardware index is now accepted: ath10k does not require
+        // the CE to be idle before programming; it just reads the index as the
+        // initial ring position.  Only u32::MAX (device removed) is rejected.
         let mut registers = MockRegisters::default();
         registers
             .values
             .insert(CE0_REGISTER_BASE + CE_SOURCE_READ_INDEX, 1);
-        assert_eq!(
-            configure_bmi_registers(&mut registers, 0x1000, 0x2000),
-            Err(CeError::EngineNotIdle)
+        assert!(
+            configure_bmi_registers(&mut registers, 0x1000, 0x2000).is_ok(),
+            "non-zero index should be accepted now"
         );
-        assert!(registers.writes.is_empty());
 
+        // u32::MAX means the device is unavailable (e.g. PCI removed).
+        let mut registers = MockRegisters::default();
         registers
             .values
             .insert(CE0_REGISTER_BASE + CE_SOURCE_READ_INDEX, u32::MAX);

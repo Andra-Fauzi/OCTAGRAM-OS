@@ -216,6 +216,12 @@ pub unsafe fn initialize_device(
             return Err(InitError::TargetReset);
         }
     };
+    crate::println!(
+        "QCA9377 cold reset: rtc_state_in_reset={:#010x} fw_indicator={:#010x} boot_rom_ready={}",
+        target_reset.cold_reset_state,
+        target_reset.cold_indicator,
+        target_reset.cold_ready
+    );
 
     // ── 4. BMI boot (GET_TARGET_INFO + download board/OTP/firmware) ───────────
     let mut bmi_rings = BmiCeRings::allocate().map_err(|_| InitError::DmaAlloc)?;

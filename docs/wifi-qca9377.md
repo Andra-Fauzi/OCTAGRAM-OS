@@ -110,8 +110,10 @@ Before the first BMI command the driver follows ath10k's QCA6174/QCA9377
 bring-up, split into two stages so the ordering matches
 `ath10k_pci_warm_reset_cpu` → `ath10k_pci_init_pipes` →
 `ath10k_pci_wait_for_target_init`. Stage 3b pulses the SoC global reset
-(`PCIE_LOCAL + 0x8`), wakes the target and cycles the copy-engine reset line,
-leaving the target CPU in reset. Stage 4 then programs the CE0/CE1 BMI rings,
+(`BAR + 0x8`, reached through ath10k's BAR-relative accessor — **not**
+`PCIE_LOCAL + 0x8`, which is a different register), waits for the boot ROM to
+report `FW_IND_INITIALIZED` like `ath10k_pci_qca6174_chip_reset` does, wakes the
+target and cycles the copy-engine reset line, leaving the target CPU in reset. Stage 4 then programs the CE0/CE1 BMI rings,
 enables PCI bus mastering and writes the target pipe tables, and only after
 that stage 4c clears the stale `FW_INDICATOR`, asserts the CPU warm reset
 (`RTC_SOC` bit 6) and waits, bounded, for `FW_IND_INITIALIZED`. Releasing the

@@ -47,7 +47,11 @@ pub(super) const QCA9377_FIRMWARE_LOAD_ADDRESS: u32 = 0x0040_8000;
 // `ath10k/hw.h` and `ath10k/pci.c`.
 const QCA6174_SOC_CORE_BASE: u64 = 0x0003_a000;
 const QCA6174_FW_INDICATOR_ADDRESS: u64 = QCA6174_SOC_CORE_BASE + 0x28;
-const QCA6174_SOC_GLOBAL_RESET_ADDRESS: u64 = QCA6174_PCIE_LOCAL_BASE + 0x8;
+// `SOC_GLOBAL_RESET_ADDRESS` (0x0008) is reached through the BAR-relative
+// accessor in ath10k (`ath10k_pci_reg_write32`), NOT through the PCIe-local
+// window that RTC_STATE/PCIE_SOC_WAKE use. Linux therefore resets the SoC at
+// BAR + 0x8, so writing PCIE_LOCAL + 0x8 only poked an unrelated register.
+const QCA6174_SOC_GLOBAL_RESET_ADDRESS: u64 = 0x0000_0008;
 const QCA6174_RTC_SOC_TIMER_OFFSET: u64 = 0x50;
 const SOC_GLOBAL_RESET_PULSE: u32 = 1 << 0;
 const RTC_SOC_CE_RESET: u32 = 1 << 0;
@@ -163,7 +167,14 @@ fn settle_reset_delay() {
 
 /// Pulse the SoC global reset latch (cold reset) so the PCIe link and RTC
 /// restart from a known state.
-pub(super) fn soc_global_reset<R: ce::RegisterIo>(registers: &mut R) -> Result<(), ce::CeError> {
+///
+/// Mirrors `ath10k_pci_cold_reset`: assert bit 0, wait for the PCIe link to
+/// settle, release it, wait again. Returns the `RTC_STATE` value read while the
+/// SoC was held in reset, so the boot log can show whether the latch actually
+/// reached the chip instead of assuming it did.
+pub(super) fn soc_global_reset<R: ce::RegisterIo>(
+    registers: &mut R,
+) -> Result<u32, ce::CeError> {
     let current = registers.read32(QCA6174_SOC_GLOBAL_RESET_ADDRESS)?;
     if current == u32::MAX {
         return Err(ce::CeError::DeviceUnavailable);
@@ -173,12 +184,13 @@ pub(super) fn soc_global_reset<R: ce::RegisterIo>(registers: &mut R) -> Result<(
         current | SOC_GLOBAL_RESET_PULSE,
     )?;
     settle_reset_delay();
+    let held = registers.read32(RTC_STATE_BAR_OFFSET)?;
     registers.write32(
         QCA6174_SOC_GLOBAL_RESET_ADDRESS,
         current & !SOC_GLOBAL_RESET_PULSE,
     )?;
     settle_reset_delay();
-    Ok(())
+    Ok(held)
 }
 
 /// Clear the stale firmware indicator and put the target CPU through reset,
@@ -252,6 +264,14 @@ pub(super) struct TargetReset {
     /// `SOC_RESET_CONTROL` before any reset work, so the boot log can show what
     /// the SoC was holding and whether our writes actually change it.
     pub reset_control_before: u32,
+    /// `RTC_STATE` (PCIE_LOCAL + 0x0) sampled while `SOC_GLOBAL_RESET` was
+    /// asserted.
+    pub cold_reset_state: u32,
+    /// `FW_INDICATOR` after the cold reset, before the CPU warm reset. ath10k
+    /// waits for `FW_IND_INITIALIZED` here, so a value without bit 1 means the
+    /// ROM did not come back after the cold reset.
+    pub cold_indicator: u32,
+    pub cold_ready: bool,
 }
 
 /// Result of a completed reset attempt, for the boot log.
@@ -302,14 +322,25 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         .read32(QCA6174_RTC_SOC_BASE)
         .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
     target_wake(registers, poll_limit).map_err(|error| failed("wake target", error))?;
-    soc_global_reset(registers).map_err(|error| failed("SoC global reset", error))?;
+    let cold_reset_state =
+        soc_global_reset(registers).map_err(|error| failed("SoC global reset", error))?;
     target_wake(registers, poll_limit)
         .map_err(|error| failed("wake after cold reset", error))?;
+
+    // `ath10k_pci_qca6174_chip_reset` waits for target init between the cold and
+    // warm reset. Keeping the value tells the boot log whether the ROM ever came
+    // back after the cold reset, instead of only seeing it after the warm reset.
+    let (cold_ready, cold_indicator) = wait_for_target_init(registers, poll_limit)
+        .map_err(|error| failed("wait for boot ROM after cold reset", error))?;
+
     pulse_ce_reset(registers).map_err(|error| failed("reset copy engines", error))?;
 
     Ok(TargetReset {
         indicator_before,
         reset_control_before,
+        cold_reset_state,
+        cold_indicator,
+        cold_ready,
     })
 }
 

@@ -225,6 +225,70 @@ pub fn setup_complete_request() -> [u8; HTC_HEADER_LENGTH + 2] {
     output
 }
 
+/// Write an HTC data-message header: `[endpoint | flags | len(2) | control(4)]`.
+pub fn write_data_header(
+    frame: &mut [u8],
+    endpoint: u8,
+    sequence: u8,
+    payload_len: u16,
+) -> Result<(), HtcError> {
+    if frame.len() < HTC_HEADER_LENGTH {
+        return Err(HtcError::OutputBufferTooSmall);
+    }
+    frame[0] = endpoint;
+    frame[1] = 0;
+    frame[2..4].copy_from_slice(&payload_len.to_le_bytes());
+    frame[4] = sequence;
+    frame[5..HTC_HEADER_LENGTH].fill(0);
+    Ok(())
+}
+
+/// Frame a fully built protocol message (WMI, HTT, …) as an HTC data message.
+/// Returns the total frame length.
+pub fn encode_data_message(
+    frame: &mut [u8],
+    endpoint: u8,
+    sequence: u8,
+    message: &[u8],
+) -> Result<usize, HtcError> {
+    let total = HTC_HEADER_LENGTH + message.len();
+    if total > frame.len() {
+        return Err(HtcError::OutputBufferTooSmall);
+    }
+    let payload_len = u16::try_from(message.len()).map_err(|_| HtcError::PayloadTooLarge)?;
+    write_data_header(frame, endpoint, sequence, payload_len)?;
+    frame[HTC_HEADER_LENGTH..total].copy_from_slice(message);
+    Ok(total)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtcDataError {
+    /// The message is shorter than its header or declares a different length.
+    FrameTooShort,
+    /// The message belongs to an HTC endpoint other than the expected one.
+    WrongEndpoint,
+    /// The credit trailer length is missing or inconsistent.
+    BadTrailer,
+}
+
+/// Validate an incoming HTC data message and return its payload with any credit
+/// trailer (`HTC_FLAG_RECV_TRAILER`) stripped.
+pub fn data_message_payload(bytes: &[u8], endpoint: u8) -> Result<&[u8], HtcDataError> {
+    let packet = HtcPacket::parse(bytes).map_err(|_| HtcDataError::FrameTooShort)?;
+    if packet.header.endpoint != endpoint {
+        return Err(HtcDataError::WrongEndpoint);
+    }
+    let payload = packet.payload;
+    if packet.header.flags & HTC_FLAG_RECV_TRAILER == 0 {
+        return Ok(payload);
+    }
+    let trailer_len = usize::from(*payload.last().ok_or(HtcDataError::BadTrailer)?);
+    if trailer_len == 0 || trailer_len > payload.len() {
+        return Err(HtcDataError::BadTrailer);
+    }
+    Ok(&payload[..payload.len() - trailer_len])
+}
+
 pub trait HtcTransport {
     type Error;
 
@@ -472,11 +536,27 @@ impl<T: HtcTransport> HtcClient<T> {
 mod tests {
     use super::{
         HTC_FLAG_RECV_TRAILER, HTC_HEADER_LENGTH, HTC_SERVICE_WMI_CONTROL,
-        HTC_SETUP_COMPLETE_MESSAGE_ID, HtcClient, HtcClientError, HtcError, HtcHeader, HtcPacket,
-        HtcTransport, connect_service_request, parse_connect_response, parse_ready,
-        setup_complete_request,
+        HTC_SETUP_COMPLETE_MESSAGE_ID, HtcClient, HtcClientError, HtcDataError, HtcError, HtcHeader,
+        HtcPacket, HtcTransport, connect_service_request, data_message_payload,
+        encode_data_message, parse_connect_response, parse_ready, setup_complete_request,
     };
     use alloc::vec::Vec;
+
+    #[test]
+    fn data_message_wraps_the_payload_for_the_requested_endpoint() {
+        let mut frame = [0u8; 32];
+        let total =
+            encode_data_message(&mut frame, 3, 9, &[0x00, 0x00, 0x00, 0x00]).expect("frame fits");
+
+        assert_eq!(total, HTC_HEADER_LENGTH + 4);
+        assert_eq!(&frame[..HTC_HEADER_LENGTH], &[3, 0, 4, 0, 9, 0, 0, 0]);
+        assert_eq!(&frame[HTC_HEADER_LENGTH..total], &[0, 0, 0, 0]);
+        assert_eq!(data_message_payload(&frame[..total], 3), Ok(&[0, 0, 0, 0][..]));
+        assert_eq!(
+            data_message_payload(&frame[..total], 2),
+            Err(HtcDataError::WrongEndpoint)
+        );
+    }
 
     #[derive(Default)]
     struct MockTransport {

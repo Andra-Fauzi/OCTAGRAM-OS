@@ -16,6 +16,7 @@ use super::{
         PIPE_EP0_TX_CE, PIPE_HTT_RX_CE, PIPE_HTT_TX_CE, PIPE_WMI_RX_CE, PIPE_WMI_TX_CE,
     },
     htc::{HtcClient, HtcClientError, HtcError, HTC_SERVICE_HTT_DATA, HTC_SERVICE_WMI_CONTROL},
+    htt,
     pci::{self, PciDevice},
     target,
     wifi_firmware,
@@ -607,20 +608,27 @@ pub unsafe fn initialize_device(
         };
 
         // ── 8. HTT version handshake ──────────────────────────────────────────
+        // HTT is an HTC service as well: the request goes out as an HTC data
+        // message for the HTT endpoint on CE4, and the version confirmation
+        // comes back on CE5. ath10k sends it from `ath10k_htt_h2t_ver_req_msg`.
         {
+            let mut htt_ep = htt::HttEndpoint::new(htt_resp.endpoint, htt_resp.max_message_size);
             let mut htt_frame = [0u8; 64];
-            let req = [0u8; 4]; // msg_type=0 VERSION_REQ
-            unsafe {
-                htt_tx.send(&mut registers, &req)?;
-                let len = htt_rx.receive(&mut registers, &mut htt_frame)?;
-                if len >= 3 && htt_frame[0] == 0x01 {
-                    crate::println!(
-                        "QCA9377 HTT version: {}.{}",
-                        htt_frame[1],
-                        htt_frame[2]
-                    );
-                } else {
-                    crate::println!("QCA9377 HTT version response unexpected");
+            crate::println!(
+                "QCA9377 HTT endpoint {} (max {} bytes), framed as HTC data messages",
+                htt_ep.endpoint(),
+                htt_resp.max_message_size
+            );
+            match unsafe {
+                htt_ep.version_handshake(&mut htt_tx, &mut htt_rx, &mut registers, &mut htt_frame)
+            } {
+                Ok(version) => crate::println!(
+                    "QCA9377 HTT version: {}.{}",
+                    version.major,
+                    version.minor
+                ),
+                Err(error) => {
+                    crate::println!("QCA9377 HTT version handshake failed: {error:?}");
                 }
             }
         }

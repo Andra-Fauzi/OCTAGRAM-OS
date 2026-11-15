@@ -12,7 +12,7 @@
 //! target assigned to the WMI control service.
 
 use super::ce::{RegisterIo, RxCe, TxCe};
-use super::htc::{HTC_FLAG_RECV_TRAILER, HTC_HEADER_LENGTH, HtcPacket};
+use super::htc::{HTC_HEADER_LENGTH, HtcDataError, data_message_payload, write_data_header};
 
 // ── WMI header ───────────────────────────────────────────────────────────────
 
@@ -445,40 +445,27 @@ fn encode_htc_wmi_frame(
     }
     let message = encode_wmi(&mut frame[HTC_HEADER_LENGTH..], cmd, payload)?;
     let payload_len = u16::try_from(message).map_err(|_| WmiError::PayloadTooLarge)?;
-    frame[0] = endpoint;
-    frame[1] = 0;
-    frame[2..4].copy_from_slice(&payload_len.to_le_bytes());
-    frame[4] = sequence;
-    frame[5..8].fill(0);
+    write_data_header(frame, endpoint, sequence, payload_len).map_err(|_| WmiError::FrameTooShort)?;
     Ok(HTC_HEADER_LENGTH + message)
 }
 
 /// Parse an HTC data message that carries a WMI event for `endpoint`.
 fn decode_htc_wmi_event(bytes: &[u8], endpoint: u8) -> Result<WmiEvent, WmiError> {
-    let packet = HtcPacket::parse(bytes).map_err(|_| WmiError::FrameTooShort)?;
-    if packet.header.endpoint() != endpoint {
-        return Err(WmiError::BadEndpoint);
-    }
-    let payload = packet.payload;
-    // A trailer (credit report) is appended to the payload and announces its own
-    // length in its last byte; it must never reach the WMI parser.
-    let payload = if packet.header.flags() & HTC_FLAG_RECV_TRAILER != 0 {
-        let trailer_len = usize::from(*payload.last().ok_or(WmiError::FrameTooShort)?);
-        if trailer_len == 0 || trailer_len > payload.len() {
-            return Err(WmiError::FrameTooShort);
-        }
-        &payload[..payload.len() - trailer_len]
-    } else {
-        payload
-    };
+    // The helper checks the endpoint and strips any credit trailer, so neither
+    // can reach the WMI parser.
+    let payload = data_message_payload(bytes, endpoint).map_err(|error| match error {
+        HtcDataError::WrongEndpoint => WmiError::BadEndpoint,
+        HtcDataError::FrameTooShort | HtcDataError::BadTrailer => WmiError::FrameTooShort,
+    })?;
     parse_wmi_event(payload)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::htc::HTC_FLAG_RECV_TRAILER;
     use super::{
-        HTC_FLAG_RECV_TRAILER, HTC_HEADER_LENGTH, WMI_HEADER_LEN, WmiCmdId, WmiError, WmiEvent,
-        WmiEventId, decode_htc_wmi_event, encode_htc_wmi_frame, parse_wmi_event, read_le32,
+        HTC_HEADER_LENGTH, WMI_HEADER_LEN, WmiCmdId, WmiError, WmiEvent, WmiEventId,
+        decode_htc_wmi_event, encode_htc_wmi_frame, parse_wmi_event, read_le32,
     };
 
     /// A READY event body: sw_version, abi_version, mac_addr[6], status.

@@ -210,7 +210,7 @@ The full driver initialization sequence is implemented in `kernel/src/drivers/qc
    - HTT Data:      TX=CE4, RX=CE5
 5. **HTC Handshake**: Waits for `HTC_READY`, connects `HTC_SERVICE_WMI_CONTROL` and `HTC_SERVICE_HTT_DATA`, and transmits `HTC_SETUP_COMPLETE`.
 6. **WMI Initialization**: Sends `WMI_INIT` inside an HTC data message on the WMI TX pipe (CE3), then polls the WMI RX pipe (CE2) for `WMI_READY` and extracts the hardware MAC address.
-7. **HTT Version Handshake**: Performs version query over HTT data pipe.
+7. **HTT Version Handshake**: Sends `HTT_H2T_MSG_TYPE_VERSION_REQ` as an HTC data message on the HTT endpoint (CE4) and reads `HTT_T2H_MSG_TYPE_VERSION_CONF` from CE5.
 8. **STA Vdev & Peer Creation**: Sends `WMI_VDEV_CREATE` (STA mode), `WMI_PEER_CREATE` (self), and disables STA powersave.
 9. **Radio Bring-up & Scanning**: Sends `WMI_VDEV_START` (2.4 GHz channel), waits for `VDEV_START_RESP`, triggers active scan via `WMI_START_SCAN`, and drains scan completion events.
 10. **AP Association**: Issues `WMI_VDEV_UP`, `WMI_PEER_CREATE` (BSS peer), and `WMI_PEER_ASSOC` to associate with the target AP.
@@ -240,6 +240,21 @@ ath10k:
   so the driver now logs the firmware version and ABI and takes the hardware
   address from the correct field. If READY never arrives, bring-up fails with
   `InitError::WmiReady` instead of registering a link with an all-zero MAC.
+
+### HTT over HTC (`qca9377/htt.rs`)
+
+HTT is an HTC service too (`ATH10K_HTC_SVC_ID_HTT_DATA_MSG`, group 3 index 0, i.e.
+`0x0300`), so the version handshake follows the same rule as WMI: the request is
+written to the HTT TX pipe (CE4) inside an HTC data message for the endpoint the
+target assigned to HTT, and the confirmation is decoded from CE5 with the same
+endpoint check and credit-trailer handling. Earlier a bare 4-byte frame went to
+CE4 and the reply was parsed without any HTC framing.
+
+The message contents now match `ath10k_htt_h2t_ver_req_msg` and
+`ath10k_htt_t2h_version_conf`: the request is `htt_cmd_hdr { msg_type = 0 }`
+padded to a word, and the response is `msg_type = 0` followed by
+`struct htt_ver_resp { minor, major, rsvd0 }`. The driver previously expected
+`msg_type = 1` and read major before minor.
 
 ### Shell Commands
 

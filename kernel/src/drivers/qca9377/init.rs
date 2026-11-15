@@ -12,6 +12,7 @@ use super::{
         CE_DESTINATION_READ_INDEX, CE_DESTINATION_RING_BASE, CE_DESTINATION_RING_SIZE,
         CE_DESTINATION_WRITE_INDEX, CE_PACKET_MAX_BYTES, CE_SOURCE_READ_INDEX,
         CE_SOURCE_RING_BASE, CE_SOURCE_RING_SIZE, CE_SOURCE_WRITE_INDEX, PIPE_EP0_RX_CE,
+        clear_all_pipe_registers,
         PIPE_EP0_TX_CE, PIPE_HTT_RX_CE, PIPE_HTT_TX_CE, PIPE_WMI_RX_CE, PIPE_WMI_TX_CE,
     },
     htc::{HtcClient, HtcClientError, HtcError, HTC_SERVICE_HTT_DATA, HTC_SERVICE_WMI_CONTROL},
@@ -50,6 +51,8 @@ pub enum InitError {
     /// The target boot ROM never reached `FW_IND_INITIALIZED` (or reported
     /// `FW_IND_EVENT_PENDING`), so BMI cannot run on it.
     TargetCrashed,
+    /// The copy engine registers could not be cleared before the chip reset.
+    CeReset,
     TargetConfig,
     BmiBoot,
     HtcReady,
@@ -234,6 +237,26 @@ pub unsafe fn initialize_device(
     let board = wifi_firmware::select_board_data(firmware.board_bundle, board_name.as_bytes())
         .map_err(|_| InitError::BoardDataUnavailable)?;
 
+    // ── 3a. Clean copy engines, then allow target DMA ───────────────────────
+    // Linux enables bus mastering in `ath10k_pci_claim` (`pci_set_master`) and
+    // zeroes every CE pipe (`ath10k_pci_ce_deinit` + `ath10k_ce_disable_interrupts`)
+    // before `ath10k_pci_chip_reset`. Starting the boot ROM against a stale CE
+    // configuration left by the firmware that ran before the driver is the most
+    // likely reason this device set `FW_IND_EVENT_PENDING` here while the same
+    // laptop boots ath10k fine. Clear the registers while bus mastering is still
+    // off, then set the master bit the way `pci_set_master` does.
+    if unsafe { clear_all_pipe_registers(&mut registers) }.is_err() {
+        let _ = target_sleep(&mut registers);
+        return Err(InitError::CeReset);
+    }
+    if pci::enable_bus_master(device).is_err() {
+        let _ = target_sleep(&mut registers);
+        return Err(InitError::BusMaster);
+    }
+    crate::println!(
+        "QCA9377 copy engines cleared and bus mastering enabled before the chip reset"
+    );
+
     // ── 3b/4b. Chip reset: cold reset, CE rings, warm reset ─────────────────
     // The boot ROM only services BMI after a cold reset, but the target CPU is
     // NOT released yet: ath10k releases it only once the CE pipes exist
@@ -371,6 +394,23 @@ pub unsafe fn initialize_device(
         let _ = pci::disable_bus_master(device);
         let _ = target_sleep(&mut registers);
         return Err(InitError::TargetCrashed);
+    }
+
+    // Linux reads the chip id only after a successful chip reset
+    // (`ath10k_pci_chip_reset` -> `ath10k_pci_soc_read32(SOC_CHIP_ID_ADDRESS)`),
+    // and that is the first point where `SOC_CHIP_ID` holds the real value: the
+    // pre-reset read on the E203NAH returns 0. Log the identity ath10k reports
+    // (`qca9377 hw1.1 chip_id ...`) so the boot log can be compared directly.
+    match with_target_awake(&mut registers, QCA_WAKE_POLL_LIMIT, |registers| {
+        registers.read32(CHIP_ID_BAR_OFFSET)
+    }) {
+        Ok(chip_id) => crate::println!(
+            "QCA9377 target identity after chip reset: chip_id={chip_id:#010x} silicon={:?}",
+            silicon_identity(chip_id)
+        ),
+        Err(error) => {
+            crate::println!("QCA9377 chip id read after the chip reset failed: {error:?}")
+        }
     }
 
     // ── 4c. Target-side CE layout and HTC service map ────────────────────────

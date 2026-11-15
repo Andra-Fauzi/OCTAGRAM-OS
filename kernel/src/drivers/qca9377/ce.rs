@@ -1389,6 +1389,28 @@ fn clear_bmi_registers(registers: &mut impl RegisterIo) -> Result<(), CeError> {
     )
 }
 
+/// Zero every copy engine's ring registers and interrupt enables.
+///
+/// Mirrors `ath10k_ce_deinit` plus `ath10k_ce_disable_interrupts`: Linux runs
+/// both before `ath10k_pci_chip_reset`, so the boot ROM starts from a clean CE
+/// state instead of inheriting whatever firmware ran before the driver.
+///
+/// # Safety
+/// The device must be awake and exclusively owned, no transfer may be in
+/// flight, and PCI bus mastering must stay disabled until the registers are
+/// cleared.
+pub unsafe fn clear_all_pipe_registers(
+    registers: &mut impl RegisterIo,
+) -> Result<(), CeError> {
+    for pipe in 0..CE_PIPE_COUNT as u64 {
+        let base = CE0_REGISTER_BASE + pipe * CE_REGISTER_STRIDE;
+        registers.write32(base + CE_HOST_INTERRUPT_ENABLE, 0)?;
+        registers.write32(base + CE_MISC_INTERRUPT_ENABLE, 0)?;
+        clear_pipe_registers(registers, base)?;
+    }
+    Ok(())
+}
+
 fn clear_pipe_registers(registers: &mut impl RegisterIo, base: u64) -> Result<(), CeError> {
     clear_registers(
         registers,

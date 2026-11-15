@@ -147,7 +147,22 @@ re-programs the CE0/CE1 BMI rings and the CE7 diagnostic pipe (the cold reset
 and the CE reset pulse clear those registers), and releases the target CPU
 again. A target that never comes up therefore spends roughly 12 s per attempt
 (`ROM_READY_ROUNDS` after the cold reset plus three warm-reset waits) and about
-36 s in total before reporting `TargetCrashed`. Everything after the reset — the pipe/service
+36 s in total before reporting `TargetCrashed`.
+
+### Host setup before the reset (Linux reference)
+
+A reference Linux boot on the same E203NAH reports
+`qca9377 hw1.1 target 0x05020001 chip_id 0x003821ff` and brings `wlp1s0` up, so
+the silicon and the power rails are fine and the remaining differences are
+host-side. ath10k enables bus mastering in `ath10k_pci_claim` (`pci_set_master`)
+and zeroes every CE pipe (`ath10k_pci_ce_deinit` plus
+`ath10k_ce_disable_interrupts`) *before* `ath10k_pci_chip_reset`. The driver now
+clears all eight pipes while bus mastering is still off and enables the master
+bit before the reset, so the boot ROM never starts against a CE configuration
+left behind by the firmware that ran before the driver. It also reads the chip id
+*after* the chip reset, the way ath10k does, because `SOC_CHIP_ID` reads back
+zero before the reset (the earlier pre-reset read reported `0x00000000`, i.e.
+"hw1.0", where the chip is really hw1.1). Everything after the reset — the pipe/service
 tables and every BMI command — depends on a running boot ROM, so continuing
 only produced a misleading `MissingPcieState` from an unpopulated
 `HOST_INTEREST`.

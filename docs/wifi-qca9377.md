@@ -109,11 +109,14 @@ status.
 Before the first BMI command the driver follows ath10k's QCA6174/QCA9377
 bring-up, split into two stages so the ordering matches
 `ath10k_pci_warm_reset_cpu` → `ath10k_pci_init_pipes` →
-`ath10k_pci_wait_for_target_init`. Stage 3b pulses the SoC global reset
-(`BAR + 0x8`, reached through ath10k's BAR-relative accessor — **not**
-`PCIE_LOCAL + 0x8`, which is a different register), waits for the boot ROM to
-report `FW_IND_INITIALIZED` like `ath10k_pci_qca6174_chip_reset` does, wakes the
-target and cycles the copy-engine reset line, leaving the target CPU in reset. Stage 4 then programs the CE0/CE1 BMI rings,
+`ath10k_pci_wait_for_target_init`. Stage 3b pulses the SoC global reset (`PCIE_LOCAL + 0x8`; ath10k's
+`ath10k_pci_reg_write32()` adds `PCIE_LOCAL_BASE_ADDRESS` itself), wakes the
+target and cycles the copy-engine reset line. Stage 4b then releases the target
+CPU and waits up to ~3 s for `FW_IND_INITIALIZED`, and only after that does
+stage 4c write the target CE pipe/service tables via CE7 — the same order as
+`ath10k_pci_qca6174_chip_reset` followed by `ath10k_pci_hif_power_up`
+(`init_pipes` → `init_config` → `wake_target_cpu`). ASPM L0s/L1 is disabled
+before the device is touched, matching `ath10k_pci_aspm_disable`. Stage 4 then programs the CE0/CE1 BMI rings,
 enables PCI bus mastering and writes the target pipe tables, and only after
 that stage 4c clears the stale `FW_INDICATOR`, asserts the CPU warm reset
 (`RTC_SOC` bit 6) and waits, bounded, for `FW_IND_INITIALIZED`. Releasing the

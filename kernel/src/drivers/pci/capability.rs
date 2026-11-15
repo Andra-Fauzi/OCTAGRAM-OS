@@ -24,6 +24,28 @@ pub struct MsixInfo {
 }
 
 /// Find a capability in the PCI linked list, bounded to avoid malformed loops.
+const PCIE_LINK_CONTROL_OFFSET: u8 = 0x10;
+const PCIE_LINK_CONTROL_ASPMC: u16 = 0x0003;
+
+/// Disable PCIe ASPM L0s/L1 on this function, mirroring
+/// `ath10k_pci_aspm_disable()`. An endpoint that is allowed to enter a link
+/// low-power state between host accesses can stall copy-engine DMA, which then
+/// surfaces as a transfer timeout instead of a link error. Returns the link
+/// control value before and after so the boot log can show the change.
+pub unsafe fn disable_aspm(device: &PciDevice) -> Option<(u16, u16)> {
+    let capability = unsafe { find_capability(device, CAP_ID_PCIE) }?;
+    let offset = capability + PCIE_LINK_CONTROL_OFFSET;
+    let before = unsafe { config_read_u16(device.bus, device.device, device.function, offset) };
+    let disabled = before & !PCIE_LINK_CONTROL_ASPMC;
+    if disabled != before {
+        unsafe {
+            config_write_u16(device.bus, device.device, device.function, offset, disabled)
+        };
+    }
+    let after = unsafe { config_read_u16(device.bus, device.device, device.function, offset) };
+    Some((before, after))
+}
+
 pub unsafe fn find_capability(device: &PciDevice, cap_id: u8) -> Option<u8> {
     let status = unsafe { config_read_u16(device.bus, device.device, device.function, PCI_STATUS) };
     if status & (1 << 4) == 0 {

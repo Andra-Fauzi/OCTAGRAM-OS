@@ -47,16 +47,16 @@ pub(super) const QCA9377_FIRMWARE_LOAD_ADDRESS: u32 = 0x0040_8000;
 // `ath10k/hw.h` and `ath10k/pci.c`.
 const QCA6174_SOC_CORE_BASE: u64 = 0x0003_a000;
 const QCA6174_FW_INDICATOR_ADDRESS: u64 = QCA6174_SOC_CORE_BASE + 0x28;
-// `SOC_GLOBAL_RESET_ADDRESS` (0x0008) is reached through the BAR-relative
-// accessor in ath10k (`ath10k_pci_reg_write32`), NOT through the PCIe-local
-// window that RTC_STATE/PCIE_SOC_WAKE use. Linux therefore resets the SoC at
-// BAR + 0x8, so writing PCIE_LOCAL + 0x8 only poked an unrelated register.
-const QCA6174_SOC_GLOBAL_RESET_ADDRESS: u64 = 0x0000_0008;
+// `ath10k_pci_reg_write32()` is a wrapper that adds `PCIE_LOCAL_BASE_ADDRESS`
+// (`return ath10k_pci_write32(ar, PCIE_LOCAL_BASE_ADDRESS + addr, val)`), so
+// `SOC_GLOBAL_RESET_ADDRESS` (0x0008) really lives at BAR + 0x80008, next to
+// RTC_STATE (+0x0) and PCIE_SOC_WAKE (+0x4) in the same window.
+const QCA6174_SOC_GLOBAL_RESET_ADDRESS: u64 = QCA6174_PCIE_LOCAL_BASE + 0x8;
 // Raw probe addresses for the cold-reset register dump: the BAR base window and
 // the PCIe-local window, so one boot shows which one the latch really uses.
 const QCA6174_BAR_PROBE_0: u64 = 0x0000_0000;
-const QCA6174_BAR_PROBE_8: u64 = QCA6174_SOC_GLOBAL_RESET_ADDRESS;
-const QCA6174_PCIE_LOCAL_PROBE_8: u64 = QCA6174_PCIE_LOCAL_BASE + 0x8;
+const QCA6174_BAR_PROBE_8: u64 = 0x0000_0008;
+const QCA6174_PCIE_LOCAL_PROBE_8: u64 = QCA6174_SOC_GLOBAL_RESET_ADDRESS;
 const QCA6174_RTC_SOC_TIMER_OFFSET: u64 = 0x50;
 const SOC_GLOBAL_RESET_PULSE: u32 = 1 << 0;
 const RTC_SOC_CE_RESET: u32 = 1 << 0;
@@ -165,6 +165,11 @@ pub(super) fn wake_target_cpu<R: ce::RegisterIo>(registers: &mut R) -> Result<()
 }
 
 fn settle_reset_delay() {
+    // Tests must not burn hundreds of millions of spins just to reach the end of
+    // a wait loop; the delay only matters on real hardware.
+    if cfg!(test) {
+        return;
+    }
     for _ in 0..RESET_SETTLE_SPINS {
         core::hint::spin_loop();
     }
@@ -235,10 +240,11 @@ pub(super) fn pulse_ce_reset<R: ce::RegisterIo>(
     registers.write32(QCA6174_RTC_SOC_BASE, rtc & !RTC_SOC_CE_RESET)
 }
 
-/// How many polling rounds the ROM gets before the wait gives up. Each round is
-/// `poll_limit` spins plus a short settle delay, i.e. roughly the ~100 ms
-/// `ATH10K_PCI_RESET_WAIT_MAX` that ath10k allows.
-const ROM_READY_ROUNDS: usize = 4;
+/// Polling rounds and their spacing. ath10k waits `ATH10K_PCI_TARGET_WAIT`
+/// (3000 ms) with a 10 ms delay per iteration, so the rounds here are sized to
+/// spend roughly three seconds in total instead of a few CPU-speed-dependent
+/// spins.
+const ROM_READY_ROUNDS: usize = 150;
 
 /// Wait for the boot ROM to report `FW_IND_INITIALIZED`.
 ///
@@ -253,8 +259,9 @@ pub(super) fn wait_for_target_init<R: ce::RegisterIo>(
     poll_limit: usize,
 ) -> Result<(bool, u32), ce::CeError> {
     let mut indicator = 0;
+    let spins_per_round = (poll_limit / ROM_READY_ROUNDS).max(1);
     for round in 0..ROM_READY_ROUNDS {
-        for _ in 0..poll_limit {
+        for _ in 0..spins_per_round {
             indicator = registers.read32(QCA6174_FW_INDICATOR_ADDRESS)?;
             if indicator == u32::MAX {
                 return Err(ce::CeError::DeviceUnavailable);
@@ -331,6 +338,9 @@ pub(super) struct ResetOutcome {
     pub reset_control_released: u32,
     /// How many reset/release attempts it took for the ROM to answer.
     pub attempts: u32,
+    /// True if the ROM ever reported `FW_IND_EVENT_PENDING`, which ath10k
+    /// treats as "device crashed during init".
+    pub saw_crash: bool,
 }
 
 /// Warm reset attempts before giving up, matching
@@ -412,6 +422,7 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
     let mut reset_control_asserted = 0;
     let mut reset_control_released = 0;
     let mut attempts = 0;
+    let mut saw_crash = false;
 
     // ath10k retries the warm reset `ATH10K_PCI_NUM_WARM_RESET_ATTEMPTS` times
     // because the first attempt does not always reach the target. Do the same:
@@ -442,6 +453,7 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
             .map_err(|error| failed("wait for boot ROM", error))?;
         ready = attempt_ready;
         indicator_after = value;
+        saw_crash |= value & FW_IND_EVENT_PENDING != 0;
         if ready {
             break;
         }
@@ -456,6 +468,7 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
         reset_control_asserted,
         reset_control_released,
         attempts,
+        saw_crash,
     })
 }
 

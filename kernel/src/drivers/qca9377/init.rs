@@ -170,6 +170,17 @@ pub unsafe fn initialize_device(
     }
     pci::enable_mmio_only(device).map_err(|_| InitError::MmioSetup)?;
 
+    // ASPM has to go before the target is exercised: an endpoint allowed to
+    // enter L1 can drop copy-engine DMA, which looks like a transfer timeout.
+    // ath10k does the same in `ath10k_pci_aspm_disable()`.
+    match unsafe { pci::disable_aspm(device) } {
+        Some((before, after)) => crate::println!(
+            "QCA9377 PCIe link control: {:#06x} -> {:#06x} (ASPM L0s/L1 disabled)",
+            before, after
+        ),
+        None => crate::println!("QCA9377 PCIe capability missing; ASPM left unchanged"),
+    }
+
     let page_off = bar.address & PAGE_OFFSET_MASK;
     let mapping_size = page_off + bar_size;
     let mmio_virt = memory::paging::map_mmio_range(bar.address, mapping_size);
@@ -257,10 +268,53 @@ pub unsafe fn initialize_device(
     }
     keep_rings = true;
 
-    // ── 4b. Target-side CE layout and HTC service map ────────────────────────
-    // Tells the boot ROM which CE carries HTC control, WMI and HTT. This runs
-    // before BMI DONE starts the firmware, because the firmware reads these
-    // tables while it boots (`ath10k_pci_init_config`).
+    // ── 4b. Release the target CPU and wait for the boot ROM ────────────────
+    // ath10k finishes the whole chip reset (cold reset, warm reset and target
+    // init) *before* it writes the target CE tables, so the ROM is already
+    // running when the configuration lands; `ath10k_pci_hif_power_up` then calls
+    // `ath10k_pci_init_pipes`, `ath10k_pci_init_config` and finally
+    // `ath10k_pci_wake_target_cpu`. This stage follows that order.
+    let mut rom_ready = false;
+    let mut rom_crashed = false;
+    match release_target_cpu(&mut registers, QCA_WAKE_POLL_LIMIT, target_reset) {
+        Ok(outcome) => {
+            crate::println!(
+                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} attempts={} crash_event={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
+                outcome.indicator_before,
+                outcome.indicator_after,
+                outcome.ready,
+                outcome.attempts,
+                outcome.saw_crash,
+                target_reset.reset_control_before,
+                outcome.reset_control_asserted,
+                outcome.reset_control_released
+            );
+            rom_ready = outcome.ready;
+            rom_crashed = outcome.saw_crash;
+            if !outcome.ready {
+                crate::println!(
+                    "QCA9377 boot ROM did not report FW_IND_INITIALIZED; attempting BMI anyway"
+                );
+            }
+        }
+        Err(failure) => {
+            crate::println!(
+                "QCA9377 reset failed at \"{}\": {:?}",
+                failure.step, failure.error
+            );
+            return Err(InitError::TargetReset);
+        }
+    }
+    if rom_crashed && !rom_ready {
+        crate::println!(
+            "QCA9377: target raised FW_IND_EVENT_PENDING without FW_IND_INITIALIZED (device crashed during init)"
+        );
+    }
+
+    // ── 4c. Target-side CE layout and HTC service map ────────────────────────
+    // Tells the target which CE carries HTC control, WMI and HTT. Linux writes
+    // these tables only after the chip reset completed, because the tables are
+    // consumed by the boot path, not by the ROM's own start-up.
     {
         let mut memory =
             unsafe { target::Ce7TargetMemory::new(&mut target_config_ce, &mut registers) };
@@ -289,37 +343,7 @@ pub unsafe fn initialize_device(
         core::mem::forget(target_config_ce);
     }
 
-    // ── 4c. Release the target CPU and wait for the boot ROM ─────────────────
-    // Rings, target pipe tables and PCI bus mastering are all in place now, so
-    // the ROM has something to consume when it finally starts.
-    match release_target_cpu(&mut registers, QCA_WAKE_POLL_LIMIT, target_reset) {
-        Ok(outcome) => {
-            crate::println!(
-                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} attempts={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
-                outcome.indicator_before,
-                outcome.indicator_after,
-                outcome.ready,
-                outcome.attempts,
-                target_reset.reset_control_before,
-                outcome.reset_control_asserted,
-                outcome.reset_control_released
-            );
-            if !outcome.ready {
-                crate::println!(
-                    "QCA9377 boot ROM did not report FW_IND_INITIALIZED; attempting BMI anyway"
-                );
-            }
-        }
-        Err(failure) => {
-            crate::println!(
-                "QCA9377 reset failed at \"{}\": {:?}",
-                failure.step, failure.error
-            );
-            return Err(InitError::TargetReset);
-        }
-    }
-
-    // Wake the target CPU (trigger CPU interrupt) so it starts servicing BMI/CE
+    // ── 4d. Wake the target CPU (trigger CPU interrupt) before BMI ──────────
     let _ = wake_target_cpu(&mut registers);
 
     // What the ROM is supposed to consume, captured before the first command.

@@ -14,8 +14,8 @@ pub use bar::{
     BarInfo, enable_bus_master, enable_device, enable_mmio_only, get_bar, get_bar0, get_bar0_size,
 };
 pub use capability::{
-    CAP_ID_MSI, CAP_ID_MSIX, CAP_ID_PCIE, CAP_ID_POWER_MGMT, MsixInfo, enable_msi, find_capability,
-    get_msix_info, set_msix_enable,
+    CAP_ID_MSI, CAP_ID_MSIX, CAP_ID_PCIE, CAP_ID_POWER_MGMT, MsixInfo, disable_aspm, enable_msi,
+    find_capability, get_msix_info, set_msix_enable,
 };
 pub use enumeration::scan_pci_bus;
 

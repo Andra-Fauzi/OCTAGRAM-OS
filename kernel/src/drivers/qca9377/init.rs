@@ -289,9 +289,18 @@ pub unsafe fn initialize_device(
     let chip_id = read_chip_id_awake(&mut registers, QCA_WAKE_POLL_LIMIT)
         .map_err(|_| InitError::SiliconUnknown)?;
 
-    match silicon_identity(chip_id) {
-        SiliconIdentity::Qca9377Hw10 | SiliconIdentity::Qca9377Hw11 => {}
-        _ => return Err(InitError::SiliconUnknown),
+    // The pre-reset read can come back zero on this platform (the E203NAH does
+    // exactly that); decoding "no answer" as hw1.0 would be a guess. When the
+    // window did answer, the identity has to be a QCA9377.
+    if super::chip_id_is_valid(chip_id) {
+        match silicon_identity(chip_id) {
+            SiliconIdentity::Qca9377Hw10 | SiliconIdentity::Qca9377Hw11 => {}
+            _ => return Err(InitError::SiliconUnknown),
+        }
+    } else {
+        crate::println!(
+            "QCA9377 identity unknown before the chip reset ({chip_id:#010x}); the post-reset read decides"
+        );
     }
 
     // ── 3. Load firmware images ───────────────────────────────────────────────
@@ -502,10 +511,25 @@ pub unsafe fn initialize_device(
     // pre-reset read on the E203NAH returns 0. Log the identity ath10k reports
     // (`qca9377 hw1.1 chip_id ...`) so the boot log can be compared directly.
     match read_chip_id_awake(&mut registers, QCA_WAKE_POLL_LIMIT) {
-        Ok(chip_id) => crate::println!(
-            "QCA9377 target identity after chip reset: chip_id={chip_id:#010x} silicon={:?}",
-            silicon_identity(chip_id)
-        ),
+        Ok(chip_id) => {
+            let identity = silicon_identity(chip_id);
+            crate::println!(
+                "QCA9377 target identity after chip reset: chip_id={chip_id:#010x} silicon={identity:?}"
+            );
+            // A real answer that is not a QCA9377 means the shared PCI id
+            // belongs to the other chip, and QCA9377 firmware must not be used.
+            if super::chip_id_is_valid(chip_id)
+                && !matches!(
+                    identity,
+                    SiliconIdentity::Qca9377Hw10 | SiliconIdentity::Qca9377Hw11
+                )
+            {
+                crate::println!("QCA9377: the chip reset revealed {identity:?}; stopping");
+                let _ = pci::disable_bus_master(device);
+                let _ = target_sleep(&mut registers);
+                return Err(InitError::SiliconUnknown);
+            }
+        }
         Err(error) => {
             crate::println!("QCA9377 chip id read after the chip reset failed: {error:?}")
         }

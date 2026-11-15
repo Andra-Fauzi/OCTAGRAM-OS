@@ -424,6 +424,31 @@ is only reachable through `qca6174_ops`; the QCA9377 hw1.0/hw1.1 entries use
 `false` for QCA9377, so ath10k itself never takes the diag-CE fast download path
 on this chip.
 
+### `ath10k_pci_init_config` Audit
+
+`target.rs` was checked field by field against Linux `pci.h` and
+`ath10k_pci_init_config`, with no divergence left:
+
+- `hi_interconnect_state` is at `0xf8` of HOST_INTEREST, and its value is used
+  directly as `pcie_state_targ_addr` (ath10k does the same).
+- `struct pcie_state` offsets: `pipe_cfg_addr` 0x00, `svc_to_pipe_map` 0x04,
+  `config_flags` 0x20, with `PCIE_CONFIG_FLAG_ENABLE_L1 = 0x1`.
+- `ath10k_pci_get_num_banks` returns 9 for QCA9377, and `hi_early_alloc` carries
+  magic `0x6d8a` in bits 31:16 plus the bank count in bits 3:0.
+- `hi_option_flag2 |= HI_OPTION_EARLY_CFG_DONE (0x10)` is the last write, and it
+  is read back through CE7 — the only value that proves the tables reached
+  target IRAM.
+- CE7 transfers are bounded by `DIAG_TRANSFER_LIMIT` (2048 bytes), which matches
+  `CE_DIAGNOSTIC_MAX_BYTES`.
+
+ath10k does not programme the MSI fields of `pcie_state` here either, so the
+absence of those writes is correct.
+
+A silicon identity is only decoded from a real `SOC_CHIP_ID` value: zero,
+all-ones and `0xdeadc0de` are reported as "unknown before the chip reset" and
+the identity is decided by the post-reset read. If that read is a valid value
+that is not a QCA9377, the driver stops instead of loading QCA9377 firmware.
+
 ### Shell Commands
 
 The shell provides user commands under `net wifi`:
@@ -431,6 +456,10 @@ The shell provides user commands under `net wifi`:
 - `net wifi status`: Display current WiFi interface status.
 - `net wifi scan`: Trigger 2.4 GHz active scan across channels.
 - `net wifi connect <ssid>`: Associate to a target SSID.
+- `net wifi bmi`: Re-run the BMI handshake and dump the host-interest words
+  (`hi_app_host_interest`, `hi_option_flag`, `hi_serial_enable`, `hi_board_data`,
+  `hi_board_data_initialized`, `hi_fw_swap`, UART power-management word). `BMI_DONE`
+  is never sent, so the boot ROM is left where the probe found it.
 - `net dhcp`: Request an IPv4 address lease via DHCP once WiFi link is associated.
 
 Linux

@@ -160,7 +160,7 @@ fn print_help() {
     crate::println!("  lsdev                  list bus devices and bound drivers");
     crate::println!("  drivers                list registered kernel drivers");
     crate::println!("  net status|dhcp        inspect interface or request an IPv4 lease");
-    crate::println!("  net wifi <scan|connect|status> scan or connect to WiFi (QCA9377)");
+    crate::println!("  net wifi <scan|connect|status|bmi> WiFi commands (QCA9377)");
     crate::println!("  net udp <IP> <port> <text> send one UDP datagram");
     crate::println!("  ping <IPv4 address>    send an ICMP echo request");
     crate::println!("  mount <device> <path> [fat32|ext2]  mount a filesystem read-write");
@@ -221,6 +221,12 @@ fn run_wifi_command(arguments: &str) {
             crate::println!("  net wifi scan              - scan all 2.4 GHz channels");
             crate::println!("  net wifi connect <ssid>    - connect to AP by SSID");
             crate::println!("  net wifi status            - show current link state");
+            crate::println!("  net wifi bmi               - re-run BMI and dump host-interest words");
+        }
+        Some("bmi") => {
+            if let Err(error) = unsafe { crate::drivers::qca9377::run_bmi_diagnostics() } {
+                crate::println!("net wifi bmi: {error}");
+            }
         }
         Some("status") => {
             crate::network::print_status();

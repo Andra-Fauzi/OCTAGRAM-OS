@@ -900,6 +900,114 @@ pub unsafe fn boot_firmware<T: BmiTransport>(
     Ok(target_info)
 }
 
+/// Re-run the BMI handshake from the shell and print every answer.
+///
+/// The boot path gives up on a target that never reports
+/// `FW_IND_INITIALIZED`, which leaves BMI untested. This runs the same bring-up
+/// (wake, CE0/CE1 rings, bus mastering) and then asks the ROM for the
+/// host-interest words the driver depends on, so a failure names the command
+/// that stopped instead of ending at a single `TargetCrashed`.
+///
+/// # Safety
+/// The caller must be sure no other agent drives the WLAN function while this
+/// runs. Bus mastering is enabled for the exchange and disabled afterwards, and
+/// `BMI_DONE` is never sent, so the boot ROM is left where the probe found it.
+pub unsafe fn run_bmi_diagnostics() -> Result<(), &'static str> {
+    let devices = pci::scan_pci_bus();
+    let Some(device) = devices
+        .iter()
+        .find(|device| is_ath10k_pci_candidate(device.vendor_id, device.device_id))
+    else {
+        return Err("no Qualcomm Atheros WLAN function found on the PCI bus");
+    };
+
+    let bar = unsafe { pci::get_bar0(device) };
+    if bar.address == 0 {
+        return Err("BAR0 is not assigned");
+    }
+    let bar_size = unsafe { pci::get_bar0_size(device) };
+    let required_size = required_register_window_size();
+    if bar_size < required_size {
+        return Err("BAR0 is too small for the target registers");
+    }
+    unsafe { pci::enable_mmio_only(device)? };
+
+    let page_offset = bar.address & PAGE_OFFSET_MASK;
+    let mapping_size = page_offset + required_size;
+    let mmio = unsafe { memory::paging::map_mmio_range(bar.address, mapping_size) };
+    let bar_virt = mmio + page_offset;
+    let mut registers = unsafe { ce::MmioWindow::new(bar_virt as usize, required_size) }
+        .map_err(|_| "MMIO window is unavailable")?;
+    let mut rings = ce::BmiCeRings::allocate().map_err(|_| "BMI DMA ring allocation failed")?;
+
+    target_wake(&mut registers, QCA_WAKE_POLL_LIMIT).map_err(|_| "target wake failed")?;
+    let chip_id = registers.read32(CHIP_ID_BAR_OFFSET).unwrap_or(u32::MAX);
+    let indicator = registers
+        .read32(QCA6174_FW_INDICATOR_ADDRESS)
+        .unwrap_or(u32::MAX);
+    crate::println!(
+        "wifi bmi: chip_id={chip_id:#010x} fw_indicator={indicator:#010x} event_pending={} initialized={}",
+        indicator & FW_IND_EVENT_PENDING != 0,
+        indicator & FW_IND_INITIALIZED != 0
+    );
+
+    unsafe { rings.configure(&mut registers) }.map_err(|_| "CE0/CE1 ring configuration failed")?;
+    unsafe { pci::enable_bus_master(device)? };
+
+    let mut outcome = Ok(());
+    {
+        let transport = unsafe { ce::BmiCeTransport::new(&mut rings, &mut registers) };
+        let mut client = BmiClient::new(transport);
+
+        match client.get_target_info() {
+            Ok(info) => crate::println!(
+                "wifi bmi: GET_TARGET_INFO version={:#010x} type={:#010x}",
+                info.version, info.target_type
+            ),
+            Err(error) => {
+                crate::println!("wifi bmi: GET_TARGET_INFO failed: {error:?}");
+                outcome = Err("GET_TARGET_INFO failed, the boot ROM is not serving BMI");
+            }
+        }
+
+        if outcome.is_ok() {
+            for (name, offset) in [
+                (
+                    "hi_app_host_interest",
+                    HOST_INTEREST_APP_HOST_INTEREST_OFFSET,
+                ),
+                ("hi_option_flag", HOST_INTEREST_OPTION_FLAG_OFFSET),
+                ("hi_serial_enable", HOST_INTEREST_SERIAL_ENABLE_OFFSET),
+                ("hi_board_data", HOST_INTEREST_BOARD_DATA_OFFSET),
+                (
+                    "hi_board_data_initialized",
+                    HOST_INTEREST_BOARD_DATA_INITIALIZED_OFFSET,
+                ),
+                ("hi_fw_swap", HOST_INTEREST_FW_SWAP_OFFSET),
+                (
+                    "hi_uart_pwr_mgmt",
+                    HOST_INTEREST_HCI_UART_PWR_MGMT_EXT_OFFSET,
+                ),
+            ] {
+                match client.read_soc_register(HOST_INTEREST_ADDRESS + offset) {
+                    Ok(value) => crate::println!("wifi bmi: {name} = {value:#010x}"),
+                    Err(error) => {
+                        crate::println!("wifi bmi: {name} read failed: {error:?}");
+                        outcome = Err("a host-interest read failed");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if unsafe { pci::disable_bus_master(device) }.is_err() {
+        crate::println!("wifi bmi: warning: bus mastering could not be disabled again");
+    }
+    let _ = target_sleep(&mut registers);
+    outcome
+}
+
 /// Configured CE pipe pairs for HTC endpoints.
 ///
 /// Pipe map (from ath10k pci.c):
@@ -1128,33 +1236,37 @@ pub(crate) fn report_pci_candidates(devices: &[PciDevice]) {
                 crate::println!(
                     "Qualcomm target registers: RTC_STATE={rtc_state:#010x} SOC_CHIP_ID@{CHIP_ID_BAR_OFFSET:#x}={chip_id:#010x}"
                 );
-                if chip_id == 0 || chip_id == u32::MAX {
+                if !chip_id_is_valid(chip_id) {
                     // Linux ath10k reads this same register as 0x003821ff on the
                     // laptops that boot this device, so an all-zero window means
-                    // the RTC_SOC block is not answering yet and no identity or
-                    // reset write through it can be trusted.
+                    // the RTC_SOC block is not answering yet. The PCI id still
+                    // matches, and the chip reset below brings the window up, so
+                    // the identity is decided by the post-reset read instead of
+                    // decoding "no answer" as hw1.0.
                     crate::println!(
-                        "Qualcomm warning: RTC_SOC window at {CHIP_ID_BAR_OFFSET:#x} answered {chip_id:#010x}; chip identity and chip-reset registers live in that window"
+                        "Qualcomm silicon identity: unknown before the chip reset (SOC_CHIP_ID@{CHIP_ID_BAR_OFFSET:#x}={chip_id:#010x}); the post-reset read decides"
                     );
-                }
-                match silicon_identity(chip_id) {
-                    SiliconIdentity::Qca9377Hw10 => {
-                        crate::println!("Qualcomm silicon identity: QCA9377 hw1.0");
-                        true
-                    }
-                    SiliconIdentity::Qca9377Hw11 => {
-                        crate::println!("Qualcomm silicon identity: QCA9377 hw1.1");
-                        true
-                    }
-                    SiliconIdentity::Qca6174Hw32 => {
-                        crate::println!(
-                            "Qualcomm silicon identity: QCA6174 hw3.2; QCA9377 firmware will not be used"
-                        );
-                        false
-                    }
-                    SiliconIdentity::UnknownRevision(revision) => {
-                        crate::println!("Qualcomm silicon revision is unsupported: {revision}");
-                        false
+                    true
+                } else {
+                    match silicon_identity(chip_id) {
+                        SiliconIdentity::Qca9377Hw10 => {
+                            crate::println!("Qualcomm silicon identity: QCA9377 hw1.0");
+                            true
+                        }
+                        SiliconIdentity::Qca9377Hw11 => {
+                            crate::println!("Qualcomm silicon identity: QCA9377 hw1.1");
+                            true
+                        }
+                        SiliconIdentity::Qca6174Hw32 => {
+                            crate::println!(
+                                "Qualcomm silicon identity: QCA6174 hw3.2; QCA9377 firmware will not be used"
+                            );
+                            false
+                        }
+                        SiliconIdentity::UnknownRevision(revision) => {
+                            crate::println!("Qualcomm silicon revision is unsupported: {revision}");
+                            false
+                        }
                     }
                 }
             }
@@ -1224,7 +1336,7 @@ mod tests {
         QCA6174_RTC_SOC_BASE, QCA6174_RTC_SOC_TIMER_OFFSET, QCA6174_SOC_GLOBAL_RESET_ADDRESS,
         QCA9377_TARGET_VERSION_1_0, QCA9377_TARGET_VERSION_1_1, RTC_SOC_CE_RESET,
         RTC_SOC_CPU_RESET, RTC_STATE_BAR_OFFSET, SiliconIdentity, download_board_data,
-        is_ath10k_pci_candidate, pci_board_name, release_target_cpu,
+        chip_id_is_valid, is_ath10k_pci_candidate, pci_board_name, release_target_cpu,
         required_register_window_size, reset_target_soc, sample_chip_id_timeline, silicon_identity,
         soc_global_reset, supports_qca9377_firmware, wait_for_target_init, with_target_awake,
         READ_FAILED_PATTERN,
@@ -1441,6 +1553,17 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn only_a_real_chip_id_counts_as_an_identity() {
+        // The pre-reset read answers zero on this platform and a dead window can
+        // answer all-ones or the bus-error pattern; none of those may be decoded
+        // as a silicon revision.
+        assert!(!chip_id_is_valid(0));
+        assert!(!chip_id_is_valid(u32::MAX));
+        assert!(!chip_id_is_valid(READ_FAILED_PATTERN));
+        assert!(chip_id_is_valid(0x0038_21ff));
     }
 
     #[test]

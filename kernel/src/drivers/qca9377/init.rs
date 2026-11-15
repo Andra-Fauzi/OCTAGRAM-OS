@@ -275,10 +275,11 @@ pub unsafe fn initialize_device(
     match release_target_cpu(&mut registers, QCA_WAKE_POLL_LIMIT, target_reset) {
         Ok(outcome) => {
             crate::println!(
-                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
+                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} attempts={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
                 outcome.indicator_before,
                 outcome.indicator_after,
                 outcome.ready,
+                outcome.attempts,
                 target_reset.reset_control_before,
                 outcome.reset_control_asserted,
                 outcome.reset_control_released

@@ -265,7 +265,13 @@ pub(super) struct ResetOutcome {
     pub reset_control_asserted: u32,
     /// The same register after the warm reset bit was released again.
     pub reset_control_released: u32,
+    /// How many reset/release attempts it took for the ROM to answer.
+    pub attempts: u32,
 }
+
+/// Warm reset attempts before giving up, matching
+/// `ATH10K_PCI_NUM_WARM_RESET_ATTEMPTS` in ath10k.
+const ROM_READY_ATTEMPTS: u32 = 3;
 
 /// A reset step that failed, so the boot log can say where the target stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,28 +328,46 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
 ) -> Result<ResetOutcome, ResetFailure> {
     let failed = |step, error| ResetFailure { step, error };
 
-    reset_target_cpu(registers).map_err(|error| failed("reset target CPU", error))?;
-    let reset_control_asserted = registers
-        .read32(QCA6174_RTC_SOC_BASE)
-        .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
+    let mut ready = false;
+    let mut indicator_after = 0;
+    let mut reset_control_asserted = 0;
+    let mut reset_control_released = 0;
+    let mut attempts = 0;
 
-    // QCA9377 does not retain the warm reset bit: it reads back cleared, so the
-    // CPU only sees an edge if the release is written explicitly. Pulse it like
-    // the SoC global reset and CE reset, then keep both readbacks for the log.
-    settle_reset_delay();
-    registers
-        .write32(
-            QCA6174_RTC_SOC_BASE,
-            reset_control_asserted & !RTC_SOC_CPU_RESET,
-        )
-        .map_err(|error| failed("release target CPU", error))?;
-    settle_reset_delay();
-    let reset_control_released = registers
-        .read32(QCA6174_RTC_SOC_BASE)
-        .map_err(|error| failed("read SOC_RESET_CONTROL after release", error))?;
+    // ath10k retries the warm reset `ATH10K_PCI_NUM_WARM_RESET_ATTEMPTS` times
+    // because the first attempt does not always reach the target. Do the same:
+    // each attempt clears FW_INDICATOR, pulses the CPU warm reset and polls.
+    for _ in 0..ROM_READY_ATTEMPTS {
+        attempts += 1;
+        reset_target_cpu(registers).map_err(|error| failed("reset target CPU", error))?;
+        reset_control_asserted = registers
+            .read32(QCA6174_RTC_SOC_BASE)
+            .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
 
-    let (ready, indicator_after) = wait_for_target_init(registers, poll_limit)
-        .map_err(|error| failed("wait for boot ROM", error))?;
+        // QCA9377 does not retain the warm reset bit: it reads back cleared, so
+        // the CPU only sees an edge if the release is written explicitly. Pulse
+        // it like the SoC global reset and CE reset, keeping both readbacks.
+        settle_reset_delay();
+        registers
+            .write32(
+                QCA6174_RTC_SOC_BASE,
+                reset_control_asserted & !RTC_SOC_CPU_RESET,
+            )
+            .map_err(|error| failed("release target CPU", error))?;
+        settle_reset_delay();
+        reset_control_released = registers
+            .read32(QCA6174_RTC_SOC_BASE)
+            .map_err(|error| failed("read SOC_RESET_CONTROL after release", error))?;
+
+        let (attempt_ready, value) = wait_for_target_init(registers, poll_limit)
+            .map_err(|error| failed("wait for boot ROM", error))?;
+        ready = attempt_ready;
+        indicator_after = value;
+        if ready {
+            break;
+        }
+    }
+
     target_wake(registers, poll_limit).map_err(|error| failed("final wake", error))?;
 
     Ok(ResetOutcome {
@@ -352,6 +376,7 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
         ready,
         reset_control_asserted,
         reset_control_released,
+        attempts,
     })
 }
 
@@ -894,6 +919,7 @@ mod tests {
         assert_eq!(prepared.reset_control_before & RTC_SOC_CPU_RESET, 0);
         assert_ne!(outcome.reset_control_asserted & RTC_SOC_CPU_RESET, 0);
         assert_eq!(outcome.reset_control_released & RTC_SOC_CPU_RESET, 0);
+        assert_eq!(outcome.attempts, 1);
         assert!(registers.awake);
 
         assert!(registers

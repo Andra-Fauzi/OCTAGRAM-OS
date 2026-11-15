@@ -361,7 +361,7 @@ pub unsafe fn initialize_device(
                     .read32(super::CHIP_ID_BAR_OFFSET)
                     .unwrap_or(u32::MAX);
                 crate::println!(
-                    "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} warm_reset_phases={} crash_event={} crash_latch_cleared={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release) cpu_warm_rst_visible={} chip_id_after_reset={:#010x}",
+                    "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} warm_reset_phases={} crash_event={} crash_latch_cleared={} soc_reset_control={:#010x} -> {:#010x} (after warm reset) cpu_warm_rst_visible={} chip_id_after_reset={:#010x}",
                     outcome.indicator_before,
                     outcome.indicator_after,
                     outcome.ready,
@@ -370,7 +370,6 @@ pub unsafe fn initialize_device(
                     outcome.crash_cleared,
                     target_reset.reset_control_before,
                     outcome.reset_control_asserted,
-                    outcome.reset_control_released,
                     outcome.cpu_warm_reset_visible,
                     chip_id_after
                 );

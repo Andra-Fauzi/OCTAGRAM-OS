@@ -359,6 +359,32 @@ installed here) and non-data frames. The resulting Ethernet frame goes to
 `network::receive_ethernet`. After association the bring-up drains up to 32 HTT
 messages and logs `QCA9377 HTT RX: <n> frame(s) delivered, <m> dropped`.
 
+### Chip Reset Follows `ath10k_pci_warm_reset`
+
+The reset path is now a transcription of the ath10k functions rather than a
+reconstruction of them:
+
+- `ath10k_pci_warm_reset_si0` → `warm_reset_cpu` → `ath10k_pci_init_pipes` →
+  `ath10k_pci_wait_for_target_init` (ath10k discards this result) →
+  `ath10k_pci_warm_reset_clear_lf` → `ath10k_pci_warm_reset_ce` →
+  `warm_reset_cpu` → `init_pipes` → `wait_for_target_init` (this one decides).
+  Both phases always run; the driver no longer stops after the first one.
+- `warm_reset_cpu` only *sets* `SOC_RESET_CONTROL_CPU_WARM_RST_MASK` (0x40) and
+  clears `FW_INDICATOR` first. ath10k never clears the bit again, so the previous
+  "release" write — a read-modify-write of `SOC_RESET_CONTROL` bits the driver
+  does not own — is gone.
+- `warm_reset_ce` re-reads `SOC_RESET_CONTROL` immediately before the pulse and
+  writes the original value back with only the CE bit cleared, so the CPU warm
+  reset bit survives the pulse.
+- `ath10k_pci_wait_for_target_init` breaks on `FW_IND_EVENT_PENDING` before it
+  looks at `FW_IND_INITIALIZED`, so a crashed target is reported on the first
+  sample instead of after the 3 s timeout.
+- Delays are real milliseconds: `SOC_GLOBAL_RESET` holds 20 ms per edge and the
+  CE pulse holds 10 ms, matching the `msleep()` calls ath10k makes because PCIe
+  is not stable for immediate register access after a global reset. The count
+  comes from the 8254 PIT channel 2 (1.193182 MHz), not from a spin loop whose
+  duration depends on the CPU.
+
 ### Shell Commands
 
 The shell provides user commands under `net wifi`:

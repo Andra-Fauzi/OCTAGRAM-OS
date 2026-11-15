@@ -12,6 +12,7 @@ use super::{
     pci::{self, PciDevice},
     wifi_firmware,
 };
+use crate::arch::x86_64::io;
 use crate::memory;
 use bmi::{BmiClient, BmiClientError, BmiTransport, TargetInfo};
 use ce::RegisterIo;
@@ -78,8 +79,6 @@ const RTC_SOC_CPU_RESET: u32 = 1 << 6;
 const RTC_SOC_TIMER_LPO_SELECT: u32 = 1 << 2;
 const FW_IND_INITIALIZED: u32 = 1 << 1;
 const FW_IND_EVENT_PENDING: u32 = 1 << 0;
-/// Roughly 20 ms at the E203NAH's Celeron N3350 spin-loop rate.
-const RESET_SETTLE_SPINS: usize = 2_000_000;
 
 const fn required_register_window_size() -> u64 {
     let chip_id_end = CHIP_ID_BAR_OFFSET + MMIO_READ_SIZE;
@@ -198,14 +197,34 @@ pub(super) fn wake_target_cpu<R: ce::RegisterIo>(registers: &mut R) -> Result<()
     )
 }
 
-fn settle_reset_delay() {
-    // Tests must not burn hundreds of millions of spins just to reach the end of
-    // a wait loop; the delay only matters on real hardware.
+/// Busy-wait for `milliseconds`, the equivalent of ath10k's `msleep()` around
+/// the reset registers.
+///
+/// The count comes from the 8254 PIT channel 2, which runs at a fixed
+/// 1.193182 MHz on every PC, so the delay does not depend on the CPU speed the
+/// way `RESET_SETTLE_SPINS` did. ath10k calls out why the delays matter for
+/// `SOC_GLOBAL_RESET`: "pulling out of reset pcie may not be stable for any
+/// immediate pcie register access and cause bus error, add delay before any
+/// pcie access request".
+fn settle_reset_delay(milliseconds: u16) {
+    // Tests must not touch real hardware ports; the delay only matters there.
     if cfg!(test) {
         return;
     }
-    for _ in 0..RESET_SETTLE_SPINS {
-        core::hint::spin_loop();
+    const PIT_HZ: u32 = 1_193_182;
+    let ticks = ((PIT_HZ / 1000) * u32::from(milliseconds)).clamp(1, 0xffff);
+    unsafe {
+        // Speaker off, channel 2 gate enabled (bit 0 of port 0x61).
+        let port_61 = io::inb(0x61);
+        io::outb(0x61, (port_61 & 0xfd) | 0x01);
+        // Channel 2, mode 0 (interrupt on terminal count), lobyte/hibyte.
+        io::outb(0x43, 0xb0);
+        io::outb(0x42, (ticks & 0xff) as u8);
+        io::outb(0x42, ((ticks >> 8) & 0xff) as u8);
+        // OUT2 (port 0x61 bit 5) rises when the count reaches zero.
+        while io::inb(0x61) & 0x20 == 0 {
+            core::hint::spin_loop();
+        }
     }
 }
 
@@ -227,13 +246,14 @@ pub(super) fn soc_global_reset<R: ce::RegisterIo>(
         QCA6174_SOC_GLOBAL_RESET_ADDRESS,
         current | SOC_GLOBAL_RESET_PULSE,
     )?;
-    settle_reset_delay();
+    // ath10k: 20 ms held in reset, 20 ms after release, before any PCIe access.
+    settle_reset_delay(20);
     let held = registers.read32(RTC_STATE_BAR_OFFSET)?;
     registers.write32(
         QCA6174_SOC_GLOBAL_RESET_ADDRESS,
         current & !SOC_GLOBAL_RESET_PULSE,
     )?;
-    settle_reset_delay();
+    settle_reset_delay(20);
     Ok(held)
 }
 
@@ -273,6 +293,8 @@ fn clear_fw_crash<R: ce::RegisterIo>(registers: &mut R) -> Result<u32, ce::CeErr
 pub(super) fn pulse_ce_reset<R: ce::RegisterIo>(
     registers: &mut R,
 ) -> Result<(), ce::CeError> {
+    // `ath10k_pci_warm_reset_clear_lf`: stop the low-frequency timer first,
+    // otherwise it keeps waking the target while the CE block is being reset.
     let timer = registers.read32(QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET)?;
     if timer == u32::MAX {
         return Err(ce::CeError::DeviceUnavailable);
@@ -282,12 +304,15 @@ pub(super) fn pulse_ce_reset<R: ce::RegisterIo>(
         timer & !RTC_SOC_TIMER_LPO_SELECT,
     )?;
 
+    // `ath10k_pci_warm_reset_ce` reads `SOC_RESET_CONTROL` fresh here and writes
+    // the original value back with only the CE bit cleared, so the CPU warm
+    // reset bit stays set across the pulse.
     let rtc = registers.read32(QCA6174_RTC_SOC_BASE)?;
     if rtc == u32::MAX {
         return Err(ce::CeError::DeviceUnavailable);
     }
     registers.write32(QCA6174_RTC_SOC_BASE, rtc | RTC_SOC_CE_RESET)?;
-    settle_reset_delay();
+    settle_reset_delay(10);
     registers.write32(QCA6174_RTC_SOC_BASE, rtc & !RTC_SOC_CE_RESET)
 }
 
@@ -299,11 +324,10 @@ const ROM_READY_ROUNDS: usize = 150;
 
 /// Wait for the boot ROM to report `FW_IND_INITIALIZED`.
 ///
-/// Only bit 1 means "ready". ath10k keeps polling for that bit and ignores the
-/// other indicator bits, because the ROM raises `FW_IND_EVENT_PENDING` while it
-/// brings the target up. Bailing out on bit 0 made this return on its first
-/// sample: the boot log showed `FW_INDICATOR 0x00000000 -> 0x00000001` and the
-/// ROM was never given the chance to finish. An expiring wait returns
+/// `ath10k_pci_wait_for_target_init` stops on the first sample that carries
+/// `FW_IND_EVENT_PENDING` (`"the device has crashed so don't bother trying
+/// anymore"`) and only keeps polling otherwise, so a crashed target is reported
+/// immediately instead of after the full timeout. An expiring wait returns
 /// `Ok((false, value))`; only an unusable register read is an error.
 pub(super) fn wait_for_target_init<R: ce::RegisterIo>(
     registers: &mut R,
@@ -312,18 +336,24 @@ pub(super) fn wait_for_target_init<R: ce::RegisterIo>(
     let mut indicator = 0;
     let spins_per_round = (poll_limit / ROM_READY_ROUNDS).max(1);
     for round in 0..ROM_READY_ROUNDS {
+        indicator = registers.read32(QCA6174_FW_INDICATOR_ADDRESS)?;
+        if indicator == u32::MAX {
+            return Err(ce::CeError::DeviceUnavailable);
+        }
+        // ath10k tests `FW_IND_EVENT_PENDING` before `FW_IND_INITIALIZED`, so an
+        // indicator carrying both bits is a crash, not a ready target.
+        if indicator & FW_IND_EVENT_PENDING != 0 {
+            return Ok((false, indicator));
+        }
+        if indicator & FW_IND_INITIALIZED != 0 {
+            return Ok((true, indicator));
+        }
         for _ in 0..spins_per_round {
-            indicator = registers.read32(QCA6174_FW_INDICATOR_ADDRESS)?;
-            if indicator == u32::MAX {
-                return Err(ce::CeError::DeviceUnavailable);
-            }
-            if indicator & FW_IND_INITIALIZED != 0 {
-                return Ok((true, indicator));
-            }
             core::hint::spin_loop();
         }
         if round + 1 < ROM_READY_ROUNDS {
-            settle_reset_delay();
+            // ath10k polls with `mdelay(10)` between samples.
+            settle_reset_delay(10);
         }
     }
     Ok((false, indicator))
@@ -385,11 +415,9 @@ pub(super) struct ResetOutcome {
     /// Live `SOC_RESET_CONTROL` (RTC_SOC + 0x0) read back right after the CPU
     /// warm reset bit was written.
     pub reset_control_asserted: u32,
-    /// The same register after the warm reset bit was released again.
-    pub reset_control_released: u32,
     /// True when the CPU warm reset bit was still set when it was read back.
-    /// QCA9377 clears it immediately (see the release comment below), so a live
-    /// unit reports `false` here and the write is only an edge.
+    /// QCA9377 clears it by itself, so a live unit reports `false` here and the
+    /// write is only an edge.
     pub cpu_warm_reset_visible: bool,
     /// How many warm-reset phases (1 or 2) ran before the ROM answered.
     pub attempts: u32,
@@ -495,50 +523,43 @@ where
     let mut ready = false;
     let mut indicator_after = 0;
     let mut reset_control_asserted = 0;
-    let mut reset_control_released = 0;
     let mut cpu_warm_reset_visible = false;
     let mut attempts = 0;
     let mut saw_crash = false;
 
+    // `ath10k_pci_warm_reset`: CPU warm reset -> `init_pipes` -> wait (ath10k
+    // ignores this result) -> clear the low-frequency timer -> CE reset pulse ->
+    // CPU warm reset -> `init_pipes` -> wait (this one decides). Both phases
+    // always run, because the first wait still sees `FW_IND_EVENT_PENDING` left
+    // by the firmware that was running before the reset.
     for phase in 0..WARM_RESET_PHASES {
         attempts += 1;
-        if phase > 0 {
-            // `ath10k_pci_warm_reset_clear_lf` plus `ath10k_pci_warm_reset_ce`:
-            // the CE reset pulse clears the ring registers, so the pipes below
-            // have to be programmed again afterwards.
-            pulse_ce_reset(registers).map_err(|error| failed("pulse CE reset", error))?;
-        }
         reset_target_cpu(registers).map_err(|error| failed("reset target CPU", error))?;
         reset_control_asserted = registers
             .read32(QCA6174_RTC_SOC_BASE)
             .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
-        cpu_warm_reset_visible = reset_control_asserted & RTC_SOC_CPU_RESET != 0;
-
-        // QCA9377 does not retain the warm reset bit: it reads back cleared, so
-        // the CPU only sees an edge if the release is written explicitly. Pulse
-        // it like the SoC global reset and CE reset, keeping both readbacks.
-        settle_reset_delay();
-        registers
-            .write32(
-                QCA6174_RTC_SOC_BASE,
-                reset_control_asserted & !RTC_SOC_CPU_RESET,
-            )
-            .map_err(|error| failed("release target CPU", error))?;
-        settle_reset_delay();
-        reset_control_released = registers
-            .read32(QCA6174_RTC_SOC_BASE)
-            .map_err(|error| failed("read SOC_RESET_CONTROL after release", error))?;
+        cpu_warm_reset_visible |= reset_control_asserted & RTC_SOC_CPU_RESET != 0;
 
         program_pipes(registers).map_err(|error| failed("program CE pipes", error))?;
 
         let (phase_ready, value) = wait_for_target_init(registers, poll_limit)
             .map_err(|error| failed("wait for boot ROM", error))?;
-        ready = phase_ready;
         indicator_after = value;
         saw_crash |= value & FW_IND_EVENT_PENDING != 0;
-        if ready {
+
+        // ath10k never clears the CPU warm reset bit again: on QCA9377 it clears
+        // itself, and writing the register back would be a read-modify-write of
+        // `SOC_RESET_CONTROL` bits the driver does not own (this hardware
+        // reports 0x33000000 there, none of which ath10k ever writes).
+        if phase + 1 == WARM_RESET_PHASES {
+            ready = phase_ready;
             break;
         }
+
+        // `ath10k_pci_warm_reset_clear_lf` plus `ath10k_pci_warm_reset_ce`: the
+        // CE reset pulse clears the ring registers, so the pipes below have to
+        // be programmed again afterwards.
+        pulse_ce_reset(registers).map_err(|error| failed("pulse CE reset", error))?;
     }
 
     target_wake(registers, poll_limit).map_err(|error| failed("final wake", error))?;
@@ -555,7 +576,6 @@ where
         indicator_after,
         ready,
         reset_control_asserted,
-        reset_control_released,
         cpu_warm_reset_visible,
         attempts,
         saw_crash,
@@ -1112,8 +1132,8 @@ mod tests {
         assert_eq!(outcome.indicator_after, FW_IND_INITIALIZED);
         assert_eq!(prepared.reset_control_before & RTC_SOC_CPU_RESET, 0);
         assert_ne!(outcome.reset_control_asserted & RTC_SOC_CPU_RESET, 0);
-        assert_eq!(outcome.reset_control_released & RTC_SOC_CPU_RESET, 0);
-        assert_eq!(outcome.attempts, 1);
+        // Both warm-reset phases run, exactly like `ath10k_pci_warm_reset`.
+        assert_eq!(outcome.attempts, 2);
         assert!(registers.awake);
 
         assert!(registers
@@ -1163,8 +1183,9 @@ mod tests {
     }
 
     #[test]
-    fn target_init_wait_ignores_pending_event_bits() {
+    fn target_init_wait_follows_ath10k_indicator_bits() {
         let mut registers = MockResetRegisters::default();
+        // Nothing latched yet: the wait expires instead of claiming readiness.
         assert_eq!(wait_for_target_init(&mut registers, 8), Ok((false, 0)));
 
         registers
@@ -1175,12 +1196,15 @@ mod tests {
             Ok((true, FW_IND_INITIALIZED))
         );
 
-        registers
-            .values
-            .insert(QCA6174_FW_INDICATOR_ADDRESS, FW_IND_EVENT_PENDING);
+        // `ath10k_pci_wait_for_target_init` breaks on `FW_IND_EVENT_PENDING`
+        // first, so a crash latch outranks the initialized bit.
+        registers.values.insert(
+            QCA6174_FW_INDICATOR_ADDRESS,
+            FW_IND_INITIALIZED | FW_IND_EVENT_PENDING,
+        );
         assert_eq!(
             wait_for_target_init(&mut registers, 8),
-            Ok((false, FW_IND_EVENT_PENDING))
+            Ok((false, FW_IND_INITIALIZED | FW_IND_EVENT_PENDING))
         );
     }
 

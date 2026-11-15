@@ -38,6 +38,10 @@ pub mod toolchain;
 
 extern crate alloc;
 
+/// Injected by `build.rs`: source revision, dirty flag and build epoch. Printed
+/// first so a kernel image that is not the one just built is obvious.
+const BUILD_STAMP: &str = env!("OCTAGRAM_BUILD_STAMP");
+
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kmain() -> ! {
     // All limine requests must also be referenced in a called function, otherwise they may be
@@ -60,6 +64,11 @@ unsafe extern "C" fn kmain() -> ! {
     unsafe { asm!("cli") };
 
     unsafe { arch::x86_64::fpu::init() };
+    println!(
+        "OCTAGRAM-OS kernel v{} {}",
+        env!("CARGO_PKG_VERSION"),
+        BUILD_STAMP
+    );
     unsafe { arch::x86_64::gdt::load_gdt() };
     println!("GDT LOADED");
     unsafe { arch::x86_64::idt::load_idt() };

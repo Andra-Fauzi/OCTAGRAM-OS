@@ -52,6 +52,11 @@ const QCA6174_FW_INDICATOR_ADDRESS: u64 = QCA6174_SOC_CORE_BASE + 0x28;
 // window that RTC_STATE/PCIE_SOC_WAKE use. Linux therefore resets the SoC at
 // BAR + 0x8, so writing PCIE_LOCAL + 0x8 only poked an unrelated register.
 const QCA6174_SOC_GLOBAL_RESET_ADDRESS: u64 = 0x0000_0008;
+// Raw probe addresses for the cold-reset register dump: the BAR base window and
+// the PCIe-local window, so one boot shows which one the latch really uses.
+const QCA6174_BAR_PROBE_0: u64 = 0x0000_0000;
+const QCA6174_BAR_PROBE_8: u64 = QCA6174_SOC_GLOBAL_RESET_ADDRESS;
+const QCA6174_PCIE_LOCAL_PROBE_8: u64 = QCA6174_PCIE_LOCAL_BASE + 0x8;
 const QCA6174_RTC_SOC_TIMER_OFFSET: u64 = 0x50;
 const SOC_GLOBAL_RESET_PULSE: u32 = 1 << 0;
 const RTC_SOC_CE_RESET: u32 = 1 << 0;
@@ -230,29 +235,38 @@ pub(super) fn pulse_ce_reset<R: ce::RegisterIo>(
     registers.write32(QCA6174_RTC_SOC_BASE, rtc & !RTC_SOC_CE_RESET)
 }
 
+/// How many polling rounds the ROM gets before the wait gives up. Each round is
+/// `poll_limit` spins plus a short settle delay, i.e. roughly the ~100 ms
+/// `ATH10K_PCI_RESET_WAIT_MAX` that ath10k allows.
+const ROM_READY_ROUNDS: usize = 4;
+
 /// Wait for the boot ROM to report `FW_IND_INITIALIZED`.
 ///
-/// Returns the readiness flag together with the last `FW_INDICATOR` value that
-/// was read, so the caller can log the live register instead of guessing. A
-/// crash event or an expiring wait returns `Ok((false, value))`; only an
-/// unusable register read is an error.
+/// Only bit 1 means "ready". ath10k keeps polling for that bit and ignores the
+/// other indicator bits, because the ROM raises `FW_IND_EVENT_PENDING` while it
+/// brings the target up. Bailing out on bit 0 made this return on its first
+/// sample: the boot log showed `FW_INDICATOR 0x00000000 -> 0x00000001` and the
+/// ROM was never given the chance to finish. An expiring wait returns
+/// `Ok((false, value))`; only an unusable register read is an error.
 pub(super) fn wait_for_target_init<R: ce::RegisterIo>(
     registers: &mut R,
     poll_limit: usize,
 ) -> Result<(bool, u32), ce::CeError> {
     let mut indicator = 0;
-    for _ in 0..poll_limit {
-        indicator = registers.read32(QCA6174_FW_INDICATOR_ADDRESS)?;
-        if indicator == u32::MAX {
-            return Err(ce::CeError::DeviceUnavailable);
+    for round in 0..ROM_READY_ROUNDS {
+        for _ in 0..poll_limit {
+            indicator = registers.read32(QCA6174_FW_INDICATOR_ADDRESS)?;
+            if indicator == u32::MAX {
+                return Err(ce::CeError::DeviceUnavailable);
+            }
+            if indicator & FW_IND_INITIALIZED != 0 {
+                return Ok((true, indicator));
+            }
+            core::hint::spin_loop();
         }
-        if indicator & FW_IND_EVENT_PENDING != 0 {
-            return Ok((false, indicator));
+        if round + 1 < ROM_READY_ROUNDS {
+            settle_reset_delay();
         }
-        if indicator & FW_IND_INITIALIZED != 0 {
-            return Ok((true, indicator));
-        }
-        core::hint::spin_loop();
     }
     Ok((false, indicator))
 }
@@ -272,6 +286,36 @@ pub(super) struct TargetReset {
     /// ROM did not come back after the cold reset.
     pub cold_indicator: u32,
     pub cold_ready: bool,
+    /// Raw registers sampled immediately before the cold reset.
+    pub dump_before: ResetRegisterDump,
+    /// The same registers sampled immediately after the cold reset.
+    pub dump_after: ResetRegisterDump,
+}
+
+/// Raw snapshot of the four registers that decide whether `0x8` really is the
+/// cold reset latch: the BAR base window and the PCIe-local window. One boot
+/// then proves which window the latch lives in instead of assuming it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ResetRegisterDump {
+    pub bar0: u32,
+    pub bar8: u32,
+    pub local0: u32,
+    pub local8: u32,
+}
+
+impl ResetRegisterDump {
+    /// A read that fails is recorded as `u32::MAX` so a diagnostic dump never
+    /// aborts the reset sequence; the bad value is still visible in the log.
+    fn capture<R: ce::RegisterIo>(registers: &mut R) -> Self {
+        Self {
+            bar0: registers.read32(QCA6174_BAR_PROBE_0).unwrap_or(u32::MAX),
+            bar8: registers.read32(QCA6174_BAR_PROBE_8).unwrap_or(u32::MAX),
+            local0: registers.read32(RTC_STATE_BAR_OFFSET).unwrap_or(u32::MAX),
+            local8: registers
+                .read32(QCA6174_PCIE_LOCAL_PROBE_8)
+                .unwrap_or(u32::MAX),
+        }
+    }
 }
 
 /// Result of a completed reset attempt, for the boot log.
@@ -322,10 +366,12 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         .read32(QCA6174_RTC_SOC_BASE)
         .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
     target_wake(registers, poll_limit).map_err(|error| failed("wake target", error))?;
+    let dump_before = ResetRegisterDump::capture(registers);
     let cold_reset_state =
         soc_global_reset(registers).map_err(|error| failed("SoC global reset", error))?;
     target_wake(registers, poll_limit)
         .map_err(|error| failed("wake after cold reset", error))?;
+    let dump_after = ResetRegisterDump::capture(registers);
 
     // `ath10k_pci_qca6174_chip_reset` waits for target init between the cold and
     // warm reset. Keeping the value tells the boot log whether the ROM ever came
@@ -341,6 +387,8 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         cold_reset_state,
         cold_indicator,
         cold_ready,
+        dump_before,
+        dump_after,
     })
 }
 
@@ -807,7 +855,8 @@ mod tests {
     use super::ce::{CeError, RegisterIo};
     use super::{
         BmiBootError, CHIP_ID_BAR_OFFSET, FW_IND_EVENT_PENDING, FW_IND_INITIALIZED,
-        HOST_INTEREST_ADDRESS, QCA6174_FW_INDICATOR_ADDRESS, QCA6174_PCIE_SOC_WAKE_ADDRESS,
+        HOST_INTEREST_ADDRESS, QCA6174_BAR_PROBE_8, QCA6174_FW_INDICATOR_ADDRESS,
+        QCA6174_PCIE_LOCAL_PROBE_8, QCA6174_PCIE_SOC_WAKE_ADDRESS, ResetRegisterDump,
         QCA6174_RTC_SOC_BASE, QCA6174_RTC_SOC_TIMER_OFFSET, QCA6174_SOC_GLOBAL_RESET_ADDRESS,
         QCA9377_TARGET_VERSION_1_0, QCA9377_TARGET_VERSION_1_1, RTC_SOC_CE_RESET,
         RTC_SOC_CPU_RESET, RTC_STATE_BAR_OFFSET, SiliconIdentity, download_board_data,
@@ -987,7 +1036,20 @@ mod tests {
     }
 
     #[test]
-    fn target_init_wait_tracks_rom_readiness_and_crash_events() {
+    fn cold_reset_dump_samples_both_register_windows() {
+        let mut registers = MockResetRegisters::default();
+        registers.values.insert(QCA6174_BAR_PROBE_8, 0xdead_beef);
+        registers
+            .values
+            .insert(QCA6174_PCIE_LOCAL_PROBE_8, 0xfeed_face);
+        let dump = ResetRegisterDump::capture(&mut registers);
+        assert_eq!(dump.bar8, 0xdead_beef);
+        assert_eq!(dump.local8, 0xfeed_face);
+        assert_eq!(dump.local0, 0x71);
+    }
+
+    #[test]
+    fn target_init_wait_ignores_pending_event_bits() {
         let mut registers = MockResetRegisters::default();
         assert_eq!(wait_for_target_init(&mut registers, 8), Ok((false, 0)));
 

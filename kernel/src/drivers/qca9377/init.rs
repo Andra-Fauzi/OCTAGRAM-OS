@@ -217,6 +217,20 @@ pub unsafe fn initialize_device(
         }
     };
     crate::println!(
+        "QCA9377 regs before cold reset: bar0={:#010x} bar8={:#010x} local0={:#010x} local8={:#010x}",
+        target_reset.dump_before.bar0,
+        target_reset.dump_before.bar8,
+        target_reset.dump_before.local0,
+        target_reset.dump_before.local8
+    );
+    crate::println!(
+        "QCA9377 regs after cold reset:  bar0={:#010x} bar8={:#010x} local0={:#010x} local8={:#010x}",
+        target_reset.dump_after.bar0,
+        target_reset.dump_after.bar8,
+        target_reset.dump_after.local0,
+        target_reset.dump_after.local8
+    );
+    crate::println!(
         "QCA9377 cold reset: rtc_state_in_reset={:#010x} fw_indicator={:#010x} boot_rom_ready={}",
         target_reset.cold_reset_state,
         target_reset.cold_indicator,

@@ -124,8 +124,32 @@ CPU before the rings existed left `FW_INDICATOR` at 0 and made every BMI
 exchange fail with `SourceTimeout`. The boot log also prints the live
 `SOC_RESET_CONTROL` readback and the CE0/CE1 ring registers before the first
 BMI command, so a target that never starts can be told apart from one that
-starts but never picks the rings up. The wait only warns, so a target that
-never reports readiness still reaches BMI and shows that failure instead.
+starts but never picks the rings up. A target that never reports readiness ends
+the bring-up (see below) instead of reaching BMI.
+
+### Boot ROM crash handling
+
+ath10k fails the chip reset when the target sets `FW_IND_EVENT_PENDING`
+("device has crashed during init", `-ECOMM` in
+`ath10k_pci_wait_for_target_init`) or never sets `FW_IND_INITIALIZED`
+(`-ETIMEDOUT`), and `ath10k_pci_hif_power_up` releases the latched crash bit
+before giving up. The driver follows the same rule: `release_target_cpu` clears
+`FW_IND_EVENT_PENDING` with a read-modify-write once the attempts are exhausted
+(`crash_latch_cleared` in the boot log), and `initialize_device` returns
+`InitError::TargetCrashed` instead of writing the CE7 target tables and running
+BMI against a halted target. Everything after the reset — the pipe/service
+tables and every BMI command — depends on a running boot ROM, so continuing
+only produced a misleading `MissingPcieState` from an unpopulated
+`HOST_INTEREST`.
+
+The last E203NAH boot log shows exactly that state:
+`FW_INDICATOR 0x00000000 -> 0x00000001`, `boot_rom_ready=false`, `attempts=3`,
+`crash_event=true`. Bit 0 is the target's crash latch, not a boot-in-progress
+bit, so the ROM is crashing during init and the remaining suspects are outside
+the CE/BMI code: PCIe link state after the SoC global reset, reference clock /
+power sequencing, and platform ASPM (the known QCA9377 workaround is
+`pcie_aspm=off`, which the driver already applies to both the endpoint and its
+root port).
 
 After the CE rings are programmed the driver writes the target-side CE layout
 and HTC service map (`qca9377/target.rs`, mirroring `ath10k_pci_init_config`):

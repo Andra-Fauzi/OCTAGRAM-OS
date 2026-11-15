@@ -217,6 +217,23 @@ pub(super) fn reset_target_cpu<R: ce::RegisterIo>(
     registers.write32(QCA6174_RTC_SOC_BASE, rtc | RTC_SOC_CPU_RESET)
 }
 
+/// Clear the latched `FW_IND_EVENT_PENDING` bit without touching the other
+/// indicator bits, matching `ath10k_pci_fw_crashed_clear`.
+///
+/// The target raises that bit when it crashes during init and the host is the
+/// only agent that can clear it again, so a failed chip reset has to release
+/// the latch before the next attempt can tell a fresh crash from a leftover
+/// one.
+fn clear_fw_crash<R: ce::RegisterIo>(registers: &mut R) -> Result<u32, ce::CeError> {
+    let current = registers.read32(QCA6174_FW_INDICATOR_ADDRESS)?;
+    if current == u32::MAX {
+        return Err(ce::CeError::DeviceUnavailable);
+    }
+    let cleared = current & !FW_IND_EVENT_PENDING;
+    registers.write32(QCA6174_FW_INDICATOR_ADDRESS, cleared)?;
+    Ok(cleared)
+}
+
 /// Cycle the copy-engine reset line so the boot ROM programs the CE ring
 /// registers from scratch instead of inheriting a stale configuration.
 pub(super) fn pulse_ce_reset<R: ce::RegisterIo>(
@@ -341,6 +358,8 @@ pub(super) struct ResetOutcome {
     /// True if the ROM ever reported `FW_IND_EVENT_PENDING`, which ath10k
     /// treats as "device crashed during init".
     pub saw_crash: bool,
+    /// True when the latched crash bit was released after the failed attempts.
+    pub crash_cleared: bool,
 }
 
 /// Warm reset attempts before giving up, matching
@@ -461,6 +480,13 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
 
     target_wake(registers, poll_limit).map_err(|error| failed("final wake", error))?;
 
+    // A target that never reported `FW_IND_INITIALIZED` leaves
+    // `FW_IND_EVENT_PENDING` latched. ath10k releases it on the error path
+    // (`ath10k_pci_fw_crashed_clear` in `ath10k_pci_hif_power_up`) so the next
+    // power-up starts from a clean indicator; a read that fails here must not
+    // replace the "not ready" result that the caller reports.
+    let crash_cleared = !ready && clear_fw_crash(registers).is_ok();
+
     Ok(ResetOutcome {
         indicator_before: reset.indicator_before,
         indicator_after,
@@ -469,6 +495,7 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
         reset_control_released,
         attempts,
         saw_crash,
+        crash_cleared,
     })
 }
 

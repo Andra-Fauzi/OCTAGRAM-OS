@@ -47,6 +47,9 @@ pub enum InitError {
     DmaAlloc,
     SiliconUnknown,
     TargetReset,
+    /// The target boot ROM never reached `FW_IND_INITIALIZED` (or reported
+    /// `FW_IND_EVENT_PENDING`), so BMI cannot run on it.
+    TargetCrashed,
     TargetConfig,
     BmiBoot,
     HtcReady,
@@ -297,28 +300,25 @@ pub unsafe fn initialize_device(
     // running when the configuration lands; `ath10k_pci_hif_power_up` then calls
     // `ath10k_pci_init_pipes`, `ath10k_pci_init_config` and finally
     // `ath10k_pci_wake_target_cpu`. This stage follows that order.
-    let mut rom_ready = false;
-    let mut rom_crashed = false;
-    match release_target_cpu(&mut registers, QCA_WAKE_POLL_LIMIT, target_reset) {
+    let (rom_ready, rom_crashed) = match release_target_cpu(
+        &mut registers,
+        QCA_WAKE_POLL_LIMIT,
+        target_reset,
+    ) {
         Ok(outcome) => {
             crate::println!(
-                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} attempts={} crash_event={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
+                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} attempts={} crash_event={} crash_latch_cleared={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
                 outcome.indicator_before,
                 outcome.indicator_after,
                 outcome.ready,
                 outcome.attempts,
                 outcome.saw_crash,
+                outcome.crash_cleared,
                 target_reset.reset_control_before,
                 outcome.reset_control_asserted,
                 outcome.reset_control_released
             );
-            rom_ready = outcome.ready;
-            rom_crashed = outcome.saw_crash;
-            if !outcome.ready {
-                crate::println!(
-                    "QCA9377 boot ROM did not report FW_IND_INITIALIZED; attempting BMI anyway"
-                );
-            }
+            (outcome.ready, outcome.saw_crash)
         }
         Err(failure) => {
             crate::println!(
@@ -327,11 +327,28 @@ pub unsafe fn initialize_device(
             );
             return Err(InitError::TargetReset);
         }
-    }
-    if rom_crashed && !rom_ready {
-        crate::println!(
-            "QCA9377: target raised FW_IND_EVENT_PENDING without FW_IND_INITIALIZED (device crashed during init)"
-        );
+    };
+    // ath10k gives up here as well: `ath10k_pci_wait_for_target_init` returns
+    // -ECOMM for `FW_IND_EVENT_PENDING` ("device has crashed during init") and
+    // -ETIMEDOUT when the bit is never set, and `ath10k_pci_hif_power_up` then
+    // fails the whole power-up. Everything below — the CE7 target tables and
+    // every BMI command — needs a running boot ROM, so continuing only turned
+    // this into a misleading `MissingPcieState` from an unpopulated
+    // HOST_INTEREST.
+    if !rom_ready {
+        if rom_crashed {
+            crate::println!(
+                "QCA9377: device has crashed during init (target set FW_IND_EVENT_PENDING without FW_IND_INITIALIZED)"
+            );
+        } else {
+            crate::println!(
+                "QCA9377 boot ROM never reported FW_IND_INITIALIZED after the cold and warm reset"
+            );
+        }
+        crate::println!("QCA9377: boot ROM is not running; skipping target CE config and BMI");
+        let _ = pci::disable_bus_master(device);
+        let _ = target_sleep(&mut registers);
+        return Err(InitError::TargetCrashed);
     }
 
     // ── 4c. Target-side CE layout and HTC service map ────────────────────────

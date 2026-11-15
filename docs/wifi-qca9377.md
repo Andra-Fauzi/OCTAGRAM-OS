@@ -397,6 +397,33 @@ mastering and BAR0 are restored if the reset cleared them — ath10k relies on
 `ath10k_pci_claim` having set those once, which a bare-metal driver cannot
 assume.
 
+### BMI Sequence Follows `ath10k_core_start`
+
+`boot_firmware` now runs the same steps in the same order as ath10k's
+pre-firmware path:
+
+- `ath10k_bmi_get_target_info` (BMI command 8) and the QCA9377 target-version
+  check.
+- `ath10k_init_configure_target`: `hi_app_host_interest = HTC_PROTOCOL_VERSION`
+  (0x0002), `hi_option_flag` with one device, AP firmware mode and the
+  globally-unique MAC address method, `hi_be = 0`, `hi_fw_swap = 0` and
+  `hi_hci_uart_pwr_mgmt_params_ext = device id`.
+- `ath10k_download_board_data`: `hi_board_data` is read and
+  `hi_board_data_initialized` written through `BMI_READ_SOC_REGISTER` /
+  `BMI_WRITE_SOC_REGISTER` (ath10k's `ath10k_bmi_read32`/`write32`), while the
+  board-data payload itself uses `BMI_WRITE_MEMORY`.
+- OTP upload and `BMI_EXECUTE`, with a non-zero result treated as a calibration
+  failure (`ath10k_download_and_run_otp`).
+- Firmware upload through BMI `LZ_STREAM_START` / `LZ_DATA` / closing
+  `LZ_STREAM_START(0)`, then `ath10k_init_uart` (`hi_serial_enable = 0`), then
+  `BMI_SET_APP_START` and `BMI_DONE`.
+
+Two ath10k steps deliberately do not exist here. `ath10k_hw_qca6174_enable_pll_clock`
+is only reachable through `qca6174_ops`; the QCA9377 hw1.0/hw1.1 entries use
+`qca988x_ops`, which has no `enable_pll_clk`. And `fw_diag_ce_download` is
+`false` for QCA9377, so ath10k itself never takes the diag-CE fast download path
+on this chip.
+
 ### Shell Commands
 
 The shell provides user commands under `net wifi`:

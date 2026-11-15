@@ -53,6 +53,21 @@ const QCA9377_TARGET_VERSION_1_1: u32 = 0x0502_0001;
 const HOST_INTEREST_ADDRESS: u32 = 0x0040_0800;
 const HOST_INTEREST_BOARD_DATA_OFFSET: u32 = 0x54;
 const HOST_INTEREST_BOARD_DATA_INITIALIZED_OFFSET: u32 = 0x58;
+// Remaining host-interest words `ath10k_init_configure_target` and
+// `ath10k_init_uart` touch, at the offsets from `ath10k_targaddrs.h`.
+const HOST_INTEREST_APP_HOST_INTEREST_OFFSET: u32 = 0x00;
+const HOST_INTEREST_OPTION_FLAG_OFFSET: u32 = 0x10;
+const HOST_INTEREST_SERIAL_ENABLE_OFFSET: u32 = 0x14;
+const HOST_INTEREST_BE_OFFSET: u32 = 0x44;
+const HOST_INTEREST_HCI_UART_PWR_MGMT_EXT_OFFSET: u32 = 0xbc;
+const HOST_INTEREST_FW_SWAP_OFFSET: u32 = 0x104;
+/// `HTC_PROTOCOL_VERSION` from ath10k (2.0).
+const HTC_PROTOCOL_VERSION: u32 = 0x0002;
+/// `hi_option_flag` fields set by `ath10k_init_configure_target`.
+const HI_OPTION_MAC_ADDR_METHOD_SHIFT: u32 = 3;
+const HI_OPTION_NUM_DEV_SHIFT: u32 = 9;
+const HI_OPTION_FW_MODE_AP: u32 = 0x2;
+const HI_OPTION_FW_MODE_SHIFT: u32 = 0xc;
 const QCA9377_BOARD_DATA_MAX_SIZE: usize = 8192;
 pub(super) const QCA9377_OTP_LOAD_ADDRESS: u32 = 0x0040_4000;
 pub(super) const QCA9377_FIRMWARE_LOAD_ADDRESS: u32 = 0x0040_8000;
@@ -745,6 +760,79 @@ pub(super) fn with_target_awake<R: ce::RegisterIo, T>(
     }
 }
 
+/// Host-interest access, the way ath10k does it.
+///
+/// `ath10k_bmi_read32`/`ath10k_bmi_write32` are `ath10k_bmi_read_soc_reg` and
+/// `ath10k_bmi_write_soc_reg`, so every host-interest word travels in
+/// `BMI_READ_SOC_REGISTER`/`BMI_WRITE_SOC_REGISTER`. Only blobs (board data,
+/// firmware) use the memory commands.
+fn read_host_interest<T: BmiTransport>(
+    client: &mut BmiClient<T>,
+    offset: u32,
+) -> Result<u32, BmiBootError<T::Error>> {
+    let address = HOST_INTEREST_ADDRESS
+        .checked_add(offset)
+        .ok_or(BmiBootError::AddressOverflow)?;
+    client
+        .read_soc_register(address)
+        .map_err(BmiBootError::Transport)
+}
+
+fn write_host_interest<T: BmiTransport>(
+    client: &mut BmiClient<T>,
+    offset: u32,
+    value: u32,
+) -> Result<(), BmiBootError<T::Error>> {
+    let address = HOST_INTEREST_ADDRESS
+        .checked_add(offset)
+        .ok_or(BmiBootError::AddressOverflow)?;
+    client
+        .write_soc_register(address, value)
+        .map_err(BmiBootError::Transport)
+}
+
+/// Mirror `ath10k_init_configure_target`.
+///
+/// The target picks its HTC version, firmware mode and MAC address method from
+/// these host-interest words. ath10k runs this after `ath10k_bmi_start` and
+/// before any calibration or firmware download, so the values are already in
+/// place when the firmware starts reading them.
+pub fn configure_target<T: BmiTransport>(
+    client: &mut BmiClient<T>,
+    device_id: u16,
+) -> Result<(), BmiBootError<T::Error>> {
+    write_host_interest(
+        client,
+        HOST_INTEREST_APP_HOST_INTEREST_OFFSET,
+        HTC_PROTOCOL_VERSION,
+    )?;
+
+    let mut option_flag = read_host_interest(client, HOST_INTEREST_OPTION_FLAG_OFFSET)?;
+    option_flag |= 1 << HI_OPTION_NUM_DEV_SHIFT;
+    option_flag |= HI_OPTION_FW_MODE_AP << HI_OPTION_FW_MODE_SHIFT;
+    option_flag |= 1 << HI_OPTION_MAC_ADDR_METHOD_SHIFT;
+    write_host_interest(client, HOST_INTEREST_OPTION_FLAG_OFFSET, option_flag)?;
+
+    // The host does all byte swapping, so both swap switches stay cleared.
+    write_host_interest(client, HOST_INTEREST_BE_OFFSET, 0)?;
+    write_host_interest(client, HOST_INTEREST_FW_SWAP_OFFSET, 0)?;
+    // Some targets sanity-check the PCI device id in this word before booting.
+    write_host_interest(
+        client,
+        HOST_INTEREST_HCI_UART_PWR_MGMT_EXT_OFFSET,
+        u32::from(device_id),
+    )?;
+    Ok(())
+}
+
+/// Mirror `ath10k_init_uart`: the target enables UART prints from a scratch
+/// register, so the host turns them off explicitly after the firmware upload.
+pub fn disable_uart_output<T: BmiTransport>(
+    client: &mut BmiClient<T>,
+) -> Result<(), BmiBootError<T::Error>> {
+    write_host_interest(client, HOST_INTEREST_SERIAL_ENABLE_OFFSET, 0)
+}
+
 pub fn download_board_data<T: BmiTransport>(
     client: &mut BmiClient<T>,
     board_data: &[u8],
@@ -753,14 +841,7 @@ pub fn download_board_data<T: BmiTransport>(
         return Err(BmiBootError::InvalidBoardData);
     }
 
-    let board_data_address_location = HOST_INTEREST_ADDRESS
-        .checked_add(HOST_INTEREST_BOARD_DATA_OFFSET)
-        .ok_or(BmiBootError::AddressOverflow)?;
-    let mut address_bytes = [0; 4];
-    client
-        .read_memory(board_data_address_location, &mut address_bytes)
-        .map_err(BmiBootError::Transport)?;
-    let board_data_address = u32::from_le_bytes(address_bytes);
+    let board_data_address = read_host_interest(client, HOST_INTEREST_BOARD_DATA_OFFSET)?;
     let write_length = board_data.len().min(QCA9377_BOARD_DATA_MAX_SIZE);
     let write_length_u32 =
         u32::try_from(write_length).map_err(|_| BmiBootError::InvalidBoardData)?;
@@ -776,12 +857,7 @@ pub fn download_board_data<T: BmiTransport>(
         .write_memory(board_data_address, &board_data[..write_length])
         .map_err(BmiBootError::Transport)?;
 
-    let initialized_address = HOST_INTEREST_ADDRESS
-        .checked_add(HOST_INTEREST_BOARD_DATA_INITIALIZED_OFFSET)
-        .ok_or(BmiBootError::AddressOverflow)?;
-    client
-        .write_memory(initialized_address, &1_u32.to_le_bytes())
-        .map_err(BmiBootError::Transport)?;
+    write_host_interest(client, HOST_INTEREST_BOARD_DATA_INITIALIZED_OFFSET, 1)?;
     Ok(board_data_address)
 }
 
@@ -801,6 +877,7 @@ pub unsafe fn boot_firmware<T: BmiTransport>(
         return Err(BmiBootError::UnsupportedTarget(target_info));
     }
 
+    configure_target(client, QCA9377_PCI_DEVICE_ID)?;
     download_board_data(client, board_data)?;
     if let Some(otp_image) = firmware.otp_image {
         let result = client
@@ -810,9 +887,16 @@ pub unsafe fn boot_firmware<T: BmiTransport>(
             return Err(BmiBootError::OtpExecutionFailed(result));
         }
     }
+    // `ath10k_core_start` order: `ath10k_download_fw` then
+    // `ath10k_init_uart`, and only after that the BMI stream is closed.
     client
-        .download_and_start_firmware(QCA9377_FIRMWARE_LOAD_ADDRESS, firmware.firmware_image)
+        .fast_download(QCA9377_FIRMWARE_LOAD_ADDRESS, firmware.firmware_image)
         .map_err(BmiBootError::Transport)?;
+    disable_uart_output(client)?;
+    client
+        .set_app_start(QCA9377_FIRMWARE_LOAD_ADDRESS)
+        .map_err(BmiBootError::Transport)?;
+    client.done().map_err(BmiBootError::Transport)?;
     Ok(target_info)
 }
 
@@ -1544,21 +1628,25 @@ mod tests {
 
         let transport = client.into_transport();
         assert_eq!(transport.requests.len(), 3);
-        assert_eq!(read_word(&transport.requests[0], 0), 2);
+        // `ath10k_bmi_read32(hi_board_data)`: a SoC register read, not a memory
+        // read.
+        assert_eq!(read_word(&transport.requests[0], 0), 6);
         assert_eq!(
             read_word(&transport.requests[0], 4),
             HOST_INTEREST_ADDRESS + 0x54
         );
+        // The payload itself is a memory write.
         assert_eq!(read_word(&transport.requests[1], 0), 3);
         assert_eq!(read_word(&transport.requests[1], 4), 0x2000);
         assert_eq!(read_word(&transport.requests[1], 8), 4);
         assert_eq!(&transport.requests[1][12..16], &[1, 2, 3, 4]);
-        assert_eq!(read_word(&transport.requests[2], 0), 3);
+        // `ath10k_bmi_write32(hi_board_data_initialized, 1)`.
+        assert_eq!(read_word(&transport.requests[2], 0), 7);
         assert_eq!(
             read_word(&transport.requests[2], 4),
             HOST_INTEREST_ADDRESS + 0x58
         );
-        assert_eq!(&transport.requests[2][12..16], &1_u32.to_le_bytes());
+        assert_eq!(read_word(&transport.requests[2], 8), 1);
     }
 
     #[test]
@@ -1592,6 +1680,9 @@ mod tests {
         let transport = MockBmiTransport {
             responses: alloc::vec![
                 target_info_response,
+                // `hi_option_flag` read by `configure_target`.
+                0_u32.to_le_bytes().into(),
+                // `hi_board_data` address, now read as an SoC register.
                 0x2000_u32.to_le_bytes().into(),
                 0_u32.to_le_bytes().into(),
             ],
@@ -1617,7 +1708,14 @@ mod tests {
             .iter()
             .map(|request| read_word(request, 0))
             .collect();
-        assert_eq!(command_ids, [8, 2, 3, 3, 13, 14, 13, 4, 13, 14, 13, 5, 1]);
+        // 8 = target info, then `ath10k_init_configure_target` (7/6 writes and
+        // the option-flag read), board data (soc-reg read, memory write,
+        // soc-reg write), OTP, firmware upload, `ath10k_init_uart` (7), app
+        // start and BMI done.
+        assert_eq!(
+            command_ids,
+            [8, 7, 6, 7, 7, 7, 7, 6, 3, 7, 13, 14, 13, 4, 13, 14, 13, 7, 5, 1]
+        );
     }
 
     #[test]

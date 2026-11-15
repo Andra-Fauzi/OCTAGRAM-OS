@@ -15,7 +15,10 @@ use super::{
         clear_all_pipe_registers,
         PIPE_EP0_TX_CE, PIPE_HTT_RX_CE, PIPE_HTT_TX_CE, PIPE_WMI_RX_CE, PIPE_WMI_TX_CE,
     },
-    htc::{HtcClient, HtcClientError, HtcError, HTC_SERVICE_HTT_DATA, HTC_SERVICE_WMI_CONTROL},
+    htc::{
+        HTC_SERVICE_HTT_DATA, HTC_SERVICE_WMI_CONTROL, HtcClient, HtcClientError, HtcCredits,
+        HtcError,
+    },
     htt,
     pci::{self, PciDevice},
     target,
@@ -548,7 +551,11 @@ pub unsafe fn initialize_device(
         // is released here and WMI is addressed by the endpoint id the target
         // returned for the WMI service.
         drop(htc);
-        let mut wmi_ep = wmi::WmiEndpoint::new(wmi_resp.endpoint, wmi_resp.max_message_size);
+        let mut wmi_ep = wmi::WmiEndpoint::new(
+            wmi_resp.endpoint,
+            wmi_resp.max_message_size,
+            HtcCredits::new(ready.credit_size, ready.credit_count),
+        );
         let mut wmi_frame = [0u8; 512];
         crate::println!(
             "QCA9377 WMI endpoint {} (max {} bytes), framed as HTC data messages",
@@ -611,7 +618,11 @@ pub unsafe fn initialize_device(
         // HTT is an HTC service as well: the request goes out as an HTC data
         // message for the HTT endpoint on CE4, and the version confirmation
         // comes back on CE5. ath10k sends it from `ath10k_htt_h2t_ver_req_msg`.
-        let mut htt_ep = htt::HttEndpoint::new(htt_resp.endpoint, htt_resp.max_message_size);
+        let mut htt_ep = htt::HttEndpoint::new(
+            htt_resp.endpoint,
+            htt_resp.max_message_size,
+            HtcCredits::new(ready.credit_size, ready.credit_count),
+        );
         // Large enough for an RX indication carrying many MSDU descriptors.
         let mut htt_frame = [0u8; 512];
         crate::println!(
@@ -828,6 +839,14 @@ pub unsafe fn initialize_device(
                 dropped
             );
         }
+
+        crate::println!(
+            "QCA9377 HTC credits left: WMI {} of {} bytes, HTT {} of {} bytes",
+            wmi_ep.credits().available(),
+            wmi_ep.credits().credit_size(),
+            htt_ep.credits().available(),
+            htt_ep.credits().credit_size()
+        );
 
         keep_rings = false;
         mac

@@ -10,7 +10,10 @@
 //! Reference: drivers/net/wireless/ath/ath10k/htt.h, htt_tx.c, htt.c.
 
 use super::ce::{DmaPage, RegisterIo, RxCe, TxCe};
-use super::htc::{HtcDataError, data_message_payload, encode_data_message};
+use super::htc::{
+    HTC_FLAG_NEED_CREDIT_UPDATE, HtcCreditReport, HtcCredits, HtcDataError, data_message,
+    encode_data_message, parse_credit_reports,
+};
 use alloc::vec::Vec;
 
 // H2T message types (`enum htt_h2t_msg_type`).
@@ -75,6 +78,8 @@ pub enum HttError {
     InvalidRing,
     /// The RX ring buffers could not be allocated.
     OutOfMemory,
+    /// The endpoint ran out of HTC transmit credits.
+    NoCredits,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,22 +92,30 @@ pub struct HttVersion {
 pub struct HttEndpoint {
     endpoint: u8,
     max_message_size: u16,
+    /// Transmit credits refunded by the target's credit reports.
+    credits: HtcCredits,
     sequence: u8,
 }
 
 impl HttEndpoint {
     /// `endpoint` and `max_message_size` come from the HTC connect response for
-    /// `HTC_SERVICE_HTT_DATA`.
-    pub const fn new(endpoint: u8, max_message_size: u16) -> Self {
+    /// `HTC_SERVICE_HTT_DATA`; `credits` from the HTC READY message.
+    pub const fn new(endpoint: u8, max_message_size: u16, credits: HtcCredits) -> Self {
         Self {
             endpoint,
             max_message_size,
+            credits,
             sequence: 0,
         }
     }
 
     pub const fn endpoint(&self) -> u8 {
         self.endpoint
+    }
+
+    /// Credits still available to this endpoint, for diagnostics.
+    pub const fn credits(&self) -> HtcCredits {
+        self.credits
     }
 
     /// Send one HTT message as an HTC data message on the HTT TX pipe.
@@ -120,8 +133,15 @@ impl HttEndpoint {
         if message.len() > usize::from(self.max_message_size) {
             return Err(HttError::HtcError);
         }
-        let total = encode_data_message(frame, self.endpoint, self.sequence, message)
+        // Ask for a credit report with every frame while credits are accounted.
+        let flags = if self.credits.is_enabled() {
+            HTC_FLAG_NEED_CREDIT_UPDATE
+        } else {
+            0
+        };
+        let total = encode_data_message(frame, self.endpoint, flags, self.sequence, message)
             .map_err(|_| HttError::HtcError)?;
+        self.credits.take(total).map_err(|_| HttError::NoCredits)?;
         self.sequence = self.sequence.wrapping_add(1);
         unsafe { tx.send(registers, &frame[..total]) }.map_err(|_| HttError::HtcError)
     }
@@ -138,10 +158,21 @@ impl HttEndpoint {
     ) -> Result<&'a [u8], HttError> {
         let length = unsafe { rx.receive(registers, frame) }.map_err(|_| HttError::HtcError)?;
         let bytes = frame.get(..length).ok_or(HttError::FrameTooShort)?;
-        data_message_payload(bytes, self.endpoint).map_err(|error| match error {
+        let message = data_message(bytes, self.endpoint).map_err(|error| match error {
             HtcDataError::FrameTooShort => HttError::FrameTooShort,
             HtcDataError::WrongEndpoint | HtcDataError::BadTrailer => HttError::UnexpectedMessage,
-        })
+        })?;
+        let mut reports = [HtcCreditReport {
+            endpoint: 0,
+            credits: 0,
+        }; 8];
+        let count = parse_credit_reports(message.trailer, &mut reports);
+        for report in &reports[..count] {
+            if report.endpoint == self.endpoint {
+                self.credits.report(report.credits);
+            }
+        }
+        Ok(message.payload)
     }
 
     /// HTT version handshake: `ath10k_htt_h2t_ver_req_msg` followed by

@@ -277,6 +277,28 @@ padded to a word, and the response is `msg_type = 0` followed by
 `struct htt_ver_resp { minor, major, rsvd0 }`. The driver previously expected
 `msg_type = 1` and read major before minor.
 
+### HTC credit flow control (`qca9377/htc.rs`)
+
+HTC READY advertises `credit_size` and `credit_count`, and every send then costs
+credits: `ath10k_htc_consume_credit` computes
+`DIV_ROUND_UP(frame_len, credit_size)` over the whole HTC frame (header
+included), refuses the send when the endpoint has fewer, and
+`ath10k_htc_prepare_tx_skb` sets `ATH10K_HTC_FLAG_NEED_CREDIT_UPDATE` so the
+target answers with a credit report. Reports arrive in receive trailers: a
+trailer is a sequence of records `{ id, len, pad[2] }` plus a `len`-byte body,
+and record `ATH10K_HTC_RECORD_CREDITS` (1) holds `len / 4`
+`struct ath10k_htc_credit_report { eid, credits, pad[2] }` entries that are added
+back to the matching endpoint.
+
+The driver now mirrors that: `HtcCredits` tracks `credit_size` and the remaining
+credits per endpoint, every WMI/HTT/EP0 send takes its credits (failing with
+`NoCredits` instead of overrunning the target) and sets the
+`NEED_CREDIT_UPDATE` flag, and receive trailers are parsed with
+`parse_credit_reports` so refunds land on the right endpoint. Initial credits
+come from HTC READY; because this driver drives one endpoint at a time they are
+not split between services the way ath10k splits its pool. The bring-up logs the
+remaining credits as `QCA9377 HTC credits left: WMI ... HTT ...`.
+
 ### HTT RX indications (`qca9377/htt.rs`, `qca9377/init.rs`)
 
 Received frames arrive as in-order paddr indications: TLV firmware (`htt-op 3`)

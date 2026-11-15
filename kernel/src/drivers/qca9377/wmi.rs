@@ -12,7 +12,10 @@
 //! target assigned to the WMI control service.
 
 use super::ce::{RegisterIo, RxCe, TxCe};
-use super::htc::{HTC_HEADER_LENGTH, HtcDataError, data_message_payload, write_data_header};
+use super::htc::{
+    HTC_FLAG_NEED_CREDIT_UPDATE, HTC_HEADER_LENGTH, HtcCreditReport, HtcCredits, HtcDataError,
+    data_message, parse_credit_reports, write_data_header,
+};
 
 // ── WMI header ───────────────────────────────────────────────────────────────
 
@@ -93,6 +96,8 @@ pub enum WmiError {
     BadEvent,
     /// The HTC message does not belong to the endpoint this client owns.
     BadEndpoint,
+    /// The endpoint ran out of HTC transmit credits.
+    NoCredits,
     Timeout,
     HtcError,
 }
@@ -376,21 +381,30 @@ pub fn parse_wmi_event(payload: &[u8]) -> Result<WmiEvent, WmiError> {
 pub struct WmiEndpoint {
     endpoint: u8,
     max_message_size: u16,
+    /// Transmit credits refunded by the target's credit reports.
+    credits: HtcCredits,
     sequence: u8,
 }
 
 impl WmiEndpoint {
-    /// `endpoint` and `max_message_size` come from the HTC connect response.
-    pub const fn new(endpoint: u8, max_message_size: u16) -> Self {
+    /// `endpoint` and `max_message_size` come from the HTC connect response;
+    /// `credits` from the HTC READY message.
+    pub const fn new(endpoint: u8, max_message_size: u16, credits: HtcCredits) -> Self {
         Self {
             endpoint,
             max_message_size,
+            credits,
             sequence: 0,
         }
     }
 
     pub const fn endpoint(&self) -> u8 {
         self.endpoint
+    }
+
+    /// Credits still available to this endpoint, for diagnostics.
+    pub const fn credits(&self) -> HtcCredits {
+        self.credits
     }
 
     /// Frame a WMI command as an HTC data message and send it on the WMI TX pipe.
@@ -409,7 +423,14 @@ impl WmiEndpoint {
         if WMI_HEADER_LEN + payload.len() > usize::from(self.max_message_size) {
             return Err(WmiError::PayloadTooLarge);
         }
-        let total = encode_htc_wmi_frame(frame, self.endpoint, self.sequence, cmd, payload)?;
+        // Ask for a credit report with every frame while credits are accounted.
+        let flags = if self.credits.is_enabled() {
+            HTC_FLAG_NEED_CREDIT_UPDATE
+        } else {
+            0
+        };
+        let total = encode_htc_wmi_frame(frame, self.endpoint, flags, self.sequence, cmd, payload)?;
+        self.credits.take(total).map_err(|_| WmiError::NoCredits)?;
         self.sequence = self.sequence.wrapping_add(1);
         unsafe { tx.send(registers, &frame[..total]) }.map_err(|_| WmiError::HtcError)
     }
@@ -426,7 +447,7 @@ impl WmiEndpoint {
     ) -> Result<WmiEvent, WmiError> {
         let length = unsafe { rx.receive(registers, frame) }.map_err(|_| WmiError::HtcError)?;
         let bytes = frame.get(..length).ok_or(WmiError::FrameTooShort)?;
-        decode_htc_wmi_event(bytes, self.endpoint)
+        decode_htc_wmi_event(bytes, self.endpoint, &mut self.credits)
     }
 }
 
@@ -435,6 +456,7 @@ impl WmiEndpoint {
 fn encode_htc_wmi_frame(
     frame: &mut [u8],
     endpoint: u8,
+    flags: u8,
     sequence: u8,
     cmd: WmiCmdId,
     payload: &[u8],
@@ -445,24 +467,41 @@ fn encode_htc_wmi_frame(
     }
     let message = encode_wmi(&mut frame[HTC_HEADER_LENGTH..], cmd, payload)?;
     let payload_len = u16::try_from(message).map_err(|_| WmiError::PayloadTooLarge)?;
-    write_data_header(frame, endpoint, sequence, payload_len).map_err(|_| WmiError::FrameTooShort)?;
+    write_data_header(frame, endpoint, flags, sequence, payload_len)
+        .map_err(|_| WmiError::FrameTooShort)?;
     Ok(HTC_HEADER_LENGTH + message)
 }
 
 /// Parse an HTC data message that carries a WMI event for `endpoint`.
-fn decode_htc_wmi_event(bytes: &[u8], endpoint: u8) -> Result<WmiEvent, WmiError> {
-    // The helper checks the endpoint and strips any credit trailer, so neither
+fn decode_htc_wmi_event(
+    bytes: &[u8],
+    endpoint: u8,
+    credits: &mut HtcCredits,
+) -> Result<WmiEvent, WmiError> {
+    // The helper checks the endpoint and separates the credit trailer, so neither
     // can reach the WMI parser.
-    let payload = data_message_payload(bytes, endpoint).map_err(|error| match error {
+    let message = data_message(bytes, endpoint).map_err(|error| match error {
         HtcDataError::WrongEndpoint => WmiError::BadEndpoint,
         HtcDataError::FrameTooShort | HtcDataError::BadTrailer => WmiError::FrameTooShort,
     })?;
-    parse_wmi_event(payload)
+    let mut reports = [HtcCreditReport {
+        endpoint: 0,
+        credits: 0,
+    }; 8];
+    let count = parse_credit_reports(message.trailer, &mut reports);
+    for report in &reports[..count] {
+        if report.endpoint == endpoint {
+            credits.report(report.credits);
+        }
+    }
+    parse_wmi_event(message.payload)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::htc::HTC_FLAG_RECV_TRAILER;
+    use super::super::htc::{
+        HTC_FLAG_NEED_CREDIT_UPDATE, HTC_FLAG_RECV_TRAILER, HtcCredits,
+    };
     use super::{
         HTC_HEADER_LENGTH, WMI_HEADER_LEN, WmiCmdId, WmiError, WmiEvent, WmiEventId,
         decode_htc_wmi_event, encode_htc_wmi_frame, parse_wmi_event, read_le32,
@@ -480,12 +519,22 @@ mod tests {
     #[test]
     fn wmi_message_header_is_a_single_masked_command_id() {
         let mut frame = [0u8; 64];
-        let total = encode_htc_wmi_frame(&mut frame, 3, 7, WmiCmdId::VdevCreate, &[0xaa, 0xbb])
-            .expect("frame fits");
+        let total = encode_htc_wmi_frame(
+            &mut frame,
+            3,
+            HTC_FLAG_NEED_CREDIT_UPDATE,
+            7,
+            WmiCmdId::VdevCreate,
+            &[0xaa, 0xbb],
+        )
+        .expect("frame fits");
 
         assert_eq!(total, HTC_HEADER_LENGTH + WMI_HEADER_LEN + 2);
         assert_eq!(frame[0], 3, "HTC endpoint id");
-        assert_eq!(frame[1], 0, "HTC flags");
+        assert_eq!(
+            frame[1], HTC_FLAG_NEED_CREDIT_UPDATE,
+            "the frame asks the target for a credit report"
+        );
         assert_eq!(u16::from_le_bytes([frame[2], frame[3]]), 6, "HTC payload length");
         assert_eq!(frame[4], 7, "HTC sequence");
         assert_eq!(
@@ -517,7 +566,9 @@ mod tests {
     fn credit_trailer_is_stripped_before_the_event_is_parsed() {
         let body = ready_body();
         let wmi_len = 4 + body.len();
-        let trailer = [0x01u8, 0x02u8]; // credit report item, total length 2
+        // Trailer: one credits record (id 1, four-byte body) reporting five
+        // credits for endpoint 3, closed by the total trailer length (9).
+        let trailer = [0x01u8, 0x04, 0x00, 0x00, 0x03, 0x05, 0x00, 0x00, 0x09];
         let htc_len = wmi_len + trailer.len();
         let mut frame = [0u8; HTC_HEADER_LENGTH + 32];
         frame[0] = 3;
@@ -529,14 +580,22 @@ mod tests {
         frame[HTC_HEADER_LENGTH + wmi_len..HTC_HEADER_LENGTH + htc_len].copy_from_slice(&trailer);
 
         let bytes = &frame[..HTC_HEADER_LENGTH + htc_len];
-        match decode_htc_wmi_event(bytes, 3).expect("ready parses through the trailer") {
+        let mut credits = HtcCredits::new(2048, 0);
+        match decode_htc_wmi_event(bytes, 3, &mut credits)
+            .expect("ready parses through the trailer")
+        {
             WmiEvent::Ready(ready) => {
                 assert_eq!(ready.mac_addr, [0x02, 0x11, 0x22, 0x33, 0x44, 0x55]);
             }
             other => panic!("unexpected event: {other:?}"),
         }
         assert_eq!(
-            decode_htc_wmi_event(bytes, 2).expect_err("wrong endpoint"),
+            credits.available(),
+            5,
+            "the credit report in the trailer is applied"
+        );
+        assert_eq!(
+            decode_htc_wmi_event(bytes, 2, &mut credits).expect_err("wrong endpoint"),
             WmiError::BadEndpoint
         );
     }

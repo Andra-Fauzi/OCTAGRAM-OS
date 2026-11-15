@@ -37,6 +37,8 @@ pub enum HtcError {
     EndpointTableFull,
     EndpointNotConnected,
     MessageTooLarge,
+    /// The endpoint has fewer transmit credits than this frame needs.
+    NoCredits,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,10 +227,151 @@ pub fn setup_complete_request() -> [u8; HTC_HEADER_LENGTH + 2] {
     output
 }
 
+/// Byte budget of one HTC transmit credit.
+///
+/// `ath10k_htc_consume_credit` divides the frame length (HTC header included)
+/// by the credit size reported in HTC READY and refuses to send when the
+/// endpoint has fewer credits than that; the target returns credits in trailer
+/// records of the frames it sends to us.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HtcCredits {
+    credit_size: u16,
+    available: u16,
+}
+
+impl HtcCredits {
+    /// Flow control disabled (nothing is accounted).
+    pub const fn disabled() -> Self {
+        Self {
+            credit_size: 0,
+            available: 0,
+        }
+    }
+
+    pub const fn new(credit_size: u16, available: u16) -> Self {
+        Self {
+            credit_size,
+            available,
+        }
+    }
+
+    pub const fn is_enabled(&self) -> bool {
+        self.credit_size != 0
+    }
+
+    pub const fn available(&self) -> u16 {
+        self.available
+    }
+
+    pub const fn credit_size(&self) -> u16 {
+        self.credit_size
+    }
+
+    /// Credits a frame of `frame_len` bytes (HTC header included) needs.
+    pub fn required(&self, frame_len: usize) -> u16 {
+        if !self.is_enabled() {
+            return 0;
+        }
+        let size = usize::from(self.credit_size);
+        ((frame_len + size - 1) / size) as u16
+    }
+
+    /// Account for a frame about to be sent.
+    pub fn take(&mut self, frame_len: usize) -> Result<(), HtcError> {
+        let needed = self.required(frame_len);
+        if needed > self.available {
+            return Err(HtcError::NoCredits);
+        }
+        self.available -= needed;
+        Ok(())
+    }
+
+    /// Add credits the target reported back.
+    pub fn report(&mut self, credits: u8) {
+        self.available = self.available.saturating_add(u16::from(credits));
+    }
+}
+
+/// One credit report entry (`struct ath10k_htc_credit_report`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HtcCreditReport {
+    pub endpoint: u8,
+    pub credits: u8,
+}
+
+/// `struct ath10k_ath10k_htc_record_hdr`.
+pub const HTC_RECORD_HEADER_LEN: usize = 4;
+/// `struct ath10k_htc_credit_report`.
+pub const HTC_CREDIT_REPORT_LEN: usize = 4;
+
+/// Parse the credit reports of an HTC receive trailer.
+///
+/// A trailer is a sequence of records `{ id, len, pad[2] }` plus `len` bytes of
+/// body; a credits record holds `len / 4` credit reports. Returns how many
+/// reports were written into `out`.
+pub fn parse_credit_reports(trailer: &[u8], out: &mut [HtcCreditReport]) -> usize {
+    let mut written = 0;
+    let mut offset = 0;
+    while offset + HTC_RECORD_HEADER_LEN <= trailer.len() && written < out.len() {
+        let id = trailer[offset];
+        let length = usize::from(trailer[offset + 1]);
+        let body_start = offset + HTC_RECORD_HEADER_LEN;
+        let Some(body_end) = body_start.checked_add(length) else {
+            break;
+        };
+        if body_end > trailer.len() {
+            break;
+        }
+        if id == HTC_TRAILER_TAG_CREDIT_REPORT {
+            let body = &trailer[body_start..body_end];
+            let mut entry = 0;
+            while entry + HTC_CREDIT_REPORT_LEN <= body.len() && written < out.len() {
+                out[written] = HtcCreditReport {
+                    endpoint: body[entry],
+                    credits: body[entry + 1],
+                };
+                written += 1;
+                entry += HTC_CREDIT_REPORT_LEN;
+            }
+        }
+        offset = body_end;
+    }
+    written
+}
+
+/// An HTC data message split into its payload and credit trailer.
+pub struct HtcDataMessage<'a> {
+    pub payload: &'a [u8],
+    /// Trailer records, without the length byte that closes the trailer.
+    pub trailer: &'a [u8],
+}
+
+/// Split an incoming HTC data message into payload and credit trailer.
+pub fn data_message(bytes: &[u8], endpoint: u8) -> Result<HtcDataMessage<'_>, HtcDataError> {
+    let packet = HtcPacket::parse(bytes).map_err(|_| HtcDataError::FrameTooShort)?;
+    if packet.header.endpoint != endpoint {
+        return Err(HtcDataError::WrongEndpoint);
+    }
+    let mut payload = packet.payload;
+    let mut trailer: &[u8] = &[];
+    if packet.header.flags & HTC_FLAG_RECV_TRAILER != 0 {
+        let trailer_len = usize::from(*payload.last().ok_or(HtcDataError::BadTrailer)?);
+        if trailer_len == 0 || trailer_len > payload.len() {
+            return Err(HtcDataError::BadTrailer);
+        }
+        let start = payload.len() - trailer_len;
+        // The trailer's last byte is its own length, not part of a record.
+        trailer = &payload[start..payload.len() - 1];
+        payload = &payload[..start];
+    }
+    Ok(HtcDataMessage { payload, trailer })
+}
+
 /// Write an HTC data-message header: `[endpoint | flags | len(2) | control(4)]`.
 pub fn write_data_header(
     frame: &mut [u8],
     endpoint: u8,
+    flags: u8,
     sequence: u8,
     payload_len: u16,
 ) -> Result<(), HtcError> {
@@ -236,7 +379,7 @@ pub fn write_data_header(
         return Err(HtcError::OutputBufferTooSmall);
     }
     frame[0] = endpoint;
-    frame[1] = 0;
+    frame[1] = flags;
     frame[2..4].copy_from_slice(&payload_len.to_le_bytes());
     frame[4] = sequence;
     frame[5..HTC_HEADER_LENGTH].fill(0);
@@ -248,6 +391,7 @@ pub fn write_data_header(
 pub fn encode_data_message(
     frame: &mut [u8],
     endpoint: u8,
+    flags: u8,
     sequence: u8,
     message: &[u8],
 ) -> Result<usize, HtcError> {
@@ -256,7 +400,7 @@ pub fn encode_data_message(
         return Err(HtcError::OutputBufferTooSmall);
     }
     let payload_len = u16::try_from(message.len()).map_err(|_| HtcError::PayloadTooLarge)?;
-    write_data_header(frame, endpoint, sequence, payload_len)?;
+    write_data_header(frame, endpoint, flags, sequence, payload_len)?;
     frame[HTC_HEADER_LENGTH..total].copy_from_slice(message);
     Ok(total)
 }
@@ -269,24 +413,6 @@ pub enum HtcDataError {
     WrongEndpoint,
     /// The credit trailer length is missing or inconsistent.
     BadTrailer,
-}
-
-/// Validate an incoming HTC data message and return its payload with any credit
-/// trailer (`HTC_FLAG_RECV_TRAILER`) stripped.
-pub fn data_message_payload(bytes: &[u8], endpoint: u8) -> Result<&[u8], HtcDataError> {
-    let packet = HtcPacket::parse(bytes).map_err(|_| HtcDataError::FrameTooShort)?;
-    if packet.header.endpoint != endpoint {
-        return Err(HtcDataError::WrongEndpoint);
-    }
-    let payload = packet.payload;
-    if packet.header.flags & HTC_FLAG_RECV_TRAILER == 0 {
-        return Ok(payload);
-    }
-    let trailer_len = usize::from(*payload.last().ok_or(HtcDataError::BadTrailer)?);
-    if trailer_len == 0 || trailer_len > payload.len() {
-        return Err(HtcDataError::BadTrailer);
-    }
-    Ok(&payload[..payload.len() - trailer_len])
 }
 
 pub trait HtcTransport {
@@ -308,8 +434,8 @@ struct HtcServiceEndpoint {
     service_id: u16,
     endpoint: u8,
     max_message_size: u16,
-    /// Available send credits for this endpoint.
-    credits: u16,
+    /// Transmit credits this endpoint still has.
+    credits: HtcCredits,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -322,6 +448,8 @@ pub struct HtcClient<T> {
     transport: T,
     ready: Option<HtcReady>,
     endpoints: [Option<HtcServiceEndpoint>; HTC_MAX_SERVICE_ENDPOINTS],
+    /// Credits for EP0 (connect requests, SETUP_COMPLETE).
+    control_credits: HtcCredits,
     /// Outgoing sequence number, incremented with each sent data frame.
     send_seq: u8,
 }
@@ -332,6 +460,7 @@ impl<T: HtcTransport> HtcClient<T> {
             transport,
             ready: None,
             endpoints: [None; HTC_MAX_SERVICE_ENDPOINTS],
+            control_credits: HtcCredits::disabled(),
             send_seq: 0,
         }
     }
@@ -348,6 +477,9 @@ impl<T: HtcTransport> HtcClient<T> {
         if ready.max_endpoints <= 1 || ready.credit_size == 0 {
             return Err(HtcClientError::Protocol(HtcError::InvalidReady));
         }
+        // HTC READY advertises the credit size and the total credit count; from
+        // here on every send costs credits and trailers replenish them.
+        self.control_credits = HtcCredits::new(ready.credit_size, ready.credit_count);
         self.ready = Some(ready);
         Ok(ready)
     }
@@ -372,6 +504,9 @@ impl<T: HtcTransport> HtcClient<T> {
 
         let request =
             connect_service_request(service_id, flags).map_err(HtcClientError::Protocol)?;
+        self.control_credits
+            .take(request.len())
+            .map_err(HtcClientError::Protocol)?;
         self.transport
             .send(&request)
             .map_err(HtcClientError::Transport)?;
@@ -389,14 +524,9 @@ impl<T: HtcTransport> HtcClient<T> {
         }) {
             return Err(HtcClientError::Protocol(HtcError::InvalidEndpoint));
         }
-        // Determine initial credits before taking a mutable borrow on endpoints.
-        // The first connected endpoint gets the full credit count from the ready
-        // message; subsequent ones start at 0 and earn credits via trailers.
-        let initial_credits = if self.endpoints.iter().all(|e| e.is_none()) {
-            ready.credit_count
-        } else {
-            0
-        };
+        // Every endpoint starts with the pool HTC READY advertised; credit reports
+        // in receive trailers replenish it afterwards. This driver drives one
+        // endpoint at a time, so the pool is not split between them.
         let slot = self
             .endpoints
             .iter_mut()
@@ -406,7 +536,7 @@ impl<T: HtcTransport> HtcClient<T> {
             service_id,
             endpoint: response.endpoint,
             max_message_size: response.max_message_size,
-            credits: initial_credits,
+            credits: HtcCredits::new(ready.credit_size, ready.credit_count),
         });
         Ok(response)
     }
@@ -420,7 +550,7 @@ impl<T: HtcTransport> HtcClient<T> {
     ) -> Result<(), HtcClientError<T::Error>> {
         let endpoint = self
             .endpoints
-            .iter()
+            .iter_mut()
             .flatten()
             .find(|endpoint| endpoint.service_id == service_id)
             .ok_or(HtcClientError::Protocol(HtcError::EndpointNotConnected))?;
@@ -435,6 +565,12 @@ impl<T: HtcTransport> HtcClient<T> {
         let mut control = [0u8; 4];
         control[0] = seq;
 
+        // Ask the target for a credit report whenever credits are accounted for.
+        let flags = if endpoint.credits.is_enabled() {
+            flags | HTC_FLAG_NEED_CREDIT_UPDATE
+        } else {
+            flags
+        };
         let ep_id = endpoint.endpoint;
         let packet = HtcPacket {
             header: HtcHeader::new(ep_id, flags, control),
@@ -442,6 +578,10 @@ impl<T: HtcTransport> HtcClient<T> {
         };
         let length = packet
             .encode_into(frame)
+            .map_err(HtcClientError::Protocol)?;
+        endpoint
+            .credits
+            .take(length)
             .map_err(HtcClientError::Protocol)?;
         self.transport
             .send(&frame[..length])
@@ -465,9 +605,27 @@ impl<T: HtcTransport> HtcClient<T> {
             return Err(HtcClientError::Protocol(HtcError::OutputBufferTooSmall));
         }
         frame[..msg.len()].copy_from_slice(&msg);
+        self.control_credits
+            .take(msg.len())
+            .map_err(HtcClientError::Protocol)?;
         self.transport
             .send(&frame[..msg.len()])
             .map_err(HtcClientError::Transport)
+    }
+
+    fn report_credits(&mut self, endpoint: u8, credits: u8) {
+        if endpoint == HTC_CONTROL_ENDPOINT {
+            self.control_credits.report(credits);
+            return;
+        }
+        if let Some(entry) = self
+            .endpoints
+            .iter_mut()
+            .flatten()
+            .find(|entry| entry.endpoint == endpoint)
+        {
+            entry.credits.report(credits);
+        }
     }
 
     pub fn receive<'a>(
@@ -525,6 +683,15 @@ impl<T: HtcTransport> HtcClient<T> {
                 return Err(HtcClientError::Protocol(HtcError::UnexpectedMessage));
             }
             let stripped_len = payload.len() - trailer_len;
+            // The trailer's last byte is its own length, not part of a record.
+            let mut reports = [HtcCreditReport {
+                endpoint: 0,
+                credits: 0,
+            }; 8];
+            let count = parse_credit_reports(&payload[stripped_len..payload.len() - 1], &mut reports);
+            for report in &reports[..count] {
+                self.report_credits(report.endpoint, report.credits);
+            }
             packet.payload = &payload[..stripped_len];
         }
 
@@ -535,26 +702,87 @@ impl<T: HtcTransport> HtcClient<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        HTC_FLAG_RECV_TRAILER, HTC_HEADER_LENGTH, HTC_SERVICE_WMI_CONTROL,
-        HTC_SETUP_COMPLETE_MESSAGE_ID, HtcClient, HtcClientError, HtcDataError, HtcError, HtcHeader,
-        HtcPacket, HtcTransport, connect_service_request, data_message_payload,
-        encode_data_message, parse_connect_response, parse_ready, setup_complete_request,
+        HTC_FLAG_NEED_CREDIT_UPDATE, HTC_FLAG_RECV_TRAILER, HTC_HEADER_LENGTH,
+        HTC_SERVICE_WMI_CONTROL, HTC_SETUP_COMPLETE_MESSAGE_ID, HtcClient, HtcClientError,
+        HtcDataError, HtcError, HtcHeader,
+        HtcCreditReport, HtcCredits, HtcPacket, HtcTransport, connect_service_request, data_message,
+        encode_data_message, parse_connect_response, parse_credit_reports, parse_ready,
+        setup_complete_request,
     };
     use alloc::vec::Vec;
 
     #[test]
+    fn credits_are_byte_based_and_replenished_by_reports() {
+        // 2048-byte credits: a 100-byte frame needs one, a 4096-byte frame two.
+        let mut credits = HtcCredits::new(2048, 3);
+        assert_eq!(credits.required(100), 1);
+        assert_eq!(credits.required(2048), 1);
+        assert_eq!(credits.required(2049), 2);
+
+        credits.take(100).expect("one credit");
+        assert_eq!(credits.available(), 2);
+        credits.take(4096).expect("two credits");
+        assert_eq!(credits.available(), 0);
+        assert_eq!(credits.take(1), Err(HtcError::NoCredits));
+
+        credits.report(5);
+        assert_eq!(credits.available(), 5);
+
+        // Flow control disabled accounts for nothing.
+        let mut disabled = HtcCredits::disabled();
+        assert_eq!(disabled.take(1 << 20), Ok(()));
+        assert_eq!(disabled.required(1 << 20), 0);
+    }
+
+    #[test]
+    fn credit_reports_are_read_from_the_trailer_records() {
+        // A credits record (id 1, eight-byte body) with two reports followed by an
+        // unknown record (id 2) that must be skipped.
+        let trailer = [
+            0x01u8, 0x08, 0x00, 0x00, // credits record, 8-byte body
+            0x03, 0x05, 0x00, 0x00, // endpoint 3, 5 credits
+            0x01, 0x02, 0x00, 0x00, // endpoint 1, 2 credits
+            0x02, 0x04, 0x00, 0x00, // lookahead record, 4-byte body
+            0xaa, 0xbb, 0xcc, 0xdd,
+        ];
+        let mut reports = [HtcCreditReport {
+            endpoint: 0,
+            credits: 0,
+        }; 8];
+        let count = parse_credit_reports(&trailer, &mut reports);
+        assert_eq!(count, 2);
+        assert_eq!(
+            reports[0],
+            HtcCreditReport {
+                endpoint: 3,
+                credits: 5,
+            }
+        );
+        assert_eq!(
+            reports[1],
+            HtcCreditReport {
+                endpoint: 1,
+                credits: 2,
+            }
+        );
+    }
+
+    #[test]
     fn data_message_wraps_the_payload_for_the_requested_endpoint() {
         let mut frame = [0u8; 32];
-        let total =
-            encode_data_message(&mut frame, 3, 9, &[0x00, 0x00, 0x00, 0x00]).expect("frame fits");
+        let total = encode_data_message(&mut frame, 3, 0, 9, &[0x00, 0x00, 0x00, 0x00])
+            .expect("frame fits");
 
         assert_eq!(total, HTC_HEADER_LENGTH + 4);
         assert_eq!(&frame[..HTC_HEADER_LENGTH], &[3, 0, 4, 0, 9, 0, 0, 0]);
         assert_eq!(&frame[HTC_HEADER_LENGTH..total], &[0, 0, 0, 0]);
-        assert_eq!(data_message_payload(&frame[..total], 3), Ok(&[0, 0, 0, 0][..]));
         assert_eq!(
-            data_message_payload(&frame[..total], 2),
-            Err(HtcDataError::WrongEndpoint)
+            data_message(&frame[..total], 3).expect("payload").payload,
+            &[0, 0, 0, 0][..]
+        );
+        assert_eq!(
+            data_message(&frame[..total], 2).err(),
+            Some(HtcDataError::WrongEndpoint)
         );
     }
 
@@ -673,8 +901,12 @@ mod tests {
 
         let transport = client.into_transport();
         assert_eq!(&transport.sent[0][8..12], &[2, 0, 0, 1]);
-        // seq_no is now in control[0]; data byte is still at offset 8.
-        assert_eq!(&transport.sent[1][..9], &[2, 0, 1, 0, 0, 0, 0, 0, 0xaa]);
+        // seq_no is now in control[0], the frame asks the target for a credit
+        // report, and the data byte is still at offset 8.
+        assert_eq!(
+            &transport.sent[1][..9],
+            &[2, HTC_FLAG_NEED_CREDIT_UPDATE, 1, 0, 0, 0, 0, 0, 0xaa]
+        );
     }
 
     #[test]

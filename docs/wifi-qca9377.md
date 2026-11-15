@@ -209,12 +209,37 @@ The full driver initialization sequence is implemented in `kernel/src/drivers/qc
    - WMI Control:   TX=CE3, RX=CE2
    - HTT Data:      TX=CE4, RX=CE5
 5. **HTC Handshake**: Waits for `HTC_READY`, connects `HTC_SERVICE_WMI_CONTROL` and `HTC_SERVICE_HTT_DATA`, and transmits `HTC_SETUP_COMPLETE`.
-6. **WMI Initialization**: Sends `WMI_INIT` resource configuration and waits for `WMI_READY` event, extracting the hardware MAC address.
+6. **WMI Initialization**: Sends `WMI_INIT` inside an HTC data message on the WMI TX pipe (CE3), then polls the WMI RX pipe (CE2) for `WMI_READY` and extracts the hardware MAC address.
 7. **HTT Version Handshake**: Performs version query over HTT data pipe.
 8. **STA Vdev & Peer Creation**: Sends `WMI_VDEV_CREATE` (STA mode), `WMI_PEER_CREATE` (self), and disables STA powersave.
 9. **Radio Bring-up & Scanning**: Sends `WMI_VDEV_START` (2.4 GHz channel), waits for `VDEV_START_RESP`, triggers active scan via `WMI_START_SCAN`, and drains scan completion events.
 10. **AP Association**: Issues `WMI_VDEV_UP`, `WMI_PEER_CREATE` (BSS peer), and `WMI_PEER_ASSOC` to associate with the target AP.
 11. **Network Link Registration**: Registers `Qca9377Link` into kernel `network::register_link()`, providing slot ID `0x9377`.
+
+### WMI over HTC (`qca9377/wmi.rs`)
+
+WMI is an HTC service, not a raw copy-engine protocol. The previous path wrote
+the command straight to CE3 with a private header and read unparsed payloads off
+CE2, so the firmware never received a valid HTC data message. It now follows
+ath10k:
+
+- Each WMI command is framed as an HTC data message for the endpoint the target
+  returned from `connect_service(HTC_SERVICE_WMI_CONTROL)`:
+  `[endpoint | flags | len(2) | control(4)][WMI message]`, with the HTC sequence
+  number stamped into `control[0]`. Commands go to the WMI TX pipe (CE3), never
+  to the control pipe CE0.
+- Events are read from the WMI RX pipe (CE2) and parsed as HTC messages, so the
+  endpoint id is checked and a credit trailer (`HTC_FLAG_RECV_TRAILER`, whose
+  last byte is the trailer length) is stripped before the payload reaches the
+  WMI parser.
+- The WMI message header is a single little-endian word (`struct wmi_cmd_hdr`,
+  `WMI_HEADER_LEN = 4`) masked with `WMI_CMD_HDR_CMD_ID_MASK`, replacing the
+  earlier ad-hoc 8-byte `cmd_id | flags | len` header.
+- `WMI_READY_EVENT` follows `struct wmi_ready_event`: `sw_version`,
+  `abi_version`, `mac_addr[6]`, `status`. The MAC address is at payload offset 8,
+  so the driver now logs the firmware version and ABI and takes the hardware
+  address from the correct field. If READY never arrives, bring-up fails with
+  `InitError::WmiReady` instead of registering a link with an all-zero MAC.
 
 ### Shell Commands
 

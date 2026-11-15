@@ -3,14 +3,22 @@
 //! Reference: drivers/net/wireless/ath/ath10k/wmi.h and wmi.c (Linux kernel).
 //! WMI rides on HTC endpoint connected to HTC_SERVICE_WMI_CONTROL.
 //!
-//! Frame layout: [WMI header 8 bytes][payload]
-//!   WMI header: cmd_id(4) | flags(2) | len(2)   (little-endian)
+//! Frame layout: [WMI header 4 bytes][payload]
+//!   WMI header: cmd_id(4) masked with `WMI_CMD_HDR_CMD_ID_MASK`
+//!
+//! ath10k's `struct wmi_cmd_hdr` is a single little-endian word: the command or
+//! event id in the low 24 bits, the "plt priv" field in the upper byte. The WMI
+//! message itself is carried inside an HTC data message for the endpoint the
+//! target assigned to the WMI control service.
 
-use super::htc::{HtcClient, HtcClientError, HtcError, HtcTransport};
+use super::ce::{RegisterIo, RxCe, TxCe};
+use super::htc::{HTC_FLAG_RECV_TRAILER, HTC_HEADER_LENGTH, HtcPacket};
 
 // ── WMI header ───────────────────────────────────────────────────────────────
 
-const WMI_HEADER_LEN: usize = 8;
+const WMI_HEADER_LEN: usize = 4;
+/// `WMI_CMD_HDR_CMD_ID_MASK` (`wmi.h`).
+const WMI_CMD_HDR_CMD_ID_MASK: u32 = 0x00ff_ffff;
 
 /// WMI command IDs (10.2 firmware / QCA9377).
 #[allow(dead_code)]
@@ -83,6 +91,8 @@ pub enum WmiError {
     PayloadTooLarge,
     FrameTooShort,
     BadEvent,
+    /// The HTC message does not belong to the endpoint this client owns.
+    BadEndpoint,
     Timeout,
     HtcError,
 }
@@ -92,23 +102,18 @@ pub enum WmiError {
 fn write_le32(buf: &mut [u8], offset: usize, v: u32) {
     buf[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
 }
-fn write_le16(buf: &mut [u8], offset: usize, v: u16) {
-    buf[offset..offset + 2].copy_from_slice(&v.to_le_bytes());
-}
 fn read_le32(buf: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap())
 }
 
-/// Encode a WMI frame into `out`: [cmd_id | flags=0 | len | payload].
-/// Returns the total frame length.
+/// Encode a WMI message into `out`: [cmd_id | payload].
+/// Returns the total message length.
 fn encode_wmi(out: &mut [u8], cmd: WmiCmdId, payload: &[u8]) -> Result<usize, WmiError> {
     let total = WMI_HEADER_LEN + payload.len();
     if total > out.len() {
         return Err(WmiError::PayloadTooLarge);
     }
-    write_le32(out, 0, cmd as u32);
-    write_le16(out, 4, 0); // flags
-    write_le16(out, 6, payload.len() as u16);
+    write_le32(out, 0, (cmd as u32) & WMI_CMD_HDR_CMD_ID_MASK);
     out[WMI_HEADER_LEN..total].copy_from_slice(payload);
     Ok(total)
 }
@@ -264,8 +269,11 @@ pub fn wmi_start_scan(vdev_id: u32, scan_id: u32, freq_mhz: u32) -> alloc::vec::
 
 #[derive(Debug, Clone)]
 pub struct WmiReadyEvent {
+    /// `struct wmi_ready_event`: sw_version, abi_version, mac_addr[6], status.
+    pub sw_version: u32,
+    pub abi_version: u32,
     pub mac_addr: [u8; 6],
-    pub phy_capability: u32,
+    pub status: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -300,14 +308,17 @@ pub fn parse_wmi_event(payload: &[u8]) -> Result<WmiEvent, WmiError> {
     let body = &payload[WMI_HEADER_LEN..];
     Ok(match WmiEventId::from_u32(event_id) {
         WmiEventId::Ready => {
-            if body.len() < 10 {
+            // The MAC address follows the two version words, not the event id.
+            if body.len() < 18 {
                 return Err(WmiError::BadEvent);
             }
             let mut mac = [0u8; 6];
-            mac.copy_from_slice(&body[0..6]);
+            mac.copy_from_slice(&body[8..14]);
             WmiEvent::Ready(WmiReadyEvent {
+                sw_version: read_le32(body, 0),
+                abi_version: read_le32(body, 4),
                 mac_addr: mac,
-                phy_capability: read_le32(body, 6),
+                status: read_le32(body, 14),
             })
         }
         WmiEventId::Scan => {
@@ -354,68 +365,194 @@ pub fn parse_wmi_event(payload: &[u8]) -> Result<WmiEvent, WmiError> {
     })
 }
 
-// ── WmiClient ────────────────────────────────────────────────────────────────
+// ── WMI over HTC ─────────────────────────────────────────────────────────────
 
-/// HTC service ID for WMI control.
-use super::htc::HTC_SERVICE_WMI_CONTROL;
-
-pub struct WmiClient<T: HtcTransport> {
-    htc: HtcClient<T>,
-    wmi_ep: u8,
-    buf: alloc::vec::Vec<u8>,
+/// WMI control endpoint plus the HTC framing it needs.
+///
+/// WMI does not ride the control pipe: HTC binds the WMI service to its own copy
+/// engine (TX=CE3, RX=CE2 on QCA9377) and to the endpoint id returned by
+/// `connect_service`. Commands therefore go out as HTC data messages for that
+/// endpoint on CE3, and events come back the same way on CE2.
+pub struct WmiEndpoint {
+    endpoint: u8,
+    max_message_size: u16,
+    sequence: u8,
 }
 
-impl<T: HtcTransport> WmiClient<T> {
-    /// Create from an already-ready HTC client that has WMI connected.
-    /// `wmi_ep` is the endpoint assigned by `connect_service`.
-    pub fn new(htc: HtcClient<T>, wmi_ep: u8) -> Self {
+impl WmiEndpoint {
+    /// `endpoint` and `max_message_size` come from the HTC connect response.
+    pub const fn new(endpoint: u8, max_message_size: u16) -> Self {
         Self {
-            htc,
-            wmi_ep,
-            buf: alloc::vec![0u8; 2048],
+            endpoint,
+            max_message_size,
+            sequence: 0,
         }
     }
 
-    /// Send a raw WMI command.
-    pub fn send<E: core::fmt::Debug>(
+    pub const fn endpoint(&self) -> u8 {
+        self.endpoint
+    }
+
+    /// Frame a WMI command as an HTC data message and send it on the WMI TX pipe.
+    ///
+    /// # Safety
+    /// The WMI CE pipe must be configured, PCI bus mastering must be enabled and
+    /// the target must have finished the HTC handshake for the WMI service.
+    pub unsafe fn send<R: RegisterIo>(
         &mut self,
+        tx: &mut TxCe,
+        registers: &mut R,
         cmd: WmiCmdId,
         payload: &[u8],
-    ) -> Result<(), WmiError>
-    where
-        T: HtcTransport<Error = E>,
-    {
-        let mut frame = alloc::vec![0u8; 8 + payload.len() + super::htc::HTC_HEADER_LENGTH];
-        let mut wmi_buf = alloc::vec![0u8; WMI_HEADER_LEN + payload.len()];
-        let len = encode_wmi(&mut wmi_buf, cmd, payload)?;
-        self.htc
-            .send_service(HTC_SERVICE_WMI_CONTROL, 0, &wmi_buf[..len], &mut frame)
-            .map_err(|_| WmiError::HtcError)
+        frame: &mut [u8],
+    ) -> Result<(), WmiError> {
+        if WMI_HEADER_LEN + payload.len() > usize::from(self.max_message_size) {
+            return Err(WmiError::PayloadTooLarge);
+        }
+        let total = encode_htc_wmi_frame(frame, self.endpoint, self.sequence, cmd, payload)?;
+        self.sequence = self.sequence.wrapping_add(1);
+        unsafe { tx.send(registers, &frame[..total]) }.map_err(|_| WmiError::HtcError)
     }
 
-    /// Receive one WMI event (blocking poll via HTC).
-    pub fn recv_event<E: core::fmt::Debug>(&mut self) -> Result<WmiEvent, WmiError>
-    where
-        T: HtcTransport<Error = E>,
-    {
-        let len = self
-            .htc
-            .transport_mut()
-            .receive(&mut self.buf)
-            .map_err(|_| WmiError::HtcError)?;
-        parse_wmi_event(&self.buf[..len])
-    }
-
-    pub fn into_htc(self) -> HtcClient<T> {
-        self.htc
+    /// Receive one WMI event from the WMI RX pipe.
+    ///
+    /// # Safety
+    /// Same requirements as [`Self::send`].
+    pub unsafe fn receive<R: RegisterIo>(
+        &mut self,
+        rx: &mut RxCe,
+        registers: &mut R,
+        frame: &mut [u8],
+    ) -> Result<WmiEvent, WmiError> {
+        let length = unsafe { rx.receive(registers, frame) }.map_err(|_| WmiError::HtcError)?;
+        let bytes = frame.get(..length).ok_or(WmiError::FrameTooShort)?;
+        decode_htc_wmi_event(bytes, self.endpoint)
     }
 }
 
-// HtcClient needs a transport_mut accessor - add it here as an extension.
-// We achieve this via a helper trait rather than modifying htc.rs.
-pub trait HtcClientExt {
-    type T: HtcTransport;
-    fn transport_mut(&mut self) -> &mut Self::T;
+/// Wrap a WMI message in an HTC data-message header.
+/// Layout: [endpoint | flags | len(2) | control(4)][wmi header | payload].
+fn encode_htc_wmi_frame(
+    frame: &mut [u8],
+    endpoint: u8,
+    sequence: u8,
+    cmd: WmiCmdId,
+    payload: &[u8],
+) -> Result<usize, WmiError> {
+    let total = HTC_HEADER_LENGTH + WMI_HEADER_LEN + payload.len();
+    if total > frame.len() {
+        return Err(WmiError::PayloadTooLarge);
+    }
+    let message = encode_wmi(&mut frame[HTC_HEADER_LENGTH..], cmd, payload)?;
+    let payload_len = u16::try_from(message).map_err(|_| WmiError::PayloadTooLarge)?;
+    frame[0] = endpoint;
+    frame[1] = 0;
+    frame[2..4].copy_from_slice(&payload_len.to_le_bytes());
+    frame[4] = sequence;
+    frame[5..8].fill(0);
+    Ok(HTC_HEADER_LENGTH + message)
+}
+
+/// Parse an HTC data message that carries a WMI event for `endpoint`.
+fn decode_htc_wmi_event(bytes: &[u8], endpoint: u8) -> Result<WmiEvent, WmiError> {
+    let packet = HtcPacket::parse(bytes).map_err(|_| WmiError::FrameTooShort)?;
+    if packet.header.endpoint() != endpoint {
+        return Err(WmiError::BadEndpoint);
+    }
+    let payload = packet.payload;
+    // A trailer (credit report) is appended to the payload and announces its own
+    // length in its last byte; it must never reach the WMI parser.
+    let payload = if packet.header.flags() & HTC_FLAG_RECV_TRAILER != 0 {
+        let trailer_len = usize::from(*payload.last().ok_or(WmiError::FrameTooShort)?);
+        if trailer_len == 0 || trailer_len > payload.len() {
+            return Err(WmiError::FrameTooShort);
+        }
+        &payload[..payload.len() - trailer_len]
+    } else {
+        payload
+    };
+    parse_wmi_event(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        HTC_FLAG_RECV_TRAILER, HTC_HEADER_LENGTH, WMI_HEADER_LEN, WmiCmdId, WmiError, WmiEvent,
+        WmiEventId, decode_htc_wmi_event, encode_htc_wmi_frame, parse_wmi_event, read_le32,
+    };
+
+    /// A READY event body: sw_version, abi_version, mac_addr[6], status.
+    fn ready_body() -> [u8; 18] {
+        let mut body = [0u8; 18];
+        body[0..4].copy_from_slice(&0x0102_0304u32.to_le_bytes());
+        body[4..8].copy_from_slice(&5u32.to_le_bytes());
+        body[8..14].copy_from_slice(&[0x02, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        body
+    }
+
+    #[test]
+    fn wmi_message_header_is_a_single_masked_command_id() {
+        let mut frame = [0u8; 64];
+        let total = encode_htc_wmi_frame(&mut frame, 3, 7, WmiCmdId::VdevCreate, &[0xaa, 0xbb])
+            .expect("frame fits");
+
+        assert_eq!(total, HTC_HEADER_LENGTH + WMI_HEADER_LEN + 2);
+        assert_eq!(frame[0], 3, "HTC endpoint id");
+        assert_eq!(frame[1], 0, "HTC flags");
+        assert_eq!(u16::from_le_bytes([frame[2], frame[3]]), 6, "HTC payload length");
+        assert_eq!(frame[4], 7, "HTC sequence");
+        assert_eq!(
+            read_le32(&frame, HTC_HEADER_LENGTH),
+            WmiCmdId::VdevCreate as u32,
+            "WMI command id sits right after the HTC header"
+        );
+        assert_eq!(&frame[HTC_HEADER_LENGTH + WMI_HEADER_LEN..total], &[0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn ready_event_reads_the_mac_after_the_two_version_words() {
+        let mut message = [0u8; 4 + 18];
+        message[0..4].copy_from_slice(&(WmiEventId::Ready as u32).to_le_bytes());
+        message[4..].copy_from_slice(&ready_body());
+
+        match parse_wmi_event(&message).expect("ready parses") {
+            WmiEvent::Ready(ready) => {
+                assert_eq!(ready.sw_version, 0x0102_0304);
+                assert_eq!(ready.abi_version, 5);
+                assert_eq!(ready.mac_addr, [0x02, 0x11, 0x22, 0x33, 0x44, 0x55]);
+                assert_eq!(ready.status, 0);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credit_trailer_is_stripped_before_the_event_is_parsed() {
+        let body = ready_body();
+        let wmi_len = 4 + body.len();
+        let trailer = [0x01u8, 0x02u8]; // credit report item, total length 2
+        let htc_len = wmi_len + trailer.len();
+        let mut frame = [0u8; HTC_HEADER_LENGTH + 32];
+        frame[0] = 3;
+        frame[1] = HTC_FLAG_RECV_TRAILER;
+        frame[2..4].copy_from_slice(&(htc_len as u16).to_le_bytes());
+        frame[HTC_HEADER_LENGTH..HTC_HEADER_LENGTH + 4]
+            .copy_from_slice(&(WmiEventId::Ready as u32).to_le_bytes());
+        frame[HTC_HEADER_LENGTH + 4..HTC_HEADER_LENGTH + wmi_len].copy_from_slice(&body);
+        frame[HTC_HEADER_LENGTH + wmi_len..HTC_HEADER_LENGTH + htc_len].copy_from_slice(&trailer);
+
+        let bytes = &frame[..HTC_HEADER_LENGTH + htc_len];
+        match decode_htc_wmi_event(bytes, 3).expect("ready parses through the trailer") {
+            WmiEvent::Ready(ready) => {
+                assert_eq!(ready.mac_addr, [0x02, 0x11, 0x22, 0x33, 0x44, 0x55]);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert_eq!(
+            decode_htc_wmi_event(bytes, 2).expect_err("wrong endpoint"),
+            WmiError::BadEndpoint
+        );
+    }
 }
 
 // ── Additional WMI payload builders ──────────────────────────────────────────

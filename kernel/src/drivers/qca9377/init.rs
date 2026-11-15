@@ -59,6 +59,8 @@ pub enum InitError {
     HtcConnect,
     HtcSetupComplete,
     WmiReady,
+    /// A WMI command or event failed after the handshake.
+    Wmi,
     HttHandshake,
     VdevCreate,
     FirmwareUnavailable,
@@ -81,6 +83,12 @@ impl From<HtcError> for InitError {
 impl From<HtcClientError<CeError>> for InitError {
     fn from(_: HtcClientError<CeError>) -> Self {
         InitError::HtcReady
+    }
+}
+
+impl From<wmi::WmiError> for InitError {
+    fn from(_: wmi::WmiError) -> Self {
+        InitError::Wmi
     }
 }
 
@@ -534,40 +542,66 @@ pub unsafe fn initialize_device(
         crate::println!("QCA9377 HTC setup complete sent");
 
         // ── 7. WMI init ───────────────────────────────────────────────────────
+        // The handshake borrowed the EP0 pipes. WMI is a different HTC endpoint
+        // carried by its own copy engine (TX=CE3, RX=CE2), so the control client
+        // is released here and WMI is addressed by the endpoint id the target
+        // returned for the WMI service.
         drop(htc);
+        let mut wmi_ep = wmi::WmiEndpoint::new(wmi_resp.endpoint, wmi_resp.max_message_size);
+        let mut wmi_frame = [0u8; 512];
+        crate::println!(
+            "QCA9377 WMI endpoint {} (max {} bytes), framed as HTC data messages",
+            wmi_ep.endpoint(),
+            wmi_resp.max_message_size
+        );
 
-        // Send WMI_INIT directly over wmi_tx CE.
-        {
-            let init_payload = wmi::wmi_init_payload();
-            let mut wmi_frame = [0u8; 512];
-            let wmi_len = encode_wmi_into(&mut wmi_frame, WmiCmdId::Init, &init_payload)?;
-            unsafe {
-                wmi_tx.send(&mut registers, &wmi_frame[..wmi_len])?;
-            }
-            crate::println!("QCA9377 WMI_INIT sent");
+        unsafe {
+            wmi_ep.send(
+                &mut wmi_tx,
+                &mut registers,
+                WmiCmdId::Init,
+                &wmi::wmi_init_payload(),
+                &mut wmi_frame,
+            )?;
         }
+        crate::println!("QCA9377 WMI_INIT sent");
 
-        // Wait for WMI READY event (contains firmware MAC address).
+        // Wait for WMI READY, which carries the firmware MAC address. Other
+        // events may arrive first, so poll a bounded number of times.
         let mac = {
-            let mut rx_buf = [0u8; 512];
-            let len = unsafe { wmi_rx.receive(&mut registers, &mut rx_buf)? };
-            crate::println!("QCA9377 WMI event received ({} bytes)", len);
-            match wmi::parse_wmi_event(&rx_buf[..len]) {
-                Ok(WmiEvent::Ready(r)) => {
-                    crate::println!(
-                        "QCA9377 WMI READY: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                        r.mac_addr[0], r.mac_addr[1], r.mac_addr[2],
-                        r.mac_addr[3], r.mac_addr[4], r.mac_addr[5]
-                    );
-                    r.mac_addr
+            let mut firmware_mac = None;
+            for _ in 0..64 {
+                match unsafe { wmi_ep.receive(&mut wmi_rx, &mut registers, &mut wmi_frame) } {
+                    Ok(WmiEvent::Ready(ready)) => {
+                        crate::println!(
+                            "QCA9377 WMI READY: sw_version={:#x} abi_version={} status={} MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                            ready.sw_version,
+                            ready.abi_version,
+                            ready.status,
+                            ready.mac_addr[0], ready.mac_addr[1], ready.mac_addr[2],
+                            ready.mac_addr[3], ready.mac_addr[4], ready.mac_addr[5]
+                        );
+                        firmware_mac = Some(ready.mac_addr);
+                        break;
+                    }
+                    Ok(other) => {
+                        crate::println!("QCA9377 WMI event before READY: {other:?}");
+                    }
+                    Err(error) => {
+                        crate::println!("QCA9377 WMI receive failed before READY: {error:?}");
+                        break;
+                    }
                 }
-                Ok(e) => {
-                    crate::println!("QCA9377 unexpected first WMI event: {:?}", e);
-                    [0u8; 6]
-                }
-                Err(_) => {
-                    crate::println!("QCA9377 WMI event parse error");
-                    [0u8; 6]
+            }
+            match firmware_mac {
+                Some(mac) => mac,
+                None => {
+                    // Without WMI READY the firmware is not up, so vdev and peer
+                    // commands would only fail later with less context.
+                    crate::println!("QCA9377 firmware never reported WMI READY");
+                    let _ = pci::disable_bus_master(device);
+                    let _ = target_sleep(&mut registers);
+                    return Err(InitError::WmiReady);
                 }
             }
         };
@@ -594,27 +628,33 @@ pub unsafe fn initialize_device(
         // ── 9. Create STA vdev ────────────────────────────────────────────────
         {
             let vc = wmi::wmi_vdev_create(VDEV_ID, mac);
-            let mut wmi_frame = [0u8; 512];
-            let wmi_len = encode_wmi_into(&mut wmi_frame, WmiCmdId::VdevCreate, &vc)?;
-            unsafe { wmi_tx.send(&mut registers, &wmi_frame[..wmi_len])? };
+            unsafe {
+                wmi_ep.send(&mut wmi_tx, &mut registers, WmiCmdId::VdevCreate, &vc, &mut wmi_frame)?
+            };
             crate::println!("QCA9377 WMI_VDEV_CREATE sent (vdev_id=0, STA)");
         }
 
         // ── 10. Create peer (self) ─────────────────────────────────────────────
         {
             let pc = wmi::wmi_peer_create(VDEV_ID, mac, PEER_TYPE_STA);
-            let mut wmi_frame = [0u8; 512];
-            let wmi_len = encode_wmi_into(&mut wmi_frame, WmiCmdId::PeerCreate, &pc)?;
-            unsafe { wmi_tx.send(&mut registers, &wmi_frame[..wmi_len])? };
+            unsafe {
+                wmi_ep.send(&mut wmi_tx, &mut registers, WmiCmdId::PeerCreate, &pc, &mut wmi_frame)?
+            };
             crate::println!("QCA9377 WMI_PEER_CREATE sent");
         }
 
         // ── 11. Disable powersave ─────────────────────────────────────────────
         {
             let ps = wmi::wmi_sta_powersave_mode(VDEV_ID, 0);
-            let mut wmi_frame = [0u8; 512];
-            let wmi_len = encode_wmi_into(&mut wmi_frame, WmiCmdId::StaPowersaveMode, &ps)?;
-            unsafe { wmi_tx.send(&mut registers, &wmi_frame[..wmi_len])? };
+            unsafe {
+                wmi_ep.send(
+                    &mut wmi_tx,
+                    &mut registers,
+                    WmiCmdId::StaPowersaveMode,
+                    &ps,
+                    &mut wmi_frame,
+                )?
+            };
         }
 
         // ── 12. VDEV_START (bring up radio on channel) ────────────────────────
@@ -622,17 +662,15 @@ pub unsafe fn initialize_device(
         // SSID is empty here — STA mode doesn't need SSID for START (only UP).
         {
             let vs = wmi::wmi_vdev_start(VDEV_ID, DEFAULT_FREQ_MHZ, &[], [0u8; 6], 0);
-            let mut wmi_frame = [0u8; 512];
-            let wmi_len = encode_wmi_into(&mut wmi_frame, WmiCmdId::VdevStart, &vs)?;
-            unsafe { wmi_tx.send(&mut registers, &wmi_frame[..wmi_len])? };
+            unsafe {
+                wmi_ep.send(&mut wmi_tx, &mut registers, WmiCmdId::VdevStart, &vs, &mut wmi_frame)?
+            };
             crate::println!("QCA9377 WMI_VDEV_START sent (freq={}MHz)", DEFAULT_FREQ_MHZ);
         }
 
         // Wait for VDEV_START_RESP.
         {
-            let mut rx_buf = [0u8; 512];
-            let len = unsafe { wmi_rx.receive(&mut registers, &mut rx_buf)? };
-            match wmi::parse_wmi_event(&rx_buf[..len]) {
+            match unsafe { wmi_ep.receive(&mut wmi_rx, &mut registers, &mut wmi_frame) } {
                 Ok(WmiEvent::VdevStartResp { vdev_id, status }) => {
                     crate::println!(
                         "QCA9377 VDEV_START_RESP: vdev={} status={}",
@@ -646,8 +684,8 @@ pub unsafe fn initialize_device(
                 Ok(e) => {
                     crate::println!("QCA9377 unexpected event (expected VDEV_START_RESP): {:?}", e);
                 }
-                Err(_) => {
-                    crate::println!("QCA9377 VDEV_START_RESP parse error (continuing)");
+                Err(error) => {
+                    crate::println!("QCA9377 VDEV_START_RESP receive failed: {error:?}");
                 }
             }
         }
@@ -656,15 +694,15 @@ pub unsafe fn initialize_device(
         // Scan on the default channel to discover APs.
         {
             let sc = wmi::wmi_start_scan(VDEV_ID, SCAN_ID, DEFAULT_FREQ_MHZ);
-            let mut wmi_frame = [0u8; 512];
-            let wmi_len = encode_wmi_into(&mut wmi_frame, WmiCmdId::StartScan, &sc)?;
-            unsafe { wmi_tx.send(&mut registers, &wmi_frame[..wmi_len])? };
+            unsafe {
+                wmi_ep.send(&mut wmi_tx, &mut registers, WmiCmdId::StartScan, &sc, &mut wmi_frame)?
+            };
             crate::println!("QCA9377 WMI_START_SCAN sent (freq={}MHz)", DEFAULT_FREQ_MHZ);
         }
 
         // Drain scan events until SCAN_COMPLETED.
         // Event type 0x20 = WMI_SCAN_EVENT_COMPLETED in ath10k.
-        let bssid_found = drain_scan_events(&mut wmi_rx, &mut registers);
+        let bssid_found = drain_scan_events(&mut wmi_ep, &mut wmi_rx, &mut registers);
         if let Some(bssid) = bssid_found {
             crate::println!(
                 "QCA9377 scan found AP: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -681,51 +719,49 @@ pub unsafe fn initialize_device(
         let ap_bssid = bssid_found.unwrap_or([0xffu8; 6]); // broadcast if no AP yet
         {
             let vu = wmi::wmi_vdev_up(VDEV_ID, 0, ap_bssid);
-            let mut wmi_frame = [0u8; 512];
-            let wmi_len = encode_wmi_into(&mut wmi_frame, WmiCmdId::VdevUp, &vu)?;
-            unsafe { wmi_tx.send(&mut registers, &wmi_frame[..wmi_len])? };
+            unsafe {
+                wmi_ep.send(&mut wmi_tx, &mut registers, WmiCmdId::VdevUp, &vu, &mut wmi_frame)?
+            };
             crate::println!("QCA9377 WMI_VDEV_UP sent");
         }
 
         // ── 15. Create peer for AP BSSID ─────────────────────────────────────
         if ap_bssid != [0xffu8; 6] {
             let pc = wmi::wmi_peer_create(VDEV_ID, ap_bssid, 2); // 2 = PEER_TYPE_BSS
-            let mut wmi_frame = [0u8; 512];
-            let wmi_len = encode_wmi_into(&mut wmi_frame, WmiCmdId::PeerCreate, &pc)?;
-            unsafe { wmi_tx.send(&mut registers, &wmi_frame[..wmi_len])? };
+            unsafe {
+                wmi_ep.send(&mut wmi_tx, &mut registers, WmiCmdId::PeerCreate, &pc, &mut wmi_frame)?
+            };
             crate::println!("QCA9377 WMI_PEER_CREATE (AP) sent");
 
             // ── 16. PEER_ASSOC — tell firmware AP capabilities ────────────────
             // Basic 11g rates: 6,9,12,18,24,36,48,54 Mbps encoded as 802.11 rates
             let basic_rates: [u8; 8] = [0x8c, 0x92, 0x98, 0xa4, 0xb0, 0xc8, 0xe0, 0xec];
             let pa = wmi::wmi_peer_assoc(VDEV_ID, ap_bssid, 1, 0x0431, 10, &basic_rates);
-            let mut wmi_frame = [0u8; 512];
-            let wmi_len = encode_wmi_into(&mut wmi_frame, WmiCmdId::PeerAssoc, &pa)?;
-            unsafe { wmi_tx.send(&mut registers, &wmi_frame[..wmi_len])? };
+            unsafe {
+                wmi_ep.send(&mut wmi_tx, &mut registers, WmiCmdId::PeerAssoc, &pa, &mut wmi_frame)?
+            };
             crate::println!("QCA9377 WMI_PEER_ASSOC sent");
         }
 
         // Poll for WMI_CONNECTED event (non-fatal if we don't get one here —
         // the event may arrive asynchronously after the OS starts the event loop).
         {
-            let mut rx_buf = [0u8; 512];
             // Try once — if no event in time, continue. Real driver uses IRQ.
-            if let Ok(len) = unsafe { wmi_rx.receive(&mut registers, &mut rx_buf) } {
-                if let Ok(ev) = wmi::parse_wmi_event(&rx_buf[..len]) {
-                    match ev {
-                        WmiEvent::Connected(c) => {
-                            crate::println!(
-                                "QCA9377 CONNECTED: vdev={} bssid={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} ch={}",
-                                c.vdev_id,
-                                c.bssid[0], c.bssid[1], c.bssid[2],
-                                c.bssid[3], c.bssid[4], c.bssid[5],
-                                c.channel
-                            );
-                        }
-                        other => {
-                            crate::println!("QCA9377 event after assoc: {:?}", other);
-                        }
-                    }
+            match unsafe { wmi_ep.receive(&mut wmi_rx, &mut registers, &mut wmi_frame) } {
+                Ok(WmiEvent::Connected(c)) => {
+                    crate::println!(
+                        "QCA9377 CONNECTED: vdev={} bssid={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} ch={}",
+                        c.vdev_id,
+                        c.bssid[0], c.bssid[1], c.bssid[2],
+                        c.bssid[3], c.bssid[4], c.bssid[5],
+                        c.channel
+                    );
+                }
+                Ok(other) => {
+                    crate::println!("QCA9377 event after assoc: {:?}", other);
+                }
+                Err(error) => {
+                    crate::println!("QCA9377 no event after assoc: {error:?}");
                 }
             }
         }
@@ -756,25 +792,12 @@ pub unsafe fn initialize_device(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const WMI_HDR: usize = 8;
-
-fn encode_wmi_into(out: &mut [u8], cmd: WmiCmdId, payload: &[u8]) -> Result<usize, InitError> {
-    let total = WMI_HDR + payload.len();
-    if total > out.len() {
-        return Err(InitError::WmiReady);
-    }
-    out[0..4].copy_from_slice(&(cmd as u32).to_le_bytes());
-    out[4..6].copy_from_slice(&0u16.to_le_bytes()); // flags
-    out[6..8].copy_from_slice(&(payload.len() as u16).to_le_bytes());
-    out[WMI_HDR..total].copy_from_slice(payload);
-    Ok(total)
-}
-
 /// Drain WMI scan events until SCAN_COMPLETED or error.
 /// Returns the first BSSID seen in a PEER_STA or SCAN event (if any).
 /// WMI_SCAN_EVENT types: 0x1=started, 0x2=completed, 0x4=bss_chan,
 /// 0x8=foreign_chan, 0x10=dequeued, 0x20=preempted, 0x40=restarted.
 unsafe fn drain_scan_events(
+    wmi_ep: &mut wmi::WmiEndpoint,
     wmi_rx: &mut RxCe,
     registers: &mut MmioWindow,
 ) -> Option<[u8; 6]> {
@@ -782,12 +805,12 @@ unsafe fn drain_scan_events(
     // Poll up to 500 iterations (each receive has internal timeout).
     for _ in 0..500 {
         let mut rx_buf = [0u8; 512];
-        let len = match unsafe { wmi_rx.receive(registers, &mut rx_buf) } {
-            Ok(n) => n,
+        let event = match unsafe { wmi_ep.receive(wmi_rx, registers, &mut rx_buf) } {
+            Ok(event) => event,
             Err(_) => break,
         };
-        match wmi::parse_wmi_event(&rx_buf[..len]) {
-            Ok(WmiEvent::Scan(s)) => {
+        match event {
+            WmiEvent::Scan(s) => {
                 crate::println!(
                     "QCA9377 SCAN_EVENT type={:#x} freq={}MHz scan_id={:#x}",
                     s.event_type, s.freq_mhz, s.scan_id
@@ -797,15 +820,14 @@ unsafe fn drain_scan_events(
                     break;
                 }
             }
-            Ok(WmiEvent::Other { event_id }) => {
+            WmiEvent::Other { event_id } => {
                 // WMI_ROAM_EVENTID or BSS info events may carry BSSID.
                 // For now just log and continue.
                 crate::println!("QCA9377 scan drain event_id={:#x}", event_id);
             }
-            Ok(e) => {
+            e => {
                 crate::println!("QCA9377 scan drain event: {:?}", e);
             }
-            Err(_) => break,
         }
     }
     found_bssid

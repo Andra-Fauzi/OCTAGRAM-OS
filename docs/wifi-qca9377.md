@@ -424,6 +424,21 @@ is only reachable through `qca6174_ops`; the QCA9377 hw1.0/hw1.1 entries use
 `false` for QCA9377, so ath10k itself never takes the diag-CE fast download path
 on this chip.
 
+### A Latched Crash Is Cleared, Not Accepted
+
+A target that keeps reporting `FW_IND_EVENT_PENDING` after a cold reset is the
+situation `ath10k_pci_hif_power_up` handles on the error path: it calls
+`ath10k_pci_fw_crashed_clear` and keeps going. The bring-up now does the same —
+it clears the latch after the cold reset and polls `FW_INDICATOR` again for the
+full 3 s window, so a ROM that only starts once the stale bit is gone is no
+longer reported as a dead device. The boot log prints the outcome as
+`rom_started_after_clear`.
+
+The warm reset also opens with `ath10k_pci_warm_reset_si0`. On QCA6174/QCA9377
+`qca6174_regs.soc_reset_control_si0_rst_mask` is `0x0`, so that step only reads
+`SOC_RESET_CONTROL` and waits 20 ms; it is kept because ath10k settles the SI0
+block there before resetting the target CPU.
+
 ### `ath10k_pci_init_config` Audit
 
 `target.rs` was checked field by field against Linux `pci.h` and

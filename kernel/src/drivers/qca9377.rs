@@ -91,6 +91,11 @@ const QCA6174_RTC_SOC_TIMER_OFFSET: u64 = 0x50;
 const SOC_GLOBAL_RESET_PULSE: u32 = 1 << 0;
 const RTC_SOC_CE_RESET: u32 = 1 << 0;
 const RTC_SOC_CPU_RESET: u32 = 1 << 6;
+// `qca6174_regs.soc_reset_control_si0_rst_mask` in `ath10k_hw.c` is 0x0, so on
+// QCA9377 `ath10k_pci_warm_reset_si0` only reads the register and waits. The
+// step is kept because it still spends its 20 ms settling time exactly where
+// ath10k does.
+const RTC_SOC_SI0_RESET: u32 = 0;
 const RTC_SOC_TIMER_LPO_SELECT: u32 = 1 << 2;
 const FW_IND_INITIALIZED: u32 = 1 << 1;
 const FW_IND_EVENT_PENDING: u32 = 1 << 0;
@@ -299,6 +304,27 @@ pub(super) fn reset_target_cpu<R: ce::RegisterIo>(
         return Err(ce::CeError::DeviceUnavailable);
     }
     registers.write32(QCA6174_RTC_SOC_BASE, rtc | RTC_SOC_CPU_RESET)
+}
+
+/// `ath10k_pci_warm_reset_si0`: settle the SI0 subsystem before the target CPU
+/// is reset, because ath10k does it to keep the target out of the copy engines
+/// while the host resets them.
+fn warm_reset_si0<R: ce::RegisterIo>(registers: &mut R) -> Result<(), ce::CeError> {
+    let current = registers.read32(QCA6174_RTC_SOC_BASE)?;
+    if current == u32::MAX {
+        return Err(ce::CeError::DeviceUnavailable);
+    }
+    if RTC_SOC_SI0_RESET != 0 {
+        registers.write32(QCA6174_RTC_SOC_BASE, current | RTC_SOC_SI0_RESET)?;
+        settle_reset_delay(10);
+        let held = registers.read32(QCA6174_RTC_SOC_BASE)?;
+        if held == u32::MAX {
+            return Err(ce::CeError::DeviceUnavailable);
+        }
+        registers.write32(QCA6174_RTC_SOC_BASE, held & !RTC_SOC_SI0_RESET)?;
+    }
+    settle_reset_delay(10);
+    Ok(())
 }
 
 /// Clear the latched `FW_IND_EVENT_PENDING` bit without touching the other
@@ -534,6 +560,10 @@ pub(super) struct TargetReset {
     /// Chip-id/wake samples taken across the first three seconds after the cold
     /// reset, showing when (or whether) the SoC window answered.
     pub chip_id_timeline: ChipIdTimeline,
+    /// True when the latched crash bit was cleared after the cold reset and the
+    /// ROM then answered `FW_IND_INITIALIZED`, which is the retry
+    /// `ath10k_pci_hif_power_up` performs on a failed chip reset.
+    pub rom_started_after_clear: bool,
 }
 
 /// Raw snapshot of the four registers that decide whether `0x8` really is the
@@ -639,8 +669,25 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
     // `ath10k_pci_qca6174_chip_reset` waits for target init between the cold and
     // warm reset. Keeping the value tells the boot log whether the ROM ever came
     // back after the cold reset, instead of only seeing it after the warm reset.
-    let (cold_ready, cold_indicator) = wait_for_target_init(registers, poll_limit)
-        .map_err(|error| failed("wait for boot ROM after cold reset", error))?;
+    let (mut cold_ready, mut cold_indicator) =
+        wait_for_target_init(registers, poll_limit)
+            .map_err(|error| failed("wait for boot ROM after cold reset", error))?;
+
+    // `ath10k_pci_hif_power_up` does not stop at "firmware crashed during chip
+    // reset": it clears the latched `FW_IND_EVENT_PENDING` and goes on. The ROM
+    // answers only once that bit is gone, so the wait is repeated after the
+    // clear instead of reporting the stale latch as the device's final state.
+    let mut rom_started_after_clear = cold_ready;
+    if !cold_ready && cold_indicator & FW_IND_EVENT_PENDING != 0 {
+        if clear_fw_crash(registers).is_ok() {
+            let (ready, value) = wait_for_target_init(registers, poll_limit).map_err(|error| {
+                failed("wait for boot ROM after clearing the crash latch", error)
+            })?;
+            cold_ready = ready;
+            cold_indicator = value;
+            rom_started_after_clear = ready;
+        }
+    }
 
     pulse_ce_reset(registers).map_err(|error| failed("reset copy engines", error))?;
 
@@ -654,6 +701,7 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         dump_before,
         dump_after,
         chip_id_timeline,
+        rom_started_after_clear,
     })
 }
 
@@ -688,6 +736,10 @@ where
     let mut cpu_warm_reset_visible = false;
     let mut attempts = 0;
     let mut saw_crash = false;
+
+    // `ath10k_pci_warm_reset` opens with `ath10k_pci_warm_reset_si0` so the
+    // target is not touching the copy engines while the host resets them.
+    warm_reset_si0(registers).map_err(|error| failed("settle SI0 reset", error))?;
 
     // `ath10k_pci_warm_reset`: CPU warm reset -> `init_pipes` -> wait (ath10k
     // ignores this result) -> clear the low-frequency timer -> CE reset pulse ->
@@ -1488,6 +1540,63 @@ mod tests {
             registers.writes.last(),
             Some(&(QCA6174_PCIE_SOC_WAKE_ADDRESS, 1))
         );
+    }
+
+    /// Target mock that latches `FW_IND_EVENT_PENDING` on the cold reset and
+    /// only starts its boot ROM once the host clears that bit, which is what the
+    /// laptop reports.
+    #[derive(Default)]
+    struct MockCrashLatch {
+        awake: bool,
+        latched: bool,
+        released: bool,
+        values: alloc::collections::BTreeMap<u64, u32>,
+    }
+
+    impl RegisterIo for MockCrashLatch {
+        fn read32(&mut self, offset: u64) -> Result<u32, CeError> {
+            if offset == RTC_STATE_BAR_OFFSET {
+                return Ok(if self.awake { 0x73 } else { 0x71 });
+            }
+            if offset == QCA6174_FW_INDICATOR_ADDRESS {
+                return Ok(if self.latched {
+                    FW_IND_EVENT_PENDING
+                } else if self.released {
+                    FW_IND_INITIALIZED
+                } else {
+                    0
+                });
+            }
+            Ok(self.values.get(&offset).copied().unwrap_or(0))
+        }
+
+        fn write32(&mut self, offset: u64, value: u32) -> Result<(), CeError> {
+            self.values.insert(offset, value);
+            match offset {
+                QCA6174_PCIE_SOC_WAKE_ADDRESS => self.awake = value & 1 != 0,
+                QCA6174_SOC_GLOBAL_RESET_ADDRESS if value & 1 == 0 => self.latched = true,
+                QCA6174_FW_INDICATOR_ADDRESS if value & FW_IND_EVENT_PENDING == 0 => {
+                    if self.latched {
+                        self.latched = false;
+                        self.released = true;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_latched_crash_is_cleared_and_the_rom_is_polled_again() {
+        let mut registers = MockCrashLatch::default();
+        let prepared = reset_target_soc(&mut registers, 8).unwrap();
+
+        // The latch the firmware left behind is released and the second wait
+        // sees a live boot ROM, so the reset is not reported as a crash.
+        assert!(prepared.rom_started_after_clear);
+        assert!(prepared.cold_ready);
+        assert_eq!(prepared.cold_indicator, FW_IND_INITIALIZED);
     }
 
     #[test]

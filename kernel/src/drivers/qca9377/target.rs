@@ -110,6 +110,9 @@ pub struct TargetConfigReport {
     pub config_flags: u32,
     pub early_alloc: u32,
     pub option_flag2: u32,
+    /// `HI_OPTION_FLAG2` read back through the same CE7 pipe: the only value in
+    /// this report that proves the writes actually reach target IRAM.
+    pub option_flag2_after: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +168,7 @@ pub fn configure_pipes(
     let option_flag2 = memory.read32(HOST_INTEREST_ADDRESS + HI_OPTION_FLAG2)?;
     let option_flag2 = option_flag2 | HI_OPTION_EARLY_CFG_DONE;
     memory.write32(HOST_INTEREST_ADDRESS + HI_OPTION_FLAG2, option_flag2)?;
+    let option_flag2_after = memory.read32(HOST_INTEREST_ADDRESS + HI_OPTION_FLAG2)?;
 
     Ok(TargetConfigReport {
         pcie_state,
@@ -173,6 +177,7 @@ pub fn configure_pipes(
         config_flags,
         early_alloc,
         option_flag2,
+        option_flag2_after,
     })
 }
 

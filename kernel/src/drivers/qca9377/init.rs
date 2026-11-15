@@ -246,12 +246,14 @@ pub unsafe fn initialize_device(
             unsafe { target::Ce7TargetMemory::new(&mut target_config_ce, &mut registers) };
         match target::configure_pipes(&mut memory) {
             Ok(report) => crate::println!(
-                "QCA9377 target CE config: pcie_state={:#010x} pipe_cfg={:#010x} svc_map={:#010x} banks={} flags={:#x}",
+                "QCA9377 target CE config: pcie_state={:#010x} pipe_cfg={:#010x} svc_map={:#010x} banks={} flags={:#x} option_flag2={:#x}->{:#x}",
                 report.pcie_state,
                 report.pipe_config_address,
                 report.service_map_address,
                 target::QCA9377_IRAM_BANKS,
-                report.config_flags
+                report.config_flags,
+                report.option_flag2,
+                report.option_flag2_after
             ),
             Err(error) => {
                 crate::println!("QCA9377 target CE config failed: {error:?}");
@@ -273,11 +275,13 @@ pub unsafe fn initialize_device(
     match release_target_cpu(&mut registers, QCA_WAKE_POLL_LIMIT, target_reset) {
         Ok(outcome) => {
             crate::println!(
-                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} soc_reset_control={:#010x}",
+                "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} soc_reset_control={:#010x} -> {:#010x} (assert) -> {:#010x} (release)",
                 outcome.indicator_before,
                 outcome.indicator_after,
                 outcome.ready,
-                outcome.reset_control
+                target_reset.reset_control_before,
+                outcome.reset_control_asserted,
+                outcome.reset_control_released
             );
             if !outcome.ready {
                 crate::println!(

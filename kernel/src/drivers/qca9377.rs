@@ -249,6 +249,9 @@ pub(super) fn wait_for_target_init<R: ce::RegisterIo>(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct TargetReset {
     pub indicator_before: u32,
+    /// `SOC_RESET_CONTROL` before any reset work, so the boot log can show what
+    /// the SoC was holding and whether our writes actually change it.
+    pub reset_control_before: u32,
 }
 
 /// Result of a completed reset attempt, for the boot log.
@@ -259,7 +262,9 @@ pub(super) struct ResetOutcome {
     pub ready: bool,
     /// Live `SOC_RESET_CONTROL` (RTC_SOC + 0x0) read back right after the CPU
     /// warm reset bit was written.
-    pub reset_control: u32,
+    pub reset_control_asserted: u32,
+    /// The same register after the warm reset bit was released again.
+    pub reset_control_released: u32,
 }
 
 /// A reset step that failed, so the boot log can say where the target stopped.
@@ -287,13 +292,19 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
     let indicator_before = registers
         .read32(QCA6174_FW_INDICATOR_ADDRESS)
         .map_err(|error| failed("read FW_INDICATOR", error))?;
+    let reset_control_before = registers
+        .read32(QCA6174_RTC_SOC_BASE)
+        .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
     target_wake(registers, poll_limit).map_err(|error| failed("wake target", error))?;
     soc_global_reset(registers).map_err(|error| failed("SoC global reset", error))?;
     target_wake(registers, poll_limit)
         .map_err(|error| failed("wake after cold reset", error))?;
     pulse_ce_reset(registers).map_err(|error| failed("reset copy engines", error))?;
 
-    Ok(TargetReset { indicator_before })
+    Ok(TargetReset {
+        indicator_before,
+        reset_control_before,
+    })
 }
 
 /// Release the target CPU so the boot ROM services BMI, then wait for
@@ -312,9 +323,25 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
     let failed = |step, error| ResetFailure { step, error };
 
     reset_target_cpu(registers).map_err(|error| failed("reset target CPU", error))?;
-    let reset_control = registers
+    let reset_control_asserted = registers
         .read32(QCA6174_RTC_SOC_BASE)
         .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
+
+    // QCA9377 does not retain the warm reset bit: it reads back cleared, so the
+    // CPU only sees an edge if the release is written explicitly. Pulse it like
+    // the SoC global reset and CE reset, then keep both readbacks for the log.
+    settle_reset_delay();
+    registers
+        .write32(
+            QCA6174_RTC_SOC_BASE,
+            reset_control_asserted & !RTC_SOC_CPU_RESET,
+        )
+        .map_err(|error| failed("release target CPU", error))?;
+    settle_reset_delay();
+    let reset_control_released = registers
+        .read32(QCA6174_RTC_SOC_BASE)
+        .map_err(|error| failed("read SOC_RESET_CONTROL after release", error))?;
+
     let (ready, indicator_after) = wait_for_target_init(registers, poll_limit)
         .map_err(|error| failed("wait for boot ROM", error))?;
     target_wake(registers, poll_limit).map_err(|error| failed("final wake", error))?;
@@ -323,7 +350,8 @@ pub(super) fn release_target_cpu<R: ce::RegisterIo>(
         indicator_before: reset.indicator_before,
         indicator_after,
         ready,
-        reset_control,
+        reset_control_asserted,
+        reset_control_released,
     })
 }
 
@@ -863,7 +891,9 @@ mod tests {
         assert!(outcome.ready);
         assert_eq!(outcome.indicator_before, 0);
         assert_eq!(outcome.indicator_after, FW_IND_INITIALIZED);
-        assert_ne!(outcome.reset_control & RTC_SOC_CPU_RESET, 0);
+        assert_eq!(prepared.reset_control_before & RTC_SOC_CPU_RESET, 0);
+        assert_ne!(outcome.reset_control_asserted & RTC_SOC_CPU_RESET, 0);
+        assert_eq!(outcome.reset_control_released & RTC_SOC_CPU_RESET, 0);
         assert!(registers.awake);
 
         assert!(registers

@@ -210,7 +210,7 @@ The full driver initialization sequence is implemented in `kernel/src/drivers/qc
    - HTT Data:      TX=CE4, RX=CE5
 5. **HTC Handshake**: Waits for `HTC_READY`, connects `HTC_SERVICE_WMI_CONTROL` and `HTC_SERVICE_HTT_DATA`, and transmits `HTC_SETUP_COMPLETE`.
 6. **WMI Initialization**: Sends `WMI_INIT` inside an HTC data message on the WMI TX pipe (CE3), then polls the WMI RX pipe (CE2) for `WMI_READY` and extracts the hardware MAC address.
-7. **HTT Version Handshake**: Sends `HTT_H2T_MSG_TYPE_VERSION_REQ` as an HTC data message on the HTT endpoint (CE4) and reads `HTT_T2H_MSG_TYPE_VERSION_CONF` from CE5.
+7. **HTT Version Handshake & RX Ring**: Sends `HTT_H2T_MSG_TYPE_VERSION_REQ` as an HTC data message on the HTT endpoint (CE4), reads `HTT_T2H_MSG_TYPE_VERSION_CONF` from CE5, then describes the RX buffer ring with `HTT_H2T_MSG_TYPE_RX_RING_CFG`.
 8. **STA Vdev & Peer Creation**: Sends `WMI_VDEV_CREATE` (STA mode), `WMI_PEER_CREATE` (self), and disables STA powersave.
 9. **Radio Bring-up & Scanning**: Sends `WMI_VDEV_START` (2.4 GHz channel), waits for `VDEV_START_RESP`, triggers active scan via `WMI_START_SCAN`, and drains scan completion events.
 10. **AP Association**: Issues `WMI_VDEV_UP`, `WMI_PEER_CREATE` (BSS peer), and `WMI_PEER_ASSOC` to associate with the target AP.
@@ -249,6 +249,20 @@ written to the HTT TX pipe (CE4) inside an HTC data message for the endpoint the
 target assigned to HTT, and the confirmation is decoded from CE5 with the same
 endpoint check and credit-trailer handling. Earlier a bare 4-byte frame went to
 CE4 and the reply was parsed without any HTC framing.
+
+After the handshake the driver describes the RX buffer ring, as
+`ath10k_htt_send_rx_ring_cfg` does: a coherent array of 32-bit buffer addresses
+(`htt_rx_ring_setup_32.rings[0].rx_ring_base_paddr`), one coherent word the
+firmware uses as its next-free index (`fw_idx_shadow_reg_paddr`), the ring length
+(`rx_ring_len`, a power of two — 64 here instead of ath10k's 2048 because every
+buffer is a whole 4 KiB DMA frame), `rx_ring_bufsize` = `HTT_RX_BUF_SIZE`
+(2048), every `HTT_RX_RING_FLAGS_*` bit in `flags`, and `fw_idx_init_val` = 0
+because the host posted buffers from index 0. The message goes out as
+`HTT_H2T_MSG_TYPE_RX_RING_CFG` on the HTT HTC endpoint, and the ring is leaked
+on purpose: the firmware keeps DMA-ing into those buffers. The
+`htt_rx_ring_rx_desc_offsets` field is still zero — ath10k's HL variant
+(`ath10k_htt_send_rx_ring_cfg_hl`) zeroes it too, and this driver does not parse
+HTT RX descriptors yet.
 
 The message contents now match `ath10k_htt_h2t_ver_req_msg` and
 `ath10k_htt_t2h_version_conf`: the request is `htt_cmd_hdr { msg_type = 0 }`

@@ -118,13 +118,16 @@ impl Descriptor {
     }
 }
 
-struct DmaPage {
+/// One DMA-visible 4 KiB frame, used for rings, buffers and status words.
+pub struct DmaPage {
     physical: usize,
     virtual_address: NonNull<u8>,
 }
 
 impl DmaPage {
-    fn allocate() -> Result<Self, CeError> {
+    pub const SIZE: usize = DMA_PAGE_SIZE;
+
+    pub fn allocate() -> Result<Self, CeError> {
         let physical = memory::allocate_dma32_frame().ok_or(CeError::OutOfDmaFrames)?;
         let Some(virtual_address) = memory::physical_to_virtual(physical) else {
             memory::free_frame(physical);
@@ -153,11 +156,11 @@ impl DmaPage {
         })
     }
 
-    const fn physical_address(&self) -> u32 {
+    pub const fn physical_address(&self) -> u32 {
         self.physical as u32
     }
 
-    fn write(&self, source: &[u8]) {
+    pub fn write(&self, source: &[u8]) {
         unsafe {
             core::ptr::copy_nonoverlapping(
                 source.as_ptr(),
@@ -168,7 +171,7 @@ impl DmaPage {
         fence(Ordering::Release);
     }
 
-    fn read(&self, destination: &mut [u8]) {
+    pub fn read(&self, destination: &mut [u8]) {
         fence(Ordering::Acquire);
         for (index, byte) in destination.iter_mut().enumerate() {
             *byte = unsafe { self.virtual_address.as_ptr().add(index).read_volatile() };

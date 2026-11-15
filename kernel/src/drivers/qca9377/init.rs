@@ -23,7 +23,7 @@ use super::{
     wmi::{self, WmiCmdId, WmiEvent},
 };
 use crate::{memory, network};
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 const QCA9377_SLOT_ID: u32 = 0x9377;
 const VDEV_ID: u32 = 0;
@@ -611,26 +611,49 @@ pub unsafe fn initialize_device(
         // HTT is an HTC service as well: the request goes out as an HTC data
         // message for the HTT endpoint on CE4, and the version confirmation
         // comes back on CE5. ath10k sends it from `ath10k_htt_h2t_ver_req_msg`.
-        {
-            let mut htt_ep = htt::HttEndpoint::new(htt_resp.endpoint, htt_resp.max_message_size);
-            let mut htt_frame = [0u8; 64];
-            crate::println!(
-                "QCA9377 HTT endpoint {} (max {} bytes), framed as HTC data messages",
-                htt_ep.endpoint(),
-                htt_resp.max_message_size
-            );
-            match unsafe {
-                htt_ep.version_handshake(&mut htt_tx, &mut htt_rx, &mut registers, &mut htt_frame)
-            } {
-                Ok(version) => crate::println!(
-                    "QCA9377 HTT version: {}.{}",
-                    version.major,
-                    version.minor
-                ),
-                Err(error) => {
-                    crate::println!("QCA9377 HTT version handshake failed: {error:?}");
+        let mut htt_ep = htt::HttEndpoint::new(htt_resp.endpoint, htt_resp.max_message_size);
+        let mut htt_frame = [0u8; 64];
+        crate::println!(
+            "QCA9377 HTT endpoint {} (max {} bytes), framed as HTC data messages",
+            htt_ep.endpoint(),
+            htt_resp.max_message_size
+        );
+        match unsafe {
+            htt_ep.version_handshake(&mut htt_tx, &mut htt_rx, &mut registers, &mut htt_frame)
+        } {
+            Ok(version) => crate::println!(
+                "QCA9377 HTT version: {}.{}",
+                version.major,
+                version.minor
+            ),
+            Err(error) => {
+                crate::println!("QCA9377 HTT version handshake failed: {error:?}");
+            }
+        }
+
+        // ── 8b. HTT RX ring ───────────────────────────────────────────────────
+        // ath10k_htt_send_rx_ring_cfg: tell the firmware which buffer ring it may
+        // DMA received MSDUs into. The firmware keeps writing into those buffers
+        // for the whole device lifetime, so the ring is leaked rather than dropped
+        // by a later error path.
+        match htt::HttRxRing::allocate(htt::HTT_RX_RING_SIZE) {
+            Ok(ring) => {
+                let ring: &'static mut htt::HttRxRing = Box::leak(Box::new(ring));
+                let mut config_frame = [0u8; 128];
+                match unsafe {
+                    ring.configure(&mut htt_ep, &mut htt_tx, &mut registers, &mut config_frame)
+                } {
+                    Ok(()) => crate::println!(
+                        "QCA9377 HTT RX ring: {} buffers of {} bytes",
+                        ring.size(),
+                        htt::HTT_RX_BUF_SIZE
+                    ),
+                    Err(error) => {
+                        crate::println!("QCA9377 HTT RX ring config failed: {error:?}");
+                    }
                 }
             }
+            Err(error) => crate::println!("QCA9377 HTT RX ring allocation failed: {error:?}"),
         }
 
         // ── 9. Create STA vdev ────────────────────────────────────────────────

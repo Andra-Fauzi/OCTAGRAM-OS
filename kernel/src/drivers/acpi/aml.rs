@@ -264,7 +264,19 @@ pub struct Namespace {
     /// iteration budget. A partial namespace only loses definitions; hanging on
     /// one is worse, because the boot never comes back.
     truncated: bool,
+    /// Terms parsed across every table, so the total work is bounded even when a
+    /// table is parsed in many nested lists.
+    steps: u64,
 }
+
+/// Set by the caller that wants parse progress in the boot log. It is off by
+/// default so host tests stay silent.
+pub static PARSE_TRACE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Total terms one namespace parse may handle before it gives up and marks the
+/// namespace truncated.
+const MAX_PARSE_STEPS: u64 = 1 << 20;
 
 impl Namespace {
     /// Parse the DSDT and every SSDT, in that order.
@@ -274,6 +286,7 @@ impl Namespace {
             tables: tables.to_vec(),
             resyncs: 0,
             truncated: false,
+            steps: 0,
         };
         for table in 0..tables.len() {
             let mut cursor = Cursor::new(tables[table]);
@@ -349,12 +362,21 @@ impl Namespace {
         // froze on "parsing the ACPI namespace" and never returned.
         let mut budget = end.saturating_mul(2).saturating_add(64);
         while cursor.position < end {
-            if budget == 0 {
+            if budget == 0 || self.steps >= MAX_PARSE_STEPS {
                 self.truncated = true;
                 break;
             }
             budget -= 1;
+            self.steps += 1;
             let start = cursor.position;
+            if PARSE_TRACE.load(core::sync::atomic::Ordering::Relaxed)
+                && start / 4096 != cursor.position / 4096
+            {
+                crate::println!(
+                    "AML parse: table {table} offset {start:#x} of {end:#x}, {} objects",
+                    self.objects.len()
+                );
+            }
             match self.parse_term(table, cursor, scope, end, depth) {
                 Ok(()) => {
                     if cursor.position <= start {
@@ -385,6 +407,7 @@ impl Namespace {
         end: usize,
         depth: usize,
     ) -> Result<(), AmlError> {
+        cursor.budget = MAX_TERM_BYTES;
         match cursor.peek()? {
             NAME_OP => {
                 cursor.next()?;
@@ -745,6 +768,7 @@ impl<'a> Interpreter<'a> {
                     let mut nested = Cursor {
                         bytes: cursor.bytes,
                         position: body_start,
+                        budget: MAX_TERM_BYTES,
                     };
                     flow = self.run_block(&mut nested, scope, end, io, depth)?;
                 }
@@ -760,6 +784,7 @@ impl<'a> Interpreter<'a> {
                         let mut nested = Cursor {
                             bytes: cursor.bytes,
                             position: cursor.position,
+                            budget: MAX_TERM_BYTES,
                         };
                         let flow = self.run_block(&mut nested, scope, else_end, io, depth)?;
                         cursor.position = else_end;
@@ -777,6 +802,7 @@ impl<'a> Interpreter<'a> {
                     let mut predicate_cursor = Cursor {
                         bytes: cursor.bytes,
                         position: predicate_start,
+                        budget: MAX_TERM_BYTES,
                     };
                     let predicate = self.expression(&mut predicate_cursor, scope, io, depth)?;
                     if predicate.as_integer() == 0 {
@@ -785,6 +811,7 @@ impl<'a> Interpreter<'a> {
                     let mut body_cursor = Cursor {
                         bytes: cursor.bytes,
                         position: predicate_cursor.position,
+                        budget: MAX_TERM_BYTES,
                     };
                     match self.run_block(&mut body_cursor, scope, end, io, depth)? {
                         Flow::Next | Flow::Break => {}
@@ -1200,11 +1227,22 @@ fn write_bits(
 struct Cursor<'a> {
     bytes: &'a [u8],
     position: usize,
+    /// Bytes the term being parsed may still consume. A single definition is at
+    /// most a few hundred bytes in any real table, so a term that keeps reading
+    /// is a reader bug; it is cut off instead of running to the end of the table.
+    budget: usize,
 }
+
+/// Upper bound on the bytes one term may consume.
+const MAX_TERM_BYTES: usize = 8 * 1024;
 
 impl<'a> Cursor<'a> {
     fn new(bytes: &'a [u8]) -> Self {
-        Cursor { bytes, position: 0 }
+        Cursor {
+            bytes,
+            position: 0,
+            budget: MAX_TERM_BYTES,
+        }
     }
 
     fn peek(&self) -> Result<u8, AmlError> {
@@ -1212,14 +1250,22 @@ impl<'a> Cursor<'a> {
     }
 
     fn next(&mut self) -> Result<u8, AmlError> {
+        if self.budget == 0 {
+            return Err(AmlError::Truncated);
+        }
         let byte = self.peek()?;
+        self.budget -= 1;
         self.position += 1;
         Ok(byte)
     }
 
     fn take(&mut self, count: usize) -> Result<&'a [u8], AmlError> {
+        if count > self.budget {
+            return Err(AmlError::Truncated);
+        }
         let end = self.position.checked_add(count).ok_or(AmlError::Truncated)?;
         let bytes = self.bytes.get(self.position..end).ok_or(AmlError::Truncated)?;
+        self.budget -= count;
         self.position = end;
         Ok(bytes)
     }

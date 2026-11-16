@@ -170,6 +170,10 @@ fn namespace() -> Option<&'static Namespace> {
                     table.len()
                 );
             }
+            // The parse froze once with every table already named, so it now
+            // reports its offset every 4 KiB: a stall then shows the exact byte
+            // the reader cannot get past.
+            super::aml::PARSE_TRACE.store(true, core::sync::atomic::Ordering::Relaxed);
             let namespace = Namespace::parse(&tables);
             crate::println!(
                 "QCA9377 ACPI power: parsed {} objects, {} resyncs, truncated={}",

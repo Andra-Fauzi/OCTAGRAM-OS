@@ -376,19 +376,41 @@ impl Namespace {
             }
             self.steps += 1;
             let start = cursor.position;
+            let trace = PARSE_TRACE.load(core::sync::atomic::Ordering::Relaxed);
             // The boot log has to say where a stall is, and after a resync this
             // loop walks the table one byte at a time, so the offset is reported
             // once per 4 KiB.
-            if PARSE_TRACE.load(core::sync::atomic::Ordering::Relaxed)
-                && start / 4096 != traced
-            {
+            if trace && start / 4096 != traced {
                 traced = start / 4096;
                 crate::println!(
-                    "AML parse: table {table} offset {start:#x} of {end:#x}, {} objects",
-                    self.objects.len()
+                    "AML parse: table {table} offset {start:#x} of {end:#x}, {} objects, steps={} depth={depth}",
+                    self.objects.len(),
+                    self.steps
                 );
             }
-            match self.parse_term(table, cursor, scope, end, depth) {
+
+            // Trace every 128 parser steps, plus every term in the region where
+            // the ASUS E203NAH DSDT stopped (around 0x1206). The begin/end pair
+            // tells whether the parser is blocked inside one AML opcode or is
+            // slowly resynchronising across unsupported bytes.
+            let trace_term = trace
+                && (self.steps % 128 == 0
+                    || (table == 0 && (0x11f0..0x1400).contains(&start)));
+            if trace_term {
+                crate::println!(
+                    "AML term begin: table={table} offset={start:#x} opcode={:#04x} steps={} depth={depth}",
+                    cursor.peek().unwrap_or(0xff),
+                    self.steps
+                );
+            }
+            let term_result = self.parse_term(table, cursor, scope, end, depth);
+            if trace_term {
+                crate::println!(
+                    "AML term end: table={table} offset={start:#x}->{:#x} result={term_result:?}",
+                    cursor.position
+                );
+            }
+            match term_result {
                 Ok(()) => {
                     if cursor.position <= start {
                         self.resyncs = self.resyncs.saturating_add(1);

@@ -55,7 +55,7 @@ const PORTSC_PED: u32 = 1 << 1;
 const PORTSC_PR: u32 = 1 << 4;
 const PORTSC_PP: u32 = 1 << 9;
 const PORTSC_SPEED_MASK: u32 = 0xF << 10;
-const PORTSC_CHANGE_BITS: u32 =
+pub const PORTSC_CHANGE_BITS: u32 =
     (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20) | (1 << 21) | (1 << 22) | (1 << 23) | (1 << 24);
 const PORTSC_WPR: u32 = 1 << 31;
 
@@ -491,7 +491,7 @@ impl XHCI {
             self.last_completion = None;
             self.send_command(parameter, status, trb_type, slot_id);
 
-            let mut timeout = 10_000_000;
+            let mut timeout = 1_000_000;
             loop {
                 if let Some((code, slot_id)) = self.last_completion.take() {
                     if code == 1 {
@@ -530,6 +530,16 @@ impl XHCI {
         let capacity = CONTROL_RING_SIZE - 1;
         if self.ep0_enqueue_index + slots > capacity {
             unsafe {
+                let trbs = self.ep0_ring_virt as *mut Trb;
+                let control = (TRB_TYPE_LINK << 10) | (1 << 1) | (self.ep0_cycle_state as u32);
+                write_trb_cycle_last(
+                    trbs.add(self.ep0_enqueue_index),
+                    Trb {
+                        parameter: self.ep0_ring_phys,
+                        status: 0,
+                        control,
+                    },
+                );
                 write_link_trb(
                     self.ep0_ring_virt,
                     self.ep0_ring_phys,
@@ -616,7 +626,7 @@ impl XHCI {
         unsafe {
             let trbs = ring_virt as *mut Trb;
 
-            let control = (TRB_TYPE_NORMAL << 10) | (1 << 5) | (*cycle_state as u32);
+            let control = (TRB_TYPE_NORMAL << 10) | (1 << 5) | (1 << 2) | (*cycle_state as u32);
 
             let trb = Trb {
                 parameter: buf_phys,
@@ -1212,7 +1222,7 @@ pub unsafe fn reset_port(root_port: u8) -> Result<u8, &'static str> {
                 delay_milliseconds(if speed == 4 { 50 } else { 10 });
                 return Ok(((status & PORTSC_SPEED_MASK) >> 10) as u8);
             }
-            poll_manual_events();
+            poll_event_ring_once();
             core::hint::spin_loop();
         }
         println!(
@@ -1442,6 +1452,7 @@ fn wait_ep0_transfer(slot_id: u32, timeout: &mut u32) -> Option<(u32, u32)> {
         if *timeout == 0 {
             return None;
         }
+        core::hint::spin_loop();
     }
 }
 
@@ -1536,7 +1547,7 @@ pub unsafe fn disable_slot(slot_id: u32) -> Result<(), &'static str> {
             core::arch::asm!("sti");
 
             match wait_command_completion(slot_id, 10_000_000) {
-                Some(1) => break,
+                Some(1) | Some(4) => break, // 1 = Success, 4 = Slot Not Enabled (sudah nonaktif)
                 Some(_) => return Err("Disable Slot gagal, completion code bukan Success"),
                 None => {
                     if attempt == 0 && recover_command_ring("Disable Slot timeout") {
@@ -1596,7 +1607,7 @@ impl ContextBuffer {
     }
 }
 
-const CONTROL_RING_SIZE: usize = 16;
+const CONTROL_RING_SIZE: usize = 64;
 
 #[repr(C, align(64))]
 struct TransferRing {
@@ -1631,6 +1642,7 @@ pub unsafe fn address_device(slot_id: u32, root_port: u8, speed: u8) -> Result<(
         let ep0_ring_virt = Box::into_raw(ep0_ring_box) as u64;
         let ep0_ring_phys = memory::virtual_to_physical(ep0_ring_virt as usize)
             .ok_or("gagal translate ep0 ring")? as u64;
+        write_link_trb(ep0_ring_virt, ep0_ring_phys, CONTROL_RING_SIZE, true);
 
         let dev_ctx_box: Box<ContextBuffer> = Box::new(ContextBuffer::zeroed());
         let dev_ctx_virt = Box::into_raw(dev_ctx_box) as u64;
@@ -1650,10 +1662,10 @@ pub unsafe fn address_device(slot_id: u32, root_port: u8, speed: u8) -> Result<(
         input_ctx.write_dword(context_size, 1, 1, (root_port as u32) << 16);
 
         let max_packet_size: u32 = match speed {
-            4 => 512,
+            4 | 5 => 512,
             3 => 64,
             2 => 8,
-            _ => 8,
+            _ => 64, // full speed: 8/16/32/64, corrected by update_ep0_max_packet
         };
 
         input_ctx.write_dword(
@@ -1682,7 +1694,7 @@ pub unsafe fn address_device(slot_id: u32, root_port: u8, speed: u8) -> Result<(
         } // <-- lock dilepas DI SINI, sebelum sti
         core::arch::asm!("sti");
 
-        let mut timeout = 10_000_000;
+        let mut timeout = 1_000_000;
         loop {
             if COMPLETION_PENDING.load(Ordering::SeqCst) {
                 let code = COMPLETION_CODE.load(Ordering::SeqCst);
@@ -1695,7 +1707,7 @@ pub unsafe fn address_device(slot_id: u32, root_port: u8, speed: u8) -> Result<(
                     Err("Address Device gagal, completion code bukan Success")
                 };
             }
-            poll_manual_events();
+            poll_event_ring_once();
             timeout -= 1;
             if timeout == 0 {
                 return Err("Timeout menunggu Address Device completion");
@@ -1723,6 +1735,23 @@ fn data_stage_control(is_in: bool) -> u32 {
 #[cfg(test)]
 mod control_trb_tests {
     use super::*;
+
+    #[test]
+    fn endpoint_interval_matches_link_speed() {
+        assert_eq!(xhci_endpoint_interval(3, 3, 4), 3); // HS exponent
+        assert_eq!(xhci_endpoint_interval(1, 3, 10), 6); // FS 10 ms -> 8 ms
+        assert_eq!(xhci_endpoint_interval(2, 3, 8), 6); // LS 8 ms
+        assert_eq!(xhci_endpoint_interval(1, 3, 1), 3); // 1 ms -> 8 microframes
+    }
+
+    #[test]
+    fn configure_endpoint_add_flags_live_in_dword_one() {
+        let mut ctx = ContextBuffer::zeroed();
+        ctx.write_dword(64, 0, 0, 0);
+        ctx.write_dword(64, 0, 1, 0b11001);
+        assert_eq!(u32::from_le_bytes(ctx.0[0..4].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(ctx.0[4..8].try_into().unwrap()), 0b11001);
+    }
 
     #[test]
     fn context_fields_use_the_controller_context_stride() {
@@ -1917,7 +1946,7 @@ pub unsafe fn get_device_descriptor(slot_id: u32) -> Result<DeviceDescriptor, &'
         } // <-- lock dilepas sebelum sti
         core::arch::asm!("sti");
 
-        let mut timeout = 10_000_000;
+        let mut timeout = 1_000_000;
         let Some((code, _)) = wait_ep0_transfer(slot_id, &mut timeout) else {
             return Err("Timeout menunggu Get Device Descriptor completion");
         };
@@ -2000,12 +2029,15 @@ pub unsafe fn control_transfer_in(
 
         core::arch::asm!("sti");
 
-        let mut timeout = 10_000_000;
+        let mut timeout = 1_000_000;
         let Some((code, residual)) = wait_ep0_transfer(slot_id, &mut timeout) else {
             return Err("timeout menunggu control transfer completion");
         };
         if code != 1 && code != 13 {
             return Err("Control transfer gagal, completion code bukan Success");
+        }
+        if code == 13 {
+            let _ = wait_ep0_transfer(slot_id, &mut timeout);
         }
         return Ok((w_length as u32).saturating_sub(residual));
     }
@@ -2050,7 +2082,7 @@ pub unsafe fn control_transfer_out(
         }
         core::arch::asm!("sti");
 
-        let mut timeout = 10_000_000;
+        let mut timeout = 1_000_000;
         let Some((code, residual)) = wait_ep0_transfer(slot_id, &mut timeout) else {
             return Err("Control OUT transfer timed out");
         };
@@ -2241,7 +2273,7 @@ pub unsafe fn control_transfer_no_data(
 
         core::arch::asm!("sti");
 
-        let mut timeout = 10_000_000;
+        let mut timeout = 1_000_000;
         let Some((code, _residual)) = wait_ep0_transfer(slot_id, &mut timeout) else {
             return Err("Timeout control transfer no data");
         };
@@ -2350,8 +2382,8 @@ pub unsafe fn configure_endpoints(
             write_link_trb(ep_ring_virt, ep_ring_phys, CONTROL_RING_SIZE, true);
 
             let ep_context_index = dci as usize + 1;
-            let interval = if transfer_type == 1 || transfer_type == 3 {
-                ep_info.interval.saturating_sub(1) as u32
+            let interval = if transfer_type == 3 || transfer_type == 1 {
+                xhci_endpoint_interval(speed, transfer_type, ep_info.interval)
             } else {
                 0
             };
@@ -2374,11 +2406,7 @@ pub unsafe fn configure_endpoints(
                 3,
                 (ep_ring_phys >> 32) as u32,
             );
-            let average_trb_length = if transfer_type == 1 || transfer_type == 3 {
-                max_packet_size as u32
-            } else {
-                0
-            };
+            let average_trb_length = (max_packet_size as u32).max(8);
             input_ctx.write_dword(context_size, ep_context_index, 4, average_trb_length);
 
             added |= 1 << dci;
@@ -2392,7 +2420,12 @@ pub unsafe fn configure_endpoints(
             });
         }
 
-        input_ctx.write_dword(context_size, 0, 0, added);
+        // Input Control Context: DW0 = Drop Context flags, DW1 = Add Context
+        // flags. Writing `added` into DW0 made the controller report Success
+        // while enabling nothing, so the first bulk transfer failed with
+        // completion code 12 (Endpoint Not Enabled).
+        input_ctx.write_dword(context_size, 0, 0, 0);
+        input_ctx.write_dword(context_size, 0, 1, added);
         for dword in 0..8 {
             let value = (device_context as *const u32).add(dword).read_volatile();
             input_ctx.write_dword(context_size, 1, dword, value);
@@ -2426,7 +2459,7 @@ pub unsafe fn configure_endpoints(
         }
         core::arch::asm!("sti");
 
-        let mut timeout = 10_000_000;
+        let mut timeout = 1_000_000;
         loop {
             if COMPLETION_PENDING.load(Ordering::SeqCst) {
                 let code = COMPLETION_CODE.load(Ordering::SeqCst);
@@ -2474,6 +2507,55 @@ pub unsafe fn configure_endpoints(
     }
 }
 
+
+/// Encode bInterval as the xHCI Interval field (period = 2^n * 125 us).
+///
+/// High/SuperSpeed bInterval is already an exponent (value - 1). Full/low
+/// speed interrupt endpoints give milliseconds, so they must be converted:
+/// 1 ms = 8 microframes, i.e. n = floor(log2(ms * 8)).
+fn xhci_endpoint_interval(speed: u8, transfer_type: u8, b_interval: u8) -> u32 {
+    let b = u32::from(b_interval.max(1));
+    if speed >= 3 {
+        return (b - 1).min(15);
+    }
+    if transfer_type == 1 {
+        // Full-speed isochronous: bInterval is an exponent in frames.
+        return ((b - 1) + 3).min(15);
+    }
+    let microframes = b * 8;
+    (31 - microframes.leading_zeros()).clamp(3, 10)
+}
+
+/// Update the EP0 max packet size after the real value is known
+/// (Evaluate Context). Needed for full-speed devices, whose EP0 size can be
+/// 8/16/32/64 and is only known after the first 8 descriptor bytes.
+pub unsafe fn update_ep0_max_packet(slot_id: u32, max_packet: u16) -> Result<(), &'static str> {
+    unsafe {
+        let context_size = XHCI_INSTANCE.get().unwrap().lock().context_size;
+        let mut input_ctx = Box::new(ContextBuffer::zeroed());
+        input_ctx.write_dword(context_size, 0, 1, 1 << 1); // A1 = EP0
+        input_ctx.write_dword(context_size, 2, 1, (4 << 3) | (3 << 1) | ((max_packet as u32) << 16));
+        let input_ctx_virt = Box::into_raw(input_ctx) as u64;
+        let input_ctx_phys = memory::virtual_to_physical(input_ctx_virt as usize)
+            .ok_or("gagal translate input context evaluate")? as u64;
+
+        COMPLETION_PENDING.store(false, Ordering::SeqCst);
+        core::arch::asm!("cli");
+        {
+            let mut guard = XHCI_INSTANCE.get().unwrap().lock();
+            guard.send_command(input_ctx_phys, 0, TRB_TYPE_EVALUATE_CONTEXT, slot_id);
+        }
+        core::arch::asm!("sti");
+        match wait_command_completion(slot_id, 10_000_000) {
+            Some(1) => Ok(()),
+            Some(_) => Err("Evaluate Context gagal"),
+            None => Err("Timeout menunggu Evaluate Context"),
+        }
+    }
+}
+
+const TRB_TYPE_EVALUATE_CONTEXT: u32 = 13;
+
 /// Configure a single endpoint. Kept for callers that only need one; it shares
 /// the batching path so the Added flags of other endpoints are never cleared by
 /// accident.
@@ -2500,17 +2582,26 @@ pub unsafe fn bulk_transfer(
     unsafe {
         arm_bulk_transfer(slot_id, endpoint, buffer_phys, length)?;
 
-        let mut timeout = 10_000_000;
+        let mut timeout = 1_000_000;
         loop {
             if TRANSFER_COMPLETION_PENDING.swap(false, Ordering::SeqCst) {
                 let code = TRANSFER_COMPLETION_CODE.load(Ordering::SeqCst);
                 let residual = TRANSFER_COMPLETION_LENGTH.load(Ordering::SeqCst);
+                let event_slot = TRANSFER_COMPLETION_SLOT.load(Ordering::SeqCst);
+                let event_dci = TRANSFER_COMPLETION_DCI.load(Ordering::SeqCst);
+                if event_slot != slot_id || event_dci != endpoint.dci {
+                    // Stale event from EP0 / another endpoint: keep waiting.
+                    continue;
+                }
                 if code != 1 && code != 13 {
+                    println!(
+                        "bulk transfer gagal: slot={slot_id} dci={event_dci} completion code={code}"
+                    );
                     return Err("bulk transfer failed");
                 }
                 return Ok(length.saturating_sub(residual));
             }
-            poll_manual_events();
+            poll_event_ring_once();
             timeout -= 1;
             if timeout == 0 {
                 return Err("bulk transfer timeout");

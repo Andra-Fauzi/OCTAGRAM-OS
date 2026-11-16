@@ -24,14 +24,17 @@ const PACKET_FILTER_BROADCAST: u32 = 0x0000_0008;
 const MAX_TRANSFER_SIZE: usize = 16 * 1024;
 const MAX_FRAME_SIZE: usize = 1514;
 const RNDIS_HEADER_SIZE: usize = 44;
-const CONTROL_BUFFER_SIZE: usize = 512;
-/// Percobaan membaca `GET_ENCAPSULATED_RESPONSE`, 5 ms sekali (total ~1 detik).
+const CONTROL_BUFFER_SIZE: usize = 1024;
+/// Percobaan membaca `GET_ENCAPSULATED_RESPONSE`, 20 ms sekali.
 ///
 /// HP Android baru menyiapkan balasan beberapa milidetik setelah perintahnya
 /// diterima; retry tanpa jeda selalu mengembalikan response kosong di hardware
 /// nyata dan seluruh bring-up RNDIS gagal dengan "short RNDIS control response".
-const CONTROL_RESPONSE_ATTEMPTS: usize = 200;
-const CONTROL_RESPONSE_DELAY_MS: u32 = 5;
+const CONTROL_RESPONSE_ATTEMPTS: usize = 20;
+const CONTROL_RESPONSE_DELAY_MS: u32 = 25;
+
+#[repr(C, align(4096))]
+struct ControlBuffer([u8; CONTROL_BUFFER_SIZE]);
 
 #[repr(C, align(4096))]
 struct DmaBuffer([u8; MAX_TRANSFER_SIZE]);
@@ -91,34 +94,38 @@ impl LinkDevice for RndisAdapter {
 }
 
 pub fn matches(interface: &UsbInterfaceInfo) -> bool {
-    interface.class == 0xE0
-        && interface.subclass == 0x01
-        && interface.protocol == 0x03
-        && find_bulk_endpoints(&interface.configuration_endpoints, interface.number).is_some()
+    let is_rndis = (interface.class == 0xE0 && interface.subclass == 0x01 && interface.protocol == 0x03)
+        || (interface.class == 0x02 && interface.subclass == 0x02 && interface.protocol == 0xFF)
+        || (interface.class == 0xEF && interface.subclass == 0x04 && interface.protocol == 0x01);
+    is_rndis && find_bulk_endpoints(&interface.configuration_endpoints, interface.number).is_some()
 }
 
 pub unsafe fn probe(interface: &UsbInterfaceInfo) -> Result<(), &'static str> {
     let (bulk_in_info, bulk_out_info) =
         find_bulk_endpoints(&interface.configuration_endpoints, interface.number)
             .ok_or("RNDIS data endpoints missing")?;
+    let notify_info =
+        find_notification_endpoint(&interface.configuration_endpoints, interface.number);
 
-    let (first, second) = if endpoint_dci(bulk_in_info) < endpoint_dci(bulk_out_info) {
-        (bulk_in_info, bulk_out_info)
-    } else {
-        (bulk_out_info, bulk_in_info)
-    };
+    let mut eps = alloc::vec::Vec::new();
+    if let Some(notify) = notify_info {
+        eps.push(notify);
+    }
+    eps.push(bulk_in_info);
+    eps.push(bulk_out_info);
+
     let mut handles = unsafe {
-        xhci::configure_endpoints(interface.slot_id, interface.root_port, &[first, second])?
+        xhci::configure_endpoints(interface.slot_id, interface.root_port, &eps)?
     };
-    let second_handle = handles.pop().ok_or("RNDIS endpoint configuration incomplete")?;
-    let first_handle = handles.pop().ok_or("RNDIS endpoint configuration incomplete")?;
-    let (bulk_in, bulk_out) = if endpoint_dci(first) == endpoint_dci(bulk_in_info) {
-        (first_handle, second_handle)
+    let bulk_out = handles.pop().ok_or("RNDIS endpoint configuration incomplete")?;
+    let bulk_in = handles.pop().ok_or("RNDIS endpoint configuration incomplete")?;
+    let mut notify_handle = if notify_info.is_some() {
+        handles.pop()
     } else {
-        (second_handle, first_handle)
+        None
     };
 
-    let mac = unsafe { initialize_rndis(interface.slot_id, interface.number)? };
+    let mac = unsafe { initialize_rndis(interface.slot_id, interface.number, notify_handle.as_mut())? };
     let rx = Box::new(DmaBuffer([0; MAX_TRANSFER_SIZE]));
     let tx = Box::new(DmaBuffer([0; MAX_TRANSFER_SIZE]));
     let rx_phys = physical_address(rx.0.as_ptr() as usize)?;
@@ -172,12 +179,15 @@ pub unsafe fn probe(interface: &UsbInterfaceInfo) -> Result<(), &'static str> {
         mac[4],
         mac[5]
     );
-    // Tethering langsung minta alamat: tanpa langkah ini link RNDIS terdaftar
-    // tapi tidak punya IPv4 (DHCP baru jalan kalau `net dhcp` diketik manual).
-    match network::start_dhcp() {
-        Ok(()) => crate::println!("RNDIS: DHCP discover sent (`net status` untuk melihat lease)"),
-        Err(error) => crate::println!("RNDIS: DHCP tidak dimulai: {error} (jalankan `net dhcp`)"),
-    }
+    // Tethering langsung minta alamat secara background (asynchronous):
+    // tanpa langkah ini link RNDIS terdaftar tapi tidak punya IPv4, namun jika
+    // dipanggil synchronous di dalam probe() akan memblokir hotplug dan input keyboard.
+    crate::task::spawn(async {
+        match network::start_dhcp() {
+            Ok(()) => crate::println!("RNDIS: DHCP discover sent (`net status` untuk melihat lease)"),
+            Err(error) => crate::println!("RNDIS: DHCP tidak dimulai: {error} (jalankan `net dhcp`)"),
+        }
+    });
     Ok(())
 }
 
@@ -199,10 +209,14 @@ pub unsafe fn poll() {
     let frame = {
         let state = adapter.state.lock();
         let actual_length = MAX_TRANSFER_SIZE.saturating_sub(residual);
-        if !state.active {
+        if !state.active || actual_length == 0 {
             None
         } else {
-            extract_packet(&state.rx.0[..actual_length]).map(alloc::vec::Vec::from)
+            let mut buf = alloc::vec![0u8; actual_length];
+            unsafe {
+                xhci::copy_dma_to_slice(state.rx.0.as_ptr(), &mut buf);
+            }
+            extract_packet(&buf).map(alloc::vec::Vec::from)
         }
     };
 
@@ -247,9 +261,7 @@ pub fn shutdown(slot_id: u32) {
     };
 
     adapter.state.lock().active = false;
-    BULK_IN_DCI.store(0, Ordering::SeqCst);
-    BULK_IN_SLOT_ID.store(0, Ordering::SeqCst);
-    BULK_IN_PENDING.store(false, Ordering::SeqCst);
+    super::bulk_in::disarm();
     network::unregister_link(slot_id);
     crate::println!(
         "RNDIS interface {} stopped (slot={slot_id})",
@@ -257,7 +269,11 @@ pub fn shutdown(slot_id: u32) {
     );
 }
 
-unsafe fn initialize_rndis(slot_id: u32, interface_number: u8) -> Result<[u8; 6], &'static str> {
+unsafe fn initialize_rndis(
+    slot_id: u32,
+    interface_number: u8,
+    mut notify: Option<&mut EndpointHandle>,
+) -> Result<[u8; 6], &'static str> {
     let mut initialize = [0u8; 24];
     let initialize_length = initialize.len() as u32;
     write_u32(&mut initialize, 0, RNDIS_INITIALIZE_MESSAGE)?;
@@ -266,7 +282,7 @@ unsafe fn initialize_rndis(slot_id: u32, interface_number: u8) -> Result<[u8; 6]
     write_u32(&mut initialize, 12, 1)?;
     write_u32(&mut initialize, 16, 0)?;
     write_u32(&mut initialize, 20, MAX_TRANSFER_SIZE as u32)?;
-    let response = unsafe { send_command(slot_id, interface_number, &initialize)? };
+    let response = unsafe { send_command(slot_id, interface_number, &initialize, notify.as_deref_mut())? };
     if read_u32(response.as_ref(), 0)? != RNDIS_INITIALIZE_COMPLETE
         || read_u32(response.as_ref(), 12)? != 0
         || read_u32(response.as_ref(), 4)? < 40
@@ -277,7 +293,7 @@ unsafe fn initialize_rndis(slot_id: u32, interface_number: u8) -> Result<[u8; 6]
         return Err("RNDIS adapter reports an undersized transfer limit");
     }
 
-    let mac = unsafe { query_mac_address(slot_id, interface_number)? };
+    let mac = unsafe { query_mac_address(slot_id, interface_number, notify.as_deref_mut())? };
     let mut set_filter = [0u8; 32];
     let set_filter_length = set_filter.len() as u32;
     write_u32(&mut set_filter, 0, RNDIS_SET_MESSAGE)?;
@@ -291,7 +307,7 @@ unsafe fn initialize_rndis(slot_id: u32, interface_number: u8) -> Result<[u8; 6]
         28,
         PACKET_FILTER_DIRECTED | PACKET_FILTER_BROADCAST,
     )?;
-    let response = unsafe { send_command(slot_id, interface_number, &set_filter)? };
+    let response = unsafe { send_command(slot_id, interface_number, &set_filter, notify)? };
     if read_u32(response.as_ref(), 0)? != RNDIS_SET_COMPLETE
         || read_u32(response.as_ref(), 12)? != 0
     {
@@ -300,7 +316,11 @@ unsafe fn initialize_rndis(slot_id: u32, interface_number: u8) -> Result<[u8; 6]
     Ok(mac)
 }
 
-unsafe fn query_mac_address(slot_id: u32, interface_number: u8) -> Result<[u8; 6], &'static str> {
+unsafe fn query_mac_address(
+    slot_id: u32,
+    interface_number: u8,
+    notify: Option<&mut EndpointHandle>,
+) -> Result<[u8; 6], &'static str> {
     let mut query = [0u8; 28];
     let query_length = query.len() as u32;
     write_u32(&mut query, 0, RNDIS_QUERY_MESSAGE)?;
@@ -308,7 +328,7 @@ unsafe fn query_mac_address(slot_id: u32, interface_number: u8) -> Result<[u8; 6
     write_u32(&mut query, 8, 3)?;
     write_u32(&mut query, 12, OID_802_3_CURRENT_ADDRESS)?;
     write_u32(&mut query, 20, 20)?;
-    let response = unsafe { send_command(slot_id, interface_number, &query)? };
+    let response = unsafe { send_command(slot_id, interface_number, &query, notify)? };
     if read_u32(response.as_ref(), 0)? != RNDIS_QUERY_COMPLETE
         || read_u32(response.as_ref(), 12)? != 0
     {
@@ -337,13 +357,14 @@ unsafe fn send_command(
     slot_id: u32,
     interface_number: u8,
     message: &[u8],
+    mut notify: Option<&mut EndpointHandle>,
 ) -> Result<Box<[u8; CONTROL_BUFFER_SIZE]>, &'static str> {
     if message.is_empty() || message.len() > CONTROL_BUFFER_SIZE {
         return Err("invalid RNDIS control message length");
     }
     let request_id = read_u32(message, 8)?;
-    let mut command = Box::new([0u8; CONTROL_BUFFER_SIZE]);
-    command[..message.len()].copy_from_slice(message);
+    let mut command = Box::new(ControlBuffer([0u8; CONTROL_BUFFER_SIZE]));
+    command.0[..message.len()].copy_from_slice(message);
     unsafe {
         xhci::control_transfer_out(
             slot_id,
@@ -351,16 +372,23 @@ unsafe fn send_command(
             0x00,
             0,
             interface_number as u16,
-            &command[..message.len()],
+            &command.0[..message.len()],
         )?;
     }
 
-    let mut response = Box::new([0u8; CONTROL_BUFFER_SIZE]);
-    let response_phys = physical_address(response.as_ptr() as usize)?;
+    let mut notify_buf = Box::new(ControlBuffer([0u8; CONTROL_BUFFER_SIZE]));
+    if let (Some(ep), Ok(phys)) = (notify.as_deref_mut(), physical_address(notify_buf.0.as_ptr() as usize)) {
+        let _ = unsafe { xhci::bulk_transfer(slot_id, ep, phys, 8) };
+    } else {
+        crate::arch::x86_64::delay_milliseconds(30);
+    }
+
+    let mut response = Box::new(ControlBuffer([0u8; CONTROL_BUFFER_SIZE]));
+    let response_phys = physical_address(response.0.as_ptr() as usize)?;
     let mut length = 0usize;
+    let mut result = Box::new([0u8; CONTROL_BUFFER_SIZE]);
     for attempt in 0..CONTROL_RESPONSE_ATTEMPTS {
-        response.fill(0);
-        length = unsafe {
+        let res = unsafe {
             xhci::control_transfer_in(
                 slot_id,
                 0xA1,
@@ -369,30 +397,49 @@ unsafe fn send_command(
                 interface_number as u16,
                 response_phys,
                 CONTROL_BUFFER_SIZE as u16,
-            )?
-        } as usize;
-        // A response is only usable once its own header is complete: the device
-        // may return a stub while it is still preparing the real message.
-        let header_length = read_u32(response.as_ref(), 4).unwrap_or(0) as usize;
-        if length >= 8 && header_length >= 8 && header_length <= length {
-            break;
+            )
+        };
+        match res {
+            Ok(len) => {
+                length = len as usize;
+                if length >= 8 {
+                    unsafe {
+                        xhci::copy_dma_to_slice(response.0.as_ptr(), &mut result[..length]);
+                    }
+                    let header_length = read_u32(&result[..length], 4).unwrap_or(0) as usize;
+                    if header_length >= 8 && header_length <= length {
+                        break;
+                    }
+                }
+            }
+            Err(_) => {}
         }
         if attempt + 1 < CONTROL_RESPONSE_ATTEMPTS {
             crate::arch::x86_64::delay_milliseconds(CONTROL_RESPONSE_DELAY_MS);
         }
     }
-    if length < 8 || length > response.len() {
+    if length < 8 || length > CONTROL_BUFFER_SIZE {
         return Err("short RNDIS control response");
     }
-    let message_length = read_u32(response.as_ref(), 4)? as usize;
+    let message_length = read_u32(&result[..length], 4)? as usize;
     if message_length < 8 || message_length > length {
         return Err("invalid RNDIS control response length");
     }
-    if read_u32(response.as_ref(), 8)? != request_id {
+    if read_u32(&result[..length], 8)? != request_id {
         return Err("RNDIS control response request ID mismatch");
     }
-    response[message_length..].fill(0);
-    Ok(response)
+    Ok(result)
+}
+
+fn find_notification_endpoint(
+    endpoints: &[xhci::EndpointInfo],
+    control_interface: u8,
+) -> Option<xhci::EndpointInfo> {
+    endpoints.iter().copied().find(|endpoint| {
+        endpoint.inteface_number == control_interface
+            && endpoint.attributes & 0x3 == 0x3
+            && endpoint.address & 0x80 != 0
+    })
 }
 
 fn find_bulk_endpoints(
@@ -403,8 +450,7 @@ fn find_bulk_endpoints(
     let mut bulk_in = None;
     let mut bulk_out = None;
     for endpoint in endpoints.iter().copied().filter(|endpoint| {
-        endpoint.interface_class == 0x0A
-            && endpoint.inteface_number == data_interface
+        (endpoint.inteface_number == data_interface || endpoint.inteface_number == control_interface)
             && endpoint.attributes & 0x3 == 0x2
     }) {
         if endpoint.address & 0x80 != 0 {

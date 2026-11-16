@@ -367,16 +367,45 @@ unsafe fn init_storage_with_endpoints(
         data: Box::new(DmaBuffer([0; MAX_TRANSFER_SIZE])),
     };
 
+    // Test Unit Ready untuk membersihkan Unit Attention / menunggu flash disk siap
+    let tur_cdb = [0u8; 6];
+    for _ in 0..5 {
+        if unsafe { state.scsi_command(&tur_cdb, 0, false) }.is_ok() {
+            break;
+        }
+        crate::arch::x86_64::delay_milliseconds(20);
+    }
+
     state.data.0[..36].fill(0);
     let mut inquiry_cdb = [0u8; 6];
     inquiry_cdb[0] = 0x12;
     inquiry_cdb[4] = 36;
-    unsafe { state.scsi_command(&inquiry_cdb, 36, true) }?;
+    let mut inquiry_ok = false;
+    for _ in 0..3 {
+        if unsafe { state.scsi_command(&inquiry_cdb, 36, true) }.is_ok() {
+            inquiry_ok = true;
+            break;
+        }
+        crate::arch::x86_64::delay_milliseconds(20);
+    }
+    if !inquiry_ok {
+        return Err(BlockError::Io);
+    }
 
     state.data.0[..8].fill(0);
     let mut capacity_cdb = [0u8; 10];
     capacity_cdb[0] = 0x25;
-    unsafe { state.scsi_command(&capacity_cdb, 8, true) }?;
+    let mut capacity_ok = false;
+    for _ in 0..5 {
+        if unsafe { state.scsi_command(&capacity_cdb, 8, true) }.is_ok() {
+            capacity_ok = true;
+            break;
+        }
+        crate::arch::x86_64::delay_milliseconds(50);
+    }
+    if !capacity_ok {
+        return Err(BlockError::Io);
+    }
     let mut capacity = [0; 8];
     copy_dma_to_slice(state.data.0.as_ptr(), &mut capacity);
     let last_lba = u32::from_be_bytes(capacity[0..4].try_into().unwrap());

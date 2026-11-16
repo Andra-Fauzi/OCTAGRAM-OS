@@ -258,6 +258,16 @@ pub fn driver_state<T: Any + Send + Sync>(key: DeviceKey) -> Option<Arc<T>> {
     Arc::downcast(state).ok()
 }
 
+pub fn is_device_bound(key: DeviceKey) -> bool {
+    REGISTRY
+        .lock()
+        .devices
+        .iter()
+        .find(|record| record.info.key() == key)
+        .and_then(|record| record.binding.as_ref())
+        .is_some()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceSnapshot {
     pub key: DeviceKey,

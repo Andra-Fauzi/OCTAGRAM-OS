@@ -51,6 +51,9 @@ const PACKET_TYPE_BROADCAST: u16 = 0x0008;
 const LOCAL_MAC: [u8; 6] = [0x02, 0x1a, 0x0c, 0x4e, 0x43, 0x4d];
 
 #[repr(C, align(4096))]
+struct ControlBuffer([u8; 64]);
+
+#[repr(C, align(4096))]
 struct DmaBuffer([u8; MAX_TRANSFER_SIZE]);
 
 struct AdapterState {
@@ -227,10 +230,12 @@ pub unsafe fn probe(interface: &UsbInterfaceInfo) -> Result<(), &'static str> {
         LOCAL_MAC[4],
         LOCAL_MAC[5]
     );
-    match network::start_dhcp() {
-        Ok(()) => crate::println!("NCM: DHCP discover sent (`net status` untuk melihat lease)"),
-        Err(error) => crate::println!("NCM: DHCP tidak dimulai: {error} (jalankan `net dhcp`)"),
-    }
+    crate::task::spawn(async {
+        match network::start_dhcp() {
+            Ok(()) => crate::println!("NCM: DHCP discover sent (`net status` untuk melihat lease)"),
+            Err(error) => crate::println!("NCM: DHCP tidak dimulai: {error} (jalankan `net dhcp`)"),
+        }
+    });
     Ok(())
 }
 
@@ -252,11 +257,15 @@ pub unsafe fn poll() {
 
     let frames: Vec<Vec<u8>> = {
         let state = adapter.state.lock();
-        if !state.active {
+        let actual_length = MAX_TRANSFER_SIZE.saturating_sub(residual);
+        if !state.active || actual_length == 0 {
             Vec::new()
         } else {
-            let actual_length = MAX_TRANSFER_SIZE.saturating_sub(residual);
-            datagrams(&state.rx.0[..actual_length])
+            let mut buf = alloc::vec![0u8; actual_length];
+            unsafe {
+                xhci::copy_dma_to_slice(state.rx.0.as_ptr(), &mut buf);
+            }
+            datagrams(&buf)
                 .take(MAX_DATAGRAMS_PER_NTB)
                 .map(Vec::from)
                 .collect()
@@ -322,8 +331,8 @@ unsafe fn read_ntb_parameters(
     slot_id: u32,
     interface_number: u8,
 ) -> Result<NtbParameters, &'static str> {
-    let response = Box::new([0u8; NTB_PARAMETERS_LENGTH]);
-    let response_phys = physical_address(response.as_ptr() as usize)?;
+    let mut response = Box::new(ControlBuffer([0u8; 64]));
+    let response_phys = physical_address(response.0.as_ptr() as usize)?;
     let length = unsafe {
         xhci::control_transfer_in(
             slot_id,
@@ -338,9 +347,13 @@ unsafe fn read_ntb_parameters(
     if length < NTB_PARAMETERS_LENGTH {
         return Err("short NCM NTB parameters response");
     }
-    let in_max = read_u32(response.as_ref(), 4)?;
-    let out_max = read_u32(response.as_ref(), 16)?;
-    let out_alignment = read_u16(response.as_ref(), 24)?;
+    let mut result = [0u8; 64];
+    unsafe {
+        xhci::copy_dma_to_slice(response.0.as_ptr(), &mut result[..length]);
+    }
+    let in_max = read_u32(&result, 4)?;
+    let out_max = read_u32(&result, 16)?;
+    let out_alignment = read_u16(&result, 24)?;
     if out_max < 64 || in_max < 64 {
         return Err("NCM adapter reports an unusable NTB size");
     }
@@ -472,8 +485,7 @@ fn find_bulk_endpoints(
     let mut bulk_in = None;
     let mut bulk_out = None;
     for endpoint in endpoints.iter().copied().filter(|endpoint| {
-        endpoint.interface_class == 0x0A
-            && endpoint.inteface_number == data_interface
+        (endpoint.inteface_number == data_interface || endpoint.inteface_number == control_interface)
             && endpoint.attributes & 0x3 == 0x2
     }) {
         if endpoint.address & 0x80 != 0 {

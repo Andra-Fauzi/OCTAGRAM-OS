@@ -161,21 +161,26 @@ unsafe fn reset_wedged_controller() {
 /// Requires an initialized xHCI controller and must not run in its ISR.
 pub(super) unsafe fn discover_and_init_hid_devices() {
     unsafe {
-        let port_states = {
+        let (port_states, changed_ports) = {
             let controller = xhci::XHCI_INSTANCE.get().unwrap().lock();
             let capabilities = controller.cap_regs();
             let operational = controller.op_regs();
             let mut states = alloc::vec::Vec::new();
+            let mut changed = alloc::vec::Vec::new();
 
             for port in 0..capabilities.max_ports() {
                 let port_status = operational.read_portsc(port);
+                let has_changes = port_status & xhci::PORTSC_CHANGE_BITS != 0;
                 operational.acknowledge_port_changes(port, port_status);
+                if has_changes {
+                    changed.push(port + 1);
+                }
                 if port_status & 0x1 != 0 {
                     let speed = ((port_status >> 10) & 0xF) as u8;
                     states.push((port, speed));
                 }
             }
-            states
+            (states, changed)
         };
 
         println!(
@@ -187,25 +192,29 @@ pub(super) unsafe fn discover_and_init_hid_devices() {
         {
             let mut failures = PORT_FAILURES.lock();
             for (port, remaining) in failures.iter_mut().enumerate() {
-                if !port_states.iter().any(|&(index, _)| usize::from(index) == port) {
+                let root_port = (port + 1) as u8;
+                if !port_states.iter().any(|&(index, _)| usize::from(index) == port)
+                    || changed_ports.contains(&root_port)
+                {
                     *remaining = 0;
                 }
             }
         }
-        disconnect_removed_ports(&port_states);
+        disconnect_removed_ports(&port_states, &changed_ports);
         connect_new_ports(&port_states);
     }
 }
 
-unsafe fn disconnect_removed_ports(port_states: &[(u8, u8)]) {
+unsafe fn disconnect_removed_ports(port_states: &[(u8, u8)], changed_ports: &[u8]) {
     let mut active_ports = ACTIVE_PORTS.lock();
     let mut index = 0;
 
     while index < active_ports.len() {
         let root_port = active_ports[index].root_port;
-        let still_connected = port_states
-            .iter()
-            .any(|&(port_index, _)| port_index + 1 == root_port);
+        let still_connected = !changed_ports.contains(&root_port)
+            && port_states
+                .iter()
+                .any(|&(port_index, _)| port_index + 1 == root_port);
         if still_connected {
             index += 1;
             continue;
@@ -251,6 +260,8 @@ unsafe fn shutdown_device(device: &ActivePort) -> bool {
             device.root_port, device.slot_id
         );
 
+        unbind_interfaces(device);
+
         if let Err(error) = xhci::disable_slot(device.slot_id) {
             // The device is physically gone, so it must still be dropped from
             // the active list: `connect_new_ports` skips ports that are already
@@ -265,7 +276,6 @@ unsafe fn shutdown_device(device: &ActivePort) -> bool {
             );
         }
 
-        unbind_interfaces(device);
         true
     }
 }
@@ -318,9 +328,20 @@ unsafe fn init_one_device(root_port: u8, speed: u8) -> Option<ActivePort> {
             // USB devices from enumerating.
             return unsafe { abandon_slot(root_port, slot_id) };
         }
-        if let Err(error) = xhci::get_device_descriptor(slot_id) {
-            println!("  get_device_descriptor gagal: {}", error);
-            return unsafe { abandon_slot(root_port, slot_id) };
+        let device_descriptor = match xhci::get_device_descriptor(slot_id) {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                println!("  get_device_descriptor gagal: {}", error);
+                return unsafe { abandon_slot(root_port, slot_id) };
+            }
+        };
+        if speed == 1 {
+            let ep0_size = u16::from(device_descriptor.max_packet_size0);
+            if matches!(ep0_size, 8 | 16 | 32 | 64) && ep0_size != 64 {
+                if let Err(error) = xhci::update_ep0_max_packet(slot_id, ep0_size) {
+                    println!("  update EP0 max packet gagal: {}", error);
+                }
+            }
         }
 
         let endpoints = match xhci::get_configuration_descriptor_endpoints(slot_id) {
@@ -337,10 +358,21 @@ unsafe fn init_one_device(root_port: u8, speed: u8) -> Option<ActivePort> {
 
         let interfaces = group_interfaces(UsbControllerId::XHCI, slot_id, root_port, &endpoints);
         let mut interface_numbers = alloc::vec::Vec::new();
+        let mut bound_count = 0;
         for interface in interfaces {
             let interface_number = interface.number;
+            let key = DeviceKey::UsbInterface {
+                controller: UsbControllerId::XHCI,
+                slot_id,
+                interface_number,
+            };
             match device_model::register_device(DeviceInfo::UsbInterface(interface)) {
-                Ok(()) => interface_numbers.push(interface_number),
+                Ok(()) => {
+                    interface_numbers.push(interface_number);
+                    if device_model::is_device_bound(key) {
+                        bound_count += 1;
+                    }
+                }
                 Err(error) => {
                     println!(
                         "  USB interface {} registration failed: {error}",
@@ -348,6 +380,19 @@ unsafe fn init_one_device(root_port: u8, speed: u8) -> Option<ActivePort> {
                     );
                 }
             }
+        }
+
+        if bound_count == 0 {
+            println!("  tidak ada USB interface yang berhasil di-bind driver");
+            for &interface_number in &interface_numbers {
+                let key = DeviceKey::UsbInterface {
+                    controller: UsbControllerId::XHCI,
+                    slot_id,
+                    interface_number,
+                };
+                let _ = device_model::remove_device(key);
+            }
+            return unsafe { abandon_slot(root_port, slot_id) };
         }
 
         Some(active_port(root_port, slot_id, interface_numbers))

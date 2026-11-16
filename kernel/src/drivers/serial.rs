@@ -49,6 +49,51 @@ pub fn write_str(text: &str) {
     }
 }
 
+/// Write fatal CPU-exception details directly to COM1.
+///
+/// This deliberately bypasses the framebuffer terminal: an exception may have
+/// happened while that terminal's lock is held or while framebuffer output is
+/// the code that faulted. The path uses only bounded port-I/O polling and fixed
+/// stack data, so it does not allocate or take a lock.
+pub fn write_kernel_exception(
+    vector: u64,
+    error_code: u64,
+    instruction_pointer: u64,
+    code_segment: u64,
+    flags: u64,
+    fault_address: Option<u64>,
+) {
+    if STATE.load(Ordering::Acquire) != 2 {
+        return;
+    }
+
+    write_str("\n[FATAL] kernel exception vector=");
+    write_hex(vector);
+    write_str(" error=");
+    write_hex(error_code);
+    write_str(" rip=");
+    write_hex(instruction_pointer);
+    write_str(" cs=");
+    write_hex(code_segment);
+    write_str(" rflags=");
+    write_hex(flags);
+    if let Some(address) = fault_address {
+        write_str(" cr2=");
+        write_hex(address);
+    }
+    write_str("\n");
+}
+
+fn write_hex(value: u64) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    write_byte(b'0');
+    write_byte(b'x');
+    for shift in (0..16).rev() {
+        let digit = ((value >> (shift * 4)) & 0x0f) as usize;
+        write_byte(DIGITS[digit]);
+    }
+}
+
 fn write_byte(byte: u8) {
     for _ in 0..100_000 {
         if unsafe { crate::arch::x86_64::io::inb(LINE_STATUS) } & TRANSMIT_READY != 0 {

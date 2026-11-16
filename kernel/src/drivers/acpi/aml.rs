@@ -260,6 +260,10 @@ pub struct Namespace {
     /// Bytes the reader had to resynchronise on. A non-zero count only means the
     /// tables contain constructs this reader skips.
     resyncs: u32,
+    /// The parse stopped before the end of a table because it used up its
+    /// iteration budget. A partial namespace only loses definitions; hanging on
+    /// one is worse, because the boot never comes back.
+    truncated: bool,
 }
 
 impl Namespace {
@@ -269,6 +273,7 @@ impl Namespace {
             objects: BTreeMap::new(),
             tables: tables.to_vec(),
             resyncs: 0,
+            truncated: false,
         };
         for table in 0..tables.len() {
             let mut cursor = Cursor::new(tables[table]);
@@ -307,6 +312,11 @@ impl Namespace {
         self.resyncs
     }
 
+    /// True when a table was too long to parse within the iteration budget.
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
     /// Every object path and object, in path order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Object)> {
         self.objects.iter()
@@ -331,10 +341,27 @@ impl Namespace {
         if depth > MAX_PARSE_DEPTH {
             return Err(AmlError::TooDeep);
         }
+        // Every iteration has to advance, and the number of iterations is
+        // bounded. A vendor DSDT is thousands of constructs this reader only
+        // partly understands: one that reports success without consuming a
+        // byte, or a table that makes the reader resynchronise on almost every
+        // position, spins here with no output, which is exactly how one boot
+        // froze on "parsing the ACPI namespace" and never returned.
+        let mut budget = end.saturating_mul(2).saturating_add(64);
         while cursor.position < end {
+            if budget == 0 {
+                self.truncated = true;
+                break;
+            }
+            budget -= 1;
             let start = cursor.position;
             match self.parse_term(table, cursor, scope, end, depth) {
-                Ok(()) => {}
+                Ok(()) => {
+                    if cursor.position <= start {
+                        self.resyncs = self.resyncs.saturating_add(1);
+                        cursor.position = (start + 1).min(end);
+                    }
+                }
                 // Anything this reader does not understand costs one byte and
                 // one retry, so the definition that follows is still found.
                 Err(AmlError::Unsupported(_))
@@ -1641,5 +1668,21 @@ mod tests {
         // Bits 11..14 live in byte 1, at bits 3..5.
         assert_eq!(io.0.get(&1), Some(&0b0010_1000));
         assert_eq!(read_bits(&mut io, REGION_SYSTEM_IO, 11, 3).unwrap(), 0b101);
+    }
+
+    #[test]
+    fn a_table_of_unknown_bytes_parses_without_spinning() {
+        let mut table = vec![0u8; 36];
+        table[0..4].copy_from_slice(b"DSDT");
+        table.extend(core::iter::repeat(0xffu8).take(1024));
+
+        let namespace = Namespace::parse(&[leaked(table)]);
+
+        assert_eq!(namespace.iter().count(), 0);
+        assert!(namespace.resyncs() > 0, "every byte is resynchronised on");
+        assert!(
+            !namespace.truncated(),
+            "resynchronising stays inside the iteration budget"
+        );
     }
 }

@@ -158,7 +158,27 @@ pub fn power_on_pci_device(
 
 fn namespace() -> Option<&'static Namespace> {
     NAMESPACE
-        .call_once(|| super::aml_tables().ok().map(|tables| Namespace::parse(&tables)))
+        .call_once(|| {
+            let tables = super::aml_tables().ok()?;
+            // The boot froze inside this step, so every table is named before it
+            // is parsed: the last line on screen then says whether the freeze is
+            // the table walk itself or one table's AML.
+            for table in &tables {
+                crate::println!(
+                    "QCA9377 ACPI power: table {} {} bytes",
+                    core::str::from_utf8(&table[..4]).unwrap_or("????"),
+                    table.len()
+                );
+            }
+            let namespace = Namespace::parse(&tables);
+            crate::println!(
+                "QCA9377 ACPI power: parsed {} objects, {} resyncs, truncated={}",
+                namespace.iter().count(),
+                namespace.resyncs(),
+                namespace.truncated()
+            );
+            Some(namespace)
+        })
         .as_ref()
 }
 

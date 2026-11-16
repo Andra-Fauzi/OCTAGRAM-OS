@@ -273,6 +273,18 @@ chip, so the remaining explanations are a timer/watchdog that fires during ROM
 start-up and a CPU/PLL clock that is not up yet. These four registers separate
 the two without another guess.
 
+### The AML Parse Cannot Spin
+
+One boot printed `QCA9377 ACPI power: parsing the ACPI namespace` and then froze;
+the parse of a real vendor DSDT is the only work behind that line. Two guarantees
+now hold: every `parse_term_list` iteration has to advance the cursor (a
+construct that reports success without consuming a byte is skipped like an
+unsupported one), and the total number of iterations is bounded to twice the
+table length, after which the namespace is marked `truncated` and the boot
+continues. A partial namespace only loses definitions; a hung parse loses the
+machine. Each table's signature and size, plus the object count, resync count
+and truncation flag, are printed so the next boot says exactly where it stopped.
+
 ### BAR0 Is Sized Only After The Function Is In D0
 
 `pci::get_bar0_size` writes `u32::MAX` into BAR0 and reads the mask back. Doing

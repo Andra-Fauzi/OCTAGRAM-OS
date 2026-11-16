@@ -40,6 +40,7 @@ all:
 	$(MAKE) -C ../user build/fork_demo.elf
 	$(MAKE) -C ../user build/time_demo.elf
 	$(MAKE) -C ../user build/mmap_demo.elf
+	$(MAKE) -C ../user build/tls_demo.elf
 	$(MAKE) -C ../user build/thread_demo.elf
 	$(MAKE) -C ../user dynamic
 	RUSTFLAGS="-C relocation-model=static" cargo build --target $(RUST_TARGET) --profile $(RUST_PROFILE)

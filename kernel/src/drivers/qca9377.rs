@@ -438,20 +438,12 @@ pub(super) fn clear_lf_timer<R: ce::RegisterIo>(
 
 /// Cycle the copy-engine reset line so the boot ROM programs the CE ring
 /// registers from scratch instead of inheriting a stale configuration.
+///
+/// The caller must clear the low-frequency timer first, in the same
+/// warm-reset phase as ath10k.
 pub(super) fn pulse_ce_reset<R: ce::RegisterIo>(
     registers: &mut R,
 ) -> Result<(), ce::CeError> {
-    // `ath10k_pci_warm_reset_clear_lf`: stop the low-frequency timer first,
-    // otherwise it keeps waking the target while the CE block is being reset.
-    let timer = registers.read32(QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET)?;
-    if timer == u32::MAX {
-        return Err(ce::CeError::DeviceUnavailable);
-    }
-    registers.write32(
-        QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET,
-        timer & !RTC_SOC_TIMER_LPO_SELECT,
-    )?;
-
     // `ath10k_pci_warm_reset_ce` reads `SOC_RESET_CONTROL` fresh here and writes
     // the original value back with only the CE bit cleared, so the CPU warm
     // reset bit stays set across the pulse.

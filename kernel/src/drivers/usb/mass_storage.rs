@@ -3,7 +3,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::Ordering;
 use spin::Mutex;
 
 use crate::drivers::usb::xhci::EndpointHandle;
@@ -267,7 +267,7 @@ impl BlockDevice for UsbMassStorageDevice {
     }
 }
 
-static NEXT_DEVICE_ID: AtomicUsize = AtomicUsize::new(0);
+
 static ACTIVE_DEVICES: Mutex<Vec<Arc<UsbMassStorageDevice>>> = Mutex::new(Vec::new());
 
 pub unsafe fn init_storage(
@@ -349,7 +349,12 @@ unsafe fn init_storage_with_endpoints(
     bulk_in: BulkEndpoint,
     bulk_out: BulkEndpoint,
 ) -> Result<BlockDeviceRef, BlockError> {
-    let name = format!("usb{}", NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed));
+    // Reuse the lowest free name so an unplug/replug cycle keeps the same
+    // device name (`usb0`) instead of climbing to usb1, usb2, ... forever.
+    let name = {
+        let devices = ACTIVE_DEVICES.lock();
+        next_free_device_name(&devices)
+    };
     let mut state = MassStorageState {
         slot_id,
         bulk_in,
@@ -397,6 +402,17 @@ unsafe fn init_storage_with_endpoints(
         block_device.sector_count()
     );
     Ok(block_device)
+}
+
+fn next_free_device_name(devices: &[Arc<UsbMassStorageDevice>]) -> String {
+    let mut index = 0usize;
+    loop {
+        let candidate = format!("usb{index}");
+        if devices.iter().all(|device| device.name != candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
 }
 
 pub fn shutdown(controller: UsbControllerId, slot_id: u32) {

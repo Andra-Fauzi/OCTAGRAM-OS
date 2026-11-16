@@ -1,12 +1,13 @@
 //! USB RNDIS transport for Android tethering devices.
 
+use super::bulk_in::{BULK_IN_CODE, BULK_IN_DCI, BULK_IN_LENGTH, BULK_IN_PENDING, BULK_IN_SLOT_ID};
 use super::xhci::{self, EndpointHandle};
 use crate::drivers::device_model::UsbInterfaceInfo;
 use crate::memory;
 use crate::network::{self, LinkDevice};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 use spin::Mutex;
 
 const RNDIS_PACKET_MESSAGE: u32 = 1;
@@ -31,13 +32,6 @@ const CONTROL_BUFFER_SIZE: usize = 512;
 /// nyata dan seluruh bring-up RNDIS gagal dengan "short RNDIS control response".
 const CONTROL_RESPONSE_ATTEMPTS: usize = 200;
 const CONTROL_RESPONSE_DELAY_MS: u32 = 5;
-
-pub static RNDIS_DCI: AtomicU32 = AtomicU32::new(0);
-pub static RNDIS_SLOT_ID: AtomicU32 = AtomicU32::new(0);
-pub static RNDIS_RX_PENDING: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-pub static RNDIS_RX_LENGTH: AtomicU32 = AtomicU32::new(0);
-pub static RNDIS_RX_CODE: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C, align(4096))]
 struct DmaBuffer([u8; MAX_TRANSFER_SIZE]);
@@ -113,10 +107,11 @@ pub unsafe fn probe(interface: &UsbInterfaceInfo) -> Result<(), &'static str> {
     } else {
         (bulk_out_info, bulk_in_info)
     };
-    let first_handle =
-        unsafe { xhci::configure_endpoint(interface.slot_id, interface.root_port, first)? };
-    let second_handle =
-        unsafe { xhci::configure_endpoint(interface.slot_id, interface.root_port, second)? };
+    let mut handles = unsafe {
+        xhci::configure_endpoints(interface.slot_id, interface.root_port, &[first, second])?
+    };
+    let second_handle = handles.pop().ok_or("RNDIS endpoint configuration incomplete")?;
+    let first_handle = handles.pop().ok_or("RNDIS endpoint configuration incomplete")?;
     let (bulk_in, bulk_out) = if endpoint_dci(first) == endpoint_dci(bulk_in_info) {
         (first_handle, second_handle)
     } else {
@@ -150,9 +145,9 @@ pub unsafe fn probe(interface: &UsbInterfaceInfo) -> Result<(), &'static str> {
         *active = Some(adapter.clone());
     }
 
-    RNDIS_DCI.store(bulk_in.dci, Ordering::SeqCst);
-    RNDIS_SLOT_ID.store(interface.slot_id, Ordering::SeqCst);
-    RNDIS_RX_PENDING.store(false, Ordering::SeqCst);
+    BULK_IN_DCI.store(bulk_in.dci, Ordering::SeqCst);
+    BULK_IN_SLOT_ID.store(interface.slot_id, Ordering::SeqCst);
+    BULK_IN_PENDING.store(false, Ordering::SeqCst);
     let arm_result = {
         let mut state = adapter.state.lock();
         unsafe {
@@ -187,15 +182,15 @@ pub unsafe fn probe(interface: &UsbInterfaceInfo) -> Result<(), &'static str> {
 }
 
 pub unsafe fn poll() {
-    if !RNDIS_RX_PENDING.swap(false, Ordering::SeqCst) {
+    if !BULK_IN_PENDING.swap(false, Ordering::SeqCst) {
         return;
     }
 
     let Some(adapter) = ACTIVE_ADAPTER.lock().clone() else {
         return;
     };
-    let completion_code = RNDIS_RX_CODE.load(Ordering::SeqCst);
-    let residual = RNDIS_RX_LENGTH.load(Ordering::SeqCst) as usize;
+    let completion_code = BULK_IN_CODE.load(Ordering::SeqCst);
+    let residual = BULK_IN_LENGTH.load(Ordering::SeqCst) as usize;
     if completion_code != 1 && completion_code != 13 {
         crate::println!("RNDIS bulk IN completion failed: code={completion_code}");
         shutdown(adapter.slot_id);
@@ -252,9 +247,9 @@ pub fn shutdown(slot_id: u32) {
     };
 
     adapter.state.lock().active = false;
-    RNDIS_DCI.store(0, Ordering::SeqCst);
-    RNDIS_SLOT_ID.store(0, Ordering::SeqCst);
-    RNDIS_RX_PENDING.store(false, Ordering::SeqCst);
+    BULK_IN_DCI.store(0, Ordering::SeqCst);
+    BULK_IN_SLOT_ID.store(0, Ordering::SeqCst);
+    BULK_IN_PENDING.store(false, Ordering::SeqCst);
     network::unregister_link(slot_id);
     crate::println!(
         "RNDIS interface {} stopped (slot={slot_id})",

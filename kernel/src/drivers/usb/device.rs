@@ -2,7 +2,7 @@
 
 use super::{
     UsbControllerId, UsbControllerKind, controller, hid_periodic, keyboard_usb, mass_storage,
-    mouse_usb, rndis, xhci,
+    mouse_usb, ncm, rndis, xhci,
 };
 use crate::drivers::device_model::{
     self, DeviceDriver, DeviceInfo, DeviceKey, DriverError, DriverState, UsbInterfaceInfo,
@@ -47,6 +47,7 @@ pub(super) unsafe fn register_class_drivers() {
         &HID_MOUSE_DRIVER,
         &MASS_STORAGE_DRIVER,
         &RNDIS_DRIVER,
+        &NCM_DRIVER,
     ] {
         if let Err(error) = unsafe { device_model::register_driver(driver) } {
             println!("driver {} registration failed: {error}", driver.name());
@@ -195,19 +196,19 @@ unsafe fn init_one_device(root_port: u8, speed: u8) -> Option<ActivePort> {
         }
         if let Err(error) = xhci::get_device_descriptor(slot_id) {
             println!("  get_device_descriptor gagal: {}", error);
-            return Some(active_port(root_port, slot_id, alloc::vec::Vec::new()));
+            return unsafe { abandon_slot(root_port, slot_id) };
         }
 
         let endpoints = match xhci::get_configuration_descriptor_endpoints(slot_id) {
             Ok(endpoints) => endpoints,
             Err(error) => {
                 println!("  tidak ada endpoint konfigurasi: {}", error);
-                return Some(active_port(root_port, slot_id, alloc::vec::Vec::new()));
+                return unsafe { abandon_slot(root_port, slot_id) };
             }
         };
         if let Err(error) = xhci::control_transfer_no_data(slot_id, 0x00, 0x09, 1, 0) {
             println!("  SET_CONFIGURATION gagal: {}", error);
-            return Some(active_port(root_port, slot_id, alloc::vec::Vec::new()));
+            return unsafe { abandon_slot(root_port, slot_id) };
         }
 
         let interfaces = group_interfaces(UsbControllerId::XHCI, slot_id, root_port, &endpoints);
@@ -227,6 +228,24 @@ unsafe fn init_one_device(root_port: u8, speed: u8) -> Option<ActivePort> {
 
         Some(active_port(root_port, slot_id, interface_numbers))
     }
+}
+
+/// Give a slot back when a device cannot be brought up.
+///
+/// Every enable-slot that is never disabled stays allocated in the controller,
+/// so a port that keeps failing enumeration (a phone that resets its gadget, a
+/// flaky cable) burned a new slot on every port-status change until the 32-slot
+/// table was exhausted and no USB device could enumerate at all. Returning
+/// `None` also stops tracking the port, so the next port change simply retries
+/// with the lowest free slot instead of stacking failures.
+unsafe fn abandon_slot(root_port: u8, slot_id: u32) -> Option<ActivePort> {
+    unsafe {
+        match xhci::disable_slot(slot_id) {
+            Ok(()) => println!("  slot {} dikembalikan (enumerasi port {} gagal)", slot_id, root_port),
+            Err(error) => println!("  disable_slot slot {} gagal: {}", slot_id, error),
+        }
+    }
+    None
 }
 
 fn active_port(root_port: u8, slot_id: u32, interfaces: alloc::vec::Vec<u8>) -> ActivePort {
@@ -390,19 +409,18 @@ unsafe fn init_mass_storage_interfaces(
         } else {
             (bulk_out, bulk_in)
         };
-        let first_handle = match unsafe { xhci::configure_endpoint(slot_id, root_port, first) } {
-            Ok(handle) => handle,
+        let mut handles = match unsafe {
+            xhci::configure_endpoints(slot_id, root_port, &[first, second])
+        } {
+            Ok(handles) => handles,
             Err(error) => {
                 println!("  configure bulk endpoint gagal: {}", error);
                 continue;
             }
         };
-        let second_handle = match unsafe { xhci::configure_endpoint(slot_id, root_port, second) } {
-            Ok(handle) => handle,
-            Err(error) => {
-                println!("  configure bulk endpoint gagal: {}", error);
-                continue;
-            }
+        let (Some(second_handle), Some(first_handle)) = (handles.pop(), handles.pop()) else {
+            println!("  configure bulk endpoint gagal: handle tidak lengkap");
+            continue;
         };
         let (in_handle, out_handle) = if in_dci < out_dci {
             (first_handle, second_handle)
@@ -468,10 +486,14 @@ struct HidMouseDriver;
 struct MassStorageDriver;
 struct RndisDriver;
 
+/// CDC-NCM tethering driver: the USB network function Android 14+ phones use.
+struct NcmDriver;
+
 static HID_KEYBOARD_DRIVER: HidKeyboardDriver = HidKeyboardDriver;
 static HID_MOUSE_DRIVER: HidMouseDriver = HidMouseDriver;
 static MASS_STORAGE_DRIVER: MassStorageDriver = MassStorageDriver;
 static RNDIS_DRIVER: RndisDriver = RndisDriver;
+static NCM_DRIVER: NcmDriver = NcmDriver;
 
 fn usb_interface(device: &DeviceInfo) -> Option<&UsbInterfaceInfo> {
     match device {
@@ -650,6 +672,39 @@ impl DeviceDriver for RndisDriver {
     unsafe fn remove(&self, device: &DeviceInfo, _state: DriverState) {
         if let Some(interface) = usb_interface(device) {
             rndis::shutdown(interface.slot_id);
+        }
+    }
+}
+
+impl DeviceDriver for NcmDriver {
+    fn name(&self) -> &'static str {
+        "usb-cdc-ncm"
+    }
+
+    /// Android 14+ (including Android 16) exposes USB tethering as CDC-NCM
+    /// rather than RNDIS, so this is the driver those phones bind to.
+    fn matches(&self, device: &DeviceInfo) -> bool {
+        usb_interface(device).is_some_and(|interface| {
+            interface.controller.kind == UsbControllerKind::Xhci && ncm::matches(interface)
+        })
+    }
+
+    unsafe fn probe(&self, device: &DeviceInfo) -> Result<DriverState, DriverError> {
+        let Some(interface) = usb_interface(device) else {
+            return Err(DriverError::Unsupported);
+        };
+        match unsafe { ncm::probe(interface) } {
+            Ok(()) => Ok(Arc::new(())),
+            Err(error) => {
+                println!("  NCM initialization failed: {error}");
+                Err(DriverError::ProbeFailed("NCM initialization failed"))
+            }
+        }
+    }
+
+    unsafe fn remove(&self, device: &DeviceInfo, _state: DriverState) {
+        if let Some(interface) = usb_interface(device) {
+            ncm::shutdown(interface.slot_id);
         }
     }
 }

@@ -7,8 +7,9 @@
 pub use super::EndpointInfo;
 use super::keyboard_usb::{KBD_DCI, KBD_REPORT_LEN, KBD_REPORT_PENDING, KBD_SLOT_ID};
 use super::mouse_usb::{MOUSE_DCI, MOUSE_REPORT_LEN, MOUSE_REPORT_PENDING, MOUSE_SLOT_ID};
-use super::rndis::{RNDIS_DCI, RNDIS_RX_CODE, RNDIS_RX_LENGTH, RNDIS_RX_PENDING, RNDIS_SLOT_ID};
+use super::bulk_in::{BULK_IN_CODE, BULK_IN_DCI, BULK_IN_LENGTH, BULK_IN_PENDING, BULK_IN_SLOT_ID};
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, compiler_fence};
 use spin::Mutex;
 use spin::Once;
@@ -397,8 +398,8 @@ impl XHCI {
                             let kbd_slot = KBD_SLOT_ID.load(Ordering::SeqCst);
                             let mouse_dci = MOUSE_DCI.load(Ordering::SeqCst);
                             let mouse_slot = MOUSE_SLOT_ID.load(Ordering::SeqCst);
-                            let rndis_dci = RNDIS_DCI.load(Ordering::SeqCst);
-                            let rndis_slot = RNDIS_SLOT_ID.load(Ordering::SeqCst);
+                            let network_dci = BULK_IN_DCI.load(Ordering::SeqCst);
+                            let network_slot = BULK_IN_SLOT_ID.load(Ordering::SeqCst);
 
                             if kbd_dci != 0 && event_slot_id == kbd_slot && endpoint_id == kbd_dci {
                                 KBD_REPORT_LEN.store(residual_length, Ordering::SeqCst);
@@ -409,13 +410,13 @@ impl XHCI {
                             {
                                 MOUSE_REPORT_LEN.store(residual_length, Ordering::SeqCst);
                                 MOUSE_REPORT_PENDING.store(true, Ordering::SeqCst);
-                            } else if rndis_dci != 0
-                                && event_slot_id == rndis_slot
-                                && endpoint_id == rndis_dci
+                            } else if network_dci != 0
+                                && event_slot_id == network_slot
+                                && endpoint_id == network_dci
                             {
-                                RNDIS_RX_CODE.store(completion_code, Ordering::SeqCst);
-                                RNDIS_RX_LENGTH.store(residual_length, Ordering::SeqCst);
-                                RNDIS_RX_PENDING.store(true, Ordering::SeqCst);
+                                BULK_IN_CODE.store(completion_code, Ordering::SeqCst);
+                                BULK_IN_LENGTH.store(residual_length, Ordering::SeqCst);
+                                BULK_IN_PENDING.store(true, Ordering::SeqCst);
                             } else {
                                 println!(
                                     "EVENT: Transfer Event, code={} residual={}",
@@ -1975,34 +1976,29 @@ pub struct EndpointHandle {
     cycle_state: bool,
 }
 
-pub unsafe fn configure_endpoint(
+/// Configure every endpoint of one device in a single `Configure Endpoint`
+/// command.
+///
+/// One command per endpoint is not equivalent: the command treats every
+/// endpoint context whose Added flag is clear as "not part of this
+/// configuration", so a second command for EP1 IN drops the EP1 OUT added by
+/// the first. On real phones that showed up as the first endpoint configuring
+/// fine and the next command never completing, which killed RNDIS and NCM
+/// bring-up. Everything therefore goes into one input context.
+pub unsafe fn configure_endpoints(
     slot_id: u32,
     root_port: u8,
-    ep_info: EndpointInfo,
-) -> Result<EndpointHandle, &'static str> {
+    endpoints: &[EndpointInfo],
+) -> Result<Vec<EndpointHandle>, &'static str> {
     unsafe {
-        let ep_number = (ep_info.address & 0x0F) as u32;
-        let is_in = ep_info.address & 0x80 != 0;
-        let transfer_type = ep_info.attributes & 0x3;
-        let endpoint_type = match (is_in, transfer_type) {
-            (false, 1) => 1,
-            (false, 2) => 2,
-            (false, 3) => 3,
-            (true, 1) => 5,
-            (true, 2) => 6,
-            (true, 3) => 7,
-            _ => return Err("unsupported endpoint transfer type"),
-        };
-        let dci = (ep_number * 2) + if is_in { 1 } else { 0 };
+        if endpoints.is_empty() {
+            return Err("no endpoints to configure");
+        }
+        if endpoints.len() > 15 {
+            return Err("too many endpoints for one configure command");
+        }
 
-        let ep_ring_box: Box<TransferRing> = Box::new(TransferRing::new());
-        let ep_ring_virt = Box::into_raw(ep_ring_box) as u64;
-        let ep_ring_phys = memory::virtual_to_physical(ep_ring_virt as usize)
-            .ok_or("gagal translate interrupt ep ring")? as u64;
-
-        write_link_trb(ep_ring_virt, ep_ring_phys, CONTROL_RING_SIZE, true);
-
-        let (context_size, device_context, slot_context) = {
+        let (context_size, device_context, slot_context, portsc) = {
             let guard = XHCI_INSTANCE.get().unwrap().lock();
             let context_size = guard.context_size;
             let dcbaa_entry = (guard.dcbaa_virt as *const u64)
@@ -2013,14 +2009,101 @@ pub unsafe fn configure_endpoint(
             }
             let device_context = memory::physical_to_virtual(dcbaa_entry as usize)
                 .ok_or("gagal translate device context")?;
-            (
-                context_size,
-                device_context,
-                (device_context as *const SlotContext).read_volatile(),
-            )
+            let slot_context = (device_context as *const SlotContext).read_volatile();
+            let portsc = if root_port == 0 {
+                0
+            } else {
+                guard.op_regs().read_portsc(root_port - 1)
+            };
+            (context_size, device_context, slot_context, portsc)
         };
+        let speed = ((portsc & PORTSC_SPEED_MASK) >> 10) as u8;
+
         let mut input_ctx = Box::new(ContextBuffer::zeroed());
-        input_ctx.write_dword(context_size, 0, 1, (1 << 0) | (1 << dci));
+        let mut added: u32 = 1 << 0;
+        let mut highest_dci = 0u32;
+        let mut handles = Vec::with_capacity(endpoints.len());
+
+        for ep_info in endpoints {
+            let ep_number = (ep_info.address & 0x0F) as u32;
+            let is_in = ep_info.address & 0x80 != 0;
+            let transfer_type = ep_info.attributes & 0x3;
+            let endpoint_type = match (is_in, transfer_type) {
+                (false, 1) => 1,
+                (false, 2) => 2,
+                (false, 3) => 3,
+                (true, 1) => 5,
+                (true, 2) => 6,
+                (true, 3) => 7,
+                _ => return Err("unsupported endpoint transfer type"),
+            };
+            let dci = (ep_number * 2) + if is_in { 1 } else { 0 };
+
+            // A full- or low-speed link cannot carry 512-byte bulk packets;
+            // phones that describe themselves that way get rejected with a
+            // parameter error, so clamp to what the link allows.
+            let max_packet_size = if speed <= 2 {
+                ep_info.max_packet_size.min(64)
+            } else {
+                ep_info.max_packet_size
+            };
+            if max_packet_size != ep_info.max_packet_size {
+                println!(
+                    "  endpoint {:#04x}: max packet {} -> {} (speed={})",
+                    ep_info.address, ep_info.max_packet_size, max_packet_size, speed
+                );
+            }
+
+            let ep_ring_box: Box<TransferRing> = Box::new(TransferRing::new());
+            let ep_ring_virt = Box::into_raw(ep_ring_box) as u64;
+            let ep_ring_phys = memory::virtual_to_physical(ep_ring_virt as usize)
+                .ok_or("gagal translate interrupt ep ring")? as u64;
+            write_link_trb(ep_ring_virt, ep_ring_phys, CONTROL_RING_SIZE, true);
+
+            let ep_context_index = dci as usize + 1;
+            let interval = if transfer_type == 1 || transfer_type == 3 {
+                ep_info.interval.saturating_sub(1) as u32
+            } else {
+                0
+            };
+            input_ctx.write_dword(context_size, ep_context_index, 0, interval << 16);
+            input_ctx.write_dword(
+                context_size,
+                ep_context_index,
+                1,
+                (endpoint_type << 3) | (3 << 1) | ((max_packet_size as u32) << 16),
+            );
+            input_ctx.write_dword(
+                context_size,
+                ep_context_index,
+                2,
+                (ep_ring_phys as u32 & !0xF) | 1,
+            );
+            input_ctx.write_dword(
+                context_size,
+                ep_context_index,
+                3,
+                (ep_ring_phys >> 32) as u32,
+            );
+            let average_trb_length = if transfer_type == 1 || transfer_type == 3 {
+                max_packet_size as u32
+            } else {
+                0
+            };
+            input_ctx.write_dword(context_size, ep_context_index, 4, average_trb_length);
+
+            added |= 1 << dci;
+            highest_dci = highest_dci.max(dci);
+            handles.push(EndpointHandle {
+                ring_virt: ep_ring_virt,
+                ring_phys: ep_ring_phys,
+                dci,
+                enqueue_index: 0,
+                cycle_state: true,
+            });
+        }
+
+        input_ctx.write_dword(context_size, 0, 0, added);
         for dword in 0..8 {
             let value = (device_context as *const u32).add(dword).read_volatile();
             input_ctx.write_dword(context_size, 1, dword, value);
@@ -2030,7 +2113,7 @@ pub unsafe fn configure_endpoint(
             context_size,
             1,
             0,
-            ((current_entries.max(dci)) << 27) | (slot_context.dword0 & 0x07FF_FFFF),
+            ((current_entries.max(highest_dci)) << 27) | (slot_context.dword0 & 0x07FF_FFFF),
         );
         input_ctx.write_dword(
             context_size,
@@ -2039,44 +2122,13 @@ pub unsafe fn configure_endpoint(
             (slot_context.dword1 & !0x00FF_0000) | ((root_port as u32) << 16),
         );
 
-        let ep_context_index = dci as usize + 1;
-        let interval = if transfer_type == 1 || transfer_type == 3 {
-            ep_info.interval.saturating_sub(1) as u32
-        } else {
-            0
-        };
-        input_ctx.write_dword(context_size, ep_context_index, 0, interval << 16);
-        input_ctx.write_dword(
-            context_size,
-            ep_context_index,
-            1,
-            (endpoint_type << 3) | (3 << 1) | ((ep_info.max_packet_size as u32) << 16),
-        );
-        input_ctx.write_dword(
-            context_size,
-            ep_context_index,
-            2,
-            (ep_ring_phys as u32 & !0xF) | 1,
-        );
-        input_ctx.write_dword(
-            context_size,
-            ep_context_index,
-            3,
-            (ep_ring_phys >> 32) as u32,
-        );
-        let average_trb_length = if transfer_type == 1 || transfer_type == 3 {
-            ep_info.max_packet_size as u32
-        } else {
-            0
-        };
-        input_ctx.write_dword(context_size, ep_context_index, 4, average_trb_length);
-
         let input_ctx_virt = Box::into_raw(input_ctx) as u64;
         let input_ctx_phys = memory::virtual_to_physical(input_ctx_virt as usize)
             .ok_or("gagal translate input context configure endpoint")?
             as u64;
 
         COMPLETION_PENDING.store(false, Ordering::SeqCst);
+        COMPLETION_SLOT.store(0, Ordering::SeqCst);
 
         core::arch::asm!("cli");
         {
@@ -2084,31 +2136,64 @@ pub unsafe fn configure_endpoint(
             guard.send_command(input_ctx_phys, 0, TRB_TYPE_CONFIGURE_ENDPOINT, slot_id);
         }
         core::arch::asm!("sti");
-        let mut timeout = 10_000_000;
 
+        let mut timeout = 10_000_000;
         loop {
             if COMPLETION_PENDING.load(Ordering::SeqCst) {
                 let code = COMPLETION_CODE.load(Ordering::SeqCst);
+                let event_slot = COMPLETION_SLOT.load(Ordering::SeqCst);
+                COMPLETION_PENDING.store(false, Ordering::SeqCst);
+                if event_slot != 0 && event_slot != slot_id {
+                    println!(
+                        "  Configure Endpoint: completion untuk slot {event_slot}, menunggu slot {slot_id}"
+                    );
+                    continue;
+                }
                 return if code == 1 {
-                    println!("Configure Endpoint sukses (DCI={}", dci);
-                    Ok(EndpointHandle {
-                        ring_virt: ep_ring_virt,
-                        ring_phys: ep_ring_phys,
-                        dci,
-                        enqueue_index: 0,
-                        cycle_state: true,
-                    })
+                    println!(
+                        "Configure Endpoint sukses (slot={slot_id}, endpoint={}, DCI tertinggi={highest_dci})",
+                        endpoints.len()
+                    );
+                    Ok(handles)
                 } else {
+                    println!("  Configure Endpoint gagal: completion code {code}");
                     Err("Configure Endpoint gagal, completion code bukan Succes")
                 };
             }
-            poll_manual_events();
+            // Poll the event ring directly. `poll_manual_events()` is a no-op
+            // when the controller runs in interrupt mode, and the deferred
+            // interrupt handler only runs from the idle loop — the very loop
+            // this call blocks — so waiting on the flag alone made the second
+            // Configure Endpoint spin until it timed out on real hardware.
+            if let Some(instance) = XHCI_INSTANCE.get() {
+                unsafe { instance.lock().poll_event_ring() };
+            }
             timeout -= 1;
             if timeout == 0 {
+                let usbsts = XHCI_INSTANCE
+                    .get()
+                    .map(|instance| unsafe { instance.lock().op_regs().read_usbsts() })
+                    .unwrap_or(0);
+                println!(
+                    "  Configure Endpoint timeout: slot={slot_id}, speed={speed}, endpoints={}, portsc={portsc:#010x}, usbsts={usbsts:#010x}",
+                    endpoints.len()
+                );
                 return Err("Timeout menunggu Configure Endpoint completion");
             }
         }
     }
+}
+
+/// Configure a single endpoint. Kept for callers that only need one; it shares
+/// the batching path so the Added flags of other endpoints are never cleared by
+/// accident.
+pub unsafe fn configure_endpoint(
+    slot_id: u32,
+    root_port: u8,
+    ep_info: EndpointInfo,
+) -> Result<EndpointHandle, &'static str> {
+    let mut handles = unsafe { configure_endpoints(slot_id, root_port, &[ep_info])? };
+    handles.pop().ok_or("configure endpoint returned no handle")
 }
 
 pub unsafe fn bulk_transfer(

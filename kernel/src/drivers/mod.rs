@@ -64,6 +64,7 @@ pub(crate) unsafe fn poll_deferred() {
     unsafe { poll_input() };
     unsafe { usb::poll_hotplug() };
     unsafe { usb::rndis::poll() };
+    unsafe { usb::ncm::poll() };
 }
 
 /// Proses event input (xHCI + driver HID) tanpa pekerjaan hotplug/network.

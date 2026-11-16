@@ -216,7 +216,7 @@ fn run_network_command(arguments: &str) {
 fn run_wifi_command(arguments: &str) {
     if !crate::drivers::qca9377::QCA9377_ENABLED {
         crate::println!(
-            "net wifi: the QCA9377 driver is disabled in this build; use USB tethering (RNDIS) instead"
+            "net wifi: the QCA9377 driver is disabled in this build; use USB tethering (RNDIS/CDC-NCM) instead"
         );
         return;
     }

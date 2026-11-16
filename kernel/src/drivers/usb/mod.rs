@@ -68,9 +68,11 @@ pub(crate) enum UsbPortEvent {
     },
 }
 
+pub(crate) mod bulk_in;
 pub mod keyboard_usb;
 pub mod mass_storage;
 pub mod mouse_usb;
+pub mod ncm;
 pub mod rndis;
 pub mod xhci;
 

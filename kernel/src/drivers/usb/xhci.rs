@@ -21,6 +21,11 @@ pub static COMPLETION_SLOT: AtomicU32 = AtomicU32::new(0);
 pub static TRANSFER_COMPLETION_PENDING: AtomicBool = AtomicBool::new(false);
 pub static TRANSFER_COMPLETION_CODE: AtomicU32 = AtomicU32::new(0);
 pub static TRANSFER_COMPLETION_LENGTH: AtomicU32 = AtomicU32::new(0);
+/// Slot/doorbell of the transfer event that last set
+/// [`TRANSFER_COMPLETION_PENDING`], so a completion can be matched to the device
+/// that asked for it instead of to whatever transfer happened to finish last.
+pub static TRANSFER_COMPLETION_SLOT: AtomicU32 = AtomicU32::new(0);
+pub static TRANSFER_COMPLETION_DCI: AtomicU32 = AtomicU32::new(0);
 pub static MANUAL_POLLING: AtomicBool = AtomicBool::new(false);
 
 // Di-set oleh `poll_event_ring` tiap kali ada Port Status Change Event
@@ -433,6 +438,8 @@ impl XHCI {
                                 );
                                 TRANSFER_COMPLETION_CODE.store(completion_code, Ordering::SeqCst);
                                 TRANSFER_COMPLETION_LENGTH.store(residual_length, Ordering::SeqCst);
+                                TRANSFER_COMPLETION_SLOT.store(event_slot_id, Ordering::SeqCst);
+                                TRANSFER_COMPLETION_DCI.store(endpoint_id, Ordering::SeqCst);
                                 TRANSFER_COMPLETION_PENDING.store(true, Ordering::SeqCst);
                             }
                         }
@@ -750,6 +757,42 @@ const LEGACY_SUPPORT_OS_OWNED: u32 = 1 << 24;
 
 fn port_reset_command(speed: u8) -> u32 {
     if speed == 4 { PORTSC_WPR } else { PORTSC_PR }
+}
+
+/// Busy-wait for `milliseconds` using the 8254 PIT channel 2.
+///
+/// The xHCI spec puts real time between steps (10 ms reset recovery after a port
+/// reset, 2 ms after Address Device before the first transfer), and a plain spin
+/// count covers a wildly different amount of time on every machine. Reads and
+/// writes go through the same PIT programming the Wi-Fi driver uses.
+fn delay_milliseconds(milliseconds: u16) {
+    if cfg!(test) {
+        return;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        use crate::arch::x86_64::io;
+        const PIT_HZ: u32 = 1_193_182;
+        // One PIT period is ~0.84 ms, so a count needs a couple of ticks per ms.
+        let ticks = ((PIT_HZ / 1000) * u32::from(milliseconds)).clamp(1, 0xffff);
+        unsafe {
+            let port_61 = io::inb(0x61);
+            io::outb(0x61, (port_61 & 0xfd) | 0x01);
+            io::outb(0x43, 0xb0);
+            io::outb(0x42, (ticks & 0xff) as u8);
+            io::outb(0x42, ((ticks >> 8) & 0xff) as u8);
+            while io::inb(0x61) & 0x20 == 0 {
+                core::hint::spin_loop();
+            }
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let spins = u32::from(milliseconds).saturating_mul(20_000);
+        for _ in 0..spins {
+            core::hint::spin_loop();
+        }
+    }
 }
 
 fn next_extended_capability_offset(header: u32) -> Option<usize> {
@@ -1162,6 +1205,11 @@ pub unsafe fn reset_port(root_port: u8) -> Result<u8, &'static str> {
                 if status & PORTSC_PED == 0 {
                     return Err("USB port did not enable after reset");
                 }
+                // tRSTRCY: the device needs a moment after the reset before it
+                // answers its address. Addressing it immediately is what made
+                // flashdisks and phones fail on real hardware while a keyboard
+                // (which recovers faster) still worked.
+                delay_milliseconds(if speed == 4 { 50 } else { 10 });
                 return Ok(((status & PORTSC_SPEED_MASK) >> 10) as u8);
             }
             poll_manual_events();
@@ -1274,6 +1322,11 @@ pub unsafe fn recover_command_ring(reason: &str) -> bool {
             return false;
         }
 
+        // 1b. Drop a latched Host System Error: while HSE is set the controller
+        //     stays halted and never consumes a command again.
+        op.write_usbsts(USBSTS_HSE | USBSTS_HCE | USBSTS_EINT);
+        compiler_fence(Ordering::SeqCst);
+
         // 2. Rewind the ring. Stale TRBs whose cycle bit still matches would be
         //    executed again as soon as the ring is re-armed.
         op.write_crcr(0);
@@ -1352,6 +1405,41 @@ fn wait_command_completion(expected_slot: u32, mut timeout: u32) -> Option<u32> 
         poll_event_ring_once();
         timeout -= 1;
         if timeout == 0 {
+            return None;
+        }
+    }
+}
+
+/// Whether a Transfer Event belongs to the EP0 transfer of `slot_id`.
+///
+/// DCI 1 is EP0 and a completion without a slot id or endpoint id is accepted,
+/// because some controllers leave those fields clear; every other transfer event
+/// belongs to a different device (or a class endpoint) and must be skipped.
+fn ep0_completion_matches(slot_id: u32, event_slot: u32, dci: u32) -> bool {
+    (event_slot == 0 || event_slot == slot_id) && (dci == 0 || dci == 1)
+}
+
+/// Wait for the EP0 (control transfer) completion of `slot_id`.
+///
+/// Transfer events are matched by slot instead of "whatever finished last":
+/// when a device is unplugged mid-enumeration its late completion used to be
+/// picked up by the next device's first descriptor read, which then parsed a
+/// garbage descriptor and failed enumeration.
+fn wait_ep0_transfer(slot_id: u32, timeout: &mut u32) -> Option<(u32, u32)> {
+    loop {
+        if TRANSFER_COMPLETION_PENDING.swap(false, Ordering::SeqCst) {
+            let code = TRANSFER_COMPLETION_CODE.load(Ordering::SeqCst);
+            let residual = TRANSFER_COMPLETION_LENGTH.load(Ordering::SeqCst);
+            let event_slot = TRANSFER_COMPLETION_SLOT.load(Ordering::SeqCst);
+            let dci = TRANSFER_COMPLETION_DCI.load(Ordering::SeqCst);
+            if ep0_completion_matches(slot_id, event_slot, dci) {
+                return Some((code, residual));
+            }
+            continue;
+        }
+        poll_event_ring_once();
+        *timeout -= 1;
+        if *timeout == 0 {
             return None;
         }
     }
@@ -1455,6 +1543,12 @@ pub unsafe fn disable_slot(slot_id: u32) -> Result<(), &'static str> {
                         continue;
                     }
                     print_controller_state("xHCI Disable Slot timeout");
+                    // Two timeouts in a row mean the controller is not
+                    // executing commands at all anymore. Only a full HCRST
+                    // clears that, and it also frees the slot we could not
+                    // disable -- `usb::poll_hotplug` runs it on the next pass.
+                    println!("xHCI: controller perlu reset penuh setelah Disable Slot timeout");
+                    CONTROLLER_RESET_REQUIRED.store(true, Ordering::SeqCst);
                     return Err("Timeout menunggu Disable Slot completion");
                 }
             }
@@ -1594,6 +1688,8 @@ pub unsafe fn address_device(slot_id: u32, root_port: u8, speed: u8) -> Result<(
                 let code = COMPLETION_CODE.load(Ordering::SeqCst);
                 return if code == 1 {
                     println!("Address Device sukses untuk slot {}", slot_id);
+                    // 2 ms after SET_ADDRESS before the first control transfer.
+                    delay_milliseconds(2);
                     Ok(())
                 } else {
                     Err("Address Device gagal, completion code bukan Success")
@@ -1669,6 +1765,15 @@ mod control_trb_tests {
         assert_eq!(crcr & 0x3F, 1);
         assert_eq!(crcr & !0x3F, 0x0000_0000_6f8b_4040);
         assert_eq!(crcr, (ring_phys & !0x3F) | 1);
+    }
+
+    #[test]
+    fn ep0_completions_are_only_taken_for_the_device_that_asked() {
+        assert!(ep0_completion_matches(5, 5, 1));
+        assert!(ep0_completion_matches(5, 0, 1));
+        assert!(ep0_completion_matches(5, 5, 0));
+        assert!(!ep0_completion_matches(5, 4, 1));
+        assert!(!ep0_completion_matches(5, 5, 2));
     }
 
     #[test]
@@ -1813,21 +1918,13 @@ pub unsafe fn get_device_descriptor(slot_id: u32) -> Result<DeviceDescriptor, &'
         core::arch::asm!("sti");
 
         let mut timeout = 10_000_000;
-        loop {
-            if TRANSFER_COMPLETION_PENDING.load(Ordering::SeqCst) {
-                let code = TRANSFER_COMPLETION_CODE.load(Ordering::SeqCst);
-                // 1 = Success, 13 = Short Packet (device kirim kurang dari wLength,
-                // tetap valid selama field-field awal descriptor sudah kebaca)
-                if code != 1 && code != 13 {
-                    return Err("Get Device Descriptor gagal, completion code bukan Success");
-                }
-                break;
-            }
-            poll_manual_events();
-            timeout -= 1;
-            if timeout == 0 {
-                return Err("Timeout menunggu Get Device Descriptor completion");
-            }
+        let Some((code, _)) = wait_ep0_transfer(slot_id, &mut timeout) else {
+            return Err("Timeout menunggu Get Device Descriptor completion");
+        };
+        // 1 = Success, 13 = Short Packet (device kirim kurang dari wLength,
+        // tetap valid selama field-field awal descriptor sudah kebaca)
+        if code != 1 && code != 13 {
+            return Err("Get Device Descriptor gagal, completion code bukan Success");
         }
 
         let mut descriptor_bytes = [0; 18];
@@ -1904,21 +2001,13 @@ pub unsafe fn control_transfer_in(
         core::arch::asm!("sti");
 
         let mut timeout = 10_000_000;
-        loop {
-            if TRANSFER_COMPLETION_PENDING.load(Ordering::SeqCst) {
-                let code = TRANSFER_COMPLETION_CODE.load(Ordering::SeqCst);
-                let residual = TRANSFER_COMPLETION_LENGTH.load(Ordering::SeqCst);
-                if code != 1 && code != 13 {
-                    return Err("Control transfer gagal, completion code bukan Success");
-                }
-                return Ok((w_length as u32).saturating_sub(residual));
-            }
-            poll_manual_events();
-            timeout -= 1;
-            if timeout == 0 {
-                return Err("timeout menunggu control transfer completion");
-            }
+        let Some((code, residual)) = wait_ep0_transfer(slot_id, &mut timeout) else {
+            return Err("timeout menunggu control transfer completion");
+        };
+        if code != 1 && code != 13 {
+            return Err("Control transfer gagal, completion code bukan Success");
         }
+        return Ok((w_length as u32).saturating_sub(residual));
     }
 }
 
@@ -1962,26 +2051,17 @@ pub unsafe fn control_transfer_out(
         core::arch::asm!("sti");
 
         let mut timeout = 10_000_000;
-        loop {
-            if TRANSFER_COMPLETION_PENDING.load(Ordering::SeqCst) {
-                let code = TRANSFER_COMPLETION_CODE.load(Ordering::SeqCst);
-                let residual = TRANSFER_COMPLETION_LENGTH.load(Ordering::SeqCst);
-                if code != 1 && code != 13 {
-                    return Err("Control OUT transfer failed");
-                }
-                return if residual == 0 {
-                    Ok(())
-                } else {
-                    Err("Control OUT transfer was incomplete")
-                };
-            }
-            poll_manual_events();
-            timeout -= 1;
-            if timeout == 0 {
-                return Err("Control OUT transfer timed out");
-            }
-            core::hint::spin_loop();
+        let Some((code, residual)) = wait_ep0_transfer(slot_id, &mut timeout) else {
+            return Err("Control OUT transfer timed out");
+        };
+        if code != 1 && code != 13 {
+            return Err("Control OUT transfer failed");
         }
+        return if residual == 0 {
+            Ok(())
+        } else {
+            Err("Control OUT transfer was incomplete")
+        };
     }
 }
 
@@ -2162,22 +2242,14 @@ pub unsafe fn control_transfer_no_data(
         core::arch::asm!("sti");
 
         let mut timeout = 10_000_000;
-
-        loop {
-            if TRANSFER_COMPLETION_PENDING.load(Ordering::SeqCst) {
-                let code = TRANSFER_COMPLETION_CODE.load(Ordering::SeqCst);
-                return if code == 1 {
-                    Ok(())
-                } else {
-                    Err("Control Transfer (no data gagal, completion code bukan Success")
-                };
-            }
-            poll_manual_events();
-            timeout -= 1;
-            if timeout == 0 {
-                return Err("Timeout control transfer no data");
-            }
-        }
+        let Some((code, _residual)) = wait_ep0_transfer(slot_id, &mut timeout) else {
+            return Err("Timeout control transfer no data");
+        };
+        return if code == 1 {
+            Ok(())
+        } else {
+            Err("Control Transfer (no data gagal, completion code bukan Success")
+        };
     }
 }
 

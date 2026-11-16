@@ -21,7 +21,7 @@ const OID_GEN_CURRENT_PACKET_FILTER: u32 = 0x0001_010E;
 const OID_802_3_CURRENT_ADDRESS: u32 = 0x0101_0102;
 const PACKET_FILTER_DIRECTED: u32 = 0x0000_0001;
 const PACKET_FILTER_BROADCAST: u32 = 0x0000_0008;
-const MAX_TRANSFER_SIZE: usize = 16 * 1024;
+const MAX_TRANSFER_SIZE: usize = 4096;
 const MAX_FRAME_SIZE: usize = 1514;
 const RNDIS_HEADER_SIZE: usize = 44;
 const CONTROL_BUFFER_SIZE: usize = 1024;
@@ -376,12 +376,7 @@ unsafe fn send_command(
         )?;
     }
 
-    let mut notify_buf = Box::new(ControlBuffer([0u8; CONTROL_BUFFER_SIZE]));
-    if let (Some(ep), Ok(phys)) = (notify.as_deref_mut(), physical_address(notify_buf.0.as_ptr() as usize)) {
-        let _ = unsafe { xhci::bulk_transfer(slot_id, ep, phys, 8) };
-    } else {
-        crate::arch::x86_64::delay_milliseconds(30);
-    }
+    crate::arch::x86_64::delay_milliseconds(20);
 
     let mut response = Box::new(ControlBuffer([0u8; CONTROL_BUFFER_SIZE]));
     let response_phys = physical_address(response.0.as_ptr() as usize)?;
@@ -399,20 +394,14 @@ unsafe fn send_command(
                 CONTROL_BUFFER_SIZE as u16,
             )
         };
-        match res {
-            Ok(len) => {
-                length = len as usize;
-                if length >= 8 {
-                    unsafe {
-                        xhci::copy_dma_to_slice(response.0.as_ptr(), &mut result[..length]);
-                    }
-                    let header_length = read_u32(&result[..length], 4).unwrap_or(0) as usize;
-                    if header_length >= 8 && header_length <= length {
-                        break;
-                    }
+        if let Ok(len) = res {
+            length = len as usize;
+            if length >= 8 {
+                unsafe {
+                    xhci::copy_dma_to_slice(response.0.as_ptr(), &mut result[..length]);
                 }
+                break;
             }
-            Err(_) => {}
         }
         if attempt + 1 < CONTROL_RESPONSE_ATTEMPTS {
             crate::arch::x86_64::delay_milliseconds(CONTROL_RESPONSE_DELAY_MS);

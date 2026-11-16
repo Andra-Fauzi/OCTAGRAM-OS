@@ -33,7 +33,7 @@ const NDP16_HEADER_LENGTH: usize = 8;
 const NDP16_ENTRY_LENGTH: usize = 4;
 /// NDP16 with one datagram plus the mandatory zeroed terminating entry.
 const NDP16_SINGLE_LENGTH: usize = NDP16_HEADER_LENGTH + 2 * NDP16_ENTRY_LENGTH;
-const MAX_TRANSFER_SIZE: usize = 16 * 1024;
+const MAX_TRANSFER_SIZE: usize = 4096;
 const MAX_FRAME_SIZE: usize = 1514;
 const MAX_DATAGRAMS_PER_NTB: usize = 16;
 

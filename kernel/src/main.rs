@@ -4,7 +4,7 @@
 use core::arch::asm;
 
 use limine::BaseRevision;
-use limine::request::{RequestsEndMarker, RequestsStartMarker};
+use limine::request::{RequestsEndMarker, RequestsStartMarker, StackSizeRequest};
 
 /// Sets the base revision to the latest revision supported by the crate.
 /// See specification for further info.
@@ -13,6 +13,10 @@ use limine::request::{RequestsEndMarker, RequestsStartMarker};
 // The .requests section allows limine to find the requests faster and more safely.
 #[unsafe(link_section = ".requests")]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
+
+#[used]
+#[unsafe(link_section = ".requests")]
+static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(256 * 1024);
 
 /// Define the stand and end markers for Limine requests.
 #[used]

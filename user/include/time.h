@@ -10,6 +10,14 @@ struct timespec {
     long tv_nsec;
 };
 
+// The vendored TinyCC compiles one translation unit ("tccrun.c") that includes
+// this header first and then a host header (`<signal.h>`) which pulls glibc's
+// `bits/types/struct_timespec.h`. That header is guarded by `_STRUCT_TIMESPEC`,
+// so claiming it here keeps glibc from redefining `struct timespec`.
+#ifndef _STRUCT_TIMESPEC
+#define _STRUCT_TIMESPEC 1
+#endif
+
 struct tm {
     int tm_sec;
     int tm_min;

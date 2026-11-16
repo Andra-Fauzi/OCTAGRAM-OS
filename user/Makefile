@@ -19,6 +19,12 @@ TCC_SOURCES := tcc libtcc tccpp tccgen tccdbg tccelf tccasm tccrun \
 	x86_64-gen x86_64-link i386-asm
 TCC_OBJECTS := $(addprefix build/tcc_,$(addsuffix .o,$(TCC_SOURCES)))
 TCC_HEADERS := $(wildcard third_party/tinycc/*.h third_party/tinycc/*.c)
+# TinyCC's `./configure` generates this header and its `.gitignore` keeps it out
+# of the repository, so a fresh clone does not have it. The template carries the
+# values this freestanding build needs; the rule below only copies it when the
+# generated file is missing.
+TCC_CONFIG := third_party/tinycc/config.h
+TCC_CONFIG_TEMPLATE := third_party/tinycc/config.h.octagram
 TCC_ELF := build/tcc.elf
 TCC_CFLAGS := $(CFLAGS) -w -DONE_SOURCE=0 -DCONFIG_TCC_STATIC \
 	-DTARGETOS_OCTAGRAM -Ithird_party/tinycc -Ithird_party/tinycc/include
@@ -71,7 +77,19 @@ build/runtime.o: runtime.c $(HEADERS) | build
 build/runtime.pic.o: runtime.c $(HEADERS) | build
 	$(CC) $(RUNTIME_PIC_CFLAGS) -c -o $@ $<
 
-build/tcc_%.o: third_party/tinycc/%.c $(TCC_HEADERS) $(HEADERS) | build
+$(TCC_CONFIG): $(TCC_CONFIG_TEMPLATE)
+	cp $< $@
+
+# TinyCC's `include/tccdefs.h` is embedded as a C string by `tccpp.c` when
+# `CONFIG_TCC_PREDEFS` is on. Upstream runs its `c2str` helper for that, and the
+# result (`tccdefs_.h`, ignored by the same `*_.h` rule) is generated here too,
+# so a fresh clone builds without running TinyCC's `./configure`.
+TCC_DEFS := third_party/tinycc/tccdefs_.h
+
+$(TCC_DEFS): third_party/tinycc/include/tccdefs.h
+	sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$$/\\n"/' $< > $@
+
+build/tcc_%.o: third_party/tinycc/%.c $(TCC_HEADERS) $(HEADERS) $(TCC_CONFIG) $(TCC_DEFS) | build
 	$(CC) $(TCC_CFLAGS) -c -o $@ $<
 
 build/tcc_support_%.o: third_party/tinycc/lib/%.c $(HEADERS) | build
@@ -136,8 +154,11 @@ build/scanf_runtime_start.o: tests/scanf_runtime_start.S | build
 build/scanf_runtime_test: build/scanf_runtime_start.o build/scanf_runtime_test.o build/scanf_runtime.o
 	$(HOSTLD) -m elf_x86_64 -static --gc-sections -e _start -o $@ $^
 
-$(TCC_ELF): $(TCC_OBJECTS) build/crt0.o build/runtime.o $(TCC_SETJMP) linker.ld
-	$(LD) $(LDFLAGS) --gc-sections -o $@ build/crt0.o build/runtime.o $(TCC_SETJMP) $(TCC_OBJECTS)
+build/tcc_signals.o: tcc_signals.c | build
+	$(CC) $(TCC_CFLAGS) -c -o $@ $<
+
+$(TCC_ELF): $(TCC_OBJECTS) build/tcc_signals.o build/crt0.o build/runtime.o $(TCC_SETJMP) linker.ld
+	$(LD) $(LDFLAGS) --gc-sections -o $@ build/crt0.o build/runtime.o $(TCC_SETJMP) $(TCC_OBJECTS) build/tcc_signals.o
 
 $(TCC_LIBTCC1): $(TCC_SUPPORT_OBJECTS)
 	$(AR) rcs $@ $^

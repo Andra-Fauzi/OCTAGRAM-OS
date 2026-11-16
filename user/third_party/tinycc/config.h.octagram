@@ -1,0 +1,19 @@
+/* Configuration for the in-kernel TCC build.
+ *
+ * Upstream TinyCC generates this file with `./configure`, and its own
+ * `.gitignore` keeps `config*.h` out of the repository, so a fresh clone has no
+ * `config.h` at all and `tcc.h`'s `#include "config.h"` fails. `user/Makefile`
+ * copies this template into place when the generated file is missing.
+ *
+ * Only the values this build needs are set: the vendored compiler is compiled
+ * freestanding (`-ffreestanding -nostdlib`) for OCTAGRAM-OS, so
+ *
+ *   - the version string is mandatory (`tcc.c` and `tccpp.c` use it directly),
+ *   - the target is x86_64,
+ *   - the semaphore-based locking must stay off, because it would pull the
+ *     host's `<semaphore.h>` in front of this tree's own `<time.h>`.
+ */
+#define TCC_VERSION "0.9.28rc"
+#define TCC_TARGET_X86_64 1
+#define CONFIG_TCC_PREDEFS 1
+#define CONFIG_TCC_SEMLOCK 0

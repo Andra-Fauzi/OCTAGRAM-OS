@@ -381,8 +381,7 @@ fn save_log(current_dir: &str, arguments: &str) {
             offset += written;
         }
         Ok(offset)
-    })
-    .and_then(|inner| inner);
+    });
     match result {
         Ok(bytes) => crate::println!("savelog: wrote {bytes} bytes to {path} (run umount before removing the USB stick)"),
         Err(error) => print_fs_error("savelog", &path, error),

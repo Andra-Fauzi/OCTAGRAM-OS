@@ -100,7 +100,23 @@ pub fn power_on_pci_device(
         "QCA9377 ACPI power: namespace ready, {} objects",
         namespace.iter().count()
     );
-    let bridge = find_root_bridge(namespace, bus).ok_or(PowerError::NoRootBridge(bus))?;
+    let bridge = match find_root_bridge(namespace, bus) {
+        Some(bridge) => bridge,
+        None => {
+            let mut shown = 0;
+            for (path, object) in namespace.iter() {
+                if matches!(object, Object::Device)
+                    && (path.contains("PCI") || path.contains("PC0") || path.contains("RP"))
+                    && shown < 40
+                {
+                    crate::println!("QCA9377 ACPI power: device {path}");
+                    shown += 1;
+                }
+            }
+            crate::println!("QCA9377 ACPI power: {shown} PCI-looking devices in the namespace");
+            return Err(PowerError::NoRootBridge(bus));
+        }
+    };
     let address = (u64::from(device) << 16) | u64::from(function);
     let path = find_endpoint(namespace, &bridge, address).ok_or(PowerError::NoDevice {
         bus,

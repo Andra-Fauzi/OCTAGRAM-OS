@@ -7,7 +7,7 @@
 //! a ring of the most recent `TAIL_CAPACITY` bytes, so a driver that keeps
 //! retrying in the background cannot push the boot log out.
 
-use crate::sync::Mutex;
+use spin::Mutex;
 use alloc::vec::Vec;
 
 const HEAD_CAPACITY: usize = 96 * 1024;

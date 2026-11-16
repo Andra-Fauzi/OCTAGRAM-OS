@@ -267,11 +267,6 @@ pub unsafe fn initialize_device(
     if bar.address == 0 {
         return Err(InitError::NoPciBar);
     }
-    let bar_size = pci::get_bar0_size(device);
-    let min_size = super::required_register_window_size();
-    if bar_size < min_size {
-        return Err(InitError::BarTooSmall);
-    }
     // Power the function on through its ACPI power resources before anything
     // touches the chip. Writing the PCI power state only moves the function to
     // D0; it does not run the platform's `_PS0`, so a rail or reference clock
@@ -287,6 +282,21 @@ pub unsafe fn initialize_device(
         ),
         None => crate::println!("QCA9377 has no PCI power-management capability"),
     }
+
+    // Sizing comes after the power steps on purpose: `pci::get_bar0_size` writes
+    // `u32::MAX` into BAR0 and reads it back, and doing that to an endpoint that
+    // is still in D3cold wedges the root complex (the machine froze between the
+    // probe's last line and the first line here, with nothing else in between).
+    crate::println!(
+        "QCA9377 BAR0 window at {:#x}; sizing it now that the function is in D0",
+        bar.address
+    );
+    let bar_size = pci::get_bar0_size(device);
+    let min_size = super::required_register_window_size();
+    if bar_size < min_size {
+        return Err(InitError::BarTooSmall);
+    }
+    crate::println!("QCA9377 BAR0 size {bar_size:#x} (needs at least {min_size:#x})");
 
     pci::enable_mmio_only(device).map_err(|_| InitError::MmioSetup)?;
 

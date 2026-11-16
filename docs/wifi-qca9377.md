@@ -273,6 +273,16 @@ chip, so the remaining explanations are a timer/watchdog that fires during ROM
 start-up and a CPU/PLL clock that is not up yet. These four registers separate
 the two without another guess.
 
+### BAR0 Is Sized Only After The Function Is In D0
+
+`pci::get_bar0_size` writes `u32::MAX` into BAR0 and reads the mask back. Doing
+that to an endpoint that firmware left in D3cold wedges the root complex: the
+E203NAH froze between the probe's `board data selected` line and the first line
+of `initialize_device`, with nothing but the BAR reads in between. The ACPI
+`_PR0`/`_PS0` step and `force_d0` now run first, and the log prints
+`QCA9377 BAR0 window at ...` and `QCA9377 BAR0 size ...` so a future hang is
+placed on the exact call.
+
 ### Host setup before the reset (Linux reference)
 
 A reference Linux boot on the same E203NAH reports

@@ -257,13 +257,13 @@ therefore separate "the CPU was never taken through reset", which would make
 every retry re-read the crash latch of the first failed boot, from "the bit is
 self-clearing". `cpu_warm_rst_visible` is set when either sample shows the bit.
 
-### The LF Timer And The CPU Clock Are Checked Before The Cold Reset
+### The LF Timer Is Cleared Between Warm-Reset Phases
 
-`ath10k_pci_warm_reset` stops the low-frequency timer before it touches the copy
-engines, because an armed timer keeps waking the target while it is being reset.
-The same timer keeps counting across `SOC_GLOBAL_RESET`, so the driver now reads
-`SOC_LF_TIMER_CONTROL0` (`RTC_SOC + 0x50`), clears its enable bit (`0x4`), and
-logs the value it found as `lf_timer_before=` on the cold-reset line.
+The upstream `ath10k_pci_warm_reset_clear_lf` step runs after the first CPU
+warm reset, CE ring initialisation and boot-ROM wait, immediately before the CE
+reset pulse. The driver records `SOC_LF_TIMER_CONTROL0` (`RTC_SOC + 0x50`)
+before the cold reset for diagnostics, but clears its enable bit (`0x4`) only
+between the two warm-reset phases, matching the hardware sequence.
 
 The `QCA9377 window` samples now also carry `lf_timer`, `cpu_clock`
 (`RTC_SOC + 0x20`), `clock_control` (`RTC_SOC + 0x28`) and `pcie_intr`
@@ -514,7 +514,8 @@ messages and logs `QCA9377 HTT RX: <n> frame(s) delivered, <m> dropped`.
 The reset path is now a transcription of the ath10k functions rather than a
 reconstruction of them:
 
-- `ath10k_pci_warm_reset_si0` → `warm_reset_cpu` → `ath10k_pci_init_pipes` →
+- `ath10k_pci_warm_reset_si0` (two 10 ms settling intervals, 20 ms total) →
+  `warm_reset_cpu` → `ath10k_pci_init_pipes` →
   `ath10k_pci_wait_for_target_init` (ath10k discards this result) →
   `ath10k_pci_warm_reset_clear_lf` → `ath10k_pci_warm_reset_ce` →
   `warm_reset_cpu` → `init_pipes` → `wait_for_target_init` (this one decides).
@@ -523,9 +524,10 @@ reconstruction of them:
   clears `FW_INDICATOR` first. ath10k never clears the bit again, so the previous
   "release" write — a read-modify-write of `SOC_RESET_CONTROL` bits the driver
   does not own — is gone.
-- `warm_reset_ce` re-reads `SOC_RESET_CONTROL` immediately before the pulse and
-  writes the original value back with only the CE bit cleared, so the CPU warm
-  reset bit survives the pulse.
+- The LF timer is cleared after the first ROM wait, then `warm_reset_ce` re-reads
+  `SOC_RESET_CONTROL` immediately before the pulse and writes the original value
+  back with only the CE bit cleared, so the CPU warm reset bit survives the pulse.
+  The second CPU reset and CE pipe initialisation happen only after this pulse.
 - `ath10k_pci_wait_for_target_init` breaks on `FW_IND_EVENT_PENDING` before it
   looks at `FW_IND_INITIALIZED`, so a crashed target is reported on the first
   sample instead of after the 3 s timeout.

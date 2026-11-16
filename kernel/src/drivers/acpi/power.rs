@@ -90,7 +90,16 @@ pub fn power_on_pci_device(
         return Ok(report);
     }
 
+    // Every stage below can block: the namespace parse walks the whole DSDT, the
+    // resource `_ON`/`_PS0` methods run AML that may touch the embedded
+    // controller, and this platform froze without printing anything once the
+    // probe reached the power step. One line per stage places the next freeze.
+    crate::println!("QCA9377 ACPI power: parsing the ACPI namespace");
     let namespace = namespace().ok_or(PowerError::Tables(AcpiError::InvalidTable))?;
+    crate::println!(
+        "QCA9377 ACPI power: namespace ready, {} objects",
+        namespace.iter().count()
+    );
     let bridge = find_root_bridge(namespace, bus).ok_or(PowerError::NoRootBridge(bus))?;
     let address = (u64::from(device) << 16) | u64::from(function);
     let path = find_endpoint(namespace, &bridge, address).ok_or(PowerError::NoDevice {
@@ -105,10 +114,12 @@ pub fn power_on_pci_device(
         resources: Vec::new(),
         ps0: None,
     };
+    crate::println!("QCA9377 ACPI power: bridge={bridge} endpoint={path}");
 
     // The endpoint first, then every device above it up to the host bridge: a
     // PCIe port may own the rail that feeds the slot below it.
     for holder in chain(&path, &bridge) {
+        crate::println!("QCA9377 ACPI power: reading _PR0 of {holder}");
         for resource in power_resources(namespace, &holder, &mut io)? {
             if report
                 .resources
@@ -117,14 +128,17 @@ pub fn power_on_pci_device(
             {
                 continue;
             }
+            crate::println!("QCA9377 ACPI power: enabling {resource}");
             report
                 .resources
                 .push(resource_state(namespace, &resource, &mut io));
         }
     }
+    crate::println!("QCA9377 ACPI power: {} resources collected", report.resources.len());
 
     let ps0 = format!("{path}._PS0");
     if matches!(namespace.get(&ps0), Some(Object::Method { .. })) {
+        crate::println!("QCA9377 ACPI power: evaluating {ps0}");
         let mut interpreter = Interpreter::new(namespace);
         report.ps0 = Some(match interpreter.invoke(&ps0, &[], &mut io) {
             Ok(_) => "evaluated".to_string(),

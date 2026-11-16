@@ -263,10 +263,12 @@ pub unsafe fn initialize_device(
     subsystem_device: u16,
 ) -> Result<[u8; 6], InitError> {
     // ── 1. Map BAR0 ──────────────────────────────────────────────────────────
+    crate::println!("QCA9377 BAR0: reading the window address from config space");
     let bar = pci::get_bar0(device);
     if bar.address == 0 {
         return Err(InitError::NoPciBar);
     }
+    crate::println!("QCA9377 BAR0 window at {:#x}", bar.address);
     // Power the function on through its ACPI power resources before anything
     // touches the chip. Writing the PCI power state only moves the function to
     // D0; it does not run the platform's `_PS0`, so a rail or reference clock

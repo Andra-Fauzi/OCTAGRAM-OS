@@ -421,10 +421,9 @@ fn clear_fw_crash<R: ce::RegisterIo>(registers: &mut R) -> Result<u32, ce::CeErr
 
 /// `ath10k_pci_warm_reset_clear_lf`: stop the low-frequency timer.
 ///
-/// The timer keeps counting across `SOC_GLOBAL_RESET`, and its expiry wakes the
-/// target (or fires its watchdog) while the boot ROM is starting up, so its
-/// enable bit is cleared before the cold reset. Returns the value read first, so
-/// the boot log shows whether the timer was armed at all.
+/// The timer is cleared between the two CPU warm-reset phases, after the first
+/// boot-ROM wait and immediately before the CE reset pulse. Returns the value
+/// read first for diagnostics.
 pub(super) fn clear_lf_timer<R: ce::RegisterIo>(
     registers: &mut R,
 ) -> Result<u32, ce::CeError> {
@@ -1783,9 +1782,16 @@ mod tests {
             .map(|(_, value)| *value)
             .collect();
         assert_eq!(global_reset, [1, 0]);
-        assert!(registers.writes.iter().any(|(offset, value)| *offset
-            == QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET
-            && *value & 4 == 0));
+        assert!(registers
+            .writes
+            .iter()
+            .all(|(offset, _)| *offset
+                != QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET));
+        assert!(registers
+            .writes
+            .iter()
+            .all(|(offset, value)| *offset != QCA6174_RTC_SOC_BASE
+                || value & RTC_SOC_CE_RESET == 0));
 
         // ...but the CPU warm reset was NOT asserted yet, so the ROM cannot be
         // running and BMI rings configured afterwards are never cleared.
@@ -1807,6 +1813,10 @@ mod tests {
         // Both warm-reset phases run, exactly like `ath10k_pci_warm_reset`.
         assert_eq!(outcome.attempts, 2);
         assert!(registers.awake);
+        // LF timer and CE reset are deferred until after phase one's ROM wait.
+        assert!(registers.writes.iter().any(|(offset, value)| *offset
+            == QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET
+            && *value & 4 == 0));
 
         assert!(registers
             .writes
@@ -1876,7 +1886,7 @@ mod tests {
     }
 
     #[test]
-    fn ce_reset_pulse_precedes_the_cpu_release() {
+    fn ce_reset_pulse_occurs_between_cpu_warm_reset_phases() {
         let mut registers = MockResetRegisters::default();
         let prepared = reset_target_soc(&mut registers, 8, || {}).unwrap();
         let _ = release_target_cpu(&mut registers, 8, prepared, |_| Ok(())).unwrap();
@@ -1888,14 +1898,35 @@ mod tests {
                 *offset == QCA6174_RTC_SOC_BASE && value & RTC_SOC_CE_RESET != 0
             })
             .expect("CE reset pulse missing");
-        let cpu_write = registers
+        let cpu_writes: alloc::vec::Vec<usize> = registers
             .writes
             .iter()
-            .position(|(offset, value)| {
-                *offset == QCA6174_RTC_SOC_BASE && value & RTC_SOC_CPU_RESET != 0
+            .enumerate()
+            .filter_map(|(index, (offset, value))| {
+                (*offset == QCA6174_RTC_SOC_BASE
+                    && value & RTC_SOC_CPU_RESET != 0
+                    && value & RTC_SOC_CE_RESET == 0)
+                    .then_some(index)
             })
-            .expect("CPU warm reset missing");
-        assert!(ce_write < cpu_write);
+            .collect();
+        assert!(
+            cpu_writes.len() >= 3,
+            "expected CPU warm reset writes plus CE deassertion"
+        );
+        assert!(cpu_writes[0] < ce_write);
+        assert!(ce_write < *cpu_writes.last().unwrap());
+
+        let indicator_clears: alloc::vec::Vec<usize> = registers
+            .writes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (offset, value))| {
+                (*offset == QCA6174_FW_INDICATOR_ADDRESS && *value == 0).then_some(index)
+            })
+            .collect();
+        assert_eq!(indicator_clears.len(), 2, "both warm-reset phases must run");
+        assert!(cpu_writes[0] > indicator_clears[0]);
+        assert!(*cpu_writes.last().unwrap() > indicator_clears[1]);
     }
 
     #[test]

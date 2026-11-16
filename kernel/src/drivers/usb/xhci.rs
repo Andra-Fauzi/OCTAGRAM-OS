@@ -36,6 +36,15 @@ pub static PORT_CHANGE_PENDING: AtomicBool = AtomicBool::new(false);
 
 pub static XHCI_INSTANCE: Once<Mutex<XHCI>> = Once::new();
 
+/// Set when the command ring could not be restarted (or the controller stayed
+/// halted), so the only way back is a full Host Controller Reset.
+///
+/// `usb::poll_hotplug` owns that reset because HCRST invalidates every slot, so
+/// the USB class drivers have to be unbound first -- doing it from inside a
+/// command-wait loop here would deadlock on drivers that take their own state
+/// locks while still holding the controller lock.
+pub static CONTROLLER_RESET_REQUIRED: AtomicBool = AtomicBool::new(false);
+
 const PORTSC_CCS: u32 = 1 << 0;
 const PORTSC_PED: u32 = 1 << 1;
 const PORTSC_PR: u32 = 1 << 4;
@@ -1179,12 +1188,65 @@ fn poll_event_ring_once() {
     }
 }
 
+/// CRCR value that starts the command ring at `ring_phys` with cycle state 1.
+///
+/// Bit 0 is the Ring Cycle State software enqueues with, bits 1-3 are Command
+/// Stop / Command Abort / Command Ring Running and stay untouched, and the base
+/// address has to be 64-byte aligned (bits 5:0 reserved).
+fn command_ring_crcr(ring_phys: u64) -> u64 {
+    (ring_phys & !0x3F) | 1
+}
+
+/// Whether a Command Completion Event belongs to the command we are waiting on.
+///
+/// A completion without a slot id (Enable Slot sits in the same field as the
+/// returned slot) always matches, and so does the requested slot; anything else
+/// is a late completion for a different command and must be skipped instead of
+/// being reported as the answer.
+fn command_completion_matches(expected_slot: u32, event_slot: u32) -> bool {
+    expected_slot == 0 || event_slot == 0 || event_slot == expected_slot
+}
+
+unsafe fn wait_controller_halt(op: &XhciOpRegs, mut spins: u32) -> bool {
+    unsafe {
+        while spins > 0 {
+            if op.read_usbsts() & USBSTS_HCH != 0 {
+                return true;
+            }
+            spins -= 1;
+            core::hint::spin_loop();
+        }
+        op.read_usbsts() & USBSTS_HCH != 0
+    }
+}
+
+unsafe fn wait_controller_run(op: &XhciOpRegs, mut spins: u32) -> bool {
+    unsafe {
+        while spins > 0 {
+            if op.read_usbsts() & USBSTS_HCH == 0 {
+                return true;
+            }
+            spins -= 1;
+            core::hint::spin_loop();
+        }
+        op.read_usbsts() & USBSTS_HCH == 0
+    }
+}
+
 /// Restart the command ring after the controller stopped consuming commands.
 ///
-/// A wedged controller reports CRCR = 0 (ring not running) and then times out
-/// every command, which used to kill USB — and with it the USB keyboard — until
-/// the machine was rebooted. Zeroing the ring before re-arming it keeps the
-/// controller from executing stale TRBs with a matching cycle bit.
+/// Two things made the previous version useless on real hardware:
+///
+/// * `CRCR` must only be written while the controller is stopped. Writing it
+///   while the controller runs is undefined and the write is typically ignored,
+///   so the ring stayed dead and every later command timed out again -- exactly
+///   the `CRCR lama=0x...08` / `disable_slot gagal` loop in the boot log.
+/// * A halted controller (`USBSTS.HCH`) never consumes commands at all, no
+///   matter where `CRCR` points.
+///
+/// So: halt the controller, rewind the ring, re-arm `CRCR` and run it again.
+/// Slots, DCBAA and the event ring all survive a Run/Stop cycle, so devices that
+/// are already enumerated keep working.
 pub unsafe fn recover_command_ring(reason: &str) -> bool {
     unsafe {
         let Some(instance) = XHCI_INSTANCE.get() else {
@@ -1197,20 +1259,101 @@ pub unsafe fn recover_command_ring(reason: &str) -> bool {
         }
         let op = guard.op_regs();
         let crcr = op.read_crcr();
+        let usbsts = op.read_usbsts();
+
+        // 1. Halt the controller: a CRCR write is only defined while halted.
+        let mut cmd = op.read_usbcmd();
+        cmd &= !USBCMD_RUN_OR_STOP;
+        op.write_usbcmd(cmd);
+        if !unsafe { wait_controller_halt(&op, 1_000_000) } {
+            println!(
+                "xHCI: controller tidak mau halt untuk restart command ring (USBSTS={:#010x})",
+                op.read_usbsts()
+            );
+            CONTROLLER_RESET_REQUIRED.store(true, Ordering::SeqCst);
+            return false;
+        }
+
+        // 2. Rewind the ring. Stale TRBs whose cycle bit still matches would be
+        //    executed again as soon as the ring is re-armed.
         op.write_crcr(0);
         let trbs = ring_virt as *mut Trb;
         for index in 0..COMMAND_RING_SIZE {
             trbs.add(index).write_volatile(Trb::empty());
         }
         compiler_fence(Ordering::SeqCst);
-        op.write_crcr((ring_phys & !0x3F) | 1);
+
         guard.cmd_enqueue_index = 0;
         guard.cmd_cycle_state = true;
+        op.write_crcr(command_ring_crcr(ring_phys));
+        compiler_fence(Ordering::SeqCst);
+
+        // 3. Run again, and note whether the controller actually came back.
+        cmd = op.read_usbcmd();
+        cmd |= USBCMD_RUN_OR_STOP;
+        op.write_usbcmd(cmd);
+        let running = unsafe { wait_controller_run(&op, 1_000_000) };
         COMPLETION_PENDING.store(false, Ordering::SeqCst);
+        let new_crcr = op.read_crcr();
         println!(
-            "xHCI: command ring di-restart ({reason}, CRCR lama={crcr:#018x})"
+            "xHCI: command ring di-restart ({reason}, CRCR lama={crcr:#018x}, baru={new_crcr:#018x}, USBSTS={usbsts:#010x})"
         );
-        true
+        if !running {
+            println!("xHCI: controller tetap halt setelah restart command ring");
+            CONTROLLER_RESET_REQUIRED.store(true, Ordering::SeqCst);
+        }
+        running
+    }
+}
+
+/// Full Host Controller Reset + re-init after the command ring could not be
+/// restarted. HCRST invalidates every slot and device context, so the caller
+/// must unbind the USB class drivers before calling this.
+pub unsafe fn reset_controller() -> bool {
+    unsafe {
+        let Some(instance) = XHCI_INSTANCE.get() else {
+            return false;
+        };
+        let mut guard = instance.lock();
+        let enable_interrupts = !MANUAL_POLLING.load(Ordering::SeqCst);
+        println!("xHCI: reset controller penuh untuk memulihkan command ring");
+        init_xhci(&mut guard, enable_interrupts);
+        let running = guard.op_regs().read_usbsts() & USBSTS_HCH == 0;
+        COMPLETION_PENDING.store(false, Ordering::SeqCst);
+        TRANSFER_COMPLETION_PENDING.store(false, Ordering::SeqCst);
+        // A reset rebinds every port, so make the idle loop re-enumerate now.
+        PORT_CHANGE_PENDING.store(true, Ordering::SeqCst);
+        if running {
+            println!("xHCI: controller pulih setelah reset penuh");
+            CONTROLLER_RESET_REQUIRED.store(false, Ordering::SeqCst);
+        } else {
+            println!("xHCI: reset penuh gagal, controller tetap halt");
+        }
+        running
+    }
+}
+
+/// Poll the event ring until the completion of the command in `expected_slot`
+/// arrives, returning its completion code.
+///
+/// `expected_slot == 0` accepts a completion for any slot (Enable Slot answers
+/// with the slot it allocated). Returns `None` on timeout.
+fn wait_command_completion(expected_slot: u32, mut timeout: u32) -> Option<u32> {
+    loop {
+        if COMPLETION_PENDING.swap(false, Ordering::SeqCst) {
+            let code = COMPLETION_CODE.load(Ordering::SeqCst);
+            let event_slot = COMPLETION_SLOT.load(Ordering::SeqCst);
+            if command_completion_matches(expected_slot, event_slot) {
+                return Some(code);
+            }
+            // Late completion for another command: keep waiting for ours.
+            continue;
+        }
+        poll_event_ring_once();
+        timeout -= 1;
+        if timeout == 0 {
+            return None;
+        }
     }
 }
 
@@ -1254,22 +1397,12 @@ pub unsafe fn enable_slot() -> Result<u32, &'static str> {
             } // lock dilepas sebelum sti
             core::arch::asm!("sti");
 
-            let mut timeout = 2_000_000u32;
-            loop {
-                if COMPLETION_PENDING.load(Ordering::SeqCst) {
-                    let code = COMPLETION_CODE.load(Ordering::SeqCst);
-                    let slot = COMPLETION_SLOT.load(Ordering::SeqCst);
-                    return if code == 1 {
-                        Ok(slot)
-                    } else {
-                        Err("Command completion code bukan Success")
-                    };
-                }
-                poll_event_ring_once();
-                timeout -= 1;
-                if timeout == 0 {
-                    break;
-                }
+            if let Some(code) = wait_command_completion(0, 2_000_000) {
+                return if code == 1 {
+                    Ok(COMPLETION_SLOT.load(Ordering::SeqCst))
+                } else {
+                    Err("Command completion code bukan Success")
+                };
             }
 
             if attempt == 0 && unsafe { recover_command_ring("Enable Slot timeout") } {
@@ -1300,43 +1433,41 @@ pub unsafe fn enable_slot() -> Result<u32, &'static str> {
 /// alamat itu (mis. di `XHCI` struct per-slot) biar bisa dibebaskan di
 /// sini.
 pub unsafe fn disable_slot(slot_id: u32) -> Result<(), &'static str> {
-    COMPLETION_PENDING.store(false, Ordering::SeqCst);
-
     unsafe {
-        core::arch::asm!("cli");
-        {
-            let mut guard = XHCI_INSTANCE.get().unwrap().lock();
-            guard.send_command(0, 0, TRB_TYPE_DISABLE_SLOT, slot_id);
-        }
-        core::arch::asm!("sti");
-    }
+        // Two attempts, like `enable_slot`: the first timeout is often a wedged
+        // command ring, and once the ring has been restarted the very same
+        // command goes through.
+        for attempt in 0..2u32 {
+            COMPLETION_PENDING.store(false, Ordering::SeqCst);
 
-    let mut timeout = 10_000_000;
-    loop {
-        if COMPLETION_PENDING.load(Ordering::SeqCst) {
-            let code = COMPLETION_CODE.load(Ordering::SeqCst);
-            if code != 1 {
-                return Err("Disable Slot gagal, completion code bukan Success");
+            core::arch::asm!("cli");
+            {
+                let mut guard = XHCI_INSTANCE.get().unwrap().lock();
+                guard.send_command(0, 0, TRB_TYPE_DISABLE_SLOT, slot_id);
             }
-            break;
-        }
-        poll_event_ring_once();
-        timeout -= 1;
-        if timeout == 0 {
-            unsafe { recover_command_ring("Disable Slot timeout") };
-            return Err("Timeout menunggu Disable Slot completion");
-        }
-    }
+            core::arch::asm!("sti");
 
-    unsafe {
+            match wait_command_completion(slot_id, 10_000_000) {
+                Some(1) => break,
+                Some(_) => return Err("Disable Slot gagal, completion code bukan Success"),
+                None => {
+                    if attempt == 0 && recover_command_ring("Disable Slot timeout") {
+                        continue;
+                    }
+                    print_controller_state("xHCI Disable Slot timeout");
+                    return Err("Timeout menunggu Disable Slot completion");
+                }
+            }
+        }
+
         let dcbaa_virt = XHCI_INSTANCE.get().unwrap().lock().dcbaa_virt;
         (dcbaa_virt as *mut u64)
             .add(slot_id as usize)
             .write_volatile(0);
-    }
 
-    println!("Disable Slot sukses untuk slot {}", slot_id);
-    Ok(())
+        println!("Disable Slot sukses untuk slot {}", slot_id);
+        Ok(())
+    }
 }
 
 // Context struct di bawah ini adalah layout memori yang dibaca xHCI
@@ -1529,6 +1660,23 @@ mod control_trb_tests {
     #[test]
     fn port_change_acknowledgment_covers_only_w1c_status_bits() {
         assert_eq!(PORTSC_CHANGE_BITS, 0xFF << 17);
+    }
+
+    #[test]
+    fn restarted_command_ring_keeps_the_cycle_bit_and_the_aligned_base() {
+        let ring_phys = 0x0000_0000_6f8b_4041u64;
+        let crcr = command_ring_crcr(ring_phys);
+        assert_eq!(crcr & 0x3F, 1);
+        assert_eq!(crcr & !0x3F, 0x0000_0000_6f8b_4040);
+        assert_eq!(crcr, (ring_phys & !0x3F) | 1);
+    }
+
+    #[test]
+    fn command_completion_matching_skips_other_slots_only_when_known() {
+        assert!(command_completion_matches(0, 7));
+        assert!(command_completion_matches(3, 3));
+        assert!(command_completion_matches(3, 0));
+        assert!(!command_completion_matches(3, 4));
     }
 
     #[test]

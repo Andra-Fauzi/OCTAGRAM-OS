@@ -92,14 +92,66 @@ pub(super) unsafe fn register_class_drivers() {
 /// Must be called after the interrupt handler has returned.
 pub unsafe fn poll_hotplug() {
     unsafe {
-        if xhci::PORT_CHANGE_PENDING.swap(false, Ordering::SeqCst)
-            && xhci::XHCI_INSTANCE.get().is_some()
-        {
-            println!("Port Status Change terdeteksi, sinkronisasi hotplug...");
-            discover_and_init_hid_devices();
+        if xhci::XHCI_INSTANCE.get().is_some() {
+            // The command ring could not be restarted: the only way back is a
+            // full controller reset, which has to unbind the devices first.
+            if xhci::CONTROLLER_RESET_REQUIRED.load(Ordering::SeqCst) {
+                reset_wedged_controller();
+            }
+            if xhci::PORT_CHANGE_PENDING.swap(false, Ordering::SeqCst) {
+                println!("Port Status Change terdeteksi, sinkronisasi hotplug...");
+                discover_and_init_hid_devices();
+            }
         }
         controller::poll_non_xhci_ports();
         hid_periodic::poll();
+    }
+}
+
+/// How many full controller resets are attempted before USB is left alone.
+///
+/// A controller that fails every reset would otherwise restart itself on each
+/// idle-loop pass and flood the log, which is worse than reporting it once and
+/// letting the rest of the system run.
+const MAX_CONTROLLER_RESETS: u32 = 3;
+static CONTROLLER_RESETS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// Recover an xHCI controller whose command ring is dead.
+///
+/// HCRST invalidates every slot and device context, so every class driver is
+/// unbound first: their state points at endpoint contexts that will not exist
+/// after the reset. Ports stay enumerated afterwards, so the caller's discovery
+/// pass re-enumerates whatever is plugged in — no replug needed.
+unsafe fn reset_wedged_controller() {
+    unsafe {
+        let attempts = CONTROLLER_RESETS.load(Ordering::SeqCst);
+        if attempts >= MAX_CONTROLLER_RESETS {
+            if attempts == MAX_CONTROLLER_RESETS {
+                CONTROLLER_RESETS.store(attempts + 1, Ordering::SeqCst);
+                println!(
+                    "xHCI: controller tidak bisa dipulihkan setelah {} reset penuh; USB dibiarkan mati sampai reboot",
+                    attempts
+                );
+            }
+            xhci::CONTROLLER_RESET_REQUIRED.store(false, Ordering::SeqCst);
+            return;
+        }
+        CONTROLLER_RESETS.store(attempts + 1, Ordering::SeqCst);
+
+        let released = core::mem::take(&mut *ACTIVE_PORTS.lock());
+        for device in released {
+            println!(
+                "--- reset controller: melepas root port {} (slot={}) ---",
+                device.root_port, device.slot_id
+            );
+            unbind_interfaces(&device);
+        }
+
+        // HCRST rebinds every port, so a port that failed twice before is worth
+        // a fresh attempt. Discovery runs right after this reset.
+        *PORT_FAILURES.lock() = [0; 32];
+        xhci::reset_controller();
     }
 }
 
@@ -200,10 +252,31 @@ unsafe fn shutdown_device(device: &ActivePort) -> bool {
         );
 
         if let Err(error) = xhci::disable_slot(device.slot_id) {
+            // The device is physically gone, so it must still be dropped from
+            // the active list: `connect_new_ports` skips ports that are already
+            // tracked, so keeping it made the port dead until reboot (the
+            // `disable_slot gagal` loop in the boot log). The controller keeps
+            // the slot allocated until its next reset, which is much better
+            // than a port that never enumerates again.
             println!("  disable_slot gagal: {}", error);
-            return false;
+            println!(
+                "  slot {} tetap dipakai controller; port {} tetap bisa dicabut-colok lagi",
+                device.slot_id, device.root_port
+            );
         }
 
+        unbind_interfaces(device);
+        true
+    }
+}
+
+/// Unbind every interface of a device from the USB class drivers.
+///
+/// Purely software: the class drivers only release their own state (report
+/// buffers, block devices, network state), so this is also safe right before a
+/// controller reset, when no endpoint exists anymore to talk to.
+unsafe fn unbind_interfaces(device: &ActivePort) {
+    unsafe {
         for &interface_number in &device.interfaces {
             let key = DeviceKey::UsbInterface {
                 controller: UsbControllerId::XHCI,
@@ -214,7 +287,6 @@ unsafe fn shutdown_device(device: &ActivePort) -> bool {
                 println!("  USB interface cleanup failed: {error}");
             }
         }
-        true
     }
 }
 
@@ -241,7 +313,10 @@ unsafe fn init_one_device(root_port: u8, speed: u8) -> Option<ActivePort> {
 
         if let Err(error) = xhci::address_device(slot_id, root_port, speed) {
             println!("  address_device gagal: {}", error);
-            return None;
+            // Give the slot back: a failed enumeration that keeps its slot
+            // burns one of the 32 slots on every retry and eventually stops all
+            // USB devices from enumerating.
+            return unsafe { abandon_slot(root_port, slot_id) };
         }
         if let Err(error) = xhci::get_device_descriptor(slot_id) {
             println!("  get_device_descriptor gagal: {}", error);

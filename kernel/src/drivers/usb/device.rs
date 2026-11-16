@@ -41,6 +41,37 @@ unsafe fn init_ohci_mass_storage(interface: &UsbInterfaceInfo) -> bool {
 
 static ACTIVE_PORTS: Mutex<alloc::vec::Vec<ActivePort>> = Mutex::new(alloc::vec::Vec::new());
 
+/// Per-port count of consecutive failed enumerations.
+///
+/// A port that keeps failing (a phone that resets its gadget, a charge-only
+/// cable, a device the driver cannot describe) used to retry on every port
+/// status change: each attempt spins the xHCI command ring for seconds, the log
+/// floods, and the shell — including USB keyboard input — becomes unusable.
+/// After [`MAX_PORT_ENUM_ATTEMPTS`] the port is skipped until it disconnects,
+/// which is the only event that can change the outcome.
+const MAX_PORT_ENUM_ATTEMPTS: u8 = 2;
+static PORT_FAILURES: Mutex<[u8; 32]> = Mutex::new([0; 32]);
+
+fn port_failure_count(root_port: u8) -> u8 {
+    PORT_FAILURES.lock()[usize::from(root_port.saturating_sub(1)).min(31)]
+}
+
+fn record_port_failure(root_port: u8) {
+    let mut failures = PORT_FAILURES.lock();
+    let slot = &mut failures[usize::from(root_port.saturating_sub(1)).min(31)];
+    *slot = slot.saturating_add(1);
+    if *slot == MAX_PORT_ENUM_ATTEMPTS {
+        println!(
+            "port {root_port}: enumerasi gagal {} kali, berhenti mencoba sampai device dicabut dan dicolok lagi",
+            *slot
+        );
+    }
+}
+
+fn record_port_success(root_port: u8) {
+    PORT_FAILURES.lock()[usize::from(root_port.saturating_sub(1)).min(31)] = 0;
+}
+
 pub(super) unsafe fn register_class_drivers() {
     for driver in [
         &HID_KEYBOARD_DRIVER as &dyn DeviceDriver,
@@ -99,6 +130,16 @@ pub(super) unsafe fn discover_and_init_hid_devices() {
             "USB discovery: {} port terhubung ditemukan",
             port_states.len()
         );
+        // A port that is no longer connected gets a clean slate: replugging is
+        // exactly the action that should retry enumeration.
+        {
+            let mut failures = PORT_FAILURES.lock();
+            for (port, remaining) in failures.iter_mut().enumerate() {
+                if !port_states.iter().any(|&(index, _)| usize::from(index) == port) {
+                    *remaining = 0;
+                }
+            }
+        }
         disconnect_removed_ports(&port_states);
         connect_new_ports(&port_states);
     }
@@ -137,8 +178,16 @@ unsafe fn connect_new_ports(port_states: &[(u8, u8)]) {
             continue;
         }
 
-        if let Some(active) = unsafe { init_one_device(root_port, speed) } {
-            active_ports.push(active);
+        if port_failure_count(root_port) >= MAX_PORT_ENUM_ATTEMPTS {
+            continue;
+        }
+
+        match unsafe { init_one_device(root_port, speed) } {
+            Some(active) => {
+                record_port_success(root_port);
+                active_ports.push(active);
+            }
+            None => record_port_failure(root_port),
         }
     }
 }

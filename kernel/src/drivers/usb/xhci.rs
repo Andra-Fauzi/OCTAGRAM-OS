@@ -1167,51 +1167,118 @@ pub unsafe fn reset_port(root_port: u8) -> Result<u8, &'static str> {
     }
 }
 
-pub unsafe fn enable_slot() -> Result<u32, &'static str> {
-    COMPLETION_PENDING.store(false, Ordering::SeqCst);
-
-    unsafe {
-        core::arch::asm!("cli");
-        {
-            let mut guard = XHCI_INSTANCE.get().unwrap().lock();
-            guard.send_command(0, 0, TRB_TYPE_ENABLE_SLOT, 0);
-        } // <-- guard di-drop DI SINI, lock dilepas sebelum sti
-        core::arch::asm!("sti");
+/// Poll the event ring once from a command-wait loop.
+///
+/// `poll_manual_events()` is a no-op when the controller runs in interrupt
+/// mode, and the deferred handler only runs from the idle loop that these spins
+/// block, so a completion could sit in the ring unnoticed until the wait timed
+/// out.
+fn poll_event_ring_once() {
+    if let Some(instance) = XHCI_INSTANCE.get() {
+        unsafe { instance.lock().poll_event_ring() };
     }
+}
 
-    let mut timeout = 10_000_000;
-    loop {
-        if COMPLETION_PENDING.load(Ordering::SeqCst) {
-            let code = COMPLETION_CODE.load(Ordering::SeqCst);
-            let slot = COMPLETION_SLOT.load(Ordering::SeqCst);
-            return if code == 1 {
-                Ok(slot)
-            } else {
-                Err("Command completion code bukan Success")
-            };
+/// Restart the command ring after the controller stopped consuming commands.
+///
+/// A wedged controller reports CRCR = 0 (ring not running) and then times out
+/// every command, which used to kill USB — and with it the USB keyboard — until
+/// the machine was rebooted. Zeroing the ring before re-arming it keeps the
+/// controller from executing stale TRBs with a matching cycle bit.
+pub unsafe fn recover_command_ring(reason: &str) -> bool {
+    unsafe {
+        let Some(instance) = XHCI_INSTANCE.get() else {
+            return false;
+        };
+        let mut guard = instance.lock();
+        let (ring_virt, ring_phys) = (guard.cmd_ring_virt, guard.cmd_ring_phys);
+        if ring_virt == 0 || ring_phys == 0 {
+            return false;
         }
-        poll_manual_events();
-        timeout -= 1;
-        if timeout == 0 {
-            let controller = XHCI_INSTANCE.get().unwrap().lock();
-            let op = unsafe { controller.op_regs() };
-            let interrupter = unsafe { controller.interrupter0() };
-            println!(
-                "xHCI Enable Slot timeout: manual_poll={} USBCMD={:#010x} USBSTS={:#010x} CRCR={:#018x} IMAN={:#010x} ERDP={:#018x} cmd_ring={:#018x} cmd_index={} event_ring={:#018x} event_index={} event_cycle={}",
-                MANUAL_POLLING.load(Ordering::SeqCst),
-                unsafe { op.read_usbcmd() },
-                unsafe { op.read_usbsts() },
-                unsafe { op.read_crcr() },
-                unsafe { interrupter.read_iman() },
-                unsafe { interrupter.read_erdp() },
-                controller.cmd_ring_phys,
-                controller.cmd_enqueue_index,
-                controller.event_ring_phys,
-                controller.dequeue_index,
-                controller.cycle_state
-            );
-            return Err("Timeout");
+        let op = guard.op_regs();
+        let crcr = op.read_crcr();
+        op.write_crcr(0);
+        let trbs = ring_virt as *mut Trb;
+        for index in 0..COMMAND_RING_SIZE {
+            trbs.add(index).write_volatile(Trb::empty());
         }
+        compiler_fence(Ordering::SeqCst);
+        op.write_crcr((ring_phys & !0x3F) | 1);
+        guard.cmd_enqueue_index = 0;
+        guard.cmd_cycle_state = true;
+        COMPLETION_PENDING.store(false, Ordering::SeqCst);
+        println!(
+            "xHCI: command ring di-restart ({reason}, CRCR lama={crcr:#018x})"
+        );
+        true
+    }
+}
+
+fn print_controller_state(context: &str) {
+    let Some(instance) = XHCI_INSTANCE.get() else {
+        return;
+    };
+    unsafe {
+        let controller = instance.lock();
+        let op = controller.op_regs();
+        let interrupter = controller.interrupter0();
+        println!(
+            "{context}: manual_poll={} USBCMD={:#010x} USBSTS={:#010x} CRCR={:#018x} IMAN={:#010x} ERDP={:#018x} cmd_ring={:#018x} cmd_index={} event_ring={:#018x} event_index={} event_cycle={}",
+            MANUAL_POLLING.load(Ordering::SeqCst),
+            op.read_usbcmd(),
+            op.read_usbsts(),
+            op.read_crcr(),
+            interrupter.read_iman(),
+            interrupter.read_erdp(),
+            controller.cmd_ring_phys,
+            controller.cmd_enqueue_index,
+            controller.event_ring_phys,
+            controller.dequeue_index,
+            controller.cycle_state,
+        );
+    }
+}
+
+pub unsafe fn enable_slot() -> Result<u32, &'static str> {
+    unsafe {
+        // Two attempts: a controller that stopped consuming commands recovers
+        // from a command-ring restart, and retrying once turns that into a
+        // successful enumeration instead of a dead USB bus.
+        for attempt in 0..2u32 {
+            COMPLETION_PENDING.store(false, Ordering::SeqCst);
+
+            core::arch::asm!("cli");
+            {
+                let mut guard = XHCI_INSTANCE.get().unwrap().lock();
+                guard.send_command(0, 0, TRB_TYPE_ENABLE_SLOT, 0);
+            } // lock dilepas sebelum sti
+            core::arch::asm!("sti");
+
+            let mut timeout = 2_000_000u32;
+            loop {
+                if COMPLETION_PENDING.load(Ordering::SeqCst) {
+                    let code = COMPLETION_CODE.load(Ordering::SeqCst);
+                    let slot = COMPLETION_SLOT.load(Ordering::SeqCst);
+                    return if code == 1 {
+                        Ok(slot)
+                    } else {
+                        Err("Command completion code bukan Success")
+                    };
+                }
+                poll_event_ring_once();
+                timeout -= 1;
+                if timeout == 0 {
+                    break;
+                }
+            }
+
+            if attempt == 0 && unsafe { recover_command_ring("Enable Slot timeout") } {
+                continue;
+            }
+            print_controller_state("xHCI Enable Slot timeout");
+            return Err("Timeout menunggu Enable Slot");
+        }
+        Err("Timeout menunggu Enable Slot")
     }
 }
 
@@ -1253,9 +1320,10 @@ pub unsafe fn disable_slot(slot_id: u32) -> Result<(), &'static str> {
             }
             break;
         }
-        poll_manual_events();
+        poll_event_ring_once();
         timeout -= 1;
         if timeout == 0 {
+            unsafe { recover_command_ring("Disable Slot timeout") };
             return Err("Timeout menunggu Disable Slot completion");
         }
     }
@@ -1540,6 +1608,7 @@ pub struct DeviceDescriptor {
 
 /// Kirim GET_DESCRIPTOR (Device Descriptor) lewat control transfer di EP0.
 /// Wajib dipanggil SETELAH address_device() sukses untuk slot yang sama.
+
 pub unsafe fn get_device_descriptor(slot_id: u32) -> Result<DeviceDescriptor, &'static str> {
     unsafe {
         // Buffer buat nampung hasil descriptor (18 byte standar)
@@ -2178,6 +2247,7 @@ pub unsafe fn configure_endpoints(
                     "  Configure Endpoint timeout: slot={slot_id}, speed={speed}, endpoints={}, portsc={portsc:#010x}, usbsts={usbsts:#010x}",
                     endpoints.len()
                 );
+                unsafe { recover_command_ring("Configure Endpoint timeout") };
                 return Err("Timeout menunggu Configure Endpoint completion");
             }
         }

@@ -208,6 +208,30 @@ fn restore_pcie_after_cold_reset(
     Ok(())
 }
 
+/// `ath10k_pci_claim` workaround: disable the PCI "retry timeout".
+///
+/// Linux reads dword 0x40 of the endpoint's config space and clears bits 15:8
+/// (the TRDY/retry timeout) before touching the chip at all:
+/// `if ((val & 0x0000ff00) != 0) pci_write_config_dword(pdev, 0x40, val & 0xffff00ff)`.
+/// With the timeout armed the endpoint can drop PCIe requests while the boot
+/// ROM is starting, which looks exactly like a ROM that "is not running".
+/// `SOC_GLOBAL_RESET` resets the endpoint's PCIe core, so this has to be
+/// applied again after every cold reset, not only once at probe.
+fn disable_pci_retry_timeout(device: &PciDevice) {
+    const RETRY_TIMEOUT_REGISTER: u8 = 0x40;
+    const RETRY_TIMEOUT_MASK: u32 = 0x0000_ff00;
+    let value = pci::read_config_u32(device, RETRY_TIMEOUT_REGISTER);
+    if value & RETRY_TIMEOUT_MASK != 0 {
+        pci::write_config_u32(device, RETRY_TIMEOUT_REGISTER, value & !RETRY_TIMEOUT_MASK);
+        let after = pci::read_config_u32(device, RETRY_TIMEOUT_REGISTER);
+        crate::println!(
+            "QCA9377 PCI retry timeout disabled: config[0x40] {value:#010x} -> {after:#010x}"
+        );
+    } else {
+        crate::println!("QCA9377 PCI retry timeout already off: config[0x40]={value:#010x}");
+    }
+}
+
 /// Log what the ACPI power resources did for this function.
 fn report_acpi_power(device: &PciDevice) {
     match crate::drivers::acpi::power::power_on_pci_device(
@@ -370,6 +394,8 @@ pub unsafe fn initialize_device(
     crate::println!(
         "QCA9377 copy engines cleared and bus mastering enabled before the chip reset"
     );
+    // Same step as `ath10k_pci_claim`, done before any cold reset.
+    disable_pci_retry_timeout(device);
 
     // ── 3b/4b. Chip reset: cold reset, CE rings, warm reset ─────────────────
     // The boot ROM only services BMI after a cold reset, but the target CPU is
@@ -470,6 +496,10 @@ pub unsafe fn initialize_device(
             let _ = target_sleep(&mut registers);
             return Err(InitError::BusMaster);
         }
+
+        // The cold reset also reset the endpoint's PCIe core, so the retry
+        // timeout comes back armed; disable it again before the warm reset.
+        disable_pci_retry_timeout(device);
 
         // Bus mastering is still enabled from the previous attempt, but the
         // global reset is re-driven every time, so confirm the bit instead of

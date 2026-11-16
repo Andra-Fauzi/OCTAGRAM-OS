@@ -234,11 +234,30 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
             crate::elf::terminate_user(frame, u64::MAX)
         }
         _ => {
-            crate::println!(
-                "Kernel exception vector={} error_code={:#x} rip={:#x}",
+            // Do not use println! here: it takes the terminal lock and writes
+            // to the framebuffer, either of which may have caused this fault.
+            // Emit the crash record directly to COM1 so the original exception
+            // remains observable even when normal console output is unsafe.
+            let fault_address = if frame.vector == 14 {
+                let address: u64;
+                unsafe {
+                    core::arch::asm!(
+                        "mov {}, cr2",
+                        out(reg) address,
+                        options(nomem, nostack, preserves_flags)
+                    );
+                }
+                Some(address)
+            } else {
+                None
+            };
+            crate::drivers::serial::write_kernel_exception(
                 frame.vector,
                 frame.error_code,
-                frame.stack_frame.instruction_pointer
+                frame.stack_frame.instruction_pointer,
+                frame.stack_frame.code_segment,
+                frame.stack_frame.cpu_flags,
+                fault_address,
             );
             loop {
                 core::hint::spin_loop();

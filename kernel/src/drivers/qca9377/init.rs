@@ -25,10 +25,9 @@ use super::{
     wifi_firmware,
     wmi::{self, WmiCmdId, WmiEvent},
 };
-use crate::{memory, network};
-use alloc::{boxed::Box, sync::Arc};
+use crate::memory;
+use alloc::boxed::Box;
 
-const QCA9377_SLOT_ID: u32 = 0x9377;
 const VDEV_ID: u32 = 0;
 const PEER_TYPE_STA: u32 = 1;
 const WMI_VDEV_TYPE_STA: u32 = 2;
@@ -72,7 +71,9 @@ pub enum InitError {
     /// A WMI command or event failed after the handshake.
     Wmi,
     HttHandshake,
+    HttRxRing,
     VdevCreate,
+    VdevStartResponse,
     FirmwareUnavailable,
     BoardDataUnavailable,
     BusMaster,
@@ -99,29 +100,6 @@ impl From<HtcClientError<CeError>> for InitError {
 impl From<wmi::WmiError> for InitError {
     fn from(_: wmi::WmiError) -> Self {
         InitError::Wmi
-    }
-}
-
-/// A live QCA9377 network link, implements `network::LinkDevice`.
-pub struct Qca9377Link {
-    slot: u32,
-    mac: [u8; 6],
-    // In a real interrupt-driven driver the TX path goes here.
-    // For now we store the MAC and report it; TX is stubbed.
-}
-
-impl network::LinkDevice for Qca9377Link {
-    fn slot_id(&self) -> u32 {
-        self.slot
-    }
-
-    fn mac_address(&self) -> [u8; 6] {
-        self.mac
-    }
-
-    fn transmit(&self, _frame: &[u8]) -> Result<(), &'static str> {
-        // TODO: post frame to HTT TX ring.
-        Err("QCA9377: TX not yet implemented")
     }
 }
 
@@ -877,36 +855,41 @@ pub unsafe fn initialize_device(
             ),
             Err(error) => {
                 crate::println!("QCA9377 HTT version handshake failed: {error:?}");
+                let _ = pci::disable_bus_master(device);
+                let _ = target_sleep(&mut registers);
+                return Err(InitError::HttHandshake);
             }
         }
 
         // ── 8b. HTT RX ring ───────────────────────────────────────────────────
-        // ath10k_htt_send_rx_ring_cfg: tell the firmware which buffer ring it may
-        // DMA received MSDUs into. The firmware keeps writing into those buffers
-        // for the whole device lifetime, so the ring is leaked rather than dropped
-        // by a later error path.
-        let mut htt_rx_ring = match htt::HttRxRing::allocate(htt::HTT_RX_RING_SIZE) {
-            Ok(ring) => {
-                let ring: &'static mut htt::HttRxRing = Box::leak(Box::new(ring));
-                let mut config_frame = [0u8; 128];
-                match unsafe {
-                    ring.configure(&mut htt_ep, &mut htt_tx, &mut registers, &mut config_frame)
-                } {
-                    Ok(()) => crate::println!(
-                        "QCA9377 HTT RX ring: {} buffers of {} bytes",
-                        ring.size(),
-                        htt::HTT_RX_BUF_SIZE
-                    ),
+        // The firmware may DMA into this ring for the whole device lifetime.
+        // Keep the backing pages alive even if configuration fails part-way.
+        let mut htt_rx_ring = {
+            let ring: &'static mut htt::HttRxRing =
+                match htt::HttRxRing::allocate(htt::HTT_RX_RING_SIZE) {
+                    Ok(ring) => Box::leak(Box::new(ring)),
                     Err(error) => {
-                        crate::println!("QCA9377 HTT RX ring config failed: {error:?}");
+                        crate::println!("QCA9377 HTT RX ring allocation failed: {error:?}");
+                        let _ = pci::disable_bus_master(device);
+                        let _ = target_sleep(&mut registers);
+                        return Err(InitError::HttRxRing);
                     }
-                }
-                Some(ring)
+                };
+            let mut config_frame = [0u8; 128];
+            if let Err(error) = unsafe {
+                ring.configure(&mut htt_ep, &mut htt_tx, &mut registers, &mut config_frame)
+            } {
+                crate::println!("QCA9377 HTT RX ring config failed: {error:?}");
+                let _ = pci::disable_bus_master(device);
+                let _ = target_sleep(&mut registers);
+                return Err(InitError::HttRxRing);
             }
-            Err(error) => {
-                crate::println!("QCA9377 HTT RX ring allocation failed: {error:?}");
-                None
-            }
+            crate::println!(
+                "QCA9377 HTT RX ring: {} buffers of {} bytes",
+                ring.size(),
+                htt::HTT_RX_BUF_SIZE
+            );
+            Some(ring)
         };
 
         // ── 9. Create STA vdev ────────────────────────────────────────────────
@@ -952,25 +935,42 @@ pub unsafe fn initialize_device(
             crate::println!("QCA9377 WMI_VDEV_START sent (freq={}MHz)", DEFAULT_FREQ_MHZ);
         }
 
-        // Wait for VDEV_START_RESP.
-        {
-            match unsafe { wmi_ep.receive(&mut wmi_rx, &mut registers, &mut wmi_frame) } {
-                Ok(WmiEvent::VdevStartResp { vdev_id, status }) => {
-                    crate::println!(
-                        "QCA9377 VDEV_START_RESP: vdev={} status={}",
-                        vdev_id, status
-                    );
-                    if status != 0 {
-                        crate::println!("QCA9377 VDEV_START failed, status={}", status);
-                        return Err(InitError::VdevCreate);
-                    }
-                }
-                Ok(e) => {
-                    crate::println!("QCA9377 unexpected event (expected VDEV_START_RESP): {:?}", e);
-                }
-                Err(error) => {
-                    crate::println!("QCA9377 VDEV_START_RESP receive failed: {error:?}");
-                }
+        // Wait for the matching VDEV_START_RESP. Continuing without this
+        // acknowledgement could send later commands to a vdev the firmware
+        // may not have started.
+        match unsafe { wmi_ep.receive(&mut wmi_rx, &mut registers, &mut wmi_frame) } {
+            Ok(WmiEvent::VdevStartResp { vdev_id, status })
+                if vdev_id == VDEV_ID && status == 0 =>
+            {
+                crate::println!(
+                    "QCA9377 VDEV_START_RESP: vdev={} status={}",
+                    vdev_id,
+                    status
+                );
+            }
+            Ok(WmiEvent::VdevStartResp { vdev_id, status }) => {
+                crate::println!(
+                    "QCA9377 VDEV_START_RESP rejected: vdev={} status={}",
+                    vdev_id,
+                    status
+                );
+                let _ = pci::disable_bus_master(device);
+                let _ = target_sleep(&mut registers);
+                return Err(InitError::VdevStartResponse);
+            }
+            Ok(other) => {
+                crate::println!(
+                    "QCA9377 unexpected event while waiting for VDEV_START_RESP: {other:?}"
+                );
+                let _ = pci::disable_bus_master(device);
+                let _ = target_sleep(&mut registers);
+                return Err(InitError::VdevStartResponse);
+            }
+            Err(error) => {
+                crate::println!("QCA9377 VDEV_START_RESP receive failed: {error:?}");
+                let _ = pci::disable_bus_master(device);
+                let _ = target_sleep(&mut registers);
+                return Err(InitError::VdevStartResponse);
             }
         }
 
@@ -1099,17 +1099,13 @@ pub unsafe fn initialize_device(
         core::mem::forget(bmi_rings);
     }
 
+    // This implementation has no HTT TX path and no complete 802.11
+    // authentication/association state machine. Do not register an Ethernet
+    // interface whose transmit path would reject every packet.
     crate::println!(
-        "QCA9377 initialization complete, registering network link"
+        "QCA9377 firmware control path initialized (MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}); network interface remains disabled until HTT TX and 802.11 association are implemented",
+        mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]
     );
-
-    let link = Arc::new(Qca9377Link {
-        slot: QCA9377_SLOT_ID,
-        mac: mac_addr,
-    });
-    if let Err(e) = network::register_link(link) {
-        crate::println!("QCA9377 register_link failed: {e}");
-    }
 
     Ok(mac_addr)
 }

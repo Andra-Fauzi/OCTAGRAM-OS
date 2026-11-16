@@ -1615,7 +1615,7 @@ pub(crate) unsafe fn poll_retry() {
             state.retry_pending = false;
             state.cooldown = 0;
             crate::println!(
-                "QCA9377 Wi-Fi active after {attempt} restart(s): MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                "QCA9377 firmware control path initialized after {attempt} restart(s): MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}; network data path is not enabled yet",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
             );
         }

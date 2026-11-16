@@ -348,7 +348,12 @@ BMI DONE starts the firmware, which reads them while it boots.
 
 ### Complete Initialization & Connection Pipeline (`qca9377/init.rs`)
 
-The full driver initialization sequence is implemented in `kernel/src/drivers/qca9377/init.rs`:
+The current QCA9377 bring-up is a work in progress, not a usable Wi-Fi
+interface. The PCI/BMI/HTC groundwork exists, but the bundled firmware declares
+WMI-TLV and initialization deliberately stops at `WmiTlvUnsupported` before
+sending `WMI_INIT`. Consequently, the later packed-WMI VDEV/scan/association
+code below is not reachable with the bundled firmware. It must not be treated
+as implemented functionality until the WMI-TLV path is ported:
 1. **BAR0 Mapping & Silicon Verification**: Maps PCI BAR0, wakes target SoC registers (`0x8f0`), and validates QCA9377 hw1.0 / hw1.1 silicon.
 2. **Firmware & Board Data Loading**: Extracts `firmware-6.bin` (FW 10.2) and selects board data from `board-2.bin`.
 3. **BMI Boot Sequence**: Configures CE0/CE1, loads board data, executes OTP at `0x0040_4000`, loads and boots firmware at `0x0040_8000`.
@@ -357,12 +362,9 @@ The full driver initialization sequence is implemented in `kernel/src/drivers/qc
    - WMI Control:   TX=CE3, RX=CE2
    - HTT Data:      TX=CE4, RX=CE5
 5. **HTC Handshake**: Waits for `HTC_READY`, connects `HTC_SERVICE_WMI_CONTROL` and `HTC_SERVICE_HTT_DATA`, and transmits `HTC_SETUP_COMPLETE`.
-6. **WMI Initialization**: Sends `WMI_INIT` inside an HTC data message on the WMI TX pipe (CE3), then polls the WMI RX pipe (CE2) for `WMI_READY` and extracts the hardware MAC address.
-7. **HTT Version Handshake & RX Ring**: Sends `HTT_H2T_MSG_TYPE_VERSION_REQ` as an HTC data message on the HTT endpoint (CE4), reads `HTT_T2H_MSG_TYPE_VERSION_CONF` from CE5, then describes the RX buffer ring with `HTT_H2T_MSG_TYPE_RX_RING_CFG`.
-8. **STA Vdev & Peer Creation**: Sends `WMI_VDEV_CREATE` (STA mode), `WMI_PEER_CREATE` (self), and disables STA powersave.
-9. **Radio Bring-up & Scanning**: Sends `WMI_VDEV_START` (2.4 GHz channel), waits for `VDEV_START_RESP`, triggers active scan via `WMI_START_SCAN`, and drains scan completion events.
-10. **AP Association**: Issues `WMI_VDEV_UP`, `WMI_PEER_CREATE` (BSS peer), and `WMI_PEER_ASSOC` to associate with the target AP.
-11. **Network Link Registration**: Registers `Qca9377Link` into kernel `network::register_link()`, providing slot ID `0x9377`.
+6. **WMI Initialization (blocked)**: The packed WMI codec does not match the bundled WMI-TLV firmware. The driver stops with `WmiTlvUnsupported` before sending `WMI_INIT`.
+7. **HTT, VDEV, Scan and Association (not reached with this firmware)**: These packed-WMI stages are not currently reachable. In addition, HTT handshake and RX-ring setup now fail initialization instead of continuing after errors, and the VDEV start acknowledgement is required.
+8. **Network data path (disabled)**: The QCA9377 is not registered as a `LinkDevice` because HTT TX and a complete 802.11 authentication/association state machine are not implemented. DHCP, ARP, and IP traffic must not be reported as available.
 
 ### WMI over HTC (`qca9377/wmi.rs`)
 
@@ -653,10 +655,22 @@ the order they matter:
    `WMI_INIT` must hand back. We answer with `count = 0` unconditionally.
 
 The driver now parses elements 2, 5 and 6, prints them next to the version, and
-refuses to send the packed `WMI_INIT` when the blob declares TLV, so the failure
-is reported as `WmiTlvUnsupported` instead of a misleading `WmiReady` timeout.
-Porting `wmi_tlv.c`'s tag parser, its `init` command and its `SERVICE_READY`
-handling is the prerequisite for anything past the HTC handshake.
+refuses to send the packed `WMI_INIT` when the blob declares TLV. The failure is
+reported as `WmiTlvUnsupported` rather than a misleading `WmiReady` timeout.
+Porting `wmi_tlv.c`'s tag parser, command encoding, `SERVICE_READY` host-memory
+request handling and `READY` event parsing is the prerequisite for anything
+past the HTC handshake.
+
+The initialization path has also been hardened:
+- A failed HTT version handshake or RX-ring setup now aborts bring-up.
+- A missing, unexpected or unsuccessful `VDEV_START_RESP` aborts bring-up.
+- The kernel no longer registers a QCA9377 `LinkDevice` whose TX method always
+  returns an error.
+- The shell does not claim that QCA9377 scan or connection commands succeeded
+  when the corresponding WMI-TLV and 802.11 MLME paths are not implemented.
+
+These changes make failure reporting more accurate; they do **not** make the
+QCA9377 data path operational yet.
 
 ### Shell Commands
 

@@ -59,6 +59,7 @@ use crate::drivers::usb::mouse_usb;
 pub const TIMER_VECTOR: u8 = 32;
 /// Local APIC spurious-interrupt vector programmed in the SVR.
 pub const SPURIOUS_VECTOR: u8 = 255;
+const SPURIOUS_VECTOR_U64: u64 = SPURIOUS_VECTOR as u64;
 
 static UNKNOWN_EXTERNAL_REPORTED: AtomicBool = AtomicBool::new(false);
 static UNKNOWN_EXTERNAL_PENDING: AtomicBool = AtomicBool::new(false);
@@ -196,7 +197,7 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
             frame as *mut InterruptFrame
         }
         // The APIC spurious vector has no device source and must not send EOI.
-        SPURIOUS_VECTOR as u64 => frame as *mut InterruptFrame,
+        SPURIOUS_VECTOR_U64 => frame as *mut InterruptFrame,
         128 => crate::elf::handle_syscall(frame),
         // Unknown external IRQs are handled before the user-CPL exception arm:
         // a hardware interrupt may arrive while a user task is running.
@@ -246,7 +247,7 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
     };
     // Acknowledge all external vectors handled above except the architectural
     // APIC spurious vector (255), which explicitly does not receive an EOI.
-    if frame.vector >= 32 && frame.vector != 128 && frame.vector != SPURIOUS_VECTOR as u64 {
+    if frame.vector >= 32 && frame.vector != 128 && frame.vector != SPURIOUS_VECTOR_U64 {
         if let Some(lapic) = apic::LAPIC.get() {
             unsafe {
                 lapic.send_eoi();

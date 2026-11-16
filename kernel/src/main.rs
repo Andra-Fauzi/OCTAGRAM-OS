@@ -147,7 +147,10 @@ fn hcf() -> ! {
         unsafe { drivers::poll_deferred() };
         // A failed QCA9377 bring-up is restarted from the idle loop, never from
         // the shell task, because one chip reset blocks for several seconds.
-        unsafe { drivers::qca9377::poll_retry() };
+        // The driver is disabled for now (`qca9377::QCA9377_ENABLED = false`).
+        if drivers::qca9377::QCA9377_ENABLED {
+            unsafe { drivers::qca9377::poll_retry() };
+        }
         crate::network::poll_tcp();
     }
 }

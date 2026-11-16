@@ -23,6 +23,15 @@ use spin::Mutex;
 /// fixed here and enabled with `pci::enable_msi()`.
 pub const QCA9377_MSI_VECTOR: u8 = 45;
 
+/// Bring-up QCA9377 dimatikan sementara.
+///
+/// Boot ROM device ini tidak pernah mencapai `FW_IND_INITIALIZED` (target
+/// melaporkan `FW_IND_EVENT_PENDING` di setiap percobaan), jadi driver dibiarkan
+/// ada di tree tapi tidak boleh probe, tidak mencetak log, dan tidak me-restart
+/// perangkat di latar belakang. Fokus sementara ada di tethering RNDIS (USB HP
+/// Android). Set `true` untuk mengaktifkan kembali.
+pub const QCA9377_ENABLED: bool = false;
+
 /// Service a target interrupt from the IDT vector above.
 ///
 /// The handler only acknowledges the PCIe cause and records which copy engines
@@ -1396,6 +1405,9 @@ fn probe_bmi_target_info(device: &PciDevice) -> Result<TargetInfo, BmiProbeError
 }
 
 pub(crate) fn report_pci_candidates(devices: &[PciDevice]) {
+    if !QCA9377_ENABLED {
+        return;
+    }
     let mut found = false;
     for device in devices {
         if !is_ath10k_pci_candidate(device.vendor_id, device.device_id) {
@@ -1584,6 +1596,9 @@ pub fn is_initialized() -> bool {
 ///
 /// Returns `false` when the link is already up or no WLAN function was found.
 pub fn request_restart() -> bool {
+    if !QCA9377_ENABLED {
+        return false;
+    }
     let mut state = BRING_UP.lock();
     if state.initialized || state.device.is_none() {
         return false;
@@ -1601,6 +1616,9 @@ pub fn request_restart() -> bool {
 /// never while the shell is inside another bring-up (the supervisor is the only
 /// caller of `initialize_device` after boot).
 pub(crate) unsafe fn poll_retry() {
+    if !QCA9377_ENABLED {
+        return;
+    }
     let Some((device, subsystem_vendor, subsystem_device, attempt)) = next_restart() else {
         return;
     };

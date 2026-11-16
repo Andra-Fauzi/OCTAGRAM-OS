@@ -24,6 +24,13 @@ const MAX_TRANSFER_SIZE: usize = 16 * 1024;
 const MAX_FRAME_SIZE: usize = 1514;
 const RNDIS_HEADER_SIZE: usize = 44;
 const CONTROL_BUFFER_SIZE: usize = 512;
+/// Percobaan membaca `GET_ENCAPSULATED_RESPONSE`, 5 ms sekali (total ~1 detik).
+///
+/// HP Android baru menyiapkan balasan beberapa milidetik setelah perintahnya
+/// diterima; retry tanpa jeda selalu mengembalikan response kosong di hardware
+/// nyata dan seluruh bring-up RNDIS gagal dengan "short RNDIS control response".
+const CONTROL_RESPONSE_ATTEMPTS: usize = 200;
+const CONTROL_RESPONSE_DELAY_MS: u32 = 5;
 
 pub static RNDIS_DCI: AtomicU32 = AtomicU32::new(0);
 pub static RNDIS_SLOT_ID: AtomicU32 = AtomicU32::new(0);
@@ -170,6 +177,12 @@ pub unsafe fn probe(interface: &UsbInterfaceInfo) -> Result<(), &'static str> {
         mac[4],
         mac[5]
     );
+    // Tethering langsung minta alamat: tanpa langkah ini link RNDIS terdaftar
+    // tapi tidak punya IPv4 (DHCP baru jalan kalau `net dhcp` diketik manual).
+    match network::start_dhcp() {
+        Ok(()) => crate::println!("RNDIS: DHCP discover sent (`net status` untuk melihat lease)"),
+        Err(error) => crate::println!("RNDIS: DHCP tidak dimulai: {error} (jalankan `net dhcp`)"),
+    }
     Ok(())
 }
 
@@ -350,7 +363,7 @@ unsafe fn send_command(
     let mut response = Box::new([0u8; CONTROL_BUFFER_SIZE]);
     let response_phys = physical_address(response.as_ptr() as usize)?;
     let mut length = 0usize;
-    for _ in 0..8 {
+    for attempt in 0..CONTROL_RESPONSE_ATTEMPTS {
         response.fill(0);
         length = unsafe {
             xhci::control_transfer_in(
@@ -363,10 +376,15 @@ unsafe fn send_command(
                 CONTROL_BUFFER_SIZE as u16,
             )?
         } as usize;
-        if length >= 8 {
+        // A response is only usable once its own header is complete: the device
+        // may return a stub while it is still preparing the real message.
+        let header_length = read_u32(response.as_ref(), 4).unwrap_or(0) as usize;
+        if length >= 8 && header_length >= 8 && header_length <= length {
             break;
         }
-        core::hint::spin_loop();
+        if attempt + 1 < CONTROL_RESPONSE_ATTEMPTS {
+            crate::arch::x86_64::delay_milliseconds(CONTROL_RESPONSE_DELAY_MS);
+        }
     }
     if length < 8 || length > response.len() {
         return Err("short RNDIS control response");

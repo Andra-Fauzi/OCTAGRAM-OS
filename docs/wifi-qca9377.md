@@ -276,14 +276,22 @@ the two without another guess.
 ### The AML Parse Cannot Spin
 
 One boot printed `QCA9377 ACPI power: parsing the ACPI namespace` and then froze;
-the parse of a real vendor DSDT is the only work behind that line. Two guarantees
-now hold: every `parse_term_list` iteration has to advance the cursor (a
-construct that reports success without consuming a byte is skipped like an
-unsupported one), and the total number of iterations is bounded to twice the
-table length, after which the namespace is marked `truncated` and the boot
-continues. A partial namespace only loses definitions; a hung parse loses the
-machine. Each table's signature and size, plus the object count, resync count
-and truncation flag, are printed so the next boot says exactly where it stopped.
+the parse of a real vendor DSDT is the only work behind that line. Termination
+now rests on two limits and one rule:
+
+- `MAX_TERM_BYTES` (8 KiB, enforced by `Cursor`) bounds a single term, so no
+  definition can read for ever;
+- `MAX_PARSE_STEPS` (1M terms) bounds the whole parse across tables and
+  recursion, so even an oscillation in `cursor.position` ends;
+- every `parse_term_list` iteration must advance the cursor; a construct that
+  reports success without consuming a byte is skipped like an unsupported one.
+
+Running out of either limit marks the namespace `truncated` and lets the boot
+continue: a partial namespace only loses definitions, a hung parse loses the
+machine. `MAX_PARSE_DEPTH` is unchanged and is about the stack, not about work.
+Each table's signature and size, the object count, the resync count and the
+truncation flag are printed, and while tracing is on the parser reports its
+offset every 4 KiB, so the next boot says exactly where it stopped.
 
 ### BAR0 Is Sized Only After The Function Is In D0
 

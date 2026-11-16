@@ -275,7 +275,8 @@ pub static PARSE_TRACE: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 /// Total terms one namespace parse may handle before it gives up and marks the
-/// namespace truncated.
+/// namespace truncated. Together with [`MAX_TERM_BYTES`] this is the whole
+/// termination argument: bounded steps, each bounded in bytes.
 const MAX_PARSE_STEPS: u64 = 1 << 20;
 
 impl Namespace {
@@ -354,24 +355,34 @@ impl Namespace {
         if depth > MAX_PARSE_DEPTH {
             return Err(AmlError::TooDeep);
         }
-        // Every iteration has to advance, and the number of iterations is
-        // bounded. A vendor DSDT is thousands of constructs this reader only
-        // partly understands: one that reports success without consuming a
-        // byte, or a table that makes the reader resynchronise on almost every
-        // position, spins here with no output, which is exactly how one boot
-        // froze on "parsing the ACPI namespace" and never returned.
-        let mut budget = end.saturating_mul(2).saturating_add(64);
+        // Termination rests on exactly two limits, and on every iteration
+        // advancing the cursor. A vendor DSDT is thousands of constructs this
+        // reader only partly understands, and one boot froze here with no
+        // output:
+        //
+        //   - `MAX_TERM_BYTES` in `Cursor` bounds one term, so no single
+        //     definition can read for ever;
+        //   - `MAX_PARSE_STEPS` bounds the whole parse across tables and
+        //     recursion, so even an oscillation in `cursor.position` ends.
+        //
+        // The forward-progress check below is not a limit but a rule: a term
+        // that reports success without consuming a byte is skipped like an
+        // unsupported one.
+        let mut traced = cursor.position / 4096;
         while cursor.position < end {
-            if budget == 0 || self.steps >= MAX_PARSE_STEPS {
+            if self.steps >= MAX_PARSE_STEPS {
                 self.truncated = true;
                 break;
             }
-            budget -= 1;
             self.steps += 1;
             let start = cursor.position;
+            // The boot log has to say where a stall is, and after a resync this
+            // loop walks the table one byte at a time, so the offset is reported
+            // once per 4 KiB.
             if PARSE_TRACE.load(core::sync::atomic::Ordering::Relaxed)
-                && start / 4096 != cursor.position / 4096
+                && start / 4096 != traced
             {
+                traced = start / 4096;
                 crate::println!(
                     "AML parse: table {table} offset {start:#x} of {end:#x}, {} objects",
                     self.objects.len()
@@ -1428,8 +1439,8 @@ fn resolve_name(scope: &str, raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AmlError, Interpreter, Namespace, Object, REGION_SYSTEM_IO, RegionIo, Value, read_bits,
-        write_bits,
+        AmlError, BUFFER_OP, Cursor, Interpreter, MAX_TERM_BYTES, Namespace, Object,
+        REGION_SYSTEM_IO, RegionIo, Value, read_bits, write_bits,
     };
     use alloc::boxed::Box;
     use alloc::collections::BTreeMap;
@@ -1729,6 +1740,34 @@ mod tests {
         assert!(
             !namespace.truncated(),
             "resynchronising stays inside the iteration budget"
+        );
+    }
+
+    #[test]
+    fn a_term_that_keeps_reading_is_cut_off() {
+        let mut namespace = Namespace::parse(&[]);
+
+        // A `Buffer` whose payload is larger than one term may consume: the
+        // reader would otherwise copy every byte up to the end of the package.
+        let oversized = with_package(
+            &[BUFFER_OP],
+            &[0x0a, 0xff], // BytePrefix 255: the declared size is not the issue
+            &vec![0u8; MAX_TERM_BYTES + 1024],
+        );
+        let mut cursor = Cursor::new(leaked(oversized));
+        assert_eq!(
+            namespace.parse_value(&mut cursor, "\\"),
+            Err(AmlError::Truncated),
+            "the per-term budget stops the copy"
+        );
+
+        // The same construct below the budget still parses, so the limit is a
+        // limit and not a refusal to read buffers.
+        let small = with_package(&[BUFFER_OP], &[0x0a, 0x08], &[0u8; 8]);
+        let mut cursor = Cursor::new(leaked(small));
+        assert_eq!(
+            namespace.parse_value(&mut cursor, "\\"),
+            Ok(Value::Bytes(vec![0u8; 8]))
         );
     }
 }

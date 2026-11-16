@@ -387,13 +387,17 @@ fn warm_reset_si0<R: ce::RegisterIo>(registers: &mut R) -> Result<(), ce::CeErro
     }
     if RTC_SOC_SI0_RESET != 0 {
         registers.write32(QCA6174_RTC_SOC_BASE, current | RTC_SOC_SI0_RESET)?;
-        settle_reset_delay(10);
+    }
+    // ath10k waits 10 ms after asserting SI0, even when QCA9377's mask is 0.
+    settle_reset_delay(10);
+    if RTC_SOC_SI0_RESET != 0 {
         let held = registers.read32(QCA6174_RTC_SOC_BASE)?;
         if held == u32::MAX {
             return Err(ce::CeError::DeviceUnavailable);
         }
         registers.write32(QCA6174_RTC_SOC_BASE, held & !RTC_SOC_SI0_RESET)?;
     }
+    // ath10k waits another 10 ms after deassertion (20 ms total).
     settle_reset_delay(10);
     Ok(())
 }
@@ -752,15 +756,11 @@ pub(super) struct ResetFailure {
     pub error: ce::CeError,
 }
 
-/// Cold-reset the target SoC and cycle the copy engines.
+/// Cold-reset the target SoC and collect its post-reset state.
 ///
-/// This runs *before* the BMI CE rings are programmed, because the CE reset
-/// pulse clears the ring registers. The target CPU is deliberately left in
-/// reset here; `release_target_cpu` starts it once the rings exist.
-///
-/// ath10k orders this the same way for QCA6174/QCA9377:
-/// `ath10k_pci_warm_reset_cpu` -> `ath10k_pci_init_pipes` ->
-/// `ath10k_pci_wait_for_target_init`.
+/// The target CPU is deliberately left for `release_target_cpu`, which runs
+/// ath10k's two-phase warm reset after the host-side CE rings are available.
+/// The CE reset pulse belongs between those warm-reset phases, not here.
 pub(super) fn reset_target_soc<R: ce::RegisterIo>(
     registers: &mut R,
     poll_limit: usize,
@@ -778,12 +778,11 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         .map_err(|error| failed("verify FW_INDICATOR write", error))?;
     target_wake(registers, poll_limit).map_err(|error| failed("wake target", error))?;
     let dump_before = ResetRegisterDump::capture(registers);
-    // Stop the low-frequency timer before the reset, the way
-    // `ath10k_pci_warm_reset_clear_lf` does: an armed timer keeps waking the
-    // target while it is being reset, and a target that is woken mid-reset
-    // aborts as soon as its boot ROM starts.
-    let lf_timer_before =
-        clear_lf_timer(registers).map_err(|error| failed("clear the LF timer", error))?;
+    // Record the LF timer before cold reset for diagnostics. ath10k clears it
+    // between the two warm-reset phases, after phase one's ROM wait.
+    let lf_timer_before = registers
+        .read32(QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET)
+        .map_err(|error| failed("read the LF timer", error))?;
     let cold_reset_state =
         soc_global_reset(registers).map_err(|error| failed("SoC global reset", error))?;
     target_wake(registers, poll_limit)
@@ -819,7 +818,8 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         }
     }
 
-    pulse_ce_reset(registers).map_err(|error| failed("reset copy engines", error))?;
+    // Do not pulse CE here. ath10k performs that reset only after the first
+    // warm-reset phase has initialised the rings and the boot ROM wait finished.
 
     Ok(TargetReset {
         indicator_before,
@@ -907,9 +907,11 @@ where
             break;
         }
 
-        // `ath10k_pci_warm_reset_clear_lf` plus `ath10k_pci_warm_reset_ce`: the
-        // CE reset pulse clears the ring registers, so the pipes below have to
-        // be programmed again afterwards.
+        // Match ath10k's order: stop the LF timer only after the first ROM
+        // wait, then reset CE. The second CPU reset and pipe setup below rebuild
+        // the rings after CE has cleared their registers.
+        clear_lf_timer(registers)
+            .map_err(|error| failed("clear LF timer between warm-reset phases", error))?;
         pulse_ce_reset(registers).map_err(|error| failed("pulse CE reset", error))?;
     }
 

@@ -387,10 +387,7 @@ fn warm_reset_si0<R: ce::RegisterIo>(registers: &mut R) -> Result<(), ce::CeErro
     }
     // ath10k performs both read/modify/write steps even when this QCA9377
     // mask is zero; the writes/readbacks also flush the register path.
-    registers.write32(
-        QCA6174_RTC_SOC_BASE,
-        current | RTC_SOC_SI0_RESET,
-    )?;
+    registers.write32(QCA6174_RTC_SOC_BASE, current | RTC_SOC_SI0_RESET)?;
     if registers.read32(QCA6174_RTC_SOC_BASE)? == u32::MAX {
         return Err(ce::CeError::DeviceUnavailable);
     }
@@ -401,10 +398,7 @@ fn warm_reset_si0<R: ce::RegisterIo>(registers: &mut R) -> Result<(), ce::CeErro
     if held == u32::MAX {
         return Err(ce::CeError::DeviceUnavailable);
     }
-    registers.write32(
-        QCA6174_RTC_SOC_BASE,
-        held & !RTC_SOC_SI0_RESET,
-    )?;
+    registers.write32(QCA6174_RTC_SOC_BASE, held & !RTC_SOC_SI0_RESET)?;
     if registers.read32(QCA6174_RTC_SOC_BASE)? == u32::MAX {
         return Err(ce::CeError::DeviceUnavailable);
     }

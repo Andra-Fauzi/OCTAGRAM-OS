@@ -1908,6 +1908,20 @@ mod tests {
         assert!(cpu_writes[0] < ce_write);
         assert!(ce_write < *cpu_writes.last().unwrap());
 
+        let timer_writes: alloc::vec::Vec<usize> = registers
+            .writes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (offset, _))| {
+                (*offset
+                    == QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET)
+                    .then_some(index)
+            })
+            .collect();
+        assert_eq!(timer_writes.len(), 1, "LF timer must be cleared once");
+        assert!(cpu_writes[0] < timer_writes[0]);
+        assert!(timer_writes[0] < ce_write);
+
         let indicator_clears: alloc::vec::Vec<usize> = registers
             .writes
             .iter()

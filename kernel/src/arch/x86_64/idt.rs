@@ -107,6 +107,8 @@ pub unsafe fn load_idt() {
         });
         IDT[44] = IdtEntry::new(xhci_irq_stub as u64, 0x08);
         IDT[45] = IdtEntry::new(qca9377_irq_stub as u64, 0x08);
+        // The LAPIC SVR uses vector 255 as its spurious interrupt vector.
+        IDT[255] = IdtEntry::new(interrupt::spurious_interrupt_stub as u64, 0x08);
         IDT[128] = IdtEntry::new_user_callable(syscall_stub as u64, 0x08);
 
         let descriptor = IdtDescriptor {

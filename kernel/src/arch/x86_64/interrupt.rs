@@ -48,6 +48,7 @@ pub struct InterruptFrame {
 }
 
 use core::arch::naked_asm;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use seq_macro::seq;
 
 use crate::arch::x86_64::apic;
@@ -56,6 +57,43 @@ use crate::drivers::usb::keyboard_usb;
 use crate::drivers::usb::mouse_usb;
 
 pub const TIMER_VECTOR: u8 = 32;
+/// Local APIC spurious-interrupt vector programmed in the SVR.
+pub const SPURIOUS_VECTOR: u8 = 255;
+
+static UNKNOWN_EXTERNAL_REPORTED: AtomicBool = AtomicBool::new(false);
+static UNKNOWN_EXTERNAL_PENDING: AtomicBool = AtomicBool::new(false);
+static UNKNOWN_EXTERNAL_VECTOR: AtomicU64 = AtomicU64::new(0);
+static UNKNOWN_EXTERNAL_ERROR: AtomicU64 = AtomicU64::new(0);
+static UNKNOWN_EXTERNAL_RIP: AtomicU64 = AtomicU64::new(0);
+
+/// Return the first unhandled external interrupt captured by the ISR.
+///
+/// The interrupt handler only records scalar values; formatted output runs in
+/// the main loop after the LAPIC EOI has been sent.
+pub fn take_unknown_external_interrupt() -> Option<(u64, u64, u64)> {
+    if !UNKNOWN_EXTERNAL_PENDING.swap(false, Ordering::Acquire) {
+        return None;
+    }
+    Some((
+        UNKNOWN_EXTERNAL_VECTOR.load(Ordering::Relaxed),
+        UNKNOWN_EXTERNAL_ERROR.load(Ordering::Relaxed),
+        UNKNOWN_EXTERNAL_RIP.load(Ordering::Relaxed),
+    ))
+}
+
+fn record_unknown_external_interrupt(frame: &InterruptFrame) {
+    // Preserve the first event so an interrupt storm cannot overwrite the
+    // original vector/RIP before the main loop prints the diagnostic.
+    if UNKNOWN_EXTERNAL_REPORTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        UNKNOWN_EXTERNAL_VECTOR.store(frame.vector, Ordering::Relaxed);
+        UNKNOWN_EXTERNAL_ERROR.store(frame.error_code, Ordering::Relaxed);
+        UNKNOWN_EXTERNAL_RIP.store(frame.stack_frame.instruction_pointer, Ordering::Relaxed);
+        UNKNOWN_EXTERNAL_PENDING.store(true, Ordering::Release);
+    }
+}
 
 macro_rules! interrupt_stub {
     ($name:ident, $vector:expr, no_error_code) => {
@@ -157,7 +195,15 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
             }
             frame as *mut InterruptFrame
         }
+        // The APIC spurious vector has no device source and must not send EOI.
+        SPURIOUS_VECTOR as u64 => frame as *mut InterruptFrame,
         128 => crate::elf::handle_syscall(frame),
+        // Unknown external IRQs are handled before the user-CPL exception arm:
+        // a hardware interrupt may arrive while a user task is running.
+        _ if frame.vector >= 32 => {
+            record_unknown_external_interrupt(frame);
+            frame as *mut InterruptFrame
+        }
         _ if frame.stack_frame.code_segment & 3 == 3 => {
             if frame.vector == 14 {
                 let fault_address: u64;
@@ -188,16 +234,19 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
         }
         _ => {
             crate::println!(
-                "Interrupt vector={} error_code={:#x} rip={:#x}",
+                "Kernel exception vector={} error_code={:#x} rip={:#x}",
                 frame.vector,
                 frame.error_code,
                 frame.stack_frame.instruction_pointer
             );
-            loop {}
+            loop {
+                core::hint::spin_loop();
+            }
         }
     };
-    // Vector 45 is the QCA9377 MSI; it needs the same LAPIC EOI as the others.
-    if matches!(frame.vector, 32 | 33 | 44 | 45) {
+    // Acknowledge all external vectors handled above except the architectural
+    // APIC spurious vector (255), which explicitly does not receive an EOI.
+    if frame.vector >= 32 && frame.vector != 128 && frame.vector != SPURIOUS_VECTOR as u64 {
         if let Some(lapic) = apic::LAPIC.get() {
             unsafe {
                 lapic.send_eoi();
@@ -246,6 +295,7 @@ seq!(N in 33..255 {
 
 interrupt_stub!(xhci_irq_stub, 44, no_error_code);
 interrupt_stub!(qca9377_irq_stub, 45, no_error_code);
+interrupt_stub!(spurious_interrupt_stub, 255, no_error_code);
 interrupt_stub!(syscall_stub, 128, no_error_code);
 
 #[cfg(test)]

@@ -27,6 +27,7 @@ mod drivers;
 pub mod elf;
 pub mod fs;
 mod graphics;
+mod klog;
 mod memory;
 pub mod network;
 mod rsdp;

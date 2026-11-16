@@ -109,6 +109,7 @@ async fn execute(
         "date" => show_date(),
         "shutdown" => shutdown(),
         "devices" => list_block_devices(),
+        "savelog" => save_log(current_dir, arguments),
         "lsdev" => list_kernel_devices(),
         "drivers" => list_kernel_drivers(),
         "net" => run_network_command(arguments),
@@ -136,6 +137,7 @@ fn print_help() {
     crate::println!("Commands:");
     crate::println!("  help                   show this help");
     crate::println!("  clear                  clear the screen");
+    crate::println!("  savelog <path>         save the kernel log to a file (e.g. /mnt/LOG.TXT)");
     crate::println!("  pwd                    show the current directory");
     crate::println!("  path                   show executable search directories");
     crate::println!("  export NAME=value     set an environment variable");
@@ -350,6 +352,40 @@ fn list_directory(current_dir: &str, arguments: &str) {
             }
         }
         Err(error) => print_fs_error("ls", &path, error),
+    }
+}
+
+/// Save everything printed since boot to a file, for example on a USB stick:
+/// `mount usb0 /mnt`, `savelog /mnt/LOG.TXT`, `umount /mnt`.
+fn save_log(current_dir: &str, arguments: &str) {
+    let Some(path) = path_argument(current_dir, arguments) else {
+        crate::println!("usage: savelog <path>   (example: savelog /mnt/LOG.TXT)");
+        return;
+    };
+    // Snapshot first: printing or writing while the log lock is held would
+    // deadlock, and the file write must not be part of what is being saved.
+    let data = crate::klog::snapshot();
+    let result = with_vfs(|vfs| -> Result<usize, FsError> {
+        match vfs.metadata(&path) {
+            Ok(_) => vfs.truncate(&path, 0)?,
+            Err(FsError::NotFound) => vfs.create_file(&path)?,
+            Err(error) => return Err(error),
+        }
+        let mut offset = 0;
+        while offset < data.len() {
+            let end = (offset + 4096).min(data.len());
+            let written = vfs.write(&path, offset, &data[offset..end])?;
+            if written == 0 {
+                return Err(FsError::IoError);
+            }
+            offset += written;
+        }
+        Ok(offset)
+    })
+    .and_then(|inner| inner);
+    match result {
+        Ok(bytes) => crate::println!("savelog: wrote {bytes} bytes to {path} (run umount before removing the USB stick)"),
+        Err(error) => print_fs_error("savelog", &path, error),
     }
 }
 

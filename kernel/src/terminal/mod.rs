@@ -431,6 +431,7 @@ impl Write for Terminal {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         terminal_print(text);
         crate::drivers::serial::write_str(text);
+        crate::klog::record(text);
         Ok(())
     }
 }

@@ -20,11 +20,32 @@ fn emit_build_stamp() {
         .unwrap_or(0);
 
     println!("cargo:rustc-env=OCTAGRAM_BUILD_STAMP=rev={revision}{dirty} epoch={epoch}");
-    // A new commit must produce a new stamp, even when no tracked source moved.
-    println!("cargo:rerun-if-changed=../.git/HEAD");
+
+    // A pull on the currently checked-out branch updates refs/heads/<branch>,
+    // not .git/HEAD (which still contains only "ref: refs/heads/<branch>").
+    // Watch the refs directory and packed-refs too, so Cargo reruns this
+    // script and refreshes the banner revision after git pull.
+    for metadata_path in ["HEAD", "refs", "packed-refs"] {
+        if let Some(path) = git_path(metadata_path) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
     println!("cargo:rerun-if-changed=build.rs");
 }
 
+/// Resolve a path inside the active Git directory to an absolute path.
+///
+/// This also works with linked worktrees, where .git is a file and the
+/// actual Git metadata lives elsewhere.
+fn git_path(path: &str) -> Option<std::path::PathBuf> {
+    let value = command_output(["rev-parse", "--git-path", path])?;
+    let path = std::path::PathBuf::from(value);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        Some(std::env::current_dir().ok()?.join(path))
+    }
+}
 fn command_output<const N: usize>(args: [&str; N]) -> Option<String> {
     let output = std::process::Command::new("git").args(args).output().ok()?;
     if !output.status.success() {

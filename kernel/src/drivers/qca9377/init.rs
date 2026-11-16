@@ -438,16 +438,17 @@ pub unsafe fn initialize_device(
             target_reset.dump_after.local8
         );
         crate::println!(
-            "QCA9377 cold reset: rtc_state_in_reset={:#010x} fw_indicator={:#010x} boot_rom_ready={} rom_started_after_clear={} fw_ind_writable={}",
+            "QCA9377 cold reset: rtc_state_in_reset={:#010x} fw_indicator={:#010x} boot_rom_ready={} rom_started_after_clear={} fw_ind_writable={} lf_timer_before={:#010x}",
             target_reset.cold_reset_state,
             target_reset.cold_indicator,
             target_reset.cold_ready,
             target_reset.rom_started_after_clear,
-            target_reset.fw_indicator_writable
+            target_reset.fw_indicator_writable,
+            target_reset.lf_timer_before
         );
         for sample in target_reset.chip_id_timeline.samples() {
             crate::println!(
-                "QCA9377 window +{}ms wake={} local0={:#010x} local8={:#010x} bar0={:#010x} chip_id={:#010x} fw_ind={:#010x} soc_reset_control={:#010x}",
+                "QCA9377 window +{}ms wake={} local0={:#010x} local8={:#010x} bar0={:#010x} chip_id={:#010x} fw_ind={:#010x} soc_reset_control={:#010x} lf_timer={:#010x} cpu_clock={:#010x} clock_control={:#010x} pcie_intr={:#010x}",
                 sample.elapsed_ms,
                 sample.awake,
                 sample.rtc_state,
@@ -455,7 +456,11 @@ pub unsafe fn initialize_device(
                 sample.bar0,
                 sample.chip_id,
                 sample.fw_indicator,
-                sample.soc_reset_control
+                sample.soc_reset_control,
+                sample.lf_timer,
+                sample.cpu_clock,
+                sample.clock_control,
+                sample.pcie_intr_cause
             );
         }
         match target_reset.chip_id_timeline.first_valid_ms {

@@ -257,6 +257,22 @@ therefore separate "the CPU was never taken through reset", which would make
 every retry re-read the crash latch of the first failed boot, from "the bit is
 self-clearing". `cpu_warm_rst_visible` is set when either sample shows the bit.
 
+### The LF Timer And The CPU Clock Are Checked Before The Cold Reset
+
+`ath10k_pci_warm_reset` stops the low-frequency timer before it touches the copy
+engines, because an armed timer keeps waking the target while it is being reset.
+The same timer keeps counting across `SOC_GLOBAL_RESET`, so the driver now reads
+`SOC_LF_TIMER_CONTROL0` (`RTC_SOC + 0x50`), clears its enable bit (`0x4`), and
+logs the value it found as `lf_timer_before=` on the cold-reset line.
+
+The `QCA9377 window` samples now also carry `lf_timer`, `cpu_clock`
+(`RTC_SOC + 0x20`), `clock_control` (`RTC_SOC + 0x28`) and `pcie_intr`
+(`PCIE_LOCAL + 0xc`). On the E203NAH the target sets `FW_IND_EVENT_PENDING`
+within one millisecond of the cold-reset release, before the host touches the
+chip, so the remaining explanations are a timer/watchdog that fires during ROM
+start-up and a CPU/PLL clock that is not up yet. These four registers separate
+the two without another guess.
+
 ### Host setup before the reset (Linux reference)
 
 A reference Linux boot on the same E203NAH reports

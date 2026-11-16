@@ -89,6 +89,14 @@ const QCA6174_BAR_PROBE_0: u64 = 0x0000_0000;
 const QCA6174_BAR_PROBE_8: u64 = 0x0000_0008;
 const QCA6174_PCIE_LOCAL_PROBE_8: u64 = QCA6174_SOC_GLOBAL_RESET_ADDRESS;
 const QCA6174_RTC_SOC_TIMER_OFFSET: u64 = 0x50;
+/// `SOC_CPU_CLOCK_OFFSET`: the CPU clock divider and standard, so the boot log
+/// can show whether the target CPU clock was up when the ROM aborted.
+const QCA6174_RTC_SOC_CPU_CLOCK: u64 = QCA6174_RTC_SOC_BASE + 0x20;
+/// `SOC_CLOCK_CONTROL_OFFSET`: the SI0 clock gate (`SI0_CLK_MASK` is bit 0).
+const QCA6174_RTC_SOC_CLOCK_CONTROL: u64 = QCA6174_RTC_SOC_BASE + 0x28;
+/// `PCIE_INTR_CAUSE_ADDRESS` in the PCIe-local window: what the target last
+/// raised towards the host, readable while the ROM is aborting.
+const QCA6174_PCIE_INTR_CAUSE: u64 = QCA6174_PCIE_LOCAL_BASE + 0x0c;
 const SOC_GLOBAL_RESET_PULSE: u32 = 1 << 0;
 const RTC_SOC_CE_RESET: u32 = 1 << 0;
 const RTC_SOC_CPU_RESET: u32 = 1 << 6;
@@ -407,6 +415,24 @@ fn clear_fw_crash<R: ce::RegisterIo>(registers: &mut R) -> Result<u32, ce::CeErr
     Ok(cleared)
 }
 
+/// `ath10k_pci_warm_reset_clear_lf`: stop the low-frequency timer.
+///
+/// The timer keeps counting across `SOC_GLOBAL_RESET`, and its expiry wakes the
+/// target (or fires its watchdog) while the boot ROM is starting up, so its
+/// enable bit is cleared before the cold reset. Returns the value read first, so
+/// the boot log shows whether the timer was armed at all.
+pub(super) fn clear_lf_timer<R: ce::RegisterIo>(
+    registers: &mut R,
+) -> Result<u32, ce::CeError> {
+    let address = QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET;
+    let before = registers.read32(address)?;
+    if before == u32::MAX {
+        return Err(ce::CeError::DeviceUnavailable);
+    }
+    registers.write32(address, before & !RTC_SOC_TIMER_LPO_SELECT)?;
+    Ok(before)
+}
+
 /// Cycle the copy-engine reset line so the boot ROM programs the CE ring
 /// registers from scratch instead of inheriting a stale configuration.
 pub(super) fn pulse_ce_reset<R: ce::RegisterIo>(
@@ -506,6 +532,16 @@ pub(super) struct TimelineSample {
     /// `SOC_RESET_CONTROL` (RTC_SOC + 0x0), so a warm reset bit that stays set
     /// after the pulse is visible in the same line as the rest.
     pub soc_reset_control: u32,
+    /// `SOC_LF_TIMER_CONTROL0` (RTC_SOC + 0x50), the timer
+    /// `ath10k_pci_warm_reset_clear_lf` stops because an armed timer keeps
+    /// waking the target while it is being reset.
+    pub lf_timer: u32,
+    /// `SOC_CPU_CLOCK` (RTC_SOC + 0x20).
+    pub cpu_clock: u32,
+    /// `SOC_CLOCK_CONTROL` (RTC_SOC + 0x28).
+    pub clock_control: u32,
+    /// `PCIE_INTR_CAUSE` (PCIE_LOCAL + 0xc).
+    pub pcie_intr_cause: u32,
     pub awake: bool,
 }
 
@@ -518,6 +554,10 @@ impl TimelineSample {
         chip_id: 0,
         fw_indicator: 0,
         soc_reset_control: 0,
+        lf_timer: 0,
+        cpu_clock: 0,
+        clock_control: 0,
+        pcie_intr_cause: 0,
         awake: false,
     };
 }
@@ -587,6 +627,14 @@ pub(super) fn sample_chip_id_timeline<R: ce::RegisterIo>(
                 .read32(QCA6174_FW_INDICATOR_ADDRESS)
                 .unwrap_or(u32::MAX),
             soc_reset_control: registers.read32(QCA6174_RTC_SOC_BASE).unwrap_or(u32::MAX),
+            lf_timer: registers
+                .read32(QCA6174_RTC_SOC_BASE + QCA6174_RTC_SOC_TIMER_OFFSET)
+                .unwrap_or(u32::MAX),
+            cpu_clock: registers.read32(QCA6174_RTC_SOC_CPU_CLOCK).unwrap_or(u32::MAX),
+            clock_control: registers
+                .read32(QCA6174_RTC_SOC_CLOCK_CONTROL)
+                .unwrap_or(u32::MAX),
+            pcie_intr_cause: registers.read32(QCA6174_PCIE_INTR_CAUSE).unwrap_or(u32::MAX),
         };
         timeline.samples[timeline.len] = sample;
         timeline.len += 1;
@@ -627,6 +675,9 @@ pub(super) struct TargetReset {
     /// ROM then answered `FW_IND_INITIALIZED`, which is the retry
     /// `ath10k_pci_hif_power_up` performs on a failed chip reset.
     pub rom_started_after_clear: bool,
+    /// `SOC_LF_TIMER_CONTROL0` read before the cold reset and before its enable
+    /// bit was cleared, so the log shows whether the timer was armed.
+    pub lf_timer_before: u32,
 }
 
 /// Raw snapshot of the four registers that decide whether `0x8` really is the
@@ -727,6 +778,12 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         .map_err(|error| failed("verify FW_INDICATOR write", error))?;
     target_wake(registers, poll_limit).map_err(|error| failed("wake target", error))?;
     let dump_before = ResetRegisterDump::capture(registers);
+    // Stop the low-frequency timer before the reset, the way
+    // `ath10k_pci_warm_reset_clear_lf` does: an armed timer keeps waking the
+    // target while it is being reset, and a target that is woken mid-reset
+    // aborts as soon as its boot ROM starts.
+    let lf_timer_before =
+        clear_lf_timer(registers).map_err(|error| failed("clear the LF timer", error))?;
     let cold_reset_state =
         soc_global_reset(registers).map_err(|error| failed("SoC global reset", error))?;
     target_wake(registers, poll_limit)
@@ -775,6 +832,7 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         dump_after,
         chip_id_timeline,
         rom_started_after_clear,
+        lf_timer_before,
     })
 }
 

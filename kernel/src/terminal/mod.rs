@@ -303,6 +303,91 @@ fn scroll_pixel_rows(pixels: &mut [u8], pitch: usize, height: usize, line_height
     pixels[total_bytes - scroll_bytes..total_bytes].fill(0);
 }
 
+/// Build one fixed diagnostic line without `core::fmt` or an allocator.
+struct CrashLine {
+    bytes: [u8; 79],
+    length: usize,
+}
+
+impl CrashLine {
+    fn new() -> Self {
+        Self {
+            bytes: [b' '; 79],
+            length: 0,
+        }
+    }
+
+    fn text(&mut self, text: &str) {
+        for byte in text.bytes() {
+            self.push(byte);
+        }
+    }
+
+    fn hex(&mut self, value: u64) {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        self.text("0x");
+        for shift in (0..16).rev() {
+            self.push(DIGITS[((value >> (shift * 4)) & 0x0f) as usize]);
+        }
+    }
+
+    fn push(&mut self, byte: u8) {
+        if self.length < self.bytes.len() {
+            self.bytes[self.length] = byte;
+            self.length += 1;
+        }
+    }
+}
+
+/// Draw a fatal CPU-exception record straight into the framebuffer.
+///
+/// The fatal handler cannot use the normal console: the fault may have happened
+/// while this module held the terminal lock, while it was scrolling, or inside
+/// `core::fmt`, and repeating that work would only fault again. This path takes
+/// no lock, does not touch the output cursor, does not scroll, does not
+/// allocate and does not format, so it either draws the record or returns.
+///
+/// It also gives hardware without a serial port the only crash record it can
+/// show: the kernel reports the same values to COM1, which a laptop cannot read.
+pub fn show_kernel_exception(vector: u64, error_code: u64, rip: u64, address: Option<u64>) {
+    let Some(framebuffer) = Framebuffer::get() else {
+        return;
+    };
+    let rows = ((framebuffer.height() / CHAR_H) as usize).clamp(1, MAX_ROWS);
+    let mut line = CrashLine::new();
+
+    line.text("KERNEL EXCEPTION vector=");
+    line.hex(vector);
+    line.text(" error=");
+    line.hex(error_code);
+    draw_crash_line(&framebuffer, rows.saturating_sub(2), &line);
+
+    let mut line = CrashLine::new();
+    line.text("rip=");
+    line.hex(rip);
+    if let Some(address) = address {
+        line.text(" cr2=");
+        line.hex(address);
+    }
+    draw_crash_line(&framebuffer, rows - 1, &line);
+}
+
+fn draw_crash_line(framebuffer: &Framebuffer, row: usize, line: &CrashLine) {
+    let columns = ((framebuffer.width() / CHAR_W) as usize).clamp(1, MAX_COLUMNS);
+    // Clear the whole row first: leftover terminal text would otherwise sit
+    // next to the record and hide where the value ends.
+    for column in 0..columns {
+        draw_character_with_colors(framebuffer, column, row, b' ', Color::WHITE, Color::BLACK);
+    }
+    for (column, byte) in line.bytes[..line.length.min(columns)]
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        draw_character_with_colors(framebuffer, column, row, byte, Color::WHITE, Color::BLACK);
+    }
+}
+
 fn draw_character(framebuffer: &Framebuffer, column: usize, row: usize, character: u8) {
     draw_character_with_colors(
         framebuffer,

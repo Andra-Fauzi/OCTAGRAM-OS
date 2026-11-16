@@ -52,6 +52,12 @@ impl IdtEntry {
         }
     }
 
+    /// Pakai stack IST ke-`index` (1-based) untuk handler ini.
+    fn with_ist(mut self, index: u8) -> Self {
+        self.ist = index;
+        self
+    }
+
     fn new_user_callable(handler: u64, selector: u16) -> Self {
         let mut entry = Self::new(handler, selector);
         entry.type_attr = 0xEE;
@@ -76,7 +82,9 @@ pub unsafe fn load_idt() {
         IDT[1] = IdtEntry::new(debug_stub as u64, 0x08);
         IDT[2] = IdtEntry::new(nmi_stub as u64, 0x08);
         IDT[3] = IdtEntry::new(breakpoint_stub as u64, 0x08);
-        IDT[8] = IdtEntry::new(double_fault_stub as u64, 0x08);
+        // #DF memakai IST1 (`DOUBLE_FAULT_STACK` di gdt.rs) supaya crash
+        // akibat stack overflow (mis. rekursi parser) tetap bisa dicetak.
+        IDT[8] = IdtEntry::new(double_fault_stub as u64, 0x08).with_ist(1);
         seq!(N in 4..8 {
             IDT[N] = IdtEntry::new(interrupt::exception_stub~N as u64, 0x08);
         });

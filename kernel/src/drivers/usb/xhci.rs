@@ -62,6 +62,42 @@ pub fn poll_manual_events() {
     }
 }
 
+/// Di-set oleh interrupt handler vector 44.
+///
+/// ISR **tidak boleh** mengambil `XHCI_INSTANCE`, `KBD_STATE`, atau
+/// `MOUSE_STATE`: lock yang sama juga dipegang jalur normal
+/// (`arm_next_report`, transfer command, `poll_manual_events`) dengan
+/// interrupt aktif. Kalau IRQ masuk tepat saat lock sedang dipegang, handler
+/// akan berputar selamanya di CPU yang sama (spin-lock tidak tahu bahwa
+/// pemegangnya baru saja dia interupsi) -- mesin hang tanpa pesan apa pun.
+/// Karena itu ISR hanya menandai flag ini, dan pemrosesan event ditunda ke
+/// `poll_interrupt_deferred()` yang dipanggil dari idle loop lewat
+/// `drivers::poll_deferred()`.
+pub static INTERRUPT_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Dipanggil dari handler vector 44; hanya menyentuh atomics.
+pub fn note_interrupt() {
+    INTERRUPT_PENDING.store(true, Ordering::Release);
+}
+
+/// Proses event xHCI yang tertunda, dari konteks non-IRQ.
+pub fn poll_interrupt_deferred() {
+    if !INTERRUPT_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    if let Some(instance) = XHCI_INSTANCE.get() {
+        // Safety: event ring ada di memori HHDM dan kita di luar ISR,
+        // jadi aman mengambil lock yang juga dipakai jalur normal.
+        unsafe {
+            instance.lock().poll_event_ring();
+        }
+    }
+    unsafe {
+        super::keyboard_usb::poll_keyboard();
+        super::mouse_usb::poll_mouse();
+    }
+}
+
 #[derive(Debug)]
 pub struct XhciCapRegs {
     base: *const u8, // read-only view

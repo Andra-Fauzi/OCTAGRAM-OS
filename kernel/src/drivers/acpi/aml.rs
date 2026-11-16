@@ -27,6 +27,26 @@ pub const REGION_SYSTEM_IO: u8 = 1;
 
 const SDT_HEADER_LENGTH: usize = 36;
 const MAX_PARSE_DEPTH: usize = 32;
+/// Nesting of `parse_value` (a `Package` whose element is a `Package`, ...).
+///
+/// Unlike container nesting this is not walked with an explicit stack, and a
+/// vendor table the reader has lost sync on can present thousands of nested
+/// values inside one 8 KiB term. A real table nests two or three levels, and
+/// each level costs several KiB of kernel stack in a debug build, so the budget
+/// is deliberately small: past it the value is reported as unsupported.
+const MAX_VALUE_DEPTH: usize = 8;
+/// Nesting of the interpreter's operand expressions.
+///
+/// Real methods nest a handful. The budget is the depth that still fits the
+/// kernel stack, because a mis-decoded method body can otherwise recurse until
+/// the stack is gone.
+const MAX_EXPRESSION_DEPTH: usize = 8;
+/// Nesting of `If`/`While` blocks inside one method.
+///
+/// Measured: eight nested blocks fit the bootloader's 64 KiB kernel stack in a
+/// debug build, sixteen overflow it. Every level is another `run_block`,
+/// `statement` and `expression` frame.
+const MAX_BLOCK_DEPTH: usize = 8;
 const MAX_OBJECTS: usize = 8192;
 const MAX_METHOD_STEPS: usize = 200_000;
 const MAX_LOOP_ITERATIONS: usize = 10_000;
@@ -101,7 +121,8 @@ pub enum AmlError {
     BadName,
     /// The namespace grew past [`MAX_OBJECTS`].
     TooManyObjects,
-    /// Scope nesting went past [`MAX_PARSE_DEPTH`].
+    /// Recursion went past one of this reader's depth limits: scope nesting,
+    /// nested values, nested expressions, or nested blocks.
     TooDeep,
     /// An opcode this reader does not decode. Carries the opcode.
     Unsupported(u8),
@@ -267,6 +288,8 @@ pub struct Namespace {
     /// Terms parsed across every table, so the total work is bounded even when a
     /// table is parsed in many nested lists.
     steps: u64,
+    /// Current `parse_value` nesting; see [`MAX_VALUE_DEPTH`].
+    value_depth: usize,
 }
 
 /// Set by the caller that wants parse progress in the boot log. It is off by
@@ -288,6 +311,7 @@ impl Namespace {
             resyncs: 0,
             truncated: false,
             steps: 0,
+            value_depth: 0,
         };
         for table in 0..tables.len() {
             let mut cursor = Cursor::new(tables[table]);
@@ -355,37 +379,60 @@ impl Namespace {
         if depth > MAX_PARSE_DEPTH {
             return Err(AmlError::TooDeep);
         }
-        // Termination rests on exactly two limits, and on every iteration
-        // advancing the cursor. A vendor DSDT is thousands of constructs this
-        // reader only partly understands, and one boot froze here with no
-        // output:
+        // A vendor DSDT is thousands of constructs this reader only partly
+        // understands, so termination rests on two limits and on every iteration
+        // advancing the cursor:
         //
         //   - `MAX_TERM_BYTES` in `Cursor` bounds one term, so no single
         //     definition can read for ever;
-        //   - `MAX_PARSE_STEPS` bounds the whole parse across tables and
-        //     recursion, so even an oscillation in `cursor.position` ends.
+        //   - `MAX_PARSE_STEPS` bounds the whole parse across tables, so even an
+        //     oscillation in `cursor.position` ends.
         //
         // The forward-progress check below is not a limit but a rule: a term
         // that reports success without consuming a byte is skipped like an
         // unsupported one.
+        //
+        // `Scope`, `Device` and the other containers open a nested term list.
+        // Those are walked with the explicit stack below instead of recursion:
+        // one Rust frame per nesting level costs several KiB in a debug build,
+        // and real firmware nests devices deep enough to overflow the kernel
+        // stack before its DSDT ends (a stack overflow that reaches the
+        // exception handler cannot even report itself). A nesting level now
+        // costs one heap entry, and `MAX_PARSE_DEPTH` still bounds it.
+        let mut path = scope.to_string();
+        let mut container_end = end;
+        let mut enclosing: Vec<(String, usize)> = Vec::new();
         let mut traced = cursor.position / 4096;
-        while cursor.position < end {
+        loop {
+            if cursor.position >= container_end {
+                let Some((parent_path, parent_end)) = enclosing.pop() else {
+                    break;
+                };
+                cursor.position = container_end.min(parent_end);
+                path = parent_path;
+                container_end = parent_end;
+                continue;
+            }
             if self.steps >= MAX_PARSE_STEPS {
                 self.truncated = true;
                 break;
             }
             self.steps += 1;
             let start = cursor.position;
+            let depth = enclosing.len();
             let trace = PARSE_TRACE.load(core::sync::atomic::Ordering::Relaxed);
             // The boot log has to say where a stall is, and after a resync this
             // loop walks the table one byte at a time, so the offset is reported
             // once per 4 KiB.
             if trace && start / 4096 != traced {
                 traced = start / 4096;
-                crate::println!(
-                    "AML parse: table {table} offset {start:#x} of {end:#x}, {} objects, steps={} depth={depth}",
+                trace_list_offset(
+                    table,
+                    start,
+                    container_end,
                     self.objects.len(),
-                    self.steps
+                    self.steps,
+                    depth,
                 );
             }
 
@@ -397,24 +444,35 @@ impl Namespace {
                 && (self.steps % 128 == 0
                     || (table == 0 && (0x11f0..0x1400).contains(&start)));
             if trace_term {
-                crate::println!(
-                    "AML term begin: table={table} offset={start:#x} opcode={:#04x} steps={} depth={depth}",
-                    cursor.peek().unwrap_or(0xff),
-                    self.steps
-                );
+                trace_term_begin(table, start, cursor.peek().ok(), self.steps, depth);
             }
-            let term_result = self.parse_term(table, cursor, scope, end, depth);
+            let term_result = self.parse_term(table, cursor, &path, container_end);
             if trace_term {
-                crate::println!(
-                    "AML term end: table={table} offset={start:#x}->{:#x} result={term_result:?}",
-                    cursor.position
+                let descend = matches!(term_result.as_ref(), Ok(Some(_)));
+                trace_term_end(
+                    table,
+                    start,
+                    cursor.position,
+                    descend,
+                    term_result.as_ref().err(),
                 );
             }
             match term_result {
-                Ok(()) => {
+                Ok(Some((child_path, child_end))) => {
+                    if enclosing.len() >= MAX_PARSE_DEPTH {
+                        // Deeper than this reader follows: skip the body but
+                        // keep the container object that was just recorded.
+                        self.resyncs = self.resyncs.saturating_add(1);
+                        cursor.position = child_end;
+                        continue;
+                    }
+                    enclosing.push((core::mem::replace(&mut path, child_path), container_end));
+                    container_end = child_end;
+                }
+                Ok(None) => {
                     if cursor.position <= start {
                         self.resyncs = self.resyncs.saturating_add(1);
-                        cursor.position = (start + 1).min(end);
+                        cursor.position = (start + 1).min(container_end);
                     }
                 }
                 // Anything this reader does not understand costs one byte and
@@ -422,9 +480,10 @@ impl Namespace {
                 Err(AmlError::Unsupported(_))
                 | Err(AmlError::Truncated)
                 | Err(AmlError::BadName)
-                | Err(AmlError::PackageTooLarge) => {
+                | Err(AmlError::PackageTooLarge)
+                | Err(AmlError::TooDeep) => {
                     self.resyncs = self.resyncs.saturating_add(1);
-                    cursor.position = (start + 1).min(end);
+                    cursor.position = (start + 1).min(container_end);
                 }
                 Err(error) => return Err(error),
             }
@@ -432,14 +491,16 @@ impl Namespace {
         Ok(())
     }
 
+    /// Parse one term. A container term (`Scope`, `Device`, `Processor`,
+    /// `ThermalZone`, `PowerResource`) returns the path and end offset of the
+    /// body its caller must walk next, so nesting never recurses here.
     fn parse_term(
         &mut self,
         table: usize,
         cursor: &mut Cursor<'static>,
         scope: &str,
         end: usize,
-        depth: usize,
-    ) -> Result<(), AmlError> {
+    ) -> Result<Option<(String, usize)>, AmlError> {
         cursor.budget = MAX_TERM_BYTES;
         match cursor.peek()? {
             NAME_OP => {
@@ -447,6 +508,7 @@ impl Namespace {
                 let raw = parse_name_string(cursor)?;
                 let value = self.parse_value(cursor, scope)?;
                 self.insert(resolve_name(scope, &raw), Object::Name(value))
+                    .map(|()| None)
             }
             SCOPE_OP => {
                 cursor.next()?;
@@ -455,9 +517,7 @@ impl Namespace {
                 let path = resolve_name(scope, &raw);
                 self.insert(path.clone(), Object::Scope)?;
                 cursor.position = cursor.position.max(body.start).min(package_end);
-                let inner = self.parse_term_list(table, cursor, &path, package_end, depth + 1);
-                cursor.position = package_end.min(end);
-                inner
+                Ok(Some((path, package_end)))
             }
             METHOD_OP => {
                 cursor.next()?;
@@ -475,14 +535,14 @@ impl Namespace {
                     },
                 )?;
                 cursor.position = package_end;
-                Ok(())
+                Ok(None)
             }
             EXTERNAL_OP => {
                 cursor.next()?;
                 let _ = parse_name_string(cursor)?;
                 cursor.next()?;
                 cursor.next()?;
-                Ok(())
+                Ok(None)
             }
             ALIAS_OP => {
                 cursor.next()?;
@@ -492,6 +552,7 @@ impl Namespace {
                     resolve_name(scope, &alias),
                     Object::Alias(resolve_name(scope, &source)),
                 )
+                .map(|()| None)
             }
             EXT_PREFIX => {
                 cursor.next()?;
@@ -511,9 +572,7 @@ impl Namespace {
                             // ProcessorId, PblkAddress, PblkLength.
                             cursor.skip(6)?;
                         }
-                        let inner = self.parse_term_list(table, cursor, &path, package_end, depth + 1);
-                        cursor.position = package_end.min(end);
-                        inner
+                        Ok(Some((path, package_end)))
                     }
                     EXT_POWER_RESOURCE_OP => {
                         let (_body, package_end) = read_package(cursor)?;
@@ -528,9 +587,7 @@ impl Namespace {
                                 resource_order,
                             },
                         )?;
-                        let inner = self.parse_term_list(table, cursor, &path, package_end, depth + 1);
-                        cursor.position = package_end.min(end);
-                        inner
+                        Ok(Some((path, package_end)))
                     }
                     EXT_OPERATION_REGION_OP => {
                         let raw = parse_name_string(cursor)?;
@@ -545,6 +602,7 @@ impl Namespace {
                                 length,
                             },
                         )
+                        .map(|()| None)
                     }
                     EXT_FIELD_OP => {
                         let (_body, package_end) = read_package(cursor)?;
@@ -552,7 +610,7 @@ impl Namespace {
                         let _flags = cursor.next()?;
                         self.parse_field_list(cursor, scope, &region, package_end)?;
                         cursor.position = package_end.min(end);
-                        Ok(())
+                        Ok(None)
                     }
                     other => Err(AmlError::Unsupported(other)),
                 }
@@ -610,7 +668,23 @@ impl Namespace {
         Ok(())
     }
 
+    /// Parse one data value, with the nesting of nested packages bounded so a
+    /// mis-decoded term cannot run the kernel stack out.
     fn parse_value(
+        &mut self,
+        cursor: &mut Cursor<'static>,
+        scope: &str,
+    ) -> Result<Value, AmlError> {
+        if self.value_depth >= MAX_VALUE_DEPTH {
+            return Err(AmlError::TooDeep);
+        }
+        self.value_depth += 1;
+        let result = self.parse_value_inner(cursor, scope);
+        self.value_depth -= 1;
+        result
+    }
+
+    fn parse_value_inner(
         &mut self,
         cursor: &mut Cursor<'static>,
         scope: &str,
@@ -701,12 +775,60 @@ impl Namespace {
     }
 }
 
+// Parse trace printing lives outside `parse_term_list` on purpose: `core::fmt`
+// plus the terminal write path need a large stack frame, and the term loop runs
+// on the kernel stack for every term of every table.
+#[inline(never)]
+fn trace_list_offset(
+    table: usize,
+    start: usize,
+    end: usize,
+    objects: usize,
+    steps: u64,
+    depth: usize,
+) {
+    crate::println!(
+        "AML parse: table {table} offset {start:#x} of {end:#x}, {objects} objects, steps={steps} depth={depth}"
+    );
+}
+
+#[inline(never)]
+fn trace_term_begin(
+    table: usize,
+    start: usize,
+    opcode: Option<u8>,
+    steps: u64,
+    depth: usize,
+) {
+    crate::println!(
+        "AML term begin: table={table} offset={start:#x} opcode={:#04x} steps={steps} depth={depth}",
+        opcode.unwrap_or(0xff)
+    );
+}
+
+#[inline(never)]
+fn trace_term_end(
+    table: usize,
+    start: usize,
+    position: usize,
+    descend: bool,
+    error: Option<&AmlError>,
+) {
+    crate::println!(
+        "AML term end: table={table} offset={start:#x}->{position:#x} descend={descend} error={error:?}"
+    );
+}
+
 /// Interpret a method body.
 pub struct Interpreter<'a> {
     namespace: &'a Namespace,
     locals: [Value; 8],
     args: [Value; 7],
     steps: usize,
+    /// Current expression nesting; see [`MAX_EXPRESSION_DEPTH`].
+    nesting: usize,
+    /// Current `If`/`While` nesting; see [`MAX_BLOCK_DEPTH`].
+    block_depth: usize,
 }
 
 /// Result of executing a statement.
@@ -723,6 +845,8 @@ impl<'a> Interpreter<'a> {
             locals: [const { Value::Integer(0) }; 8],
             args: [const { Value::Integer(0) }; 7],
             steps: 0,
+            nesting: 0,
+            block_depth: 0,
         }
     }
 
@@ -774,7 +898,26 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// Run statements until the block ends, bounding `If`/`While` nesting: a
+    /// mis-decoded method body must not recurse until the stack is gone.
     fn run_block(
+        &mut self,
+        cursor: &mut Cursor<'static>,
+        scope: &str,
+        end: usize,
+        io: &mut dyn RegionIo,
+        depth: usize,
+    ) -> Result<Flow, AmlError> {
+        if self.block_depth >= MAX_BLOCK_DEPTH {
+            return Err(AmlError::TooDeep);
+        }
+        self.block_depth += 1;
+        let result = self.run_block_inner(cursor, scope, end, io, depth);
+        self.block_depth -= 1;
+        result
+    }
+
+    fn run_block_inner(
         &mut self,
         cursor: &mut Cursor<'static>,
         scope: &str,
@@ -903,7 +1046,25 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// Evaluate an expression, bounding operand nesting so `Add(Add(Add(...)))`
+    /// or a mis-decoded body cannot exhaust the kernel stack.
     fn expression(
+        &mut self,
+        cursor: &mut Cursor<'static>,
+        scope: &str,
+        io: &mut dyn RegionIo,
+        depth: usize,
+    ) -> Result<Value, AmlError> {
+        if self.nesting >= MAX_EXPRESSION_DEPTH {
+            return Err(AmlError::TooDeep);
+        }
+        self.nesting += 1;
+        let result = self.expression_inner(cursor, scope, io, depth);
+        self.nesting -= 1;
+        result
+    }
+
+    fn expression_inner(
         &mut self,
         cursor: &mut Cursor<'static>,
         scope: &str,
@@ -1825,6 +1986,45 @@ mod tests {
         );
     }
 
+    /// A `Name` whose value is a `Package` holding another `Package`, `levels`
+    /// deep: one Rust stack frame of `parse_value` per level.
+    fn nested_package(levels: usize) -> Vec<u8> {
+        let mut value = vec![0x00]; // innermost package element: NullName
+        for _ in 0..levels {
+            let mut payload = vec![0x01]; // NumElements
+            payload.extend_from_slice(&value);
+            let mut package = vec![0x12]; // PackageOp
+            package.extend(pkglen(payload.len()));
+            package.extend(payload);
+            value = package;
+        }
+        let mut table = vec![0u8; 36];
+        table[0..4].copy_from_slice(b"DSDT");
+        table.push(0x08); // NameOp
+        table.extend(seg("PKG0"));
+        table.extend(value);
+        table
+    }
+
+    #[test]
+    fn nested_packages_are_bounded_instead_of_recursing() {
+        // A table the reader has lost sync on can present thousands of nested
+        // packages inside one term. Every level is a stack frame, so the parse
+        // must stop at MAX_VALUE_DEPTH instead of walking the kernel stack out.
+        let namespace = Namespace::parse(&[leaked(nested_package(1500))]);
+        assert!(
+            namespace.get("\\PKG0").is_none(),
+            "nesting past the value depth limit must be reported, not parsed"
+        );
+
+        // Real tables nest a handful of levels, and those must still parse.
+        let namespace = Namespace::parse(&[leaked(nested_package(3))]);
+        assert!(matches!(
+            namespace.get("\\PKG0"),
+            Some(Object::Name(Value::Package(_)))
+        ));
+    }
+
     #[test]
     fn raw_buffer_payload_still_obeys_the_package_limit() {
         let oversized = with_package(
@@ -1839,5 +2039,99 @@ mod tests {
             Err(AmlError::Truncated),
             "read_package rejects packages larger than MAX_PACKAGE_BYTES"
         );
+    }
+
+
+    fn nested_scopes(levels: usize) -> Vec<u8> {
+        let mut inner: Vec<u8> = Vec::new();
+        for _ in 0..levels {
+            let mut payload = seg("SCP0").to_vec();
+            payload.extend_from_slice(&inner);
+            let mut term = vec![0x10];
+            term.extend(pkglen(payload.len()));
+            term.extend(payload);
+            inner = term;
+        }
+        let mut table = vec![0u8; 36];
+        table[0..4].copy_from_slice(b"DSDT");
+        table.extend(inner);
+        table
+    }
+
+    #[test]
+    fn nested_scopes_parse_without_recursing() {
+        // Scope/Device nesting used to cost one Rust stack frame per level
+        // (several KiB in a debug build), and real firmware nests devices deep
+        // enough to overflow the kernel stack mid-parse. The reader keeps its
+        // containers on the heap now, so this parses on the 64 KiB stack a
+        // bootloader gives a kernel.
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(|| {
+                let namespace = Namespace::parse(&[leaked(nested_scopes(32))]);
+                assert_eq!(
+                    namespace.iter().count(),
+                    32,
+                    "every nested container must still be recorded"
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn deeply_nested_values_parse_without_recursing() {
+        // `Package` nesting is bounded by MAX_VALUE_DEPTH instead: the value is
+        // reported as unsupported, and the rest of the table still parses.
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(|| {
+                let namespace = Namespace::parse(&[leaked(nested_package(1500))]);
+                assert!(namespace.get("\\PKG0").is_none());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn nested_ifs(levels: usize) -> Vec<u8> {
+        let mut inner: Vec<u8> = Vec::new();
+        for _ in 0..levels {
+            inner = with_package(&[0xA0], &[0x01], &inner);
+        }
+        let mut table = vec![0u8; 36];
+        table[0..4].copy_from_slice(b"DSDT");
+        table.extend(method("MTD0", 0, &inner));
+        table
+    }
+
+    #[test]
+    fn nested_blocks_execute_within_the_depth_limit() {
+        // Each `If` level is another Rust frame in the interpreter, so the depth
+        // is bounded: a method body that nests past the limit is an error, not a
+        // stack overflow inside the kernel.
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(|| {
+                // The method body itself is one block, so the deepest method
+                // this limit accepts has `MAX_BLOCK_DEPTH - 1` nested `If`s.
+                let namespace =
+                    Namespace::parse(&[leaked(nested_ifs(super::MAX_BLOCK_DEPTH - 1))]);
+                let mut io = MockIo::default();
+                let mut interpreter = Interpreter::new(&namespace);
+                assert!(interpreter.invoke("\\MTD0", &[], &mut io).is_ok());
+
+                let namespace =
+                    Namespace::parse(&[leaked(nested_ifs(super::MAX_BLOCK_DEPTH + 4))]);
+                let mut interpreter = Interpreter::new(&namespace);
+                assert_eq!(
+                    interpreter.invoke("\\MTD0", &[], &mut io),
+                    Err(AmlError::TooDeep)
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

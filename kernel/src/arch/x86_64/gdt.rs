@@ -8,6 +8,8 @@ pub const USER_DATA_SELECTOR: u16 = 0x1B;
 pub const USER_CODE_SELECTOR: u16 = 0x23;
 const TSS_SELECTOR: u16 = 0x28;
 const USER_KERNEL_STACK_SIZE: usize = 64 * 1024;
+/// Stack khusus double fault (IST1), terpisah dari stack yang sedang jalan.
+const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
 
 #[repr(C, packed)]
 struct GdtDescriptor {
@@ -51,6 +53,19 @@ unsafe fn set_ring0_stack(stack_top: u64) {
     }
 }
 
+/// Pasang `stack_top` sebagai stack IST ke-`index` (0-based: IST1 = 0).
+unsafe fn set_interrupt_stack(index: usize, stack_top: u64) {
+    let tss = core::ptr::addr_of_mut!(TSS).cast::<u8>();
+    let entry = unsafe {
+        tss.add(core::mem::offset_of!(TaskStateSegment, ist))
+            .cast::<u64>()
+            .add(index)
+    };
+    unsafe {
+        entry.write_unaligned(stack_top);
+    }
+}
+
 /// Update the kernel stack used for the next privilege transition from ring 3.
 ///
 /// # Safety
@@ -61,6 +76,9 @@ pub unsafe fn set_ring0_stack_top(stack_top: u64) {
 
 #[repr(align(16))]
 struct KernelStack([u8; USER_KERNEL_STACK_SIZE]);
+
+#[repr(align(16))]
+struct DoubleFaultStack([u8; DOUBLE_FAULT_STACK_SIZE]);
 
 static mut GDT: [u64; 7] = [
     0,
@@ -73,6 +91,12 @@ static mut GDT: [u64; 7] = [
 ];
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
 static mut USER_KERNEL_STACK: KernelStack = KernelStack([0; USER_KERNEL_STACK_SIZE]);
+/// IST1 untuk #DF. Wajib ada: kalau double fault dipicu oleh stack overflow
+/// (stack yang sedang dipakai sudah habis), CPU tidak bisa push frame
+/// exception ke stack itu dan langsung triple fault / reboot tanpa
+/// melaporkan apa pun.
+static mut DOUBLE_FAULT_STACK: DoubleFaultStack =
+    DoubleFaultStack([0; DOUBLE_FAULT_STACK_SIZE]);
 static mut USER_KERNEL_RSP: u64 = 0;
 static mut USER_EXIT_STATUS: u64 = 0;
 static mut GDTR: GdtDescriptor = GdtDescriptor {
@@ -87,6 +111,10 @@ pub fn user_kernel_stack_top() -> u64 {
 pub unsafe fn load_gdt() {
     unsafe {
         set_ring0_stack(user_kernel_stack_top());
+        set_interrupt_stack(
+            0,
+            core::ptr::addr_of!(DOUBLE_FAULT_STACK) as u64 + DOUBLE_FAULT_STACK_SIZE as u64,
+        );
 
         let tss_base = core::ptr::addr_of!(TSS) as u64;
         let tss_limit = (core::mem::size_of::<TaskStateSegment>() - 1) as u64;

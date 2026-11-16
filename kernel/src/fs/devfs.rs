@@ -267,6 +267,11 @@ pub(crate) fn read_tty(terminal: usize, buffer: &mut [u8]) -> Result<usize, FsEr
         let event = match crate::drivers::keyboard::pop_event_for(terminal) {
             Some(event) => event,
             None => {
+                // Keyboard USB tidak lagi diproses di ISR (lihat
+                // `xhci::INTERRUPT_PENDING`), jadi event ring harus di-poll
+                // di sini sebelum tidur -- tanpa ini `read(0)` dari program
+                // user akan menunggu selamanya walaupun tombol ditekan.
+                unsafe { crate::drivers::poll_input() };
                 unsafe {
                     asm!("sti; hlt; cli", options(nomem, nostack));
                 }

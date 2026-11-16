@@ -15,6 +15,12 @@ use limine::memory_map::EntryType;
 const FRAME_SIZE: usize = 4096;
 const DMA32_LIMIT: usize = 1 << 32;
 
+/// Penanda "frame ini sedang ada di free-list", disimpan di offset 8 frame
+/// kosong (offset 0 dipakai untuk pointer `next`). `allocate` meng-zero-kan
+/// frame sebelum diserahkan ke pemanggil, jadi penanda ini hilang begitu
+/// frame dipakai.
+const FREE_MAGIC: usize = 0xF4EE_F0E5_F4EE_F0E5;
+
 /// Sentinel "next = None" di linked list.
 const NULL_MARK: usize = usize::MAX;
 
@@ -73,6 +79,7 @@ impl FrameAllocator {
         // Safety: virt adalah alamat valid di HHDM, frame belum dipakai.
         unsafe {
             ptr::write(virt as *mut usize, head.unwrap_or(NULL_MARK));
+            ptr::write((virt as *mut usize).add(1), FREE_MAGIC);
         }
         *head = Some(frame);
     }
@@ -99,14 +106,44 @@ impl FrameAllocator {
 
     /// Bebaskan satu frame fisik (dikembalikan ke free-list).
     ///
-    /// `frame` harus **alamat fisik** yang valid — memanggil ini dengan
-    /// alamat sembarang akan merusak free-list.
+    /// Frame yang tidak valid — alamat 0, tidak ter-align `FRAME_SIZE`, di
+    /// luar semua region `USABLE`, atau **sudah ada di free-list** (double
+    /// free) — diabaikan. Tanpa cek ini, double free menyisipkan node yang
+    /// sama dua kali sehingga satu frame bisa diserahkan ke dua pemilik
+    /// sekaligus (korupsi memori yang sulit dilacak).
     pub fn free(&mut self, frame: usize) {
-        // Zero dulu sebelum di-push (hygiene + keamanan).
-        if let Some(virt) = physical_to_virtual_internal(frame) {
-            unsafe { ptr::write_bytes(virt as *mut u8, 0, FRAME_SIZE) };
+        if frame == 0 || frame % FRAME_SIZE != 0 || !self.is_usable_frame(frame) {
+            return;
         }
+        let Some(virt) = physical_to_virtual_internal(frame) else {
+            return;
+        };
+        // Safety: virt di HHDM; offset 8 frame kosong menyimpan penanda
+        // free-list, dan penanda hanya ditulis di `push_free`.
+        let already_free = unsafe { ptr::read((virt as *const usize).add(1)) } == FREE_MAGIC;
+        if already_free {
+            return;
+        }
+        // Zero dulu sebelum di-push (hygiene + keamanan).
+        unsafe { ptr::write_bytes(virt as *mut u8, 0, FRAME_SIZE) };
         self.push_free(frame);
+    }
+
+    /// Apakah `frame` seluruhnya berada di dalam region `USABLE` memory map.
+    fn is_usable_frame(&self, frame: usize) -> bool {
+        let Some(response) = MEMORY_MAP_REQUEST.get_response() else {
+            // Tanpa memory map kita tidak bisa memvalidasi apa pun;
+            // pertahankan perilaku lama supaya pembebasan tidak gagal semua.
+            return true;
+        };
+        let Some(end) = frame.checked_add(FRAME_SIZE) else {
+            return false;
+        };
+        response.entries().iter().any(|entry| {
+            entry.entry_type == EntryType::USABLE
+                && frame >= entry.base as usize
+                && end <= (entry.base as usize).saturating_add(entry.length as usize)
+        })
     }
 
     fn pop(head: &mut Option<usize>) -> Option<usize> {

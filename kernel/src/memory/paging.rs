@@ -308,6 +308,12 @@ fn user_mapping_flags(virt: u64, write_access: bool) -> Result<u64, PagingError>
         let pd_entry = *next_table_existing(pdpt_entry)?.add(pd_idx);
         let pte = *next_table_existing(pd_entry)?.add(pt_idx);
         for entry in [pml4_entry, pdpt_entry, pd_entry, pte] {
+            // PTE non-present tidak boleh lolos validasi: tanpa cek ini,
+            // entry yang belum di-map (tapi bit USER-nya masih ada) dianggap
+            // valid dan kernel fault saat mengakses buffer user.
+            if entry & flags::PRESENT == 0 {
+                return Err(PagingError::NotMapped);
+            }
             if entry & flags::USER == 0 {
                 return Err(PagingError::NotUserAccessible);
             }
@@ -389,11 +395,15 @@ pub unsafe fn map_page(
         let phys = phys_addr & !(PAGE_SIZE - 1);
 
         let (pml4_idx, pdpt_idx, pd_idx, pt_idx) = table_indices(virt);
-        let user_accessible =
-            extra_flags & flags::USER != 0 || (USER_ADDRESS_MIN..USER_ADDRESS_MAX).contains(&virt);
-        if user_accessible && !(USER_ADDRESS_MIN..USER_ADDRESS_MAX).contains(&virt) {
+        // Setiap mapping di setengah-atas user harus bisa ditelusuri user
+        // juga di level tabel perantara -- kalau tidak, mapping PROT_NONE
+        // tidak akan pernah bisa diaktifkan lagi lewat `set_page_flags`.
+        // Sebaliknya, flag USER di luar rentang user adalah bug pemanggil.
+        let in_user_range = (USER_ADDRESS_MIN..USER_ADDRESS_MAX).contains(&virt);
+        if extra_flags & flags::USER != 0 && !in_user_range {
             return Err(PagingError::UserAddressOutOfRange);
         }
+        let user_accessible = in_user_range;
 
         let pml4 = pml4_virt()?;
         let pdpt = next_table_or_create(&mut *pml4.add(pml4_idx), user_accessible)?;

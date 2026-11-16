@@ -53,8 +53,6 @@ use seq_macro::seq;
 
 use crate::arch::x86_64::apic;
 use crate::drivers::keyboard;
-use crate::drivers::usb::keyboard_usb;
-use crate::drivers::usb::mouse_usb;
 
 pub const TIMER_VECTOR: u8 = 32;
 /// Local APIC spurious-interrupt vector programmed in the SVR.
@@ -62,6 +60,12 @@ pub const SPURIOUS_VECTOR: u8 = 255;
 const SPURIOUS_VECTOR_U64: u64 = SPURIOUS_VECTOR as u64;
 
 static UNKNOWN_EXTERNAL_REPORTED: AtomicBool = AtomicBool::new(false);
+/// Set once the fatal CPU-exception record has been written out.
+///
+/// A fault that repeats (or one that happens inside the reporter) must not
+/// re-enter it: every entry would print another partial record and the screen
+/// would end up covered in fragments instead of the original vector and RIP.
+static FATAL_REPORTED: AtomicBool = AtomicBool::new(false);
 static UNKNOWN_EXTERNAL_PENDING: AtomicBool = AtomicBool::new(false);
 static UNKNOWN_EXTERNAL_VECTOR: AtomicU64 = AtomicU64::new(0);
 static UNKNOWN_EXTERNAL_ERROR: AtomicU64 = AtomicU64::new(0);
@@ -183,17 +187,14 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
             let _ = crate::drivers::qca9377::handle_irq();
             frame as *mut InterruptFrame
         }
+        // Vector 44: xHCI. Hanya set flag -- TIDAK mengambil lock apa pun.
+        // `XHCI_INSTANCE`/`KBD_STATE`/`MOUSE_STATE` juga dipakai jalur normal
+        // dengan interrupt aktif, jadi `lock()` di dalam ISR bisa deadlock
+        // (spin selamanya karena pemegang lock di-interupsi oleh dirinya
+        // sendiri). Pemrosesan event dilakukan di luar ISR oleh
+        // `usb::xhci::poll_interrupt_deferred()` dari idle loop.
         44 => {
-            if let Some(xhci_mutex) = crate::drivers::usb::xhci::XHCI_INSTANCE.get() {
-                let mut xhci = xhci_mutex.lock();
-                unsafe {
-                    xhci.poll_event_ring();
-                }
-            }
-            unsafe {
-                keyboard_usb::poll_keyboard();
-                mouse_usb::poll_mouse();
-            }
+            crate::drivers::usb::xhci::note_interrupt();
             frame as *mut InterruptFrame
         }
         // The APIC spurious vector has no device source and must not send EOI.
@@ -236,29 +237,36 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
         _ => {
             // Do not use println! here: it takes the terminal lock and writes
             // to the framebuffer, either of which may have caused this fault.
-            // Emit the crash record directly to COM1 so the original exception
-            // remains observable even when normal console output is unsafe.
-            let fault_address = if frame.vector == 14 {
-                let address: u64;
-                unsafe {
-                    core::arch::asm!(
-                        "mov {}, cr2",
-                        out(reg) address,
-                        options(nomem, nostack, preserves_flags)
-                    );
-                }
-                Some(address)
-            } else {
-                None
-            };
-            crate::drivers::serial::write_kernel_exception(
-                frame.vector,
-                frame.error_code,
-                frame.stack_frame.instruction_pointer,
-                frame.stack_frame.code_segment,
-                frame.stack_frame.cpu_flags,
-                fault_address,
-            );
+            // Record the crash once, to COM1 and to the framebuffer, then halt.
+            if !FATAL_REPORTED.swap(true, Ordering::AcqRel) {
+                let fault_address = if frame.vector == 14 {
+                    let address: u64;
+                    unsafe {
+                        core::arch::asm!(
+                            "mov {}, cr2",
+                            out(reg) address,
+                            options(nomem, nostack, preserves_flags)
+                        );
+                    }
+                    Some(address)
+                } else {
+                    None
+                };
+                crate::drivers::serial::write_kernel_exception(
+                    frame.vector,
+                    frame.error_code,
+                    frame.stack_frame.instruction_pointer,
+                    frame.stack_frame.code_segment,
+                    frame.stack_frame.cpu_flags,
+                    fault_address,
+                );
+                crate::terminal::show_kernel_exception(
+                    frame.vector,
+                    frame.error_code,
+                    frame.stack_frame.instruction_pointer,
+                    fault_address,
+                );
+            }
             loop {
                 core::hint::spin_loop();
             }

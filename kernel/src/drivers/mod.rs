@@ -61,9 +61,27 @@ pub(crate) unsafe fn initialize() {
 /// # Safety
 /// Must be called from the idle loop after interrupt handlers have returned.
 pub(crate) unsafe fn poll_deferred() {
-    if usb::XHCI_ENABLED {
-        usb::xhci::poll_manual_events();
-    }
+    unsafe { poll_input() };
     unsafe { usb::poll_hotplug() };
     unsafe { usb::rndis::poll() };
+}
+
+/// Proses event input (xHCI + driver HID) tanpa pekerjaan hotplug/network.
+///
+/// Sejak ISR vector 44 hanya menandai flag (lihat `xhci::INTERRUPT_PENDING`),
+/// event baru benar-benar diproses di konteks non-IRQ. Jalur yang memblokir
+/// menunggu input — mis. `fs::devfs::read_tty` untuk `read(0)` dari program
+/// user — wajib memanggil ini di dalam loop tunggunya, kalau tidak `read()`
+/// akan menunggu selamanya walaupun tombol sudah ditekan.
+///
+/// # Safety
+/// Panggil dari konteks non-IRQ (syscall/idle loop).
+pub(crate) unsafe fn poll_input() {
+    if usb::XHCI_ENABLED {
+        usb::xhci::poll_manual_events();
+        // Event yang ditandai oleh ISR vector 44 diproses di sini, bukan di
+        // dalam handler interrupt (hindari deadlock spin-lock, lihat
+        // `xhci::INTERRUPT_PENDING`).
+        usb::xhci::poll_interrupt_deferred();
+    }
 }

@@ -106,7 +106,12 @@ unsafe fn arm_next_report() {
             None => return,
         };
 
-        let xhci_guard = XHCI_INSTANCE.get().unwrap().lock();
+        // Jangan `unwrap()`: fungsi ini juga dipanggil dari jalur IRQ (lewat
+        // `poll_mouse`), dan panic di sana menjatuhkan kernel.
+        let Some(xhci) = XHCI_INSTANCE.get() else {
+            return;
+        };
+        let xhci_guard = xhci.lock();
         xhci_guard.enqueue_normal_trb_and_ring(
             state.ring_virt,
             state.ring_phys,

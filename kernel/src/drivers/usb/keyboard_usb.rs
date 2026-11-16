@@ -105,7 +105,12 @@ unsafe fn arm_next_report() {
             None => return,
         };
 
-        let xhci_guard = XHCI_INSTANCE.get().unwrap().lock();
+        // Jangan `unwrap()`: fungsi ini juga dipanggil dari jalur IRQ (lewat
+        // `poll_keyboard`), dan panic di sana menjatuhkan kernel.
+        let Some(xhci) = XHCI_INSTANCE.get() else {
+            return;
+        };
+        let xhci_guard = xhci.lock();
         xhci_guard.enqueue_normal_trb_and_ring(
             state.ring_virt,
             state.ring_phys,
@@ -149,7 +154,9 @@ pub unsafe fn shutdown_keyboard(slot_id: u32) {
     }
 }
 
-/// Panggil dari interrupt handler (vector 44) setiap kali ada event masuk.
+/// Panggil setiap kali ada event masuk -- dari `poll_interrupt_deferred()`
+/// (idle loop), BUKAN langsung dari interrupt handler: lihat catatan
+/// `xhci::INTERRUPT_PENDING` soal spin-lock di konteks IRQ.
 pub unsafe fn poll_keyboard() {
     unsafe {
         if !KBD_REPORT_PENDING.swap(false, core::sync::atomic::Ordering::SeqCst) {

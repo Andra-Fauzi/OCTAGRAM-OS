@@ -26,6 +26,7 @@ use super::{
     wmi::{self, WmiCmdId, WmiEvent},
 };
 use crate::memory;
+use crate::network;
 use alloc::boxed::Box;
 
 const VDEV_ID: u32 = 0;

@@ -1924,9 +1924,13 @@ mod tests {
                 (*offset == QCA6174_FW_INDICATOR_ADDRESS && *value == 0).then_some(index)
             })
             .collect();
-        assert_eq!(indicator_clears.len(), 2, "both warm-reset phases must run");
-        assert!(cpu_writes[0] > indicator_clears[0]);
-        assert!(*cpu_writes.last().unwrap() > indicator_clears[1]);
+        assert!(
+            indicator_clears.len() >= 3,
+            "cold-reset verification and both warm-reset phases must clear the indicator"
+        );
+        let warm_reset_markers = &indicator_clears[indicator_clears.len() - 2..];
+        assert!(cpu_writes[0] > warm_reset_markers[0]);
+        assert!(*cpu_writes.last().unwrap() > warm_reset_markers[1]);
     }
 
     #[test]

@@ -1,0 +1,295 @@
+From 562491248ddcec12dbcad2c891e6ff3beddd4486 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 12:35:33 +0000
+Subject: [PATCH 1/2] qca9377: disable PCI retry timeout (config 0x40) before
+ and after cold reset, as ath10k_pci_claim does
+
+---
+ kernel/src/drivers/qca9377/init.rs | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/kernel/src/drivers/qca9377/init.rs b/kernel/src/drivers/qca9377/init.rs
+index 32cc652..b22d0de 100644
+--- a/kernel/src/drivers/qca9377/init.rs
++++ b/kernel/src/drivers/qca9377/init.rs
+@@ -208,6 +208,30 @@ fn restore_pcie_after_cold_reset(
+     Ok(())
+ }
+ 
++/// `ath10k_pci_claim` workaround: disable the PCI "retry timeout".
++///
++/// Linux reads dword 0x40 of the endpoint's config space and clears bits 15:8
++/// (the TRDY/retry timeout) before touching the chip at all:
++/// `if ((val & 0x0000ff00) != 0) pci_write_config_dword(pdev, 0x40, val & 0xffff00ff)`.
++/// With the timeout armed the endpoint can drop PCIe requests while the boot
++/// ROM is starting, which looks exactly like a ROM that "is not running".
++/// `SOC_GLOBAL_RESET` resets the endpoint's PCIe core, so this has to be
++/// applied again after every cold reset, not only once at probe.
++fn disable_pci_retry_timeout(device: &PciDevice) {
++    const RETRY_TIMEOUT_REGISTER: u8 = 0x40;
++    const RETRY_TIMEOUT_MASK: u32 = 0x0000_ff00;
++    let value = pci::read_config_u32(device, RETRY_TIMEOUT_REGISTER);
++    if value & RETRY_TIMEOUT_MASK != 0 {
++        pci::write_config_u32(device, RETRY_TIMEOUT_REGISTER, value & !RETRY_TIMEOUT_MASK);
++        let after = pci::read_config_u32(device, RETRY_TIMEOUT_REGISTER);
++        crate::println!(
++            "QCA9377 PCI retry timeout disabled: config[0x40] {value:#010x} -> {after:#010x}"
++        );
++    } else {
++        crate::println!("QCA9377 PCI retry timeout already off: config[0x40]={value:#010x}");
++    }
++}
++
+ /// Log what the ACPI power resources did for this function.
+ fn report_acpi_power(device: &PciDevice) {
+     match crate::drivers::acpi::power::power_on_pci_device(
+@@ -370,6 +394,8 @@ pub unsafe fn initialize_device(
+     crate::println!(
+         "QCA9377 copy engines cleared and bus mastering enabled before the chip reset"
+     );
++    // Same step as `ath10k_pci_claim`, done before any cold reset.
++    disable_pci_retry_timeout(device);
+ 
+     // ── 3b/4b. Chip reset: cold reset, CE rings, warm reset ─────────────────
+     // The boot ROM only services BMI after a cold reset, but the target CPU is
+@@ -471,6 +497,10 @@ pub unsafe fn initialize_device(
+             return Err(InitError::BusMaster);
+         }
+ 
++        // The cold reset also reset the endpoint's PCIe core, so the retry
++        // timeout comes back armed; disable it again before the warm reset.
++        disable_pci_retry_timeout(device);
++
+         // Bus mastering is still enabled from the previous attempt, but the
+         // global reset is re-driven every time, so confirm the bit instead of
+         // assuming PCIe configuration space kept it.
+-- 
+2.43.0
+
+
+From a15fe43ecc0c8a146376b91b70bf6a3af944c70d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 16 Nov 2026 12:50:29 +0000
+Subject: [PATCH 2/2] kernel: keep a log buffer and add 'savelog <path>' shell
+ command to save it to a file/USB
+
+---
+ kernel/src/klog.rs         | 118 +++++++++++++++++++++++++++++++++++++
+ kernel/src/main.rs         |   1 +
+ kernel/src/shell.rs        |  36 +++++++++++
+ kernel/src/terminal/mod.rs |   1 +
+ 4 files changed, 156 insertions(+)
+ create mode 100644 kernel/src/klog.rs
+
+diff --git a/kernel/src/klog.rs b/kernel/src/klog.rs
+new file mode 100644
+index 0000000..35fa6d3
+--- /dev/null
++++ b/kernel/src/klog.rs
+@@ -0,0 +1,118 @@
++//! Kernel log buffer.
++//!
++//! Everything printed through `println!` is also copied here so it can be saved
++//! to a file later (`savelog <path>` in the shell), for example onto a USB stick
++//! mounted with `mount usb0 /mnt`. The buffer keeps the first `HEAD_CAPACITY`
++//! bytes untouched (the boot log, which is what matters for driver bring-up) and
++//! a ring of the most recent `TAIL_CAPACITY` bytes, so a driver that keeps
++//! retrying in the background cannot push the boot log out.
++
++use crate::sync::Mutex;
++use alloc::vec::Vec;
++
++const HEAD_CAPACITY: usize = 96 * 1024;
++const TAIL_CAPACITY: usize = 160 * 1024;
++
++struct LogBuffer {
++    head: [u8; HEAD_CAPACITY],
++    head_len: usize,
++    tail: [u8; TAIL_CAPACITY],
++    /// Index where the next tail byte is written.
++    tail_next: usize,
++    tail_len: usize,
++    /// Bytes that were overwritten in the tail ring.
++    dropped: usize,
++}
++
++impl LogBuffer {
++    const fn new() -> Self {
++        Self {
++            head: [0; HEAD_CAPACITY],
++            head_len: 0,
++            tail: [0; TAIL_CAPACITY],
++            tail_next: 0,
++            tail_len: 0,
++            dropped: 0,
++        }
++    }
++
++    fn push(&mut self, bytes: &[u8]) {
++        let mut bytes = bytes;
++        if self.head_len < HEAD_CAPACITY {
++            let take = bytes.len().min(HEAD_CAPACITY - self.head_len);
++            self.head[self.head_len..self.head_len + take].copy_from_slice(&bytes[..take]);
++            self.head_len += take;
++            bytes = &bytes[take..];
++        }
++        for &byte in bytes {
++            self.tail[self.tail_next] = byte;
++            self.tail_next = (self.tail_next + 1) % TAIL_CAPACITY;
++            if self.tail_len < TAIL_CAPACITY {
++                self.tail_len += 1;
++            } else {
++                self.dropped += 1;
++            }
++        }
++    }
++
++    fn to_vec(&self) -> Vec<u8> {
++        let mut out = Vec::with_capacity(self.head_len + self.tail_len + 64);
++        out.extend_from_slice(&self.head[..self.head_len]);
++        if self.dropped > 0 {
++            out.extend_from_slice(
++                alloc::format!("\n[... {} bytes of log omitted ...]\n", self.dropped).as_bytes(),
++            );
++        }
++        let start = (self.tail_next + TAIL_CAPACITY - self.tail_len) % TAIL_CAPACITY;
++        for index in 0..self.tail_len {
++            out.push(self.tail[(start + index) % TAIL_CAPACITY]);
++        }
++        out
++    }
++}
++
++static LOG: Mutex<LogBuffer> = Mutex::new(LogBuffer::new());
++
++/// Append text to the log. Never blocks: if the buffer is busy (for example a
++/// print from an interrupt handler while the shell is saving the log) the text
++/// is dropped from the log, not from the screen.
++pub fn record(text: &str) {
++    if let Some(mut log) = LOG.try_lock() {
++        log.push(text.as_bytes());
++    }
++}
++
++/// Copy of the whole log, oldest byte first.
++pub fn snapshot() -> Vec<u8> {
++    LOG.lock().to_vec()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{HEAD_CAPACITY, LogBuffer, TAIL_CAPACITY};
++    use alloc::boxed::Box;
++
++    #[test]
++    fn short_log_is_returned_unchanged() {
++        let mut log = Box::new(LogBuffer::new());
++        log.push(b"hello ");
++        log.push(b"world");
++        assert_eq!(log.to_vec(), b"hello world");
++    }
++
++    #[test]
++    fn head_is_kept_and_tail_is_a_ring() {
++        let mut log = Box::new(LogBuffer::new());
++        log.push(&alloc::vec![b'h'; HEAD_CAPACITY]);
++        log.push(&alloc::vec![b'a'; TAIL_CAPACITY]);
++        log.push(b"END");
++        let out = log.to_vec();
++        assert!(out.starts_with(&alloc::vec![b'h'; HEAD_CAPACITY]));
++        assert!(out.ends_with(b"END"));
++        assert!(
++            core::str::from_utf8(&out)
++                .unwrap()
++                .contains("bytes of log omitted")
++        );
++    }
++}
+diff --git a/kernel/src/main.rs b/kernel/src/main.rs
+index deb75db..1f54772 100644
+--- a/kernel/src/main.rs
++++ b/kernel/src/main.rs
+@@ -27,6 +27,7 @@ mod drivers;
+ pub mod elf;
+ pub mod fs;
+ mod graphics;
++mod klog;
+ mod memory;
+ pub mod network;
+ mod rsdp;
+diff --git a/kernel/src/shell.rs b/kernel/src/shell.rs
+index fdeea5c..8996c88 100644
+--- a/kernel/src/shell.rs
++++ b/kernel/src/shell.rs
+@@ -109,6 +109,7 @@ async fn execute(
+         "date" => show_date(),
+         "shutdown" => shutdown(),
+         "devices" => list_block_devices(),
++        "savelog" => save_log(current_dir, arguments),
+         "lsdev" => list_kernel_devices(),
+         "drivers" => list_kernel_drivers(),
+         "net" => run_network_command(arguments),
+@@ -136,6 +137,7 @@ fn print_help() {
+     crate::println!("Commands:");
+     crate::println!("  help                   show this help");
+     crate::println!("  clear                  clear the screen");
++    crate::println!("  savelog <path>         save the kernel log to a file (e.g. /mnt/LOG.TXT)");
+     crate::println!("  pwd                    show the current directory");
+     crate::println!("  path                   show executable search directories");
+     crate::println!("  export NAME=value     set an environment variable");
+@@ -353,6 +355,40 @@ fn list_directory(current_dir: &str, arguments: &str) {
+     }
+ }
+ 
++/// Save everything printed since boot to a file, for example on a USB stick:
++/// `mount usb0 /mnt`, `savelog /mnt/LOG.TXT`, `umount /mnt`.
++fn save_log(current_dir: &str, arguments: &str) {
++    let Some(path) = path_argument(current_dir, arguments) else {
++        crate::println!("usage: savelog <path>   (example: savelog /mnt/LOG.TXT)");
++        return;
++    };
++    // Snapshot first: printing or writing while the log lock is held would
++    // deadlock, and the file write must not be part of what is being saved.
++    let data = crate::klog::snapshot();
++    let result = with_vfs(|vfs| -> Result<usize, FsError> {
++        match vfs.metadata(&path) {
++            Ok(_) => vfs.truncate(&path, 0)?,
++            Err(FsError::NotFound) => vfs.create_file(&path)?,
++            Err(error) => return Err(error),
++        }
++        let mut offset = 0;
++        while offset < data.len() {
++            let end = (offset + 4096).min(data.len());
++            let written = vfs.write(&path, offset, &data[offset..end])?;
++            if written == 0 {
++                return Err(FsError::IoError);
++            }
++            offset += written;
++        }
++        Ok(offset)
++    })
++    .and_then(|inner| inner);
++    match result {
++        Ok(bytes) => crate::println!("savelog: wrote {bytes} bytes to {path} (run umount before removing the USB stick)"),
++        Err(error) => print_fs_error("savelog", &path, error),
++    }
++}
++
+ fn show_file(current_dir: &str, arguments: &str) {
+     let Some(path) = path_argument(current_dir, arguments) else {
+         crate::println!("usage: cat <path>");
+diff --git a/kernel/src/terminal/mod.rs b/kernel/src/terminal/mod.rs
+index cb94606..fd2c02e 100644
+--- a/kernel/src/terminal/mod.rs
++++ b/kernel/src/terminal/mod.rs
+@@ -431,6 +431,7 @@ impl Write for Terminal {
+     fn write_str(&mut self, text: &str) -> fmt::Result {
+         terminal_print(text);
+         crate::drivers::serial::write_str(text);
++        crate::klog::record(text);
+         Ok(())
+     }
+ }
+-- 
+2.43.0
+

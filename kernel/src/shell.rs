@@ -222,6 +222,18 @@ fn run_wifi_command(arguments: &str) {
             crate::println!("  net wifi connect <ssid>    - connect to AP by SSID");
             crate::println!("  net wifi status            - show current link state");
             crate::println!("  net wifi bmi               - re-run BMI and dump host-interest words");
+            crate::println!("  net wifi retry             - restart the driver after a failed bring-up");
+        }
+        Some("retry") => {
+            if crate::drivers::qca9377::is_initialized() {
+                crate::println!("net wifi retry: the QCA9377 link is already up");
+            } else if crate::drivers::qca9377::request_restart() {
+                crate::println!(
+                    "net wifi retry: the driver will restart the WLAN device from the idle loop"
+                );
+            } else {
+                crate::println!("net wifi retry: no Qualcomm Atheros WLAN function found");
+            }
         }
         Some("bmi") => {
             if let Err(error) = unsafe { crate::drivers::qca9377::run_bmi_diagnostics() } {
@@ -245,7 +257,9 @@ fn run_wifi_command(arguments: &str) {
             crate::network::wifi_connect(ssid);
         }
         Some(sub) => {
-            crate::println!("net wifi: unknown subcommand '{sub}'. Try: scan, connect, status");
+            crate::println!(
+                "net wifi: unknown subcommand '{sub}'. Try: scan, connect, status, bmi, retry"
+            );
         }
     }
 }

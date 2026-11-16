@@ -133,6 +133,9 @@ fn hcf() -> ! {
 
         // Deferred driver work runs after interrupt completion.
         unsafe { drivers::poll_deferred() };
+        // A failed QCA9377 bring-up is restarted from the idle loop, never from
+        // the shell task, because one chip reset blocks for several seconds.
+        unsafe { drivers::qca9377::poll_retry() };
         crate::network::poll_tcp();
     }
 }

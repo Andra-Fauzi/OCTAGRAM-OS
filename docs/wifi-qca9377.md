@@ -155,6 +155,67 @@ again. A target that never comes up therefore spends roughly 12 s per attempt
 (`ROM_READY_ROUNDS` after the cold reset plus three warm-reset waits) and about
 36 s in total before reporting `TargetCrashed`.
 
+### The Failed Bring-up Is Restarted From the Idle Loop
+
+ath10k can give up after its three reset attempts because Linux reloads the
+driver later; this kernel has no module reload, so giving up left the machine
+without a WLAN function until the next power cycle. `report_pci_candidates`
+now records the WLAN function and, when the bring-up fails, arms a supervisor
+(`drivers::qca9377::poll_retry`) that `main`'s idle loop calls next to
+`drivers::poll_deferred`. Each pass runs one complete `initialize_device`
+(another full chip reset, CE7 tables, BMI and firmware start) and logs it as
+`QCA9377 restarting the driver (automatic attempt N)`; the loop only stops when
+the link is registered, which is reported as `QCA9377 Wi-Fi active after N
+restart(s)`.
+
+The supervisor never runs from a shell task, because one chip reset blocks for
+about 36 s; a typed command keeps queuing keyboard input while an attempt runs.
+Every restart is a fresh `initialize_device`, so failures before the reset
+(for example an MMIO window the cold reset dropped) are retried as well, not
+only `TargetCrashed`. A failed attempt sets a spin throttle
+(`RETRY_COOLDOWN_POLLS` idle-loop passes) so an instant failure cannot turn the
+idle loop into a hot retry loop; a real reset failure already spends tens of
+seconds in the reset waits. The throttle is a pass count rather than a
+timeout because the kernel has no monotonic millisecond clock.
+
+`net wifi retry` clears the throttle and asks for a restart immediately; it
+reports when the link is already up or no WLAN function was found. Note that a
+link that does come up still stops at `WmiTlvUnsupported`, because the shipped
+`firmware-6.bin` speaks WMI-TLV and the packed WMI codec is the only one
+implemented.
+
+### The PCIe Link Is Waited For Around Every Reset
+
+`SOC_GLOBAL_RESET` resets the endpoint's PCIe core, so the link has to be
+re-established before the boot ROM can use it. Linux never waits for this because
+the PCI core and the root-port driver own the link; the driver only sampled
+`link_status` once, immediately after the cold reset, where the E203NAH log
+showed `0x1011` — DLL inactive (bit 13 clear), training inactive (bit 11 clear).
+Sampled at that moment that is expected (the reset just happened), but a single
+sample cannot tell "not trained yet" from "never came back", and the attempt was
+abandoned before the ROM had a link at all.
+
+`wait_for_pcie_link` now samples the endpoint's `PCI_EXP_LNKSTA` once per
+millisecond for up to 500 ms and logs
+`QCA9377 PCIe link <stage>: dll_active=... training=... status=... root_port_status=... waited=...ms retrained=...`.
+If DLL is still down after 50 ms it toggles Link Disable (`PCI_EXP_LNKCTL_LD`)
+on the endpoint so both ends retrain, then keeps sampling. The wait runs before
+each cold reset, **immediately after the cold reset inside `reset_target_soc`**
+(before the 3 s wait for the ROM rather than after it), and again from
+`program_pipes`, which is invoked after each CPU warm reset and before that
+phase's wait for the boot ROM.
+
+### The CPU Warm-Reset Bit Is Sampled Twice
+
+ath10k writes `SOC_RESET_CONTROL_CPU_WARM_RST_MASK` (bit 6) and never reads it
+back, so a write that does not stick is invisible there. `release_target_cpu`
+now samples `SOC_RESET_CONTROL` immediately after the write and again 1 ms
+later, and the reset line logs both values
+(`... (after warm reset, 0x... after 1ms) cpu_warm_rst_visible=...`). The log can
+therefore separate "the CPU was never taken through reset", which would make
+every retry re-read the crash latch of the first failed boot, from "the bit is
+self-clearing". `cpu_warm_rst_visible` is set when either sample shows the bit.
+
 ### Host setup before the reset (Linux reference)
 
 A reference Linux boot on the same E203NAH reports
@@ -521,6 +582,8 @@ The shell provides user commands under `net wifi`:
   (`hi_app_host_interest`, `hi_option_flag`, `hi_serial_enable`, `hi_board_data`,
   `hi_board_data_initialized`, `hi_fw_swap`, UART power-management word). `BMI_DONE`
   is never sent, so the boot ROM is left where the probe found it.
+- `net wifi retry`: Restart the driver after a failed bring-up without waiting
+  for the idle-loop supervisor's next attempt.
 - `net dhcp`: Request an IPv4 address lease via DHCP once WiFi link is associated.
 
 Linux

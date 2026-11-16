@@ -371,7 +371,15 @@ pub unsafe fn initialize_device(
         attempt += 1;
         crate::println!("QCA9377 chip reset attempt {attempt}/{CHIP_RESET_ATTEMPTS}");
 
-        let target_reset = match reset_target_soc(&mut registers, QCA_WAKE_POLL_LIMIT) {
+        // The link is normally already up from probe, but a previous failed
+        // attempt may have left it down, so it is checked (and retrained) before
+        // this attempt's cold reset, and again right after that reset inside
+        // `reset_target_soc`.
+        super::wait_for_pcie_link(device, "before the cold reset");
+
+        let target_reset = match reset_target_soc(&mut registers, QCA_WAKE_POLL_LIMIT, || {
+            super::wait_for_pcie_link(device, "after the cold reset");
+        }) {
             Ok(state) => state,
             Err(failure) => {
                 crate::println!(
@@ -455,6 +463,9 @@ pub unsafe fn initialize_device(
             QCA_WAKE_POLL_LIMIT,
             target_reset,
             |registers| {
+                // The CPU was just put through reset again, so wait for the link
+                // it will run against before the ROM gets its 3 s window.
+                super::wait_for_pcie_link(device, "before releasing the target CPU");
                 unsafe { bmi_rings.configure(registers)? };
                 unsafe { target_config_ce.configure(registers)? };
                 Ok(())
@@ -468,7 +479,7 @@ pub unsafe fn initialize_device(
                     .read32(super::CHIP_ID_BAR_OFFSET)
                     .unwrap_or(u32::MAX);
                 crate::println!(
-                    "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} warm_reset_phases={} crash_event={} crash_latch_cleared={} soc_reset_control={:#010x} -> {:#010x} (after warm reset) cpu_warm_rst_visible={} chip_id_after_reset={:#010x}",
+                    "QCA9377 reset: FW_INDICATOR {:#010x} -> {:#010x} boot_rom_ready={} warm_reset_phases={} crash_event={} crash_latch_cleared={} soc_reset_control={:#010x} -> {:#010x} (after warm reset, {:#010x} after 1ms) cpu_warm_rst_visible={} chip_id_after_reset={:#010x}",
                     outcome.indicator_before,
                     outcome.indicator_after,
                     outcome.ready,
@@ -477,6 +488,7 @@ pub unsafe fn initialize_device(
                     outcome.crash_cleared,
                     target_reset.reset_control_before,
                     outcome.reset_control_asserted,
+                    outcome.reset_control_settled,
                     outcome.cpu_warm_reset_visible,
                     chip_id_after
                 );

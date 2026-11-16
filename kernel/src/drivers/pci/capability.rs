@@ -47,7 +47,66 @@ pub unsafe fn force_d0(device: &PciDevice) -> Option<(u16, u16)> {
 }
 
 const PCIE_LINK_CONTROL_OFFSET: u8 = 0x10;
+const PCIE_LINK_STATUS_OFFSET: u8 = 0x12;
 const PCIE_LINK_CONTROL_ASPMC: u16 = 0x0003;
+const PCIE_LINK_CONTROL_LINK_DISABLE: u16 = 1 << 4;
+
+/// Raw PCIe link status word (`PCI_EXP_LNKSTA`), `None` without a PCIe
+/// capability.
+///
+/// Bit 11 is Link Training and bit 13 is Data Link Layer Link Active. A bare
+/// metal driver that only reads this once right after a chip reset cannot tell
+/// "the link has not retrained yet" from "the link never came back".
+pub unsafe fn link_status(device: &PciDevice) -> Option<u16> {
+    let capability = unsafe { find_capability(device, CAP_ID_PCIE) }?;
+    Some(unsafe {
+        config_read_u16(
+            device.bus,
+            device.device,
+            device.function,
+            capability + PCIE_LINK_STATUS_OFFSET,
+        )
+    })
+}
+
+/// Force this function's PCIe link to retrain by toggling Link Disable
+/// (`PCI_EXP_LNKCTL_LD`).
+///
+/// The SoC global reset resets the endpoint's PCIe core, so the link has to be
+/// re-established afterwards. Linux never does this because the PCI core owns
+/// the link and the root port driver handles the retrain; here the host waits
+/// and, if the link stays down, toggles Link Disable so both ends retrain.
+/// Returns the link control value before and after the toggle.
+pub unsafe fn retrain_link(device: &PciDevice) -> Option<(u16, u16)> {
+    let capability = unsafe { find_capability(device, CAP_ID_PCIE) }?;
+    let offset = capability + PCIE_LINK_CONTROL_OFFSET;
+    let before = unsafe { config_read_u16(device.bus, device.device, device.function, offset) };
+    unsafe {
+        config_write_u16(
+            device.bus,
+            device.device,
+            device.function,
+            offset,
+            before | PCIE_LINK_CONTROL_LINK_DISABLE,
+        )
+    };
+    // The endpoint has to stay disabled long enough for both ends to drop the
+    // link before it is released and training restarts.
+    for _ in 0..500_000u32 {
+        core::hint::spin_loop();
+    }
+    unsafe {
+        config_write_u16(
+            device.bus,
+            device.device,
+            device.function,
+            offset,
+            before & !PCIE_LINK_CONTROL_LINK_DISABLE,
+        )
+    };
+    let after = unsafe { config_read_u16(device.bus, device.device, device.function, offset) };
+    Some((before, after))
+}
 
 /// Disable PCIe ASPM L0s/L1 on this function, mirroring
 /// `ath10k_pci_aspm_disable()`. An endpoint that is allowed to enter a link

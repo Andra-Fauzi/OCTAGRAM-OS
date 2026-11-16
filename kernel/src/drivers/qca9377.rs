@@ -16,6 +16,7 @@ use crate::arch::x86_64::io;
 use crate::memory;
 use bmi::{BmiClient, BmiClientError, BmiTransport, TargetInfo};
 use ce::RegisterIo;
+use spin::Mutex;
 
 /// IDT vector the target's MSI is routed to. ath10k takes the single MSI vector
 /// `pci_enable_msi()` hands out; this kernel owns the IDT, so the vector is
@@ -246,6 +247,63 @@ fn settle_reset_delay(milliseconds: u16) {
             core::hint::spin_loop();
         }
     }
+}
+
+/// How long the host waits for the endpoint's data link layer to come back
+/// after a chip reset.
+const PCIE_LINK_WAIT_MS: u32 = 500;
+/// Retrain the link if it has not come up within this many milliseconds.
+const PCIE_LINK_RETRAIN_AFTER_MS: u32 = 50;
+const PCIE_LINK_STATUS_TRAINING: u16 = 1 << 11;
+const PCIE_LINK_STATUS_DLL_ACTIVE: u16 = 1 << 13;
+
+/// Wait for the endpoint's PCIe data link layer, retraining it if needed.
+///
+/// `SOC_GLOBAL_RESET` resets the endpoint's PCIe core, so after the cold reset
+/// the link has to be re-established by both ends before the boot ROM can use
+/// it. Linux never does this because the PCI core and the root-port driver own
+/// the link; a bare-metal driver has to wait for it, and toggle Link Disable
+/// when it stays down, or the ROM starts on a dead link — which showed up as a
+/// latched `FW_IND_EVENT_PENDING` with `dll_active=false` on the E203NAH.
+///
+/// Returns whether the data link layer was active when the wait finished.
+pub(super) fn wait_for_pcie_link(device: &PciDevice, stage: &str) -> bool {
+    let bridge = pci::find_parent_bridge(device.bus);
+    let Some(mut status) = (unsafe { pci::link_status(device) }) else {
+        crate::println!("QCA9377 PCIe link {stage}: the endpoint has no PCIe capability");
+        return false;
+    };
+
+    let mut elapsed = 0;
+    let mut retrained = false;
+    while status & PCIE_LINK_STATUS_DLL_ACTIVE == 0 && elapsed < PCIE_LINK_WAIT_MS {
+        settle_reset_delay(1);
+        elapsed += 1;
+        if !retrained && elapsed >= PCIE_LINK_RETRAIN_AFTER_MS {
+            retrained = true;
+            let control = unsafe { pci::retrain_link(device) };
+            match control {
+                Some((before, after)) => crate::println!(
+                    "QCA9377 PCIe link {stage}: DLL still down after {elapsed}ms (status {status:#06x}); toggling Link Disable to retrain, link control {before:#06x} -> {after:#06x}"
+                ),
+                None => crate::println!(
+                    "QCA9377 PCIe link {stage}: DLL still down after {elapsed}ms and the link cannot be retrained"
+                ),
+            }
+        }
+        status = unsafe { pci::link_status(device) }.unwrap_or(0);
+    }
+
+    let root_port_status = bridge
+        .and_then(|bridge| unsafe { pci::link_status(&bridge) })
+        .unwrap_or(0);
+    let active = status & PCIE_LINK_STATUS_DLL_ACTIVE != 0;
+    crate::println!(
+        "QCA9377 PCIe link {stage}: dll_active={} training={} status={status:#06x} root_port_status={root_port_status:#06x} waited={elapsed}ms retrained={retrained}",
+        active,
+        status & PCIE_LINK_STATUS_TRAINING != 0
+    );
+    active
 }
 
 /// Pulse the SoC global reset latch (cold reset) so the PCIe link and RTC
@@ -601,6 +659,11 @@ pub(super) struct ResetOutcome {
     /// Live `SOC_RESET_CONTROL` (RTC_SOC + 0x0) read back right after the CPU
     /// warm reset bit was written.
     pub reset_control_asserted: u32,
+    /// The same register sampled 1 ms later. ath10k never reads this bit back,
+    /// so a reset bit that does not stick is invisible there; comparing the two
+    /// samples separates "the CPU was never taken through reset" from "the bit
+    /// is self-clearing".
+    pub reset_control_settled: u32,
     /// True when the CPU warm reset bit was still set when it was read back.
     /// QCA9377 clears it by itself, so a live unit reports `false` here and the
     /// write is only an edge.
@@ -645,6 +708,7 @@ pub(super) struct ResetFailure {
 pub(super) fn reset_target_soc<R: ce::RegisterIo>(
     registers: &mut R,
     poll_limit: usize,
+    mut restore_link: impl FnMut(),
 ) -> Result<TargetReset, ResetFailure> {
     let failed = |step, error| ResetFailure { step, error };
 
@@ -662,6 +726,10 @@ pub(super) fn reset_target_soc<R: ce::RegisterIo>(
         soc_global_reset(registers).map_err(|error| failed("SoC global reset", error))?;
     target_wake(registers, poll_limit)
         .map_err(|error| failed("wake after cold reset", error))?;
+    // The cold reset resets the endpoint's PCIe core as well, and the boot ROM
+    // needs the link as soon as it starts. Restore it here, before the 3 s wait
+    // for the ROM, instead of only checking after the wait has already failed.
+    restore_link();
     let dump_after = ResetRegisterDump::capture(registers);
     let chip_id_timeline = sample_chip_id_timeline(registers)
         .map_err(|error| failed("sample chip id window", error))?;
@@ -733,6 +801,7 @@ where
     let mut ready = false;
     let mut indicator_after = 0;
     let mut reset_control_asserted = 0;
+    let mut reset_control_settled = 0;
     let mut cpu_warm_reset_visible = false;
     let mut attempts = 0;
     let mut saw_crash = false;
@@ -752,7 +821,12 @@ where
         reset_control_asserted = registers
             .read32(QCA6174_RTC_SOC_BASE)
             .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
-        cpu_warm_reset_visible |= reset_control_asserted & RTC_SOC_CPU_RESET != 0;
+        settle_reset_delay(1);
+        reset_control_settled = registers
+            .read32(QCA6174_RTC_SOC_BASE)
+            .map_err(|error| failed("read SOC_RESET_CONTROL", error))?;
+        cpu_warm_reset_visible |= reset_control_asserted & RTC_SOC_CPU_RESET != 0
+            || reset_control_settled & RTC_SOC_CPU_RESET != 0;
 
         program_pipes(registers).map_err(|error| failed("program CE pipes", error))?;
 
@@ -790,6 +864,7 @@ where
         indicator_after,
         ready,
         reset_control_asserted,
+        reset_control_settled,
         cpu_warm_reset_visible,
         attempts,
         saw_crash,
@@ -1356,15 +1431,30 @@ pub(crate) fn report_pci_candidates(devices: &[PciDevice]) {
 
         // ── Full initialization attempt ───────────────────────────────────────
         if qca9377_revision {
+            // Remember the function so the idle-loop supervisor can restart the
+            // bring-up without scanning the bus again.
+            {
+                let mut state = BRING_UP.lock();
+                state.device = Some(*device);
+                state.subsystem_vendor = subsystem_vendor;
+                state.subsystem_device = subsystem_device;
+            }
             match unsafe { init::initialize_device(device, subsystem_vendor, subsystem_device) } {
                 Ok(mac) => {
                     crate::println!(
                         "QCA9377 Wi-Fi active: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
                     );
+                    BRING_UP.lock().initialized = true;
                 }
                 Err(e) => {
                     crate::println!("QCA9377 initialization failed: {e:?}");
+                    let mut state = BRING_UP.lock();
+                    state.retry_pending = true;
+                    state.cooldown = RETRY_COOLDOWN_POLLS;
+                    crate::println!(
+                        "QCA9377: the driver will keep restarting the device in the background; 'net wifi retry' restarts it immediately"
+                    );
                 }
             }
         } else {
@@ -1375,6 +1465,127 @@ pub(crate) fn report_pci_candidates(devices: &[PciDevice]) {
     if !found {
         crate::println!("No Qualcomm Atheros ath10k PCI candidate found");
     }
+}
+
+/// How many idle-loop passes to skip after a failed bring-up.
+///
+/// This is a spin throttle, not a timer: the kernel has no monotonic
+/// millisecond clock, and every real failure spends several seconds inside the
+/// reset waits anyway. It only keeps an immediate failure (a DMA allocation or
+/// an MMIO window the reset dropped) from turning the idle loop into a hot
+/// retry loop.
+const RETRY_COOLDOWN_POLLS: u32 = 1 << 20;
+
+/// State of the automatic bring-up restart.
+///
+/// The boot ROM on this platform can set `FW_IND_EVENT_PENDING` on every reset
+/// inside the fixed `CHIP_RESET_ATTEMPTS` budget, and the same silicon has been
+/// observed to come up on a later attempt. ath10k only ever sees one boot per
+/// driver load, so it can give up; this kernel does not reload its Wi-Fi driver,
+/// so after the boot attempt fails the whole bring-up is restarted from the idle
+/// loop until it succeeds.
+struct BringUpState {
+    /// WLAN function the bring-up targets, recorded at boot.
+    device: Option<PciDevice>,
+    subsystem_vendor: u16,
+    subsystem_device: u16,
+    /// A restart is wanted because the last bring-up failed.
+    retry_pending: bool,
+    /// The link came up and `network::register_link` was called.
+    initialized: bool,
+    /// Restarts attempted since boot, for the log.
+    attempts: u32,
+    /// Idle-loop passes still to skip before the next restart.
+    cooldown: u32,
+}
+
+static BRING_UP: Mutex<BringUpState> = Mutex::new(BringUpState {
+    device: None,
+    subsystem_vendor: 0,
+    subsystem_device: 0,
+    retry_pending: false,
+    initialized: false,
+    attempts: 0,
+    cooldown: 0,
+});
+
+/// Whether the QCA9377 is up and its link registered.
+pub fn is_initialized() -> bool {
+    BRING_UP.lock().initialized
+}
+
+/// Ask for an immediate bring-up restart, used by `net wifi retry`.
+///
+/// The attempt itself runs from the idle-loop supervisor so the shell never
+/// blocks for the ~12 s a chip reset takes.
+///
+/// Returns `false` when the link is already up or no WLAN function was found.
+pub fn request_restart() -> bool {
+    let mut state = BRING_UP.lock();
+    if state.initialized || state.device.is_none() {
+        return false;
+    }
+    state.retry_pending = true;
+    state.cooldown = 0;
+    true
+}
+
+/// Restart a failed bring-up. Called from the idle loop in `main`, right after
+/// `drivers::poll_deferred`.
+///
+/// # Safety
+/// Runs on the boot CPU with interrupts enabled, outside interrupt context, and
+/// never while the shell is inside another bring-up (the supervisor is the only
+/// caller of `initialize_device` after boot).
+pub(crate) unsafe fn poll_retry() {
+    let Some((device, subsystem_vendor, subsystem_device, attempt)) = next_restart() else {
+        return;
+    };
+
+    crate::println!("QCA9377 restarting the driver (automatic attempt {attempt})");
+    let result = unsafe { init::initialize_device(&device, subsystem_vendor, subsystem_device) };
+
+    let mut state = BRING_UP.lock();
+    match result {
+        Ok(mac) => {
+            state.initialized = true;
+            state.retry_pending = false;
+            state.cooldown = 0;
+            crate::println!(
+                "QCA9377 Wi-Fi active after {attempt} restart(s): MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            );
+        }
+        Err(error) => {
+            state.cooldown = RETRY_COOLDOWN_POLLS;
+            crate::println!(
+                "QCA9377 restart attempt {attempt} failed: {error:?}; the driver will restart the device again"
+            );
+        }
+    }
+}
+
+/// Claim the next restart, if one is due, and count it.
+fn next_restart() -> Option<(PciDevice, u16, u16, u32)> {
+    let mut state = BRING_UP.lock();
+    if !state.retry_pending || state.initialized {
+        return None;
+    }
+    if state.cooldown > 0 {
+        state.cooldown -= 1;
+        return None;
+    }
+    let Some(device) = state.device else {
+        state.retry_pending = false;
+        return None;
+    };
+    state.attempts += 1;
+    Some((
+        device,
+        state.subsystem_vendor,
+        state.subsystem_device,
+        state.attempts,
+    ))
 }
 
 #[cfg(test)]
@@ -1496,7 +1707,7 @@ mod tests {
     #[test]
     fn cold_reset_keeps_the_cpu_in_reset_until_the_rings_exist() {
         let mut registers = MockResetRegisters::default();
-        let prepared = reset_target_soc(&mut registers, 8).unwrap();
+        let prepared = reset_target_soc(&mut registers, 8, || {}).unwrap();
         assert_eq!(prepared.indicator_before, 0);
 
         // Cold reset happened...
@@ -1590,7 +1801,7 @@ mod tests {
     #[test]
     fn a_latched_crash_is_cleared_and_the_rom_is_polled_again() {
         let mut registers = MockCrashLatch::default();
-        let prepared = reset_target_soc(&mut registers, 8).unwrap();
+        let prepared = reset_target_soc(&mut registers, 8, || {}).unwrap();
 
         // The latch the firmware left behind is released and the second wait
         // sees a live boot ROM, so the reset is not reported as a crash.
@@ -1602,7 +1813,7 @@ mod tests {
     #[test]
     fn ce_reset_pulse_precedes_the_cpu_release() {
         let mut registers = MockResetRegisters::default();
-        let prepared = reset_target_soc(&mut registers, 8).unwrap();
+        let prepared = reset_target_soc(&mut registers, 8, || {}).unwrap();
         let _ = release_target_cpu(&mut registers, 8, prepared, |_| Ok(())).unwrap();
 
         let ce_write = registers
@@ -1738,7 +1949,7 @@ mod tests {
         registers
             .values
             .insert(QCA6174_SOC_GLOBAL_RESET_ADDRESS, u32::MAX);
-        let failure = reset_target_soc(&mut registers, 8).unwrap_err();
+        let failure = reset_target_soc(&mut registers, 8, || {}).unwrap_err();
         assert_eq!(failure.step, "SoC global reset");
         assert_eq!(failure.error, CeError::DeviceUnavailable);
     }

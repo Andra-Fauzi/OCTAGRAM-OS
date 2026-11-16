@@ -630,7 +630,19 @@ impl Namespace {
                 cursor.next()?;
                 let (_body, end) = read_package(cursor)?;
                 let _size = self.parse_value(cursor, scope)?;
-                let bytes = cursor.take(end.saturating_sub(cursor.position))?.to_vec();
+                if cursor.position > end {
+                    return Err(AmlError::Truncated);
+                }
+                // Buffer initializers are raw AML data, not nested terms.
+                // Vendor DSDTs commonly embed blobs larger than MAX_TERM_BYTES;
+                // charging those bytes to the term parser budget made the whole
+                // Buffer fail and caused byte-by-byte resynchronisation through
+                // the binary payload. The package length and table bounds have
+                // already been checked by read_package(), and this raw read has
+                // its own MAX_PACKAGE_BYTES cap.
+                let bytes = cursor
+                    .take_raw_package_data(end - cursor.position)?
+                    .to_vec();
                 cursor.position = end;
                 Ok(Value::Bytes(bytes))
             }
@@ -1285,6 +1297,25 @@ impl<'a> Cursor<'a> {
         self.take(count).map(|_| ())
     }
 
+    /// Consume a bounded raw data payload inside an already validated AML
+    /// package. Unlike term bytes, this is not interpreted as AML opcodes, so
+    /// its size does not consume the parser's per-term instruction budget.
+    fn take_raw_package_data(&mut self, count: usize) -> Result<&'a [u8], AmlError> {
+        if count > MAX_PACKAGE_BYTES {
+            return Err(AmlError::PackageTooLarge);
+        }
+        let end = self
+            .position
+            .checked_add(count)
+            .ok_or(AmlError::Truncated)?;
+        let bytes = self
+            .bytes
+            .get(self.position..end)
+            .ok_or(AmlError::Truncated)?;
+        self.position = end;
+        Ok(bytes)
+    }
+
     fn u16(&mut self) -> Result<u16, AmlError> {
         let bytes = self.take(2)?;
         Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
@@ -1744,30 +1775,47 @@ mod tests {
     }
 
     #[test]
-    fn a_term_that_keeps_reading_is_cut_off() {
-        let mut namespace = Namespace::parse(&[]);
+    fn large_buffer_payload_is_skipped_as_data_not_resynchronised_as_aml() {
+        let payload = vec![0x5b; MAX_TERM_BYTES + 1024];
+        let large_buffer = with_package(&[BUFFER_OP], &[0x0a, 0xff], &payload);
+        let mut body = name_op("BIGB", &large_buffer);
+        body.extend(name_op("_HID", &dword(0x030A_D041)));
 
-        // A `Buffer` whose payload is larger than one term may consume: the
-        // reader would otherwise copy every byte up to the end of the package.
+        let mut table = vec![0u8; 36];
+        table[0..4].copy_from_slice(b"DSDT");
+        table.extend(body);
+
+        let namespace = Namespace::parse(&[leaked(table)]);
+        assert_eq!(
+            namespace.get("\\BIGB"),
+            Some(&Object::Name(Value::Bytes(payload))),
+            "a valid Buffer initializer may exceed the per-term opcode budget"
+        );
+        assert_eq!(
+            namespace.get("\\_HID"),
+            Some(&Object::Name(Value::Integer(0x030A_D041))),
+            "the term after the raw buffer must still be parsed"
+        );
+        assert_eq!(
+            namespace.resyncs(),
+            0,
+            "valid raw buffer bytes must not be scanned as AML opcodes"
+        );
+    }
+
+    #[test]
+    fn raw_buffer_payload_still_obeys_the_package_limit() {
         let oversized = with_package(
             &[BUFFER_OP],
-            &[0x0a, 0xff], // BytePrefix 255: the declared size is not the issue
-            &vec![0u8; MAX_TERM_BYTES + 1024],
+            &[0x0a, 0xff],
+            &vec![0u8; super::MAX_PACKAGE_BYTES + 1],
         );
         let mut cursor = Cursor::new(leaked(oversized));
+        let mut namespace = Namespace::parse(&[]);
         assert_eq!(
             namespace.parse_value(&mut cursor, "\\"),
             Err(AmlError::Truncated),
-            "the per-term budget stops the copy"
-        );
-
-        // The same construct below the budget still parses, so the limit is a
-        // limit and not a refusal to read buffers.
-        let small = with_package(&[BUFFER_OP], &[0x0a, 0x08], &[0u8; 8]);
-        let mut cursor = Cursor::new(leaked(small));
-        assert_eq!(
-            namespace.parse_value(&mut cursor, "\\"),
-            Ok(Value::Bytes(vec![0u8; 8]))
+            "read_package rejects packages larger than MAX_PACKAGE_BYTES"
         );
     }
 }

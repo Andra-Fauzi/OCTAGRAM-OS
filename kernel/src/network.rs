@@ -292,10 +292,9 @@ pub fn wifi_scan() {
         return;
     };
     if device.slot_id() == 0x9377 {
-        crate::println!("wifi: QCA9377 scanning 2.4 GHz channels 1..13...");
-        crate::println!("wifi: active probe on channel 1 (2412 MHz), 6 (2437 MHz), 11 (2462 MHz)");
-        crate::println!("wifi: radio status: online, STA vdev active");
-        crate::println!("wifi: scan completed. Use 'net wifi connect <ssid>' to connect.");
+        crate::println!(
+            "wifi: QCA9377 scan is not implemented yet; WMI-TLV scan control is still missing"
+        );
     } else {
         crate::println!(
             "wifi: registered interface (slot {:#x}) is not a WiFi device",
@@ -311,10 +310,11 @@ pub fn wifi_connect(ssid: &str) {
         return;
     };
     if device.slot_id() == 0x9377 {
-        crate::println!("wifi: target SSID: {}", ssid);
-        crate::println!("wifi: associating with AP on default channel (2437 MHz)...");
-        crate::println!("wifi: association command issued to QCA9377 WMI layer.");
-        crate::println!("wifi: execute 'net dhcp' to acquire IP lease once association is complete.");
+        crate::println!(
+            "wifi: cannot connect to {:?}: 802.11 authentication/association is not implemented",
+            ssid
+        );
+        crate::println!("wifi: no connection was started; DHCP will not work yet");
     } else {
         crate::println!(
             "wifi: registered interface (slot {:#x}) is not a WiFi device",

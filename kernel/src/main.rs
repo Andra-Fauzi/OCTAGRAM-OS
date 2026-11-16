@@ -131,6 +131,17 @@ fn hcf() -> ! {
             }
         }
 
+        // Report unknown external interrupts from task/idle context rather
+        // than formatting strings inside the interrupt handler.
+        if let Some((vector, error_code, rip)) =
+            arch::x86_64::interrupt::take_unknown_external_interrupt()
+        {
+            println!(
+                "Unhandled external interrupt vector={} error_code={:#x} rip={:#x}",
+                vector, error_code, rip
+            );
+        }
+
         // Deferred driver work runs after interrupt completion.
         unsafe { drivers::poll_deferred() };
         // A failed QCA9377 bring-up is restarted from the idle loop, never from

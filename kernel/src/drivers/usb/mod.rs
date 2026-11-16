@@ -4,15 +4,17 @@
 //! USB enumeration, class dispatch, and hotplug cleanup. Controller-neutral
 //! USB descriptors are shared by the xHCI, EHCI, and OHCI transports.
 
-/// Temporary build switch for the xHCI host controller.
+/// Build switch for the xHCI host controller.
 ///
 /// Set to `false` to keep the boot log readable on hardware where the USB
 /// controller misbehaves: the driver is never registered, so no BAR is mapped,
 /// no controller reset or port scan runs, and the idle loop never polls its
 /// event ring. EHCI/OHCI and every non-USB driver keep working, and the rest of
 /// the USB stack stays compiled, so flipping this back to `true` is the only
-/// change needed to re-enable it.
-pub const XHCI_ENABLED: bool = false;
+/// change needed to re-enable it. It is on: every controller wait in
+/// `xhci::init_xhci` and `xhci::start_controller` is bounded, so a controller
+/// that does not halt or reset is reported instead of hanging the boot.
+pub const XHCI_ENABLED: bool = true;
 
 mod controller;
 pub(crate) mod descriptors;

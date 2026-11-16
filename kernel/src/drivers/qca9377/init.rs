@@ -194,7 +194,7 @@ fn restore_pcie_after_cold_reset(
     let command = (command_status & 0xffff) as u16;
     let bar0 = pci::read_config_u32(device, 0x10);
     // PCIe capability + 0x10 holds link control (low half) and link status
-    // (high half); bit 13 of the status is Data Link Layer active.
+    // (high half); bit 12 of the status is Data Link Layer link active.
     let link = unsafe { pci::find_capability(device, pci::CAP_ID_PCIE) }
         .and_then(|capability| capability.checked_add(0x10))
         .map(|offset| pci::read_config_u32(device, offset));
@@ -204,8 +204,8 @@ fn restore_pcie_after_cold_reset(
     };
     crate::println!(
         "QCA9377 PCIe after cold reset: id={id:#010x} command={command:#06x} bar0={bar0:#010x} link_control={link_control:#06x} link_status={link_status:#06x} dll_active={} training={}",
-        link_status & (1 << 13) != 0,
-        link_status & (1 << 11) != 0
+        link_status & (1 << 12) != 0,
+        link_status & (1 << 10) != 0
     );
 
     const COMMAND_MEMORY_SPACE: u16 = 1 << 1;
@@ -229,6 +229,34 @@ fn restore_pcie_after_cold_reset(
     Ok(())
 }
 
+/// Log what the ACPI power resources did for this function.
+fn report_acpi_power(device: &PciDevice) {
+    match crate::drivers::acpi::power::power_on_pci_device(
+        device.bus,
+        device.device,
+        device.function,
+    ) {
+        Ok(report) => {
+            crate::println!(
+                "QCA9377 ACPI power: device={} power_resources={} already_on={} enabled={} ps0={}",
+                report.device,
+                report.resources.len(),
+                report.already_on(),
+                report.enabled(),
+                report.ps0.as_deref().unwrap_or("none")
+            );
+            for state in report.resources.iter().filter(|state| state.error.is_some()) {
+                crate::println!(
+                    "QCA9377 ACPI power: {} could not be enabled: {}",
+                    state.path,
+                    state.error.as_deref().unwrap_or("unknown error")
+                );
+            }
+        }
+        Err(error) => crate::println!("QCA9377 ACPI power unavailable: {error:?}"),
+    }
+}
+
 pub unsafe fn initialize_device(
     device: &PciDevice,
     subsystem_vendor: u16,
@@ -244,6 +272,12 @@ pub unsafe fn initialize_device(
     if bar_size < min_size {
         return Err(InitError::BarTooSmall);
     }
+    // Power the function on through its ACPI power resources before anything
+    // touches the chip. Writing the PCI power state only moves the function to
+    // D0; it does not run the platform's `_PS0`, so a rail or reference clock
+    // that firmware left off stays off, and the boot ROM faults on its first
+    // access instead of reaching FW_IND_INITIALIZED.
+    report_acpi_power(device);
     // Apollo Lake firmware on this laptop family can leave the WLAN in D3hot or
     // D3cold; config space still answers there, but the target ROM stays halted.
     match unsafe { pci::force_d0(device) } {

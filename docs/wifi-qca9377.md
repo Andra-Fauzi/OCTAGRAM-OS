@@ -190,10 +190,12 @@ implemented.
 re-established before the boot ROM can use it. Linux never waits for this because
 the PCI core and the root-port driver own the link; the driver only sampled
 `link_status` once, immediately after the cold reset, where the E203NAH log
-showed `0x1011` — DLL inactive (bit 13 clear), training inactive (bit 11 clear).
-Sampled at that moment that is expected (the reset just happened), but a single
-sample cannot tell "not trained yet" from "never came back", and the attempt was
-abandoned before the ROM had a link at all.
+showed `0x1011` — 2.5 GT/s, width 1, bit 12 (DLL Active) set and bit 10 (Link
+Training) clear, i.e. a trained, live link. The first version of this decoder
+read the wrong bits (13/11) and reported the link as dead; an earlier attempt
+was abandoned on that false reading. A single sample still cannot tell "not
+trained yet" from "never came back", so the wait loops instead of trusting one
+read, but the log line is now trustworthy.
 
 `wait_for_pcie_link` now samples the endpoint's `PCI_EXP_LNKSTA` once per
 millisecond for up to 500 ms and logs
@@ -204,6 +206,45 @@ each cold reset, **immediately after the cold reset inside `reset_target_soc`**
 (before the 3 s wait for the ROM rather than after it), and again from
 `program_pipes`, which is invoked after each CPU warm reset and before that
 phase's wait for the boot ROM.
+
+### The WLAN Rail Is Switched On Through ACPI (`_PR0`/`_PS0`)
+
+Writing the PCI power-management state only moves the *function* to D0; it does
+not run the platform's ACPI power methods, which is what Linux relies on. A
+bare-metal kernel never evaluates `_PS0` for a device, so a rail or reference
+clock that firmware left off stays off, and the target aborts on its first access —
+which matches a boot ROM that latches `FW_IND_EVENT_PENDING` right after the host
+clears the indicator. `PM_CSR 0x3000 -> 0x0000` on this laptop puts the function
+in D0 already, so config space answered while the SoC had no working rail.
+
+`drivers::acpi::aml` is a minimal AML reader: it parses the DSDT and every SSDT
+into a path-indexed namespace (`Device`, `Scope`, `Method`, `Name`,
+`PowerResource`, `OperationRegion`, `Field`, `Alias`, `Processor`,
+`ThermalZone`), skipping constructs it does not decode one byte at a time so an
+unknown vendor block cannot hide the definitions that follow. `Object::Method`
+records only the byte range of its body, and a small interpreter runs `Store`,
+`If`/`Else`/`While`, `Return`, `Local`/`Arg` and field access over SystemIO and
+SystemMemory, so the `_ON`/`_STA` bodies real firmware ships actually execute.
+
+`drivers::acpi::power::power_on_pci_device` finds the host bridge (`_HID`
+`PNP0A03`/`PNP0A08` whose `_BBN` matches the bus), finds the endpoint by
+`_ADR = (device << 16) | function`, and evaluates `_PR0` for the endpoint and for
+every device between it and the bridge (a PCIe port can own the rail that feeds
+the slot below it). Each referenced power resource is checked with `_STA` and
+switched on with `_ON`; `_PS0` is evaluated last when the device has one. The
+namespace is parsed once, and a fully successful report is cached so the bring
+-up retry does not re-run the same methods.
+
+The result is logged before the first register access:
+
+```text
+QCA9377 ACPI power: device=\_SB.PCI0.RP01.WLAN power_resources=2 already_on=1 enabled=1 ps0=evaluated
+```
+
+A resource that cannot be switched on gets its own line with the AML error, and
+a machine with no usable ACPI path logs
+`QCA9377 ACPI power unavailable: <reason>` and continues, because the rest of the
+bring-up is still worth attempting.
 
 ### The CPU Warm-Reset Bit Is Sampled Twice
 

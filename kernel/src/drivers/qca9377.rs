@@ -254,8 +254,13 @@ fn settle_reset_delay(milliseconds: u16) {
 const PCIE_LINK_WAIT_MS: u32 = 500;
 /// Retrain the link if it has not come up within this many milliseconds.
 const PCIE_LINK_RETRAIN_AFTER_MS: u32 = 50;
-const PCIE_LINK_STATUS_TRAINING: u16 = 1 << 11;
-const PCIE_LINK_STATUS_DLL_ACTIVE: u16 = 1 << 13;
+// `PCI_EXP_LNKSTA` (PCIe base spec, Link Status Register): bit 10 is Link
+// Training, bit 11 is Slot Clock Configuration, bit 12 is Data Link Layer Link
+// Active and bit 13 is Link Bandwidth Management Status. Reading bit 13 as
+// "DLL active" reported a healthy link as down on the E203NAH, where the
+// endpoint and its root port both return 0x1011 / 0x3011.
+const PCIE_LINK_STATUS_TRAINING: u16 = 1 << 10;
+const PCIE_LINK_STATUS_DLL_ACTIVE: u16 = 1 << 12;
 
 /// Wait for the endpoint's PCIe data link layer, retraining it if needed.
 ///

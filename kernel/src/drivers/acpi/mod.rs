@@ -1,5 +1,10 @@
-//! ACPI table discovery and power-off support for legacy PM1 control blocks.
+//! ACPI table discovery, power-off support for legacy PM1 control blocks, and
+//! the AML reader used to switch a device's power resources on.
 
+pub mod aml;
+pub mod power;
+
+use alloc::vec::Vec;
 use core::arch::asm;
 use core::hint::spin_loop;
 use core::slice;
@@ -198,6 +203,71 @@ fn locate_power_config() -> Result<PowerConfig, AcpiError> {
         sleep_type_a,
         sleep_type_b,
     })
+}
+
+/// Collect the DSDT and every SSDT: the tables the AML reader parses.
+///
+/// The DSDT comes first because it holds the device tree; the SSDTs are listed
+/// in RSDT/XSDT order. A table that fails its checksum is skipped instead of
+/// failing the whole walk, so one vendor table cannot hide the rest.
+pub(crate) fn aml_tables() -> Result<Vec<&'static [u8]>, AcpiError> {
+    let rsdp_address = crate::rsdp::address().ok_or(AcpiError::RsdpUnavailable)?;
+    let rsdp_header = physical_slice(rsdp_address, 20).map_err(|_| AcpiError::InvalidRsdp)?;
+    if &rsdp_header[..8] != RSDP_SIGNATURE || checksum(rsdp_header) != 0 {
+        return Err(AcpiError::InvalidRsdp);
+    }
+
+    let revision = rsdp_header[15];
+    let rsdt_address = u32_at(rsdp_header, 16)? as u64;
+    let (root_address, extended) = if revision >= 2 {
+        let extended = physical_slice(rsdp_address, 36).map_err(|_| AcpiError::InvalidRsdp)?;
+        let xsdt_address = u64_at(extended, 24)?;
+        if xsdt_address != 0 {
+            (xsdt_address, true)
+        } else {
+            (rsdt_address, false)
+        }
+    } else {
+        (rsdt_address, false)
+    };
+    if root_address == 0 {
+        return Err(AcpiError::InvalidTable);
+    }
+
+    let root = sdt(root_address)?;
+    let entry_size = if extended { 8 } else { 4 };
+    let mut dsdt = None;
+    let mut ssdts = Vec::new();
+    for offset in (SDT_HEADER_LENGTH..root.len()).step_by(entry_size) {
+        let address = if extended {
+            u64_at(root, offset)?
+        } else {
+            u32_at(root, offset)? as u64
+        };
+        if address == 0 {
+            continue;
+        }
+        let Ok(table) = sdt(address) else { continue };
+        let signature = &table[..4];
+        if signature == b"FACP" {
+            let dsdt_address = u32_at(table, DSDT_ADDRESS_OFFSET)? as u64;
+            if dsdt_address != 0 {
+                if let Ok(candidate) = sdt(dsdt_address) {
+                    if &candidate[..4] == b"DSDT" {
+                        dsdt = Some(candidate);
+                    }
+                }
+            }
+        } else if signature == b"SSDT" {
+            ssdts.push(table);
+        }
+    }
+
+    let dsdt = dsdt.ok_or(AcpiError::InvalidTable)?;
+    let mut tables = Vec::with_capacity(ssdts.len() + 1);
+    tables.push(dsdt);
+    tables.extend(ssdts);
+    Ok(tables)
 }
 
 fn enable_acpi(config: PowerConfig) -> Result<(), AcpiError> {

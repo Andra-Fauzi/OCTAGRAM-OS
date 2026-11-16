@@ -1659,8 +1659,9 @@ mod tests {
         QCA6174_PCIE_LOCAL_PROBE_8, QCA6174_PCIE_SOC_WAKE_ADDRESS, ResetRegisterDump,
         QCA6174_RTC_SOC_BASE, QCA6174_RTC_SOC_TIMER_OFFSET, QCA6174_SOC_GLOBAL_RESET_ADDRESS,
         QCA9377_TARGET_VERSION_1_0, QCA9377_TARGET_VERSION_1_1, RTC_SOC_CE_RESET,
-        RTC_SOC_CPU_RESET, RTC_STATE_BAR_OFFSET, SiliconIdentity, download_board_data,
-        chip_id_is_valid, is_ath10k_pci_candidate, pci_board_name, release_target_cpu,
+        RTC_SOC_CPU_RESET, RTC_SOC_SI0_RESET, RTC_STATE_BAR_OFFSET, SiliconIdentity,
+        download_board_data, chip_id_is_valid, is_ath10k_pci_candidate, pci_board_name,
+        release_target_cpu, warm_reset_si0,
         required_register_window_size, reset_target_soc, sample_chip_id_timeline, silicon_identity,
         soc_global_reset, supports_qca9377_firmware, wait_for_target_init, with_target_awake,
         READ_FAILED_PATTERN,
@@ -1763,6 +1764,19 @@ mod tests {
     #[test]
     fn matches_qca9377_pci_id() {
         assert!(is_ath10k_pci_candidate(0x168c, 0x0042));
+    }
+
+    #[test]
+    fn si0_reset_follows_both_ath10k_read_modify_write_phases() {
+        let mut registers = MockResetRegisters::default();
+        warm_reset_si0(&mut registers).unwrap();
+
+        let writes: alloc::vec::Vec<u32> = registers
+            .writes
+            .iter()
+            .filter_map(|(offset, value)| (*offset == QCA6174_RTC_SOC_BASE).then_some(*value))
+            .collect();
+        assert_eq!(writes, [RTC_SOC_SI0_RESET, 0]);
     }
 
     #[test]

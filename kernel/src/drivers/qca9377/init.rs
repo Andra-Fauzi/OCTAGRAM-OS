@@ -378,9 +378,9 @@ pub unsafe fn initialize_device(
     // `ath10k_pci_wait_for_target_init`). Releasing it here left FW_INDICATOR at
     // 0 and every BMI exchange timed out with SourceTimeout.
     //
-    // The CE reset pulse also belongs to the cold-reset stage: it clears the CE
-    // ring registers, so the BMI rings and the CE7 diagnostic pipe are
-    // programmed again on every attempt.
+    // The CE reset pulse belongs between the two warm-reset phases, after the
+    // first ROM wait. It clears the rings, which are then programmed again by
+    // the second phase; it must not run before the cold reset or first ROM wait.
     //
     // ath10k retries the whole chip reset `ATH10K_PCI_NUM_WARM_RESET_ATTEMPTS`
     // times (`ath10k_pci_qca988x_chip_reset`) because a target that did not come

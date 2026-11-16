@@ -198,6 +198,12 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
         // The APIC spurious vector has no device source and must not send EOI.
         SPURIOUS_VECTOR as u64 => frame as *mut InterruptFrame,
         128 => crate::elf::handle_syscall(frame),
+        // Unknown external IRQs are handled before the user-CPL exception arm:
+        // a hardware interrupt may arrive while a user task is running.
+        _ if frame.vector >= 32 => {
+            record_unknown_external_interrupt(frame);
+            frame as *mut InterruptFrame
+        }
         _ if frame.stack_frame.code_segment & 3 == 3 => {
             if frame.vector == 14 {
                 let fault_address: u64;
@@ -225,13 +231,6 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                 );
             }
             crate::elf::terminate_user(frame, u64::MAX)
-        }
-        // Unknown external IRQs are acknowledged and reported outside the ISR.
-        // This prevents a single unhandled line from trapping the CPU in a
-        // logging loop with its LAPIC interrupt in-service bit left asserted.
-        _ if frame.vector >= 32 => {
-            record_unknown_external_interrupt(frame);
-            frame as *mut InterruptFrame
         }
         _ => {
             crate::println!(

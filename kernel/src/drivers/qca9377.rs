@@ -385,17 +385,28 @@ fn warm_reset_si0<R: ce::RegisterIo>(registers: &mut R) -> Result<(), ce::CeErro
     if current == u32::MAX {
         return Err(ce::CeError::DeviceUnavailable);
     }
-    if RTC_SOC_SI0_RESET != 0 {
-        registers.write32(QCA6174_RTC_SOC_BASE, current | RTC_SOC_SI0_RESET)?;
+    // ath10k performs both read/modify/write steps even when this QCA9377
+    // mask is zero; the writes/readbacks also flush the register path.
+    registers.write32(
+        QCA6174_RTC_SOC_BASE,
+        current | RTC_SOC_SI0_RESET,
+    )?;
+    if registers.read32(QCA6174_RTC_SOC_BASE)? == u32::MAX {
+        return Err(ce::CeError::DeviceUnavailable);
     }
-    // ath10k waits 10 ms after asserting SI0, even when QCA9377's mask is 0.
+    // ath10k waits 10 ms after asserting SI0.
     settle_reset_delay(10);
-    if RTC_SOC_SI0_RESET != 0 {
-        let held = registers.read32(QCA6174_RTC_SOC_BASE)?;
-        if held == u32::MAX {
-            return Err(ce::CeError::DeviceUnavailable);
-        }
-        registers.write32(QCA6174_RTC_SOC_BASE, held & !RTC_SOC_SI0_RESET)?;
+
+    let held = registers.read32(QCA6174_RTC_SOC_BASE)?;
+    if held == u32::MAX {
+        return Err(ce::CeError::DeviceUnavailable);
+    }
+    registers.write32(
+        QCA6174_RTC_SOC_BASE,
+        held & !RTC_SOC_SI0_RESET,
+    )?;
+    if registers.read32(QCA6174_RTC_SOC_BASE)? == u32::MAX {
+        return Err(ce::CeError::DeviceUnavailable);
     }
     // ath10k waits another 10 ms after deassertion (20 ms total).
     settle_reset_delay(10);

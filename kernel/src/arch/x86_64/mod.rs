@@ -1,5 +1,7 @@
 //! Platform-specific code untuk x86_64.
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 pub mod apic;
 pub mod fpu;
 pub mod gdt;
@@ -49,4 +51,30 @@ unsafe fn pit_delay(milliseconds: u32) {
             core::hint::spin_loop();
         }
     }
+}
+
+static TSC_EPOCH: AtomicU64 = AtomicU64::new(0);
+static TSC_PER_MILLISECOND: AtomicU64 = AtomicU64::new(0);
+
+/// Read the x86 Time Stamp Counter.
+pub fn read_tsc() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// Milliseconds since the first call, backed by the TSC.
+///
+/// The first call calibrates the TSC against the PIT for 10 ms and returns 0,
+/// so `CLOCK_MONOTONIC` starts at zero and never goes backwards.
+pub fn monotonic_milliseconds() -> u64 {
+    let mut per_millisecond = TSC_PER_MILLISECOND.load(Ordering::Acquire);
+    if per_millisecond == 0 {
+        let start = read_tsc();
+        delay_milliseconds(10);
+        let elapsed = read_tsc().saturating_sub(start);
+        per_millisecond = (elapsed / 10).max(1);
+        TSC_PER_MILLISECOND.store(per_millisecond, Ordering::Release);
+        TSC_EPOCH.store(start, Ordering::Release);
+        return 0;
+    }
+    read_tsc().saturating_sub(TSC_EPOCH.load(Ordering::Acquire)) / per_millisecond
 }

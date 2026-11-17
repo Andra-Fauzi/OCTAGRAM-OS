@@ -20,6 +20,21 @@
 #include <time.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/select.h>
+#include <sys/time.h>
+#include <sys/utsname.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/random.h>
+#include <sys/semaphore.h>
+#include <locale.h>
+#include <wchar.h>
+#include <uchar.h>
+#include <termios.h>
+#include <sys/socket.h>
+#include <sys/timerfd.h>
 
 struct octagram_FILE {
     int fd;
@@ -307,15 +322,34 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex)
     return mutex->state == 0 ? 0 : EBUSY;
 }
 
+static int oct_futex_wait_uint(volatile unsigned int *address,
+                               unsigned int expected)
+{
+    return (int)oct_futex((uint32_t *)address, 0 /* FUTEX_WAIT */, expected);
+}
+
+static void oct_futex_wake_uint(volatile unsigned int *address, int count)
+{
+    oct_futex((uint32_t *)address, 1 /* FUTEX_WAKE */, (uint32_t)count);
+}
+
 int pthread_mutex_lock(pthread_mutex_t *mutex)
 {
     if (mutex == NULL) {
         return EINVAL;
     }
-    while (__sync_lock_test_and_set(&mutex->state, 1) != 0) {
-        __asm__ volatile ("pause");
+    if (__sync_bool_compare_and_swap(&mutex->state, 0, 1)) {
+        return 0;
     }
-    return 0;
+    for (;;) {
+        if (__sync_lock_test_and_set(&mutex->state, 2) == 0) {
+            return 0;
+        }
+        while (mutex->state != 0) {
+            /* -EINTR hanya berarti sinyal; kunci tetap harus diambil. */
+            oct_futex_wait_uint((volatile unsigned int *)&mutex->state, 2);
+        }
+    }
 }
 
 int pthread_mutex_trylock(pthread_mutex_t *mutex)
@@ -323,7 +357,8 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
     if (mutex == NULL) {
         return EINVAL;
     }
-    return __sync_lock_test_and_set(&mutex->state, 1) == 0 ? 0 : EBUSY;
+    /* CAS, bukan xchg: menimpa state 2 akan menghilangkan wakeup untuk waiter. */
+    return __sync_bool_compare_and_swap(&mutex->state, 0, 1) ? 0 : EBUSY;
 }
 
 int pthread_mutex_unlock(pthread_mutex_t *mutex)
@@ -331,9 +366,241 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex)
     if (mutex == NULL) {
         return EINVAL;
     }
-    if (__sync_lock_test_and_set(&mutex->state, 0) == 0) {
+    if (__sync_lock_test_and_set(&mutex->state, 0) == 2) {
+        oct_futex_wake_uint((volatile unsigned int *)&mutex->state, 1);
+    }
+    return 0;
+}
+
+static uint64_t oct_realtime_milliseconds(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
+        return 0;
+    }
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
+
+static int oct_absolute_milliseconds(const struct timespec *absolute,
+                                     uint64_t *milliseconds)
+{
+    if (absolute == NULL || milliseconds == NULL || absolute->tv_sec < 0 ||
+        absolute->tv_nsec < 0 || absolute->tv_nsec >= 1000000000) {
         return EINVAL;
     }
+    *milliseconds = (uint64_t)absolute->tv_sec * 1000u +
+                    (uint64_t)absolute->tv_nsec / 1000000u;
+    return 0;
+}
+
+int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attributes)
+{
+    if (cond == NULL) {
+        return EINVAL;
+    }
+    (void)attributes;
+    cond->sequence = 0;
+    return 0;
+}
+
+int pthread_cond_destroy(pthread_cond_t *cond)
+{
+    return cond == NULL ? EINVAL : 0;
+}
+
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
+{
+    if (cond == NULL || mutex == NULL) {
+        return EINVAL;
+    }
+    uint32_t sequence = cond->sequence;
+    pthread_mutex_unlock(mutex);
+    for (;;) {
+        int result = oct_futex_wait_uint(&cond->sequence, sequence);
+        if (result == -EINTR) {
+            continue;
+        }
+        break;
+    }
+    pthread_mutex_lock(mutex);
+    return 0;
+}
+
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                           const struct timespec *absolute_time)
+{
+    if (cond == NULL || mutex == NULL) {
+        return EINVAL;
+    }
+    uint64_t deadline;
+    int conversion = oct_absolute_milliseconds(absolute_time, &deadline);
+    if (conversion != 0) {
+        return conversion;
+    }
+    uint32_t sequence = cond->sequence;
+    pthread_mutex_unlock(mutex);
+    int result = 0;
+    for (;;) {
+        uint64_t now = oct_realtime_milliseconds();
+        if (now >= deadline) {
+            result = ETIMEDOUT;
+            break;
+        }
+        uint64_t remaining = deadline - now;
+        struct oct_timespec timeout;
+        timeout.tv_sec = (int64_t)(remaining / 1000u);
+        timeout.tv_nsec = (int64_t)((remaining % 1000u) * 1000000u);
+        int rc = (int)oct_futex_wait_timeout(
+            (uint32_t *)&cond->sequence, sequence, &timeout);
+        if (rc == -ETIMEDOUT) {
+            result = ETIMEDOUT;
+            break;
+        }
+        if (rc != -EINTR) {
+            break;
+        }
+    }
+    pthread_mutex_lock(mutex);
+    return result;
+}
+
+int pthread_cond_signal(pthread_cond_t *cond)
+{
+    if (cond == NULL) {
+        return EINVAL;
+    }
+    __sync_fetch_and_add(&cond->sequence, 1);
+    oct_futex_wake_uint(&cond->sequence, 1);
+    return 0;
+}
+
+int pthread_cond_broadcast(pthread_cond_t *cond)
+{
+    if (cond == NULL) {
+        return EINVAL;
+    }
+    __sync_fetch_and_add(&cond->sequence, 1);
+    oct_futex_wake_uint(&cond->sequence, 2147483647);
+    return 0;
+}
+
+int sem_init(sem_t *semaphore, int shared, unsigned int value)
+{
+    if (semaphore == NULL) {
+        return EINVAL;
+    }
+    if (shared != 0) {
+        return ENOSYS;
+    }
+    semaphore->count = value;
+    return 0;
+}
+
+int sem_destroy(sem_t *semaphore)
+{
+    return semaphore == NULL ? EINVAL : 0;
+}
+
+int sem_trywait(sem_t *semaphore)
+{
+    if (semaphore == NULL) {
+        return EINVAL;
+    }
+    for (;;) {
+        unsigned int value = semaphore->count;
+        if (value == 0) {
+            errno = EAGAIN;
+            return -1;
+        }
+        if (__sync_bool_compare_and_swap(&semaphore->count, value, value - 1)) {
+            return 0;
+        }
+    }
+}
+
+int sem_wait(sem_t *semaphore)
+{
+    if (semaphore == NULL) {
+        return EINVAL;
+    }
+    for (;;) {
+        unsigned int value = semaphore->count;
+        if (value > 0) {
+            if (__sync_bool_compare_and_swap(&semaphore->count, value,
+                                             value - 1)) {
+                return 0;
+            }
+            continue;
+        }
+        int result = oct_futex_wait_uint(&semaphore->count, 0);
+        if (result == -EINTR) {
+            continue;
+        }
+        if (result != 0 && result != -EAGAIN) {
+            errno = -result;
+            return -1;
+        }
+    }
+}
+
+int sem_timedwait(sem_t *semaphore, const struct timespec *absolute_time)
+{
+    if (semaphore == NULL) {
+        return EINVAL;
+    }
+    uint64_t deadline;
+    int conversion = oct_absolute_milliseconds(absolute_time, &deadline);
+    if (conversion != 0) {
+        errno = conversion;
+        return -1;
+    }
+    for (;;) {
+        unsigned int value = semaphore->count;
+        if (value > 0) {
+            if (__sync_bool_compare_and_swap(&semaphore->count, value,
+                                             value - 1)) {
+                return 0;
+            }
+            continue;
+        }
+        uint64_t now = oct_realtime_milliseconds();
+        if (now >= deadline) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        uint64_t remaining = deadline - now;
+        struct oct_timespec timeout;
+        timeout.tv_sec = (int64_t)(remaining / 1000u);
+        timeout.tv_nsec = (int64_t)((remaining % 1000u) * 1000000u);
+        int result = (int)oct_futex_wait_timeout(
+            (uint32_t *)&semaphore->count, 0, &timeout);
+        if (result == -ETIMEDOUT) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        if (result != 0 && result != -EAGAIN && result != -EINTR) {
+            errno = -result;
+            return -1;
+        }
+    }
+}
+
+int sem_post(sem_t *semaphore)
+{
+    if (semaphore == NULL) {
+        return EINVAL;
+    }
+    __sync_fetch_and_add(&semaphore->count, 1);
+    oct_futex_wake_uint(&semaphore->count, 1);
+    return 0;
+}
+
+int sem_getvalue(sem_t *semaphore, int *value)
+{
+    if (semaphore == NULL || value == NULL) {
+        return EINVAL;
+    }
+    *value = (int)semaphore->count;
     return 0;
 }
 
@@ -1297,6 +1564,12 @@ int dirfd(DIR *directory)
     return directory->fd;
 }
 
+static int oct_descriptor_is_nonblocking(int fd)
+{
+    int64_t flags = oct_fcntl(fd, F_GETFL, 0);
+    return flags >= 0 && (flags & OCT_O_NONBLOCK) != 0;
+}
+
 ssize_t read(int fd, void *buffer, size_t count)
 {
     if (count > OCT_MAX_SYSCALL_IO) {
@@ -1305,6 +1578,9 @@ ssize_t read(int fd, void *buffer, size_t count)
     for (;;) {
         int64_t result = oct_read(fd, buffer, count);
         if (result != -EAGAIN) {
+            return (ssize_t)posix_result(result);
+        }
+        if (oct_descriptor_is_nonblocking(fd)) {
             return (ssize_t)posix_result(result);
         }
         int64_t yield_result = oct_yield();
@@ -1322,6 +1598,9 @@ ssize_t write(int fd, const void *buffer, size_t count)
     for (;;) {
         int64_t result = oct_write(fd, buffer, count);
         if (result != -EAGAIN) {
+            return (ssize_t)posix_result(result);
+        }
+        if (oct_descriptor_is_nonblocking(fd)) {
             return (ssize_t)posix_result(result);
         }
         int64_t yield_result = oct_yield();
@@ -1508,12 +1787,22 @@ pid_t getpid(void)
 
 int isatty(int fd)
 {
-    return (int)posix_result(oct_isatty(fd));
+    struct termios termios_state;
+    if (tcgetattr(fd, &termios_state) == 0) {
+        return 1;
+    }
+    errno = ENOTTY;
+    return 0;
 }
 
 int pipe(int descriptors[2])
 {
     return (int)posix_result(oct_pipe(descriptors));
+}
+
+int pipe2(int descriptors[2], int flags)
+{
+    return (int)posix_result(oct_pipe2(descriptors, flags));
 }
 
 int dup2(int source_fd, int target_fd)
@@ -3480,8 +3769,8 @@ long double ldexpl(long double value, int exponent)
 
 long sysconf(int name)
 {
-    (void)name;
-    return 4096;
+    int64_t result = oct_sysconf(name);
+    return result < 0 ? -1 : (long)result;
 }
 
 int execvp(const char *file, char *const arguments[])
@@ -3525,4 +3814,683 @@ __attribute__((noreturn)) void abort(void)
     for (;;) {
         __asm__ volatile ("pause");
     }
+}
+
+/* --- Kompatibilitas POSIX untuk runtime Python/Java --- */
+
+uid_t getuid(void)
+{
+    return (uid_t)oct_getuid();
+}
+
+gid_t getgid(void)
+{
+    return (gid_t)oct_getgid();
+}
+
+uid_t geteuid(void)
+{
+    return (uid_t)oct_geteuid();
+}
+
+gid_t getegid(void)
+{
+    return (gid_t)oct_getegid();
+}
+
+int uname(struct utsname *name)
+{
+    if (name == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    return (int)posix_result(oct_uname((struct oct_utsname *)name));
+}
+
+static uintptr_t program_break;
+
+static int refresh_program_break(void)
+{
+    int64_t current = oct_brk(0);
+    if (current < 0) {
+        errno = (int)-current;
+        return -1;
+    }
+    program_break = (uintptr_t)current;
+    return 0;
+}
+
+int brk(void *address)
+{
+    if (program_break == 0 && refresh_program_break() != 0) {
+        return -1;
+    }
+    int64_t result = oct_brk((uint64_t)(uintptr_t)address);
+    if (result < 0) {
+        errno = (int)-result;
+        return -1;
+    }
+    program_break = (uintptr_t)result;
+    if ((uintptr_t)address > program_break) {
+        errno = ENOMEM;
+        return -1;
+    }
+    return 0;
+}
+
+void *sbrk(intptr_t increment)
+{
+    if (program_break == 0 && refresh_program_break() != 0) {
+        return (void *)-1;
+    }
+    uintptr_t previous = program_break;
+    if (increment == 0) {
+        return (void *)previous;
+    }
+    if (increment > 0) {
+        uintptr_t requested = previous + (uintptr_t)increment;
+        if (requested < previous) {
+            errno = ENOMEM;
+            return (void *)-1;
+        }
+        int64_t result = oct_brk(requested);
+        if (result < 0) {
+            errno = (int)-result;
+            return (void *)-1;
+        }
+        if ((uintptr_t)result != requested) {
+            errno = ENOMEM;
+            return (void *)-1;
+        }
+        program_break = requested;
+        return (void *)previous;
+    }
+    /* Kernel belum menyusutkan heap; break yang dilaporkan kernel dipakai. */
+    uintptr_t requested = previous - (uintptr_t)(-increment);
+    int64_t result = oct_brk(requested);
+    if (result < 0) {
+        errno = (int)-result;
+        return (void *)-1;
+    }
+    program_break = (uintptr_t)result;
+    return (void *)previous;
+}
+
+int gettimeofday(struct timeval *time_value, void *timezone)
+{
+    (void)timezone;
+    if (time_value == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    return (int)posix_result(oct_gettimeofday((struct oct_timeval *)time_value));
+}
+
+int nanosleep(const struct timespec *request, struct timespec *remaining)
+{
+    (void)remaining;
+    if (request == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    return (int)posix_result(oct_nanosleep((const struct oct_timespec *)request));
+}
+
+unsigned int sleep(unsigned int seconds)
+{
+    struct timespec request;
+    request.tv_sec = (time_t)seconds;
+    request.tv_nsec = 0;
+    if (nanosleep(&request, NULL) == 0) {
+        return 0;
+    }
+    return errno == EINTR ? seconds : 0;
+}
+
+int usleep(useconds_t microseconds)
+{
+    struct timespec request;
+    request.tv_sec = (time_t)(microseconds / 1000000u);
+    request.tv_nsec = (long)(microseconds % 1000000u) * 1000L;
+    return nanosleep(&request, NULL);
+}
+
+sighandler_t signal(int signal_number, sighandler_t handler)
+{
+    return (sighandler_t)(intptr_t)posix_result(
+        oct_signal(signal_number, (void *)(uintptr_t)handler));
+}
+
+/* Dipanggil saat handler selesai: meminta kernel memulihkan konteks yang
+   disimpan di stack sebelum handler dijalankan. */
+__attribute__((naked, used)) static void oct_signal_restorer(void)
+{
+    __asm__ volatile("mov $113, %rax\n\tint $0x80\n\tud2");
+}
+
+int sigaction(int signal_number, const struct sigaction *action,
+              struct sigaction *old_action)
+{
+    if (action == NULL) {
+        return (int)posix_result(oct_sigaction(signal_number, NULL, old_action));
+    }
+    struct sigaction copy = *action;
+    if (copy.sa_restorer == NULL) {
+        copy.sa_restorer = oct_signal_restorer;
+    }
+    return (int)posix_result(oct_sigaction(signal_number, &copy, old_action));
+}
+
+int sigprocmask(int how, const sigset_t *set, sigset_t *old_set)
+{
+    return (int)posix_result(oct_sigprocmask(how, set, old_set));
+}
+
+int kill(pid_t pid, int signal_number)
+{
+    return (int)posix_result(oct_kill(pid, signal_number));
+}
+
+int sigpending(sigset_t *set)
+{
+    return (int)posix_result(oct_sigpending(set));
+}
+
+int sigsuspend(const sigset_t *mask)
+{
+    return (int)posix_result(oct_sigsuspend(mask));
+}
+
+int raise(int signal_number)
+{
+    return kill(getpid(), signal_number);
+}
+
+int poll(struct pollfd *fds, nfds_t nfds, int timeout)
+{
+    return (int)posix_result(oct_poll((struct oct_pollfd *)fds, (uint64_t)nfds, (int64_t)timeout));
+}
+
+int select(int nfds, fd_set *readfds, fd_set *writefds,
+           fd_set *exceptfds, struct timeval *timeout)
+{
+    if (nfds < 0 || nfds > FD_SETSIZE) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (int)posix_result(oct_select((uint64_t)(unsigned int)nfds,
+                                        readfds, writefds, exceptfds,
+                                        (struct oct_timeval *)timeout));
+}
+
+int setsockopt(int socket_fd, int level, int option_name,
+               const void *option_value, socklen_t option_length)
+{
+    return (int)posix_result(oct_setsockopt(socket_fd, level, option_name,
+                                            option_value, option_length));
+}
+
+int getsockopt(int socket_fd, int level, int option_name,
+               void *option_value, socklen_t *option_length)
+{
+    return (int)posix_result(oct_getsockopt(socket_fd, level, option_name,
+                                            option_value, option_length));
+}
+
+int putenv(char *entry)
+{
+    if (entry == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    char *equals = strchr(entry, '=');
+    if (equals == NULL) {
+        return unsetenv(entry);
+    }
+    size_t name_length = (size_t)(equals - entry);
+    if (name_length == 0 || name_length > 255) {
+        errno = EINVAL;
+        return -1;
+    }
+    char name[256];
+    memcpy(name, entry, name_length);
+    name[name_length] = '\0';
+    /* setenv menyalin string, sehingga buffer pemanggil tetap boleh berubah. */
+    return setenv(name, equals + 1, 1);
+}
+
+pid_t getppid(void)
+{
+    return (pid_t)oct_getppid();
+}
+
+int fsync(int fd)
+{
+    return (int)posix_result(oct_fsync(fd));
+}
+
+int fdatasync(int fd)
+{
+    return (int)posix_result(oct_fdatasync(fd));
+}
+
+int clock_getres(clockid_t clock_id, struct timespec *resolution)
+{
+    if (resolution == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    return (int)posix_result(
+        oct_clock_getres(clock_id, (struct oct_timespec *)resolution));
+}
+
+ssize_t getrandom(void *buffer, size_t length, unsigned int flags)
+{
+    if (buffer == NULL && length != 0) {
+        errno = EFAULT;
+        return -1;
+    }
+    unsigned char *bytes = buffer;
+    size_t done = 0;
+    while (done < length) {
+        size_t chunk = length - done;
+        if (chunk > 256) {
+            chunk = 256;
+        }
+        int64_t result = oct_getrandom(bytes + done, chunk, flags);
+        if (result < 0) {
+            return done == 0 ? (ssize_t)posix_result(result) : (ssize_t)done;
+        }
+        if (result == 0) {
+            break;
+        }
+        done += (size_t)result;
+    }
+    return (ssize_t)done;
+}
+
+int epoll_create1(int flags)
+{
+    return (int)posix_result(oct_epoll_create1(flags));
+}
+
+int epoll_ctl(int epfd, int operation, int fd, struct epoll_event *event)
+{
+    return (int)posix_result(
+        oct_epoll_ctl(epfd, operation, fd, (void *)event));
+}
+
+int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
+               int timeout)
+{
+    return (int)posix_result(
+        oct_epoll_wait(epfd, (void *)events, maxevents, timeout));
+}
+
+int eventfd(unsigned int initial_value, int flags)
+{
+    return (int)posix_result(oct_eventfd2(initial_value, flags));
+}
+
+int timerfd_create(clockid_t clock_id, int flags)
+{
+    return (int)posix_result(oct_timerfd_create(clock_id, flags));
+}
+
+int timerfd_settime(int fd, int flags, const struct itimerspec *new_value,
+                    struct itimerspec *old_value)
+{
+    return (int)posix_result(
+        oct_timerfd_settime(fd, flags, (const void *)new_value,
+                            (void *)old_value));
+}
+
+int timerfd_gettime(int fd, struct itimerspec *current_value)
+{
+    return (int)posix_result(oct_timerfd_gettime(fd, (void *)current_value));
+}
+
+int socketpair(int domain, int socket_type, int protocol, int sv[2])
+{
+    return (int)posix_result(
+        oct_socketpair(domain, socket_type, protocol, (void *)sv));
+}
+
+int clock_nanosleep(clockid_t clock_id, int flags,
+                    const struct timespec *request, struct timespec *remaining)
+{
+    return (int)posix_result(oct_clock_nanosleep(
+        clock_id, flags, (const struct oct_timespec *)request,
+        (struct oct_timespec *)remaining));
+}
+
+/* ---------- locale dan konversi multibyte UTF-8 ---------- */
+
+static struct lconv oct_locale_conv = {
+    .decimal_point = ".",
+    .thousands_sep = "",
+    .grouping = "",
+    .int_curr_symbol = "",
+    .currency_symbol = "",
+    .mon_decimal_point = "",
+    .mon_thousands_sep = "",
+    .mon_grouping = "",
+    .positive_sign = "",
+    .negative_sign = "",
+    .int_frac_digits = 127,
+    .frac_digits = 127,
+    .p_cs_precedes = 127,
+    .p_sep_by_space = 127,
+    .n_cs_precedes = 127,
+    .n_sep_by_space = 127,
+    .p_sign_posn = 127,
+    .n_sign_posn = 127,
+    .int_p_cs_precedes = 127,
+    .int_p_sep_by_space = 127,
+    .int_n_cs_precedes = 127,
+    .int_n_sep_by_space = 127,
+    .int_p_sign_posn = 127,
+    .int_n_sign_posn = 127
+};
+
+char *setlocale(int category, const char *locale)
+{
+    static char current[32] = "C";
+    (void)category;
+    if (locale == NULL) {
+        return current;
+    }
+    if (locale[0] == '\0') {
+        const char *environment = getenv("LC_ALL");
+        if (environment == NULL || environment[0] == '\0') {
+            environment = getenv("LC_CTYPE");
+        }
+        if (environment == NULL || environment[0] == '\0') {
+            environment = getenv("LANG");
+        }
+        if (environment != NULL &&
+            (strstr(environment, "UTF-8") != NULL ||
+             strstr(environment, "utf8") != NULL ||
+             strstr(environment, "UTF8") != NULL)) {
+            strcpy(current, "C.UTF-8");
+        } else {
+            strcpy(current, "C");
+        }
+        return current;
+    }
+    if (strcmp(locale, "C") == 0 || strcmp(locale, "POSIX") == 0) {
+        strcpy(current, "C");
+        return current;
+    }
+    if (strcmp(locale, "C.UTF-8") == 0 || strcmp(locale, "C.utf8") == 0 ||
+        strcmp(locale, "UTF-8") == 0 || strcmp(locale, "utf8") == 0 ||
+        strcmp(locale, "en_US.UTF-8") == 0) {
+        strcpy(current, "C.UTF-8");
+        return current;
+    }
+    return NULL;
+}
+
+struct lconv *localeconv(void)
+{
+    return &oct_locale_conv;
+}
+
+/* 0 = berhasil, 1 = butuh byte tambahan, -1 = urutan tidak valid. */
+static int oct_utf8_inspect(const unsigned char *bytes, int available,
+                            uint32_t *code_point, int *length)
+{
+    if (available == 0) {
+        return 1;
+    }
+    unsigned char first = bytes[0];
+    if (first < 0x80) {
+        *code_point = first;
+        *length = 1;
+        return 0;
+    }
+    int needed;
+    uint32_t minimum;
+    uint32_t value;
+    if (first >= 0xC2 && first <= 0xDF) {
+        needed = 2;
+        minimum = 0x80;
+        value = first & 0x1F;
+    } else if (first >= 0xE0 && first <= 0xEF) {
+        needed = 3;
+        minimum = 0x800;
+        value = first & 0x0F;
+    } else if (first >= 0xF0 && first <= 0xF4) {
+        needed = 4;
+        minimum = 0x10000;
+        value = first & 0x07;
+    } else {
+        return -1;
+    }
+    for (int index = 1; index < needed; ++index) {
+        if (index >= available) {
+            return 1;
+        }
+        unsigned char next = bytes[index];
+        if ((next & 0xC0) != 0x80) {
+            return -1;
+        }
+        value = (value << 6) | (next & 0x3F);
+    }
+    if (value < minimum || value > 0x10FFFF ||
+        (value >= 0xD800 && value <= 0xDFFF)) {
+        return -1;
+    }
+    *code_point = value;
+    *length = needed;
+    return 0;
+}
+
+size_t mbrtowc(wchar_t *restrict wide, const char *restrict input, size_t count,
+               mbstate_t *restrict state)
+{
+    static mbstate_t fallback_state;
+    if (state == NULL) {
+        state = &fallback_state;
+    }
+    if (input == NULL) {
+        memset(state, 0, sizeof(*state));
+        return 0;
+    }
+    unsigned char buffer[8];
+    int have = state->count;
+    if (have < 0 || have > 4) {
+        have = 0;
+    }
+    memcpy(buffer, state->bytes, (size_t)have);
+    size_t added = 0;
+    for (;;) {
+        uint32_t code_point = 0;
+        int length = 0;
+        int status = oct_utf8_inspect(buffer, have + (int)added, &code_point,
+                                      &length);
+        if (status == 0) {
+            size_t used = (size_t)(length - have);
+            memset(state, 0, sizeof(*state));
+            if (wide != NULL) {
+                *wide = (wchar_t)code_point;
+            }
+            return code_point == 0 ? 0 : used;
+        }
+        if (status < 0) {
+            memset(state, 0, sizeof(*state));
+            errno = EILSEQ;
+            return (size_t)-1;
+        }
+        if (added >= count) {
+            state->count = have + (int)added;
+            memcpy(state->bytes, buffer, (size_t)state->count);
+            return (size_t)-2;
+        }
+        buffer[have + (int)added] = (unsigned char)input[added];
+        ++added;
+    }
+}
+
+static size_t oct_utf8_encode(uint32_t code_point, unsigned char *output)
+{
+    if (code_point <= 0x7F) {
+        output[0] = (unsigned char)code_point;
+        return 1;
+    }
+    if (code_point <= 0x7FF) {
+        output[0] = (unsigned char)(0xC0 | (code_point >> 6));
+        output[1] = (unsigned char)(0x80 | (code_point & 0x3F));
+        return 2;
+    }
+    if (code_point <= 0xFFFF) {
+        output[0] = (unsigned char)(0xE0 | (code_point >> 12));
+        output[1] = (unsigned char)(0x80 | ((code_point >> 6) & 0x3F));
+        output[2] = (unsigned char)(0x80 | (code_point & 0x3F));
+        return 3;
+    }
+    output[0] = (unsigned char)(0xF0 | (code_point >> 18));
+    output[1] = (unsigned char)(0x80 | ((code_point >> 12) & 0x3F));
+    output[2] = (unsigned char)(0x80 | ((code_point >> 6) & 0x3F));
+    output[3] = (unsigned char)(0x80 | (code_point & 0x3F));
+    return 4;
+}
+
+size_t wcrtomb(char *restrict output, wchar_t wide, mbstate_t *restrict state)
+{
+    char scratch[4];
+    (void)state;
+    if (output == NULL) {
+        output = scratch;
+    }
+    uint32_t code_point = (uint32_t)wide;
+    if (code_point > 0x10FFFF ||
+        (code_point >= 0xD800 && code_point <= 0xDFFF)) {
+        errno = EILSEQ;
+        return (size_t)-1;
+    }
+    return oct_utf8_encode(code_point, (unsigned char *)output);
+}
+
+size_t c32rtomb(char *restrict output, char32_t wide, mbstate_t *restrict state)
+{
+    return wcrtomb(output, (wchar_t)wide, state);
+}
+
+size_t c16rtomb(char *restrict output, char16_t unit, mbstate_t *restrict state)
+{
+    static mbstate_t fallback_state;
+    if (state == NULL) {
+        state = &fallback_state;
+    }
+    if (output == NULL) {
+        state->pending = 0;
+        return 1;
+    }
+    uint32_t value = unit;
+    if (value >= 0xD800 && value <= 0xDBFF) {
+        if (state->pending != 0) {
+            state->pending = 0;
+            errno = EILSEQ;
+            return (size_t)-1;
+        }
+        state->pending = value;
+        return 0;
+    }
+    if (value >= 0xDC00 && value <= 0xDFFF) {
+        if (state->pending == 0) {
+            errno = EILSEQ;
+            return (size_t)-1;
+        }
+        uint32_t code_point = 0x10000 +
+            ((state->pending - 0xD800) << 10) + (value - 0xDC00);
+        state->pending = 0;
+        return oct_utf8_encode(code_point, (unsigned char *)output);
+    }
+    if (state->pending != 0) {
+        state->pending = 0;
+        errno = EILSEQ;
+        return (size_t)-1;
+    }
+    return oct_utf8_encode(value, (unsigned char *)output);
+}
+
+/* ---------- termios ---------- */
+
+int tcgetattr(int fd, struct termios *termios_state)
+{
+    if (termios_state == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    return ioctl(fd, TCGETS, termios_state) == 0 ? 0 : -1;
+}
+
+int tcsetattr(int fd, int action, const struct termios *termios_state)
+{
+    if (termios_state == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    unsigned long request;
+    switch (action) {
+    case TCSANOW:
+        request = TCSETS;
+        break;
+    case TCSADRAIN:
+        request = TCSETSW;
+        break;
+    case TCSAFLUSH:
+        request = TCSETSF;
+        break;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+    return ioctl(fd, request, (void *)termios_state) == 0 ? 0 : -1;
+}
+
+void cfmakeraw(struct termios *termios_state)
+{
+    if (termios_state == NULL) {
+        return;
+    }
+    termios_state->c_iflag &=
+        ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+    termios_state->c_oflag &= ~OPOST;
+    termios_state->c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    termios_state->c_cflag &= ~(CSIZE | PARENB);
+    termios_state->c_cflag |= CS8;
+    termios_state->c_cc[VMIN] = 1;
+    termios_state->c_cc[VTIME] = 0;
+}
+
+speed_t cfgetispeed(const struct termios *termios_state)
+{
+    return termios_state == NULL ? 0 : termios_state->c_ispeed;
+}
+
+speed_t cfgetospeed(const struct termios *termios_state)
+{
+    return termios_state == NULL ? 0 : termios_state->c_ospeed;
+}
+
+int cfsetispeed(struct termios *termios_state, speed_t speed)
+{
+    if (termios_state == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    termios_state->c_ispeed = speed;
+    return 0;
+}
+
+int cfsetospeed(struct termios *termios_state, speed_t speed)
+{
+    if (termios_state == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    termios_state->c_ospeed = speed;
+    return 0;
 }

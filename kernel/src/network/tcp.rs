@@ -1144,3 +1144,21 @@ mod tests {
         assert!(weak.upgrade().is_none());
     }
 }
+
+/// True when `recv`/`accept` on this socket would make progress.
+pub fn is_readable(socket: &Arc<Mutex<TcpSocket>>) -> bool {
+    let socket = socket.lock();
+    if socket.receive_eof || !socket.received.is_empty() {
+        return true;
+    }
+    socket.state == TcpState::Listening && !socket.accepted.is_empty()
+}
+
+/// True when `send` on this socket would make progress.
+pub fn is_writable(socket: &Arc<Mutex<TcpSocket>>) -> bool {
+    let socket = socket.lock();
+    socket.state != TcpState::Listening
+        && socket.state != TcpState::Closed
+        && !socket.write_shutdown
+        && socket.error.is_none()
+}

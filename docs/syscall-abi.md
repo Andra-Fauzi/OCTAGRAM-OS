@@ -83,11 +83,246 @@ menyediakan inline wrappers.
 | 78 | `shutdown` | `RDI=fd`, `RSI=how` (`SHUT_RD/WR/RDWR`) | 0 |
 | 79 | `getsockname` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=socklen_t*` | 0 |
 | 80 | `getpeername` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=socklen_t*` | 0 |
+| 81 | `ioctl` | `RDI=fd`, `RSI=request`, `RDX=arg` | Hasil sesuai request |
+| 82 | `getuid` | — | 0 |
+| 83 | `getgid` | — | 0 |
+| 84 | `geteuid` | — | 0 |
+| 85 | `getegid` | — | 0 |
+| 86 | `uname` | `RDI=struct utsname*` | 0 |
+| 87 | `getppid` | — | 1 |
+| 88 | `brk` | `RDI=address` (0 untuk membaca) | Program break saat ini/baru |
+| 89 | `gettimeofday` | `RDI=struct timeval*` (0 untuk abaikan) | 0 |
+| 90 | `nanosleep` | `RDI=struct timespec*` | 0 |
+| 91 | `kill` | `RDI=pid`, `RSI=signal` | 0, `-ESRCH` bila pid tidak ada |
+| 92 | `sigaction` | `RDI=signal`, `RSI=action*`, `RDX=old*` | 0, `-EINVAL` untuk `SIGKILL`/`SIGSTOP` |
+| 93 | `sigprocmask` | `RDI=how`, `RSI=set*`, `RDX=old*` | 0 |
+| 94 | `futex` | `RDI=address`, `RSI=operation`, `RDX=value`, `R10=timeout*` | 0 untuk `WAIT` bangun normal, jumlah waiter untuk `WAKE`, `-ETIMEDOUT` saat timeout |
+| 95 | `setsockopt` | `RDI=fd`, `RSI=level`, `RDX=option`, `R10=value*`, `R8=length` | 0 |
+| 96 | `getsockopt` | `RDI=fd`, `RSI=level`, `RDX=option`, `R10=value*`, `R8=length*` | 0 |
+| 97 | `poll` | `RDI=struct pollfd*`, `RSI=nfds`, `RDX=timeout_ms` | Jumlah fd siap |
+| 98 | `pipe2` | `RDI=int fds[2]` | 0; flag diabaikan |
+| 99 | `dup3` | `RDI=source_fd`, `RSI=target_fd`, `RDX=flags` | `target_fd` |
+| 100 | `eventfd2` | `RDI=initial_value`, `RSI=flags` | fd baru |
+| 101 | `timerfd_create` | `RDI=clock_id`, `RSI=flags` | fd baru |
+| 102 | `pread` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=offset` | Byte dibaca |
+| 103 | `pwrite` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=offset` | Byte ditulis |
+| 104 | `writev` | `RDI=fd`, `RSI=iov*`, `RDX=iovcnt` | Byte ditulis |
+| 105 | `readv` | `RDI=fd`, `RSI=iov*`, `RDX=iovcnt` | Byte dibaca |
+| 106 | `sendmsg` | — | `-ENOSYS` |
+| 107 | `recvmsg` | — | `-ENOSYS` |
+| 108 | `sysconf` | `RDI=nama _SC_*` | Nilai atau -1 |
+| 109 | `getrlimit` | `RDI=resource`, `RSI=struct rlimit*` | 0; selalu tak terbatas |
+| 110 | `setrlimit` | `RDI=resource`, `RSI=struct rlimit*` | 0; diabaikan |
+| 111 | `getrusage` | `RDI=who`, `RSI=struct rusage*` | 0; nilai nol |
+| 112 | `times` | `RDI=struct tms*` (0 untuk abaikan) | 0; nilai nol |
+| 113 | `sigreturn` | frame di `RSP` | Memulihkan seluruh register dan mask |
+| 114 | `sigpending` | `RDI=set*` | 0, mask sinyal tertunda yang terblokir |
+| 115 | `sigsuspend` | `RDI=mask*` | 0 setelah ada sinyal atau batas tunggu |
+| 116 | `signal` | `RDI=signal`, `RSI=handler` | Handler sebelumnya |
+| 117 | `select` | `RDI=nfds`, `RSI=readfds*`, `RDX=writefds*`, `R10=exceptfds*`, `R8=timeval*` | Jumlah fd siap |
+| 118 | `clock_getres` | `RDI=clock_id`, `RSI=timespec*` | 0 |
+| 119 | `fsync` | `RDI=fd` | 0 untuk file/direktori, `-EINVAL` untuk pipe/console/socket |
+| 120 | `fdatasync` | `RDI=fd` | Sama dengan `fsync` |
+| 121 | `getrandom` | `RDI=buffer`, `RSI=length`, `RDX=flags` | Byte yang diisi (maks 256 per panggilan) |
+| 122 | `epoll_create1` | `RDI=flags` | fd epoll baru |
+| 123 | `epoll_ctl` | `RDI=epfd`, `RSI=op`, `RDX=fd`, `R10=event*` | 0, `-EEXIST`, atau `-ENOENT` |
+| 124 | `epoll_wait` | `RDI=epfd`, `RSI=events*`, `RDX=maxevents`, `R10=timeout_ms` | Jumlah event siap |
+| 125 | `timerfd_settime` | `RDI=fd`, `RSI=flags`, `RDX=new*`, `R10=old*` | 0 |
+| 126 | `timerfd_gettime` | `RDI=fd`, `RSI=current*` | 0 |
+| 127 | `socketpair` | `RDI=domain`, `RSI=type`, `RDX=protocol`, `R10=sv*` | 0 |
+| 128 | `clock_nanosleep` | `RDI=clock_id`, `RSI=flags`, `RDX=request*`, `R10=remain*` | 0 |
 
 Nomor 10, 15, 18, 19, 23, 24, 26, dan 49 sudah dicabut dan tetap
 dicadangkan agar nomor syscall berikutnya tidak bergeser; pemanggilannya
 mengembalikan `-ENOSYS`. API POSIX `posix_spawn` disediakan runtime melalui
 `fork` dan `execve`, bukan syscall khusus.
+
+Syscall 82-117 melayani runtime bahasa tingkat tinggi seperti Python dan
+Java. `getuid`, `getgid`, `geteuid`, dan `getegid` selalu mengembalikan 0 karena
+OS belum punya konsep user; `getppid` mengembalikan 1. `uname` mengisi struct
+`utsname` berisi enam field 65 byte dengan identitas OCTAGRAM.
+
+`brk` mengelola program break: alamat 0 membaca nilai saat ini, alamat yang lebih
+tinggi memetakan halaman anonim RW, dan alamat yang lebih rendah tidak
+menyusutkan heap. `gettimeofday` melaporkan detik Unix dari RTC dengan `tv_usec`
+selalu 0. `nanosleep` menunggu secara sibuk di kernel (belum scheduler-aware),
+dibatasi total 60 detik per panggilan; `sleep` dan `usleep` di runtime memakai
+syscall ini.
+
+Signal sudah nyata. Setiap proses menyimpan `pending_signals`, `blocked_signals`,
+dan tabel 31 handler. `kill` menambahkan bit pending pada proses target (diri
+sendiri bila `pid` 0 atau sama dengan pid saat ini, `-ESRCH` bila tidak ada);
+`sigaction`/`signal` menyimpan handler, mask tambahan, flag, dan restorer.
+Sinyal dikirim tepat sebelum kembali ke mode user dari sebuah syscall: kernel
+menulis `UserSignalFrame` (16 register, `rip`, `rflags`, `rsp`, mask, nomor
+sinyal) ke stack user, menaruh alamat restorer di bawahnya, lalu mengarahkan
+`rip` ke handler dengan `rdi` berisi nomor sinyal dan `rsi`/`rdx` menunjuk frame.
+Handler mengembalikan konteks lewat `sigreturn` (113), yang dipasang otomatis
+oleh library C sebagai restorer bila program tidak mengisinya. Sinyal yang
+sedang ditangani otomatis diblokir; `sigprocmask` menahan pengiriman dan
+`sigpending` melaporkan bit yang tertunda. `SIGKILL` dan `SIGSTOP` tidak bisa
+ditangani atau diblokir. Handler `SIG_IGN` membuang sinyal, sedangkan default
+untuk `SIGCHLD`, `SIGCONT`, `SIGURG`, dan `SIGWINCH` diabaikan dan sinyal lain
+menghentikan proses dengan status `128 + nomor`. `SA_RESETHAND` mengembalikan
+handler ke default setelah sekali jalan, dan `SA_RESTART` membuat syscall yang
+terinterupsi diulang otomatis setelah handler selesai (restorer menulis ulang
+`rip` ke instruksi `int 0x80` dengan nomor syscall asli). `SA_SIGINFO` dan
+`SA_NOCLDSTOP` diterima tetapi belum mengubah perilaku.
+
+Sinyal membangunkan proses yang sedang menunggu di `read`/`write` pada pipe,
+`poll`, `select`, dan `futex`; syscall tersebut kembali dengan `-EINTR` kecuali
+handler-nya memakai `SA_RESTART`. `kill` ke pid sendiri juga menyapu thread
+saudara yang sedang menunggu, bukan hanya thread pemanggil. Untuk itu `poll` dan
+`select` tidak lagi tidur di kernel: keduanya memblokir lewat scheduler dengan
+tick 1 ms sambil menyimpan deadline total per proses, sehingga thread lain bisa
+berjalan dan mengirim sinyal. `nanosleep`/`clock_nanosleep` hanya memeriksa
+sinyal sebelum tidur, belum bisa dibangunkan di tengah tidur.
+
+`futex` sudah nyata untuk `FUTEX_WAIT` dan `FUTEX_WAKE` (flag `FUTEX_PRIVATE_FLAG`
+dan `FUTEX_CLOCK_REALTIME` diabaikan). `FUTEX_WAIT` membandingkan word 32-bit di
+`address` dengan `value`: bila berbeda langsung `-EAGAIN`, bila sama proses
+diblokir dan dijadwalkan keluar sampai ada `FUTEX_WAKE` atau `timeout` relatif
+(`R10` menunjuk `timespec`) habis. Timeout diperiksa timer LAPIC sehingga
+`-ETIMEDOUT` dikembalikan tanpa polling dari user space. `FUTEX_WAKE` membangunkan
+hingga `value` waiter pada alamat yang sama dan mengembalikan jumlahnya. Bila
+tidak ada proses lain yang bisa dijalankan dan tidak ada timeout, `FUTEX_WAIT`
+mengembalikan `-EDEADLK`. Bila timeout ada tetapi belum ada thread siap, kernel
+tidak tidur memblokir CPU: waiter tetap berstatus menunggu, kernel bangun tiap
+1 ms untuk memeriksa deadline dan langsung menjadwalkan thread yang menjadi siap,
+lalu mengembalikan `-ETIMEDOUT` saat deadline lewat. Operasi lain (mis. `FUTEX_REQUEUE`, `WAIT_BITSET`)
+masih `-ENOSYS`, dan `FUTEX_WAIT` yang bangun karena wake mengembalikan 0 meski
+word tidak berubah.
+
+`epoll` memakai `struct epoll_event` padat (`u32 events`, `u64 data`, 12 byte).
+`epoll_create1` menerima flag apa pun tanpa mengubah perilaku; `epoll_ctl`
+mendukung `ADD`, `MOD`, dan `DEL` dengan semantik errno Linux (`EEXIST` untuk
+fd ganda, `ENOENT` bila entri tidak ada, `EINVAL` bila target adalah epoll lain).
+`epoll_wait` menghitung readiness dari state kernel yang sama dengan `poll`, jadi
+pipe, TTY, socket, eventfd, dan timerfd bekerja tanpa registrasi tambahan.
+Level-triggered adalah default; `EPOLLET` hanya melaporkan transisi readiness
+0 → siap sehingga data yang belum dibaca tidak dilaporkan ulang, dan
+`EPOLLONESHOT` mematikan minat setelah satu laporan sampai `EPOLL_CTL_MOD`
+mengarm ulang. Menunggu memakai polling 1 ms sampai batas 60 detik.
+
+`eventfd2` menyimpan counter 64-bit: `write` menambahkan nilai 8 byte (gagal
+`EAGAIN` bila akan meluap) dan `read` mengembalikan counter lalu memusatkannya
+ke nol, atau mengembalikan 1 per panggilan bila flag `EFD_SEMAPHORE` dipakai.
+`timerfd_create` menerima `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, dan
+`CLOCK_BOOTTIME`; `timerfd_settime` mendukung `TFD_TIMER_ABSTIME` untuk clock
+monoton, dan `read` mengembalikan jumlah expiration yang sudah lewat sebagai
+`u64`. `socketpair` hanya untuk `AF_UNIX` dengan `SOCK_STREAM`/`SOCK_DGRAM` dan
+dibangun dari dua pipe sehingga dua arah; `shutdown` belum berlaku untuknya.
+`clock_nanosleep` menerima clock realtime/monoton/boottime dan `TIMER_ABSTIME`,
+dengan sisa waktu selalu diisi nol karena tidur berjalan di kernel dan dibatasi
+60 detik seperti `nanosleep`.
+
+Status flag descriptor disimpan per fd di tabel yang sama dengan `FD_CLOEXEC`.
+`open`/`openat` menerima `O_NONBLOCK`, `pipe2` menerima `O_NONBLOCK` dan
+`O_CLOEXEC`, dan `fcntl` mendukung `F_GETFL`/`F_SETFL` untuk `O_NONBLOCK` dan
+`O_APPEND`. Descriptor nonblocking tidak pernah masuk jalur blokir: `read`/`write`
+mengembalikan `-EAGAIN` apa adanya. Library C memeriksa status itu lewat
+`F_GETFL` sehingga `read`/`write` hanya memutar ulang `EAGAIN` pada descriptor
+blocking, sesuai POSIX.
+
+`poll` dan `select` menghitung readiness dari state kernel, bukan menebak:
+pipe siap baca ketika ada byte di buffer atau semua writer sudah ditutup
+(disertai `POLLHUP`), siap tulis selama buffer belum penuh, dan descriptor yang
+tidak ada dilaporkan `POLLNVAL`. TTY siap baca setelah satu baris lengkap masuk
+line discipline; event keyboard yang masih antre ikut dipompa saat readiness
+diperiksa, dan selama menunggu interrupt tetap aktif sehingga huruf yang diketik
+ketika `poll` berjalan tetap terlihat. Batas tunggu 60 detik. `select` memakai
+`fd_set` berisi `uint64_t` dengan bit berurut little-endian dan batas 1024
+descriptor. `setsockopt` menerima opsi
+`SOL_SOCKET` tanpa mengubah perilaku jaringan; `getsockopt` mengisi `SO_TYPE`
+(`SOCK_STREAM` atau `SOCK_DGRAM`) dan `SO_ERROR` (0), sedangkan opsi lain
+mengembalikan `-ENOPROTOOPT`.
+
+`sysconf` memakai penomoran `_SC_*` gaya glibc: `_SC_ARG_MAX` 0, `_SC_CHILD_MAX`
+1, `_SC_CLK_TCK` 2, `_SC_NGROUPS_MAX` 3, `_SC_OPEN_MAX` 4, `_SC_PAGESIZE` 30,
+`_SC_NPROCESSORS_CONF` 83, dan `_SC_NPROCESSORS_ONLN` 84. Nama lain menghasilkan
+-1. `setenv`, `putenv`, dan `unsetenv` tetap berada di runtime user, bukan
+syscall. `getrandom` mengisi hingga 256 byte per panggilan dari PRNG xorshift
+yang di-seed TSC; flag `GRND_*` diterima tetapi belum mengubah perilaku.
+`fsync` dan `fdatasync` sukses untuk file dan direktori RAM, dan mengembalikan
+`-EINVAL` untuk pipe, console, serta socket seperti POSIX.
+
+## Locale dan konversi UTF-8
+
+`setlocale` mengenal `"C"`, `"POSIX"`, `"C.UTF-8"`, `"C.utf8"`, `"UTF-8"`,
+`"utf8"`, dan `"en_US.UTF-8"`; query (`locale == NULL`) mengembalikan nama yang
+sedang aktif dan locale lain mengembalikan `NULL`. String kosong memilih locale
+dari `LC_ALL`, lalu `LC_CTYPE`, lalu `LANG`: bernilai UTF-8 menjadi `"C.UTF-8"`,
+selain itu `"C"`. `MB_CUR_MAX` dan `MB_LEN_MAX` bernilai 4. Kategori diabaikan
+(satu locale untuk semua). `localeconv` mengembalikan `struct lconv` dengan
+`decimal_point = "."` dan `thousands_sep = ""`, field lain nol atau 127 seperti
+glibc untuk nilai yang tidak tersedia.
+
+`mbrtowc`, `wcrtomb`, `c16rtomb`, dan `c32rtomb` (di `<wchar.h>` dan `<uchar.h>`)
+mengimplementasikan UTF-8 murni:
+
+- `mbrtowc` menerima 1–4 byte, memvalidasi overlong, surrogate, dan batas
+  `U+10FFFF`; urutan belum lengkap mengembalikan `(size_t)-2` dan menyimpan byte
+  parsial di `mbstate_t`, byte invalid mengembalikan `(size_t)-1` dengan `EILSEQ`.
+- `wcrtomb`/`c32rtomb` menolak surrogate dan nilai di atas `U+10FFFF` dengan
+  `EILSEQ`.
+- `c16rtomb` menyimpan high surrogate di `mbstate_t`, menggabungkannya dengan low
+  surrogate menjadi satu karakter UTF-8 4 byte, dan menolak low surrogate tanpa
+  pasangan atau high surrogate ganda (state direset saat `EILSEQ`).
+  `c16rtomb(NULL, ...)` mereset state dan mengembalikan 1.
+
+`mbstate_t` adalah struct milik OCTAGRAM (`count`, `bytes[4]`, `pending`), bukan
+layout glibc, jadi state tidak boleh dibagi dengan binary yang dibangun untuk
+glibc. Belum ada `mbsrtowcs`, `wcsrtombs`, `mbrtoc16`, `mbrtoc32`, collation,
+atau encoding selain UTF-8.
+
+## Termios dan isatty
+
+`<termios.h>` menyediakan `struct termios` dengan layout x86_64 seperti glibc
+(`tcflag_t`/`cc_t`/`speed_t`, 32 `c_cc`, kecepatan in/out), konstanta flag
+(`ICANON`, `ECHO`, `ISIG`, `OPOST`, `ICRNL`, `IXON`, `CS8`, ...), indeks `c_cc`
+(`VINTR`, `VERASE`, `VEOF`, `VMIN`, `VTIME`, ...), dan action `TCSANOW`,
+`TCSADRAIN`, `TCSAFLUSH`.
+
+Syscall `ioctl` (79) kini menangani `TCGETS` dan `TCSETS`/`TCSETSW`/`TCSETSF`
+pada console dan `/dev/tty*`, di samping `TIOCGWINSZ` yang sudah ada. Kernel
+menyimpan satu state termios console (default canonical: `ICANON|ECHO|ISIG`,
+`ICRNL|IXON`, `OPOST|ONLCR`, `CREAD|CS8|B38400`) dan menyalinnya bolak-balik ke
+user space. `isatty` di libc memakai `TCGETS`, jadi fd pipe, socket, dan file
+biasa mengembalikan 0 dengan `ENOTTY`. `tcgetattr`, `tcsetattr`, `cfmakeraw`,
+serta `cfgetispeed`/`cfsetispeed`/`cfgetospeed`/`cfsetospeed` tersedia.
+
+Line discipline console (`fs/devfs.rs`) menghormati `ICANON` dan `ECHO`:
+
+- `ICANON` aktif (default): input diedit per baris (`VERASE`/`VEOF`), baru bisa
+  dibaca setelah newline.
+- `ICANON` mati (mis. setelah `cfmakeraw`): setiap karakter langsung masuk buffer
+  siap baca sebagai byte UTF-8 tanpa editing, termasuk karakter kontrol seperti
+  `0x04`; `poll`/`read` melihatnya seketika.
+- `ECHO` mengatur apakah karakter yang masuk dicetak kembali, di kedua mode.
+- Saat `TCSETS`/`TCSETSW`/`TCSETSF` mematikan `ICANON`, baris canonical yang belum
+  selesai langsung dipindahkan ke buffer baca (setelah data yang belum dibaca),
+  jadi `read()` tidak menggantung menunggu newline yang tidak akan datang.
+  `TCSETSF` (`TCSAFLUSH`) membuang semua input yang belum dibaca, termasuk baris
+  parsial itu.
+
+State termios masih global untuk semua terminal (bukan per `/dev/ttyN`), dan
+`VMIN`/`VTIME` belum diterapkan: `read` mengembalikan byte yang tersedia begitu
+ada. `TIOCGWINSZ` mengikuti ukuran framebuffer (80×25 bila tidak ada framebuffer).
+
+## Threading di libc
+
+`pthread_mutex_t` memakai futex: `lock` melakukan CAS 0 → 1, menandai state 2 saat
+ada kontensi, dan tidur di `FUTEX_WAIT` sampai `unlock` membangunkan satu waiter.
+`pthread_cond_t` menyimpan penghitung urutan: `pthread_cond_wait` membaca urutan,
+melepas mutex, tidur di futex pada urutan tersebut, lalu mengambil mutex lagi;
+`cond_signal`/`cond_broadcast` menaikkan urutan dan membangunkan satu/semua
+waiter, sehingga sinyal yang datang sebelum waiter tidur tidak hilang.
+`pthread_cond_timedwait` memakai `CLOCK_REALTIME` absolut dan mengembalikan
+`ETIMEDOUT` saat deadline lewat. `sem_t` (di `<sys/semaphore.h>`) memakai
+penghitung atomik dengan futex untuk `sem_wait`/`sem_timedwait`; `sem_init`
+menolak `pshared != 0` dengan `ENOSYS` karena belum ada shared memory antar
+proses. Diuji di `/bin/syscall-compat-demo`: kontensi mutex 2 × 500 kenaikan,
+signal/broadcast condition variable, serta timeout 50 ms untuk cond dan sem.
 
 `set_thread_pointer` mengatur register `FS.base` untuk thread saat ini. Kernel
 menyimpan dan memulihkan nilainya ketika berpindah proses. Nilai harus nol atau
@@ -166,7 +401,9 @@ sampai Ctrl+Alt+F4 untuk berpindah console. Shell dan program yang dijalankan
 dari console memakai TTY console tersebut. `/dev/tty0` sampai `/dev/tty3`
 mengakses TTY tertentu; `/dev/tty` mengikuti console aktif. Descriptor 1 dan 2
 menulis ke terminal framebuffer;
-bytes harus UTF-8. `/dev/tty` dan `/dev/console` mengakses TTY yang sama,
+bytes harus UTF-8. Setiap penulisan ke TTY juga dicerminkan ke COM1 sehingga
+boot headless dapat membaca output program. `/dev/tty` dan `/dev/console`
+mengakses TTY yang sama,
 sedangkan `/dev/stdin`, `/dev/stdout`, dan `/dev/stderr` menyediakan endpoint
 terpisah sesuai arahnya. Path tersebut terdaftar pada devfs di `/dev`.
 
@@ -268,9 +505,12 @@ berbagi open description/state seperti proses hasil `fork`. Batas proses
 terjadwal saat ini adalah 16; kegagalan alokasi atau tercapainya batas
 mengembalikan `-ENOMEM`. Gunakan `waitpid` untuk menunggu child.
 
-`clock_gettime` saat ini mendukung `CLOCK_REALTIME` dari RTC CMOS; `tv_sec`
-berisi detik Unix dan `tv_nsec` selalu 0 karena RTC hanya menyediakan resolusi
-satu detik. Nilai RTC diperlakukan sebagai UTC karena OS belum memiliki
+`clock_gettime` mendukung `CLOCK_REALTIME` dari RTC CMOS (`tv_sec` detik Unix,
+`tv_nsec` selalu 0 karena RTC beresolusi satu detik) dan clock monoton
+(`CLOCK_MONOTONIC`, `CLOCK_MONOTONIC_RAW`, `CLOCK_BOOTTIME`,
+`CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID`) yang memakai TSC dan
+dikalibrasi sekali terhadap PIT dengan resolusi 1 ms. `clock_getres` melaporkan
+1 detik untuk realtime dan 1 ms untuk clock monoton. Nilai RTC diperlakukan sebagai UTC karena OS belum memiliki
 konfigurasi zona waktu. API C juga menyediakan `time()`, `gmtime()`, dan
 `localtime()`; saat ini `localtime()` sama dengan UTC.
 

@@ -18,6 +18,7 @@ char *getenv(const char *name);
 #define OCT_O_CREAT  (1u << 8)
 #define OCT_O_TRUNC  (1u << 9)
 #define OCT_O_APPEND (1u << 10)
+#define OCT_O_NONBLOCK (1u << 11)
 #define OCT_AT_FDCWD (-100)
 #define OCT_AT_SYMLINK_NOFOLLOW (1u << 8)
 #define OCT_AT_REMOVEDIR (1u << 9)
@@ -498,6 +499,11 @@ static inline int64_t oct_pipe(int descriptors[2])
     return oct_syscall1(21, (uint64_t)(uintptr_t)descriptors);
 }
 
+static inline int64_t oct_pipe2(int *descriptors, int64_t flags)
+{
+    return oct_syscall2(98, (uint64_t)(uintptr_t)descriptors, (uint64_t)flags);
+}
+
 static inline int64_t oct_dup2(int source_fd, int target_fd)
 {
     return oct_syscall2(22, (uint64_t)source_fd, (uint64_t)target_fd);
@@ -506,6 +512,264 @@ static inline int64_t oct_dup2(int source_fd, int target_fd)
 static inline int64_t oct_ioctl(int fd, uint64_t request, void *argp)
 {
     return oct_syscall3(81, (uint64_t)fd, request, (uint64_t)(uintptr_t)argp);
+}
+
+struct oct_timespec {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+};
+
+struct oct_timeval {
+    int64_t tv_sec;
+    int64_t tv_usec;
+};
+
+struct oct_utsname {
+    char sysname[65];
+    char nodename[65];
+    char release[65];
+    char version[65];
+    char machine[65];
+    char domainname[65];
+};
+
+struct oct_pollfd {
+    int32_t fd;
+    int16_t events;
+    int16_t revents;
+};
+
+#define OCT_POLLIN  0x0001
+#define OCT_POLLOUT 0x0004
+#define OCT_POLLERR 0x0008
+#define OCT_POLLHUP 0x0010
+#define OCT_POLLNVAL 0x0020
+
+#define OCT_SIG_DFL ((void *)0)
+#define OCT_SIG_IGN ((void *)1)
+
+static inline int64_t oct_getuid(void)
+{
+    return oct_syscall0(82);
+}
+
+static inline int64_t oct_getgid(void)
+{
+    return oct_syscall0(83);
+}
+
+static inline int64_t oct_geteuid(void)
+{
+    return oct_syscall0(84);
+}
+
+static inline int64_t oct_getegid(void)
+{
+    return oct_syscall0(85);
+}
+
+static inline int64_t oct_uname(struct oct_utsname *name)
+{
+    return oct_syscall1(86, (uint64_t)(uintptr_t)name);
+}
+
+static inline int64_t oct_brk(uint64_t address)
+{
+    return oct_syscall1(88, address);
+}
+
+static inline int64_t oct_gettimeofday(struct oct_timeval *time_value)
+{
+    return oct_syscall1(89, (uint64_t)(uintptr_t)time_value);
+}
+
+static inline int64_t oct_nanosleep(const struct oct_timespec *request)
+{
+    return oct_syscall1(90, (uint64_t)(uintptr_t)request);
+}
+
+static inline int64_t oct_kill(int64_t pid, int64_t signal_number)
+{
+    return oct_syscall2(91, (uint64_t)pid, (uint64_t)signal_number);
+}
+
+static inline int64_t oct_sigaction(int64_t signal_number, const void *action,
+                                    void *old_action)
+{
+    return oct_syscall3(92, (uint64_t)signal_number,
+                        (uint64_t)(uintptr_t)action,
+                        (uint64_t)(uintptr_t)old_action);
+}
+
+static inline int64_t oct_sigprocmask(int64_t how, const void *set,
+                                      void *old_set)
+{
+    return oct_syscall3(93, (uint64_t)how, (uint64_t)(uintptr_t)set,
+                        (uint64_t)(uintptr_t)old_set);
+}
+
+static inline int64_t oct_futex(uint32_t *address, int64_t operation,
+                                uint32_t value)
+{
+    return oct_syscall3(94, (uint64_t)(uintptr_t)address,
+                        (uint64_t)operation, value);
+}
+
+static inline int64_t oct_futex_wait_timeout(uint32_t *address, uint32_t value,
+                                             const struct oct_timespec *timeout)
+{
+    return oct_syscall4(94, (uint64_t)(uintptr_t)address, 0, (uint64_t)value,
+                        (uint64_t)(uintptr_t)timeout);
+}
+
+static inline int64_t oct_setsockopt(int64_t fd, int64_t level,
+                                     int64_t option_name,
+                                     const void *option_value,
+                                     uint32_t option_length)
+{
+    return oct_syscall6(95, (uint64_t)fd, (uint64_t)level,
+                        (uint64_t)option_name,
+                        (uint64_t)(uintptr_t)option_value, option_length, 0);
+}
+
+static inline int64_t oct_getsockopt(int64_t fd, int64_t level,
+                                     int64_t option_name, void *option_value,
+                                     uint32_t *option_length)
+{
+    return oct_syscall6(96, (uint64_t)fd, (uint64_t)level,
+                        (uint64_t)option_name,
+                        (uint64_t)(uintptr_t)option_value,
+                        (uint64_t)(uintptr_t)option_length, 0);
+}
+
+static inline int64_t oct_poll(struct oct_pollfd *fds, uint64_t nfds,
+                               int64_t timeout_milliseconds)
+{
+    return oct_syscall3(97, (uint64_t)(uintptr_t)fds, nfds,
+                        (uint64_t)timeout_milliseconds);
+}
+
+static inline int64_t oct_sysconf(int name)
+{
+    return oct_syscall1(108, (uint64_t)(int64_t)name);
+}
+
+static inline int64_t oct_sigreturn(void)
+{
+    return oct_syscall0(113);
+}
+
+static inline int64_t oct_sigpending(void *set)
+{
+    return oct_syscall1(114, (uint64_t)(uintptr_t)set);
+}
+
+static inline int64_t oct_sigsuspend(const void *set)
+{
+    return oct_syscall1(115, (uint64_t)(uintptr_t)set);
+}
+
+static inline int64_t oct_signal(int64_t signal_number, void *handler)
+{
+    return oct_syscall2(116, (uint64_t)signal_number,
+                        (uint64_t)(uintptr_t)handler);
+}
+
+static inline int64_t oct_select(uint64_t nfds, void *readfds,
+                                 void *writefds, void *exceptfds,
+                                 struct oct_timeval *timeout)
+{
+    return oct_syscall6(117, nfds, (uint64_t)(uintptr_t)readfds,
+                        (uint64_t)(uintptr_t)writefds,
+                        (uint64_t)(uintptr_t)exceptfds,
+                        (uint64_t)(uintptr_t)timeout, 0);
+}
+
+static inline int64_t oct_getppid(void)
+{
+    return oct_syscall0(87);
+}
+
+static inline int64_t oct_clock_getres(int64_t clock_id,
+                                       struct oct_timespec *resolution)
+{
+    return oct_syscall2(118, (uint64_t)clock_id,
+                        (uint64_t)(uintptr_t)resolution);
+}
+
+static inline int64_t oct_fsync(int64_t fd)
+{
+    return oct_syscall1(119, (uint64_t)fd);
+}
+
+static inline int64_t oct_fdatasync(int64_t fd)
+{
+    return oct_syscall1(120, (uint64_t)fd);
+}
+
+static inline int64_t oct_getrandom(void *buffer, uint64_t length,
+                                     uint64_t flags)
+{
+    return oct_syscall3(121, (uint64_t)(uintptr_t)buffer, length, flags);
+}
+
+static inline int64_t oct_epoll_create1(int64_t flags)
+{
+    return oct_syscall1(122, (uint64_t)flags);
+}
+
+static inline int64_t oct_epoll_ctl(int64_t epfd, int64_t operation,
+                                    int64_t fd, void *event)
+{
+    return oct_syscall4(123, (uint64_t)epfd, (uint64_t)operation, (uint64_t)fd,
+                        (uint64_t)(uintptr_t)event);
+}
+
+static inline int64_t oct_epoll_wait(int64_t epfd, void *events,
+                                     int64_t maxevents, int64_t timeout_ms)
+{
+    return oct_syscall4(124, (uint64_t)epfd, (uint64_t)(uintptr_t)events,
+                        (uint64_t)maxevents, (uint64_t)timeout_ms);
+}
+
+static inline int64_t oct_eventfd2(uint64_t initial_value, int64_t flags)
+{
+    return oct_syscall2(100, initial_value, (uint64_t)flags);
+}
+
+static inline int64_t oct_timerfd_create(int64_t clock_id, int64_t flags)
+{
+    return oct_syscall2(101, (uint64_t)clock_id, (uint64_t)flags);
+}
+
+static inline int64_t oct_timerfd_settime(int64_t fd, int64_t flags,
+                                          const void *new_value,
+                                          void *old_value)
+{
+    return oct_syscall4(125, (uint64_t)fd, (uint64_t)flags,
+                        (uint64_t)(uintptr_t)new_value,
+                        (uint64_t)(uintptr_t)old_value);
+}
+
+static inline int64_t oct_timerfd_gettime(int64_t fd, void *current_value)
+{
+    return oct_syscall2(126, (uint64_t)fd, (uint64_t)(uintptr_t)current_value);
+}
+
+static inline int64_t oct_socketpair(int64_t domain, int64_t socket_type,
+                                     int64_t protocol, void *addresses)
+{
+    return oct_syscall4(127, (uint64_t)domain, (uint64_t)socket_type,
+                        (uint64_t)protocol, (uint64_t)(uintptr_t)addresses);
+}
+
+static inline int64_t oct_clock_nanosleep(int64_t clock_id, int64_t flags,
+                                          const struct oct_timespec *request,
+                                          struct oct_timespec *remaining)
+{
+    return oct_syscall4(128, (uint64_t)clock_id, (uint64_t)flags,
+                        (uint64_t)(uintptr_t)request,
+                        (uint64_t)(uintptr_t)remaining);
 }
 
 #endif

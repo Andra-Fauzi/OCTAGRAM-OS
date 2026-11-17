@@ -11,5 +11,8 @@ typedef int64_t time_t;
 typedef int64_t suseconds_t;
 typedef int64_t clock_t;
 typedef int32_t clockid_t;
+typedef uint32_t uid_t;
+typedef uint32_t gid_t;
+typedef uint32_t useconds_t;
 
 #endif

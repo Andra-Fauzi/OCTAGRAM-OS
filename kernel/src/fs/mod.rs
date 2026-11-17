@@ -4,10 +4,13 @@
 //! filesystem interface. The initial root is a [`RamFs`], so its contents are
 //! volatile until a block-device driver and a persistent filesystem exist.
 
+pub(crate) use devfs::{Termios, console_termios, discard_pending_input, set_console_termios};
 mod devfs;
 mod ramfs;
 
-pub(crate) use devfs::{DevFs, device_access, is_fb_path, is_tty_path, read_tty};
+pub(crate) use devfs::{
+    DevFs, device_access, is_fb_path, is_tty_path, read_tty, tty_path_readable, tty_readable,
+};
 pub use ramfs::RamFs;
 
 use alloc::boxed::Box;
@@ -23,6 +26,8 @@ const AT_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/at_api_demo.e
 const EXECVE_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/execve_demo.elf");
 const FORK_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/fork_demo.elf");
 const TIME_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/time_demo.elf");
+const SYSCALL_COMPAT_DEMO_ELF: &[u8] =
+    include_bytes!("../../../user/build/syscall_compat_demo.elf");
 const MMAP_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/mmap_demo.elf");
 const TLS_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/tls_demo.elf");
 const THREAD_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/thread_demo.elf");
@@ -589,6 +594,12 @@ pub fn init() {
         seed_file(&mut vfs, "/bin/execve-demo", EXECVE_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/fork-demo", FORK_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/time-demo", TIME_DEMO_ELF, 0o755);
+        seed_file(
+            &mut vfs,
+            "/bin/syscall-compat-demo",
+            SYSCALL_COMPAT_DEMO_ELF,
+            0o755,
+        );
         seed_file(&mut vfs, "/bin/mmap-demo", MMAP_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/tls-demo", TLS_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/thread-demo", THREAD_DEMO_ELF, 0o755);

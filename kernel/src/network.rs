@@ -10,6 +10,7 @@ pub use tcp::{
     shutdown_socket as shutdown_tcp_socket, socket_name as tcp_socket_name,
     is_established as tcp_is_established, is_closed as tcp_is_closed,
     socket_error as tcp_socket_error, is_receive_eof as tcp_is_receive_eof,
+    is_readable as tcp_socket_readable, is_writable as tcp_socket_writable,
 };
 
 pub mod dns;
@@ -144,6 +145,11 @@ pub fn unregister_link(slot_id: u32) {
 
 pub fn config() -> NetworkConfig {
     STATE.lock().config
+}
+
+/// True when a datagram is waiting in the socket's receive queue.
+pub fn udp_socket_readable(socket: &Arc<Mutex<UdpSocket>>) -> bool {
+    !socket.lock().received.is_empty()
 }
 
 pub fn create_udp_socket() -> Arc<Mutex<UdpSocket>> {

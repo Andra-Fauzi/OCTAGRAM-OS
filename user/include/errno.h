@@ -37,6 +37,7 @@ extern int errno;
 #define EMFILE 24
 #define ENAMETOOLONG 36
 #define ENODEV 19
+#define ESRCH 3
 #define ENOENT 2
 #define ENOEXEC 8
 #define ENOMEM 12

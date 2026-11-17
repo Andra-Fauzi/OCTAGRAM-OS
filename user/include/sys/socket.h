@@ -16,6 +16,8 @@ struct sockaddr {
 #define AF_UNSPEC 0
 #define AF_INET 2
 
+#define AF_UNIX 1
+#define AF_INET 2
 #define SOCK_STREAM 1
 #define SOCK_DGRAM 2
 #define SOCK_RAW 3
@@ -26,6 +28,7 @@ struct sockaddr {
 #define MSG_NOSIGNAL 0x4000
 
 #define SOL_SOCKET 1
+#define SO_REUSEADDR 2
 #define SO_TYPE 3
 #define SO_ERROR 4
 
@@ -43,5 +46,11 @@ ssize_t recv(int socket_fd, void *buffer, size_t length, int flags);
 int shutdown(int socket_fd, int how);
 int getsockname(int socket_fd, struct sockaddr *address, socklen_t *address_length);
 int getpeername(int socket_fd, struct sockaddr *address, socklen_t *address_length);
+int setsockopt(int socket_fd, int level, int option_name,
+               const void *option_value, socklen_t option_length);
+int getsockopt(int socket_fd, int level, int option_name,
+               void *option_value, socklen_t *option_length);
+
+int socketpair(int domain, int socket_type, int protocol, int sv[2]);
 
 #endif

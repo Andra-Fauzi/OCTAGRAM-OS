@@ -2,6 +2,7 @@
 #define OCTAGRAM_UNISTD_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 extern char **environ;
@@ -16,6 +17,16 @@ extern char **environ;
 #define X_OK 1
 #define W_OK 2
 #define R_OK 4
+
+#define _SC_ARG_MAX 0
+#define _SC_CHILD_MAX 1
+#define _SC_CLK_TCK 2
+#define _SC_NGROUPS_MAX 3
+#define _SC_OPEN_MAX 4
+#define _SC_PAGESIZE 30
+#define _SC_PAGE_SIZE 30
+#define _SC_NPROCESSORS_CONF 83
+#define _SC_NPROCESSORS_ONLN 84
 
 int close(int fd);
 int access(const char *path, int mode);
@@ -37,8 +48,21 @@ char *getcwd(char *buffer, size_t size);
 pid_t getpid(void);
 int isatty(int fd);
 int pipe(int descriptors[2]);
+int pipe2(int descriptors[2], int flags);
 int dup2(int source_fd, int target_fd);
 int dup(int fd);
 int ftruncate(int fd, off_t length);
+uid_t getuid(void);
+gid_t getgid(void);
+uid_t geteuid(void);
+gid_t getegid(void);
+int brk(void *address);
+void *sbrk(intptr_t increment);
+unsigned int sleep(unsigned int seconds);
+int usleep(useconds_t microseconds);
+long sysconf(int name);
+pid_t getppid(void);
+int fsync(int fd);
+int fdatasync(int fd);
 
 #endif

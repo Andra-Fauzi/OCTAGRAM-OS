@@ -3,6 +3,13 @@
 
 #include <stddef.h>
 
+#ifndef MB_CUR_MAX
+#define MB_CUR_MAX 4
+#endif
+#ifndef MB_LEN_MAX
+#define MB_LEN_MAX 4
+#endif
+
 extern char **environ;
 
 void *malloc(size_t size);
@@ -21,6 +28,7 @@ long double strtold(const char *text, char **end);
 char *getenv(const char *name);
 int setenv(const char *name, const char *value, int overwrite);
 int unsetenv(const char *name);
+int putenv(char *entry);
 int atoi(const char *text);
 char *realpath(const char *path, char *resolved_path);
 int remove(const char *path);

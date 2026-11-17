@@ -158,6 +158,18 @@ const SYSCALL_SIGRETURN: u64 = 113;
 const SYSCALL_SIGPENDING: u64 = 114;
 const SYSCALL_SIGSUSPEND: u64 = 115;
 const SYSCALL_SIGNAL: u64 = 116;
+const SYSCALL_SELECT: u64 = 117;
+const SYSCALL_CLOCK_GETRES: u64 = 118;
+const SYSCALL_FSYNC: u64 = 119;
+const SYSCALL_FDATASYNC: u64 = 120;
+const SYSCALL_GETRANDOM: u64 = 121;
+const SYSCALL_EPOLL_CREATE1: u64 = 122;
+const SYSCALL_EPOLL_CTL: u64 = 123;
+const SYSCALL_EPOLL_WAIT: u64 = 124;
+const SYSCALL_TIMERFD_SETTIME: u64 = 125;
+const SYSCALL_TIMERFD_GETTIME: u64 = 126;
+const SYSCALL_SOCKETPAIR: u64 = 127;
+const SYSCALL_CLOCK_NANOSLEEP: u64 = 128;
 const AT_FDCWD: i64 = -100;
 const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
 const AT_REMOVEDIR: u64 = 0x200;
@@ -178,6 +190,11 @@ const FBIOPUT_VSCREENINFO: u64 = 0x4601;
 const FBIOGET_FSCREENINFO: u64 = 0x4602;
 const FBIOBLANK: u64 = 0x4611;
 const TIOCGWINSZ: u64 = 0x5413;
+const TCGETS: u64 = 0x5401;
+const TCSETS: u64 = 0x5402;
+const TCSETSW: u64 = 0x5403;
+const TCSETSF: u64 = 0x5404;
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -329,6 +346,8 @@ const O_ACCESS_MASK: u64 = 3;
 const O_CREAT: u64 = 1 << 8;
 const O_TRUNC: u64 = 1 << 9;
 const O_APPEND: u64 = 1 << 10;
+const O_NONBLOCK: u64 = 1 << 11;
+const O_CLOEXEC: u64 = 1 << 19;
 const FD_CLOEXEC: u32 = 1;
 const F_DUPFD: u64 = 0;
 const F_GETFD: u64 = 1;
@@ -375,12 +394,15 @@ const EADDRINUSE: i32 = 98;
 const ENETDOWN: i32 = 100;
 const EHOSTUNREACH: i32 = 113;
 const EAFNOSUPPORT: i32 = 97;
+const EPROTONOSUPPORT: i32 = 93;
+const EPROTOTYPE: i32 = 91;
 const EADDRNOTAVAIL: i32 = 99;
 const ECONNRESET: i32 = 104;
 const ENOTCONN: i32 = 107;
 const EISCONN: i32 = 106;
 const ETIMEDOUT: i32 = 110;
 const ECONNREFUSED: i32 = 111;
+const ENOPROTOOPT: i32 = 92;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElfError {
@@ -418,6 +440,10 @@ fn syscall_fstat(fd: u64, stat_address: u64) -> Result<u64, i32> {
             Some(UserDescriptor::Directory(directory)) => directory.lock().path.clone(),
             Some(
                 UserDescriptor::Pipe(_)
+                | UserDescriptor::SocketPair(_)
+                | UserDescriptor::Epoll(_)
+                | UserDescriptor::EventFd(_)
+                | UserDescriptor::TimerFd(_)
                 | UserDescriptor::UdpSocket(_)
                 | UserDescriptor::TcpSocket(_),
             ) => {
@@ -689,6 +715,49 @@ struct PipeEnd {
     writable: bool,
 }
 
+/// Dua ujung pipe yang digabung menjadi satu endpoint dua arah (socketpair).
+#[derive(Clone)]
+struct DuplexEnd {
+    read_end: PipeEnd,
+    write_end: PipeEnd,
+}
+
+#[derive(Clone, Copy)]
+struct EpollEntry {
+    fd: usize,
+    events: u32,
+    data: u64,
+    last_ready: u32,
+}
+
+struct EpollInstance {
+    entries: Vec<EpollEntry>,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct UserEpollEvent {
+    events: u32,
+    data: u64,
+}
+
+struct EventFdState {
+    counter: u64,
+    semaphore: bool,
+}
+
+struct TimerFdState {
+    clock: u64,
+    interval_ms: u64,
+    next_expiry_ms: Option<u64>,
+}
+
+#[repr(C)]
+struct UserItimerspec {
+    interval: UserTimespec,
+    value: UserTimespec,
+}
+
 impl Clone for PipeEnd {
     fn clone(&self) -> Self {
         let mut pipe = self.pipe.lock();
@@ -727,6 +796,10 @@ enum UserDescriptor {
     File(Arc<Mutex<OpenFile>>),
     Directory(Arc<Mutex<DirectoryStream>>),
     Pipe(PipeEnd),
+    SocketPair(DuplexEnd),
+    Epoll(Arc<Mutex<EpollInstance>>),
+    EventFd(Arc<Mutex<EventFdState>>),
+    TimerFd(Arc<Mutex<TimerFdState>>),
     UdpSocket(Arc<Mutex<crate::network::UdpSocket>>),
     TcpSocket(Arc<Mutex<crate::network::TcpSocket>>),
 }
@@ -737,6 +810,8 @@ enum ProcessWait {
     Thread(u64),
     PipeReadable(u64),
     PipeWritable(u64),
+    Futex(u64),
+    PollWait,
 }
 
 struct UserProcess {
@@ -750,6 +825,15 @@ struct UserProcess {
     file_creation_mask: u16,
     fpu_state: FpuState,
     thread_pointer: u64,
+    /// Hasil FUTEX_WAIT yang disimpan saat proses dibangunkan.
+    wait_result: Option<i32>,
+    pending_signals: u64,
+    blocked_signals: u64,
+    signal_handlers: Vec<SignalAction>,
+    interrupted: bool,
+    interrupt_signal: u64,
+    restart_number: Option<u64>,
+    poll_deadline: Option<u64>,
 }
 
 impl UserProcess {
@@ -765,6 +849,14 @@ impl UserProcess {
             file_creation_mask: 0o022,
             fpu_state: FpuState::new(),
             thread_pointer: 0,
+            wait_result: None,
+            pending_signals: 0,
+            blocked_signals: 0,
+            signal_handlers: Vec::new(),
+            interrupted: false,
+            interrupt_signal: 0,
+            restart_number: None,
+            poll_deadline: None,
         }
     }
 }
@@ -799,6 +891,7 @@ struct ScheduledProcess {
     tid: u64,
     thread_mapping: Option<(u64, u64)>,
     waiting_for: Option<ProcessWait>,
+    wait_deadline: Option<u64>,
     resume_context: Option<UserResumeContext>,
     wait_status_pointer: u64,
     reaped: bool,
@@ -1387,6 +1480,7 @@ fn run_loaded_processes(
             tid: index as u64 + 1,
             thread_mapping: None,
             waiting_for: None,
+            wait_deadline: None,
             resume_context: None,
             wait_status_pointer: 0,
             reaped: false,
@@ -1758,7 +1852,14 @@ pub fn handle_syscall(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     USER_SCHEDULER.lock().retired_kernel_stacks.clear();
     save_current_thread_pointer();
     save_current_user_fpu();
-    let next_frame = handle_syscall_inner(frame);
+    let mut next_frame = handle_syscall_inner(frame);
+    if next_frame == frame as *mut InterruptFrame
+        && frame.stack_frame.code_segment & 3 == 3
+    {
+        if let Some(replacement) = deliver_pending_signal(frame) {
+            next_frame = replacement;
+        }
+    }
     restore_current_thread_pointer();
     restore_current_user_fpu();
     next_frame
@@ -1775,11 +1876,19 @@ fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         SYSCALL_THREAD_CREATE => syscall_thread_create(frame),
         SYSCALL_THREAD_EXIT => syscall_thread_exit(frame),
         SYSCALL_THREAD_JOIN => syscall_thread_join(frame),
+        SYSCALL_FUTEX => syscall_futex(frame),
+        SYSCALL_SIGRETURN => syscall_sigreturn(frame),
+        SYSCALL_POLL => syscall_poll_frame(frame),
+        SYSCALL_SELECT => syscall_select_frame(frame),
         number => {
             let result = dispatch_syscall(
                 number, frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9,
             );
             if result == Err(EAGAIN) {
+                if take_interrupted_syscall(number) {
+                    frame.rax = (-(EINTR as i64)) as u64;
+                    return frame_pointer;
+                }
                 let pipe_wait = match number {
                     SYSCALL_READ => pipe_wait_target(frame.rdi, true),
                     SYSCALL_WRITE => pipe_wait_target(frame.rdi, false),
@@ -1847,11 +1956,13 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
 
 fn handle_timer_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
-    if frame.stack_frame.code_segment & 3 != 3 {
-        return frame_pointer;
-    }
+    let from_user = frame.stack_frame.code_segment & 3 == 3;
 
     let mut scheduler = USER_SCHEDULER.lock();
+    expire_futex_timeouts(&mut scheduler);
+    if !from_user {
+        return frame_pointer;
+    }
     if !scheduler.active || scheduler.processes.is_empty() {
         return frame_pointer;
     }
@@ -2009,6 +2120,23 @@ fn handle_fb_ioctl(request: u64, arg: u64) -> Result<u64, i32> {
 
 fn handle_tty_ioctl(request: u64, arg: u64) -> Result<u64, i32> {
     match request {
+        TCGETS => {
+            paging::validate_user_range(arg, core::mem::size_of::<fs::Termios>(), true)
+                .map_err(|_| EFAULT)?;
+            let termios = fs::console_termios();
+            unsafe { (arg as *mut fs::Termios).write_unaligned(termios) };
+            Ok(0)
+        }
+        TCSETS | TCSETSW | TCSETSF => {
+            paging::validate_user_range(arg, core::mem::size_of::<fs::Termios>(), false)
+                .map_err(|_| EFAULT)?;
+            let termios = unsafe { (arg as *const fs::Termios).read_unaligned() };
+            fs::set_console_termios(termios);
+            if request == TCSETSF {
+                fs::discard_pending_input();
+            }
+            Ok(0)
+        }
         TIOCGWINSZ => {
             paging::validate_user_range(arg, core::mem::size_of::<Winsize>(), true)
                 .map_err(|_| EFAULT)?;
@@ -2138,6 +2266,10 @@ fn dispatch_syscall(
                 Some(UserDescriptor::Directory(_)) => Err(ENOTTY),
                 Some(
                     UserDescriptor::Pipe(_)
+                    | UserDescriptor::SocketPair(_)
+                    | UserDescriptor::Epoll(_)
+                    | UserDescriptor::EventFd(_)
+                    | UserDescriptor::TimerFd(_)
                     | UserDescriptor::UdpSocket(_)
                     | UserDescriptor::TcpSocket(_),
                 ) => Err(ENOTTY),
@@ -2152,22 +2284,37 @@ fn dispatch_syscall(
         SYSCALL_BRK => syscall_brk(arg1),
         SYSCALL_GETTIMEOFDAY => syscall_gettimeofday(arg1),
         SYSCALL_NANOSLEEP => syscall_nanosleep(arg1),
-        SYSCALL_KILL => Ok(0),
-        SYSCALL_SIGACTION | SYSCALL_SIGPROCMASK | SYSCALL_SIGRETURN
-        | SYSCALL_SIGPENDING | SYSCALL_SIGSUSPEND | SYSCALL_SIGNAL => Ok(0),
-        SYSCALL_FUTEX => syscall_futex(arg1, arg2, arg3),
-        SYSCALL_SETSOCKOPT | SYSCALL_GETSOCKOPT => Ok(0),
-        SYSCALL_POLL => syscall_poll(arg1, arg2),
-        SYSCALL_PIPE2 => syscall_pipe2(arg1),
+        SYSCALL_KILL => syscall_kill(arg1, arg2),
+        SYSCALL_SIGACTION => syscall_sigaction(arg1, arg2, arg3),
+        SYSCALL_SIGPROCMASK => syscall_sigprocmask(arg1, arg2, arg3),
+        SYSCALL_SIGPENDING => syscall_sigpending(arg1),
+        SYSCALL_SIGSUSPEND => syscall_sigsuspend(arg1),
+        SYSCALL_SIGNAL => syscall_signal(arg1, arg2),
+        SYSCALL_SETSOCKOPT => syscall_setsockopt(arg1, arg2, arg3, arg4, arg5),
+        SYSCALL_GETSOCKOPT => syscall_getsockopt(arg1, arg2, arg3, arg4, arg5),
+        SYSCALL_POLL => syscall_poll(arg1, arg2, arg3),
+        SYSCALL_SELECT => syscall_select(arg1, arg2, arg3, arg4, arg5),
+        SYSCALL_CLOCK_GETRES => syscall_clock_getres(arg1, arg2),
+        SYSCALL_FSYNC | SYSCALL_FDATASYNC => syscall_fsync(arg1),
+        SYSCALL_GETRANDOM => syscall_getrandom(arg1, arg2, arg3),
+        SYSCALL_PIPE2 => syscall_pipe2(arg1, arg2),
         SYSCALL_DUP3 => syscall_dup3(arg1, arg2, arg3),
-        SYSCALL_EVENTFD | SYSCALL_TIMERFD_CREATE => Err(ENOSYS),
+        SYSCALL_EVENTFD => syscall_eventfd(arg1, arg2),
+        SYSCALL_TIMERFD_CREATE => syscall_timerfd_create(arg1, arg2),
+        SYSCALL_TIMERFD_SETTIME => syscall_timerfd_settime(arg1, arg2, arg3, arg4),
+        SYSCALL_TIMERFD_GETTIME => syscall_timerfd_gettime(arg1, arg2),
+        SYSCALL_EPOLL_CREATE1 => syscall_epoll_create1(arg1),
+        SYSCALL_EPOLL_CTL => syscall_epoll_ctl(arg1, arg2, arg3, arg4),
+        SYSCALL_EPOLL_WAIT => syscall_epoll_wait(arg1, arg2, arg3, arg4),
+        SYSCALL_SOCKETPAIR => syscall_socketpair(arg1, arg2, arg3, arg4),
+        SYSCALL_CLOCK_NANOSLEEP => syscall_clock_nanosleep(arg1, arg2, arg3, arg4),
         SYSCALL_PREAD => syscall_pread(arg1, arg2, arg3, arg4),
         SYSCALL_PWRITE => syscall_pwrite(arg1, arg2, arg3, arg4),
         SYSCALL_WRITEV => syscall_writev(arg1, arg2, arg3),
         SYSCALL_READV => syscall_readv(arg1, arg2, arg3),
         SYSCALL_SENDMSG | SYSCALL_RECVMSG => Err(ENOSYS),
         SYSCALL_SYSCONF => syscall_sysconf(arg1),
-        SYSCALL_GETRLIMIT | SYSCALL_SETRLIMIT => syscall_rlimit(frame.rax, arg1, arg2),
+        SYSCALL_GETRLIMIT | SYSCALL_SETRLIMIT => syscall_rlimit(number, arg1, arg2),
         SYSCALL_GETRUSAGE => syscall_getrusage(arg1, arg2),
         SYSCALL_TIMES => syscall_times(arg1),
         _ => Err(ENOSYS),
@@ -2328,6 +2475,7 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         tid,
         thread_mapping: Some((mapping_base, mapping_length)),
         waiting_for: None,
+        wait_deadline: None,
         resume_context: None,
         wait_status_pointer: 0,
         reaped: false,
@@ -2638,6 +2786,7 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
         tid: child_pid,
         thread_mapping: None,
         waiting_for: None,
+        wait_deadline: None,
         resume_context: None,
         wait_status_pointer: 0,
         reaped: false,
@@ -2925,6 +3074,13 @@ fn pipe_wait_target(fd: u64, reading: bool) -> Option<(u64, ProcessWait)> {
     if !process.active {
         return None;
     }
+    if process
+        .descriptor_flags
+        .get(fd)
+        .is_some_and(|flags| flags & O_NONBLOCK as u32 != 0)
+    {
+        return None;
+    }
     let Some(UserDescriptor::Pipe(endpoint)) = process.descriptors.get(fd).and_then(Option::as_ref)
     else {
         return None;
@@ -2984,6 +3140,279 @@ fn block_current_on_pipe(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut 
         next_process.image.memory.address_space.activate();
     }
     next_frame
+}
+
+fn expire_futex_timeouts(scheduler: &mut UserScheduler) {
+    let now = crate::arch::x86_64::monotonic_milliseconds();
+    for process in &mut scheduler.processes {
+        let Some(deadline) = process.wait_deadline else {
+            continue;
+        };
+        if now < deadline {
+            continue;
+        }
+        match process.waiting_for {
+            Some(ProcessWait::Futex(_)) => {
+                process.waiting_for = None;
+                process.state.wait_result = Some(ETIMEDOUT);
+            }
+            Some(ProcessWait::PollWait) => process.waiting_for = None,
+            _ => {}
+        }
+        process.wait_deadline = None;
+    }
+}
+
+const FUTEX_WAIT: u64 = 0;
+const FUTEX_WAKE: u64 = 1;
+const FUTEX_PRIVATE_FLAG: u64 = 128;
+const FUTEX_CLOCK_REALTIME: u64 = 256;
+const FUTEX_OPERATION_MASK: u64 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+
+fn futex_deadline(timeout: u64) -> Result<Option<u64>, i32> {
+    if timeout == 0 {
+        return Ok(None);
+    }
+    paging::validate_user_range(timeout, core::mem::size_of::<UserTimespec>(), false)
+        .map_err(|_| EFAULT)?;
+    let ts = unsafe { (timeout as *const UserTimespec).read_unaligned() };
+    if ts.seconds < 0 || ts.nanoseconds < 0 || ts.nanoseconds >= 1_000_000_000 {
+        return Err(EINVAL);
+    }
+    let milliseconds = (ts.seconds as u64)
+        .saturating_mul(1000)
+        .saturating_add((ts.nanoseconds / 1_000_000) as u64);
+    if milliseconds == 0 {
+        return Ok(Some(0));
+    }
+    Ok(Some(
+        crate::arch::x86_64::monotonic_milliseconds().saturating_add(milliseconds),
+    ))
+}
+
+fn block_current_on_futex(
+    frame: &mut InterruptFrame,
+    address: u64,
+    deadline: Option<u64>,
+) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let Some(retry_address) = frame.stack_frame.instruction_pointer.checked_sub(2) else {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    };
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    {
+        let process = USER_PROCESS.lock();
+        if !scheduler.active || !process.active || current >= scheduler.processes.len() {
+            frame.rax = (-(EINTR as i64)) as u64;
+            return frame_pointer;
+        }
+    }
+    scheduler.processes[current].frame_pointer = frame_pointer as usize;
+    scheduler.processes[current].waiting_for = Some(ProcessWait::Futex(address));
+    scheduler.processes[current].wait_deadline = deadline;
+    frame.stack_frame.instruction_pointer = retry_address;
+    let mut active_process = USER_PROCESS.lock();
+    if let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
+        is_process_runnable(&scheduler.processes[index])
+    }) {
+        core::mem::swap(
+            &mut *active_process,
+            &mut scheduler.processes[current].state,
+        );
+        core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
+        scheduler.current = next;
+        let next_process = &scheduler.processes[next];
+        let next_frame = next_process.frame_pointer as *mut InterruptFrame;
+        unsafe {
+            gdt::set_ring0_stack_top(next_process.kernel_stack_top);
+            next_process.image.memory.address_space.activate();
+        }
+        return next_frame;
+    }
+
+    let Some(deadline) = deadline else {
+        scheduler.processes[current].waiting_for = None;
+        scheduler.processes[current].wait_deadline = None;
+        frame.stack_frame.instruction_pointer = retry_address + 2;
+        frame.rax = (-(EDEADLK as i64)) as u64;
+        return frame_pointer;
+    };
+    // Tidak ada thread siap. State proses sengaja tidak di-swap keluar, jadi
+    // USER_PROCESS selalu memegang state yang hidup selama tidur. Bangun tiap
+    // 1 ms untuk memeriksa deadline dan menjadwalkan thread yang menjadi siap.
+    drop(active_process);
+    drop(scheduler);
+    loop {
+        sleep_milliseconds(1);
+        let mut scheduler = USER_SCHEDULER.lock();
+        let now = crate::arch::x86_64::monotonic_milliseconds();
+        if now >= deadline || scheduler.processes[current].waiting_for.is_none() {
+            let timed_out = now >= deadline;
+            scheduler.processes[current].waiting_for = None;
+            scheduler.processes[current].wait_deadline = None;
+            drop(scheduler);
+            if timed_out {
+                frame.stack_frame.instruction_pointer = retry_address + 2;
+                frame.rax = (-(ETIMEDOUT as i64)) as u64;
+            } else {
+                frame.stack_frame.instruction_pointer = retry_address;
+            }
+            return frame_pointer;
+        }
+        let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
+            is_process_runnable(&scheduler.processes[index])
+        }) else {
+            continue;
+        };
+        let mut active = USER_PROCESS.lock();
+        core::mem::swap(
+            &mut *active,
+            &mut scheduler.processes[current].state,
+        );
+        core::mem::swap(&mut *active, &mut scheduler.processes[next].state);
+        scheduler.current = next;
+        let next_process = &scheduler.processes[next];
+        let next_frame = next_process.frame_pointer as *mut InterruptFrame;
+        unsafe {
+            gdt::set_ring0_stack_top(next_process.kernel_stack_top);
+            next_process.image.memory.address_space.activate();
+        }
+        return next_frame;
+    }
+}
+
+fn block_current_on_poll(frame: &mut InterruptFrame, deadline: u64) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let Some(retry_address) = frame.stack_frame.instruction_pointer.checked_sub(2) else {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    };
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    {
+        let process = USER_PROCESS.lock();
+        if !scheduler.active || !process.active || current >= scheduler.processes.len() {
+            frame.rax = (-(EINTR as i64)) as u64;
+            return frame_pointer;
+        }
+    }
+    scheduler.processes[current].frame_pointer = frame_pointer as usize;
+    scheduler.processes[current].waiting_for = Some(ProcessWait::PollWait);
+    scheduler.processes[current].wait_deadline = Some(deadline);
+    frame.stack_frame.instruction_pointer = retry_address;
+    let mut active_process = USER_PROCESS.lock();
+    core::mem::swap(
+        &mut *active_process,
+        &mut scheduler.processes[current].state,
+    );
+    let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
+        is_process_runnable(&scheduler.processes[index])
+    }) else {
+        core::mem::swap(
+            &mut *active_process,
+            &mut scheduler.processes[current].state,
+        );
+        scheduler.processes[current].waiting_for = None;
+        scheduler.processes[current].wait_deadline = None;
+        // Tidak ada proses lain: tidur sebentar lalu ulangi scan.
+        drop(active_process);
+        drop(scheduler);
+        sleep_milliseconds(1);
+        frame.stack_frame.instruction_pointer = retry_address;
+        return frame_pointer;
+    };
+    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
+    scheduler.current = next;
+    let next_process = &scheduler.processes[next];
+    let next_frame = next_process.frame_pointer as *mut InterruptFrame;
+    unsafe {
+        gdt::set_ring0_stack_top(next_process.kernel_stack_top);
+        next_process.image.memory.address_space.activate();
+    }
+    next_frame
+}
+
+fn syscall_futex(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    if take_interrupted_syscall(SYSCALL_FUTEX) {
+        frame.rax = (-(EINTR as i64)) as u64;
+        return frame_pointer;
+    }
+    let address = frame.rdi;
+    let operation = frame.rsi & FUTEX_OPERATION_MASK;
+    let value = frame.rdx as u32;
+    if address == 0 || address % 4 != 0 {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    }
+    if paging::validate_user_range(address, core::mem::size_of::<u32>(), true).is_err() {
+        frame.rax = (-(EFAULT as i64)) as u64;
+        return frame_pointer;
+    }
+
+    let pid = {
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            frame.rax = (-(EINTR as i64)) as u64;
+            return frame_pointer;
+        }
+        if let Some(result) = process.wait_result.take() {
+            frame.rax = if result == 0 {
+                0
+            } else {
+                (-(result as i64)) as u64
+            };
+            return frame_pointer;
+        }
+        process.pid
+    };
+
+    match operation {
+        FUTEX_WAKE => {
+            let mut scheduler = USER_SCHEDULER.lock();
+            let mut woken = 0u64;
+            for waiting in &mut scheduler.processes {
+                if woken >= value as u64 {
+                    break;
+                }
+                if waiting.pid == pid
+                    && waiting.waiting_for == Some(ProcessWait::Futex(address))
+                {
+                    waiting.waiting_for = None;
+                    waiting.wait_deadline = None;
+                    waiting.state.wait_result = Some(0);
+                    woken += 1;
+                }
+            }
+            frame.rax = woken;
+            frame_pointer
+        }
+        FUTEX_WAIT => {
+            let current = unsafe { (address as *const u32).read_unaligned() };
+            if current != value {
+                frame.rax = (-(EAGAIN as i64)) as u64;
+                return frame_pointer;
+            }
+            let deadline = match futex_deadline(frame.r10) {
+                Ok(deadline) => deadline,
+                Err(errno) => {
+                    frame.rax = (-(errno as i64)) as u64;
+                    return frame_pointer;
+                }
+            };
+            if deadline == Some(0) {
+                frame.rax = (-(ETIMEDOUT as i64)) as u64;
+                return frame_pointer;
+            }
+            block_current_on_futex(frame, address, deadline)
+        }
+        _ => {
+            frame.rax = (-(ENOSYS as i64)) as u64;
+            frame_pointer
+        }
+    }
 }
 
 fn wake_pipe_waiters(pipe_id: u64, readers_ready: bool, writers_ready: bool) {
@@ -3051,6 +3480,14 @@ fn new_user_process(
         file_creation_mask: 0o022,
         fpu_state: FpuState::new(),
         thread_pointer: 0,
+        wait_result: None,
+        pending_signals: 0,
+        blocked_signals: 0,
+        signal_handlers: Vec::new(),
+        interrupted: false,
+        interrupt_signal: 0,
+        restart_number: None,
+        poll_deadline: None,
     })
 }
 
@@ -3085,6 +3522,14 @@ fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProces
         file_creation_mask: parent.file_creation_mask,
         fpu_state: parent.fpu_state,
         thread_pointer: parent.thread_pointer,
+        wait_result: None,
+        pending_signals: 0,
+        blocked_signals: parent.blocked_signals,
+        signal_handlers: parent.signal_handlers.clone(),
+        interrupted: false,
+        interrupt_signal: 0,
+        restart_number: None,
+        poll_deadline: None,
     })
 }
 
@@ -3283,6 +3728,8 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
         UserDescriptor::ConsoleOutput | UserDescriptor::ConsoleError => {
             let text = core::str::from_utf8(bytes).map_err(|_| EILSEQ)?;
             crate::terminal::terminal_print_to(terminal, text);
+            // Mirror console writes to COM1 so headless boots can observe output.
+            crate::drivers::serial::write_str(text);
             Ok(bytes.len() as u64)
         }
         UserDescriptor::File(file) => {
@@ -3321,12 +3768,40 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
             pipe_id = Some(pipe.id);
             Ok(count as u64)
         }
+        UserDescriptor::SocketPair(endpoint) => {
+            if !endpoint.write_end.writable {
+                return Err(EBADF);
+            }
+            let mut pipe = endpoint.write_end.pipe.lock();
+            let count = pipe.write(bytes)?;
+            pipe_id = Some(pipe.id);
+            Ok(count as u64)
+        }
+        UserDescriptor::EventFd(state) => {
+            if bytes.len() != core::mem::size_of::<u64>() {
+                return Err(EINVAL);
+            }
+            let mut event = state.lock();
+            let value = u64::from_ne_bytes(bytes.try_into().map_err(|_| EINVAL)?);
+            if event.semaphore {
+                event.counter = event.counter.saturating_add(value);
+            } else {
+                event.counter = event
+                    .counter
+                    .checked_add(value)
+                    .filter(|counter| *counter < u64::MAX)
+                    .ok_or(EAGAIN)?;
+            }
+            Ok(bytes.len() as u64)
+        }
         UserDescriptor::TcpSocket(socket) => crate::network::send_tcp_socket(socket, bytes)
             .map(|count| count as u64)
             .map_err(errno_from_network),
         UserDescriptor::ConsoleInput
         | UserDescriptor::Directory(_)
-        | UserDescriptor::UdpSocket(_) => Err(EBADF),
+        | UserDescriptor::UdpSocket(_)
+        | UserDescriptor::Epoll(_)
+        | UserDescriptor::TimerFd(_) => Err(EBADF),
     };
     drop(process);
     if let Some(pipe_id) = pipe_id {
@@ -3713,6 +4188,47 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
         UserDescriptor::UdpSocket(socket) => crate::network::receive_udp_socket(socket, output)
             .map(|(count, _, _)| count as u64)
             .map_err(|_| EAGAIN),
+        UserDescriptor::SocketPair(endpoint) => {
+            if !endpoint.read_end.readable {
+                return Err(EBADF);
+            }
+            let mut pipe = endpoint.read_end.pipe.lock();
+            let count = pipe.read(output)?;
+            pipe_id = Some(pipe.id);
+            Ok(count as u64)
+        }
+        UserDescriptor::EventFd(state) => {
+            if output.len() < core::mem::size_of::<u64>() {
+                return Err(EINVAL);
+            }
+            let mut event = state.lock();
+            if event.counter == 0 {
+                return Err(EAGAIN);
+            }
+            let value = if event.semaphore {
+                event.counter -= 1;
+                1
+            } else {
+                let counter = event.counter;
+                event.counter = 0;
+                counter
+            };
+            output[..8].copy_from_slice(&value.to_ne_bytes());
+            Ok(8)
+        }
+        UserDescriptor::TimerFd(state) => {
+            if output.len() < core::mem::size_of::<u64>() {
+                return Err(EINVAL);
+            }
+            let now = crate::arch::x86_64::monotonic_milliseconds();
+            let mut timer = state.lock();
+            let expirations = timerfd_take_expirations(&mut timer, now);
+            if expirations == 0 {
+                return Err(EAGAIN);
+            }
+            output[..8].copy_from_slice(&expirations.to_ne_bytes());
+            Ok(8)
+        }
         UserDescriptor::TcpSocket(socket) => {
             crate::network::receive_tcp_socket(socket, output, false)
                 .map(|count| count as u64)
@@ -3720,6 +4236,7 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
         }
         UserDescriptor::ConsoleOutput | UserDescriptor::ConsoleError => Err(EBADF),
         UserDescriptor::Directory(_) => Err(EBADF),
+        UserDescriptor::Epoll(_) => Err(EBADF),
     };
     drop(process);
     if let Some(pipe_id) = pipe_id {
@@ -4094,7 +4611,7 @@ fn syscall_openat(dirfd: u64, path_address: u64, flags: u64, mode: u64) -> Resul
 }
 
 fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32> {
-    const ALLOWED_FLAGS: u64 = O_ACCESS_MASK | O_CREAT | O_TRUNC | O_APPEND;
+    const ALLOWED_FLAGS: u64 = O_ACCESS_MASK | O_CREAT | O_TRUNC | O_APPEND | O_NONBLOCK;
     if flags & !ALLOWED_FLAGS != 0 || flags & O_ACCESS_MASK == 3 {
         return Err(EINVAL);
     }
@@ -4202,6 +4719,11 @@ fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32
         writable,
         append: flags & O_APPEND != 0,
     }))));
+    let descriptor_count = process.descriptors.len();
+    process.descriptor_flags.resize(descriptor_count, 0);
+    if flags & O_NONBLOCK != 0 {
+        process.descriptor_flags[fd] |= O_NONBLOCK as u32;
+    }
     Ok(fd as u64)
 }
 
@@ -4353,36 +4875,51 @@ fn syscall_fcntl(fd: u64, command: u64, argument: u64) -> Result<u64, i32> {
             process.descriptor_flags[fd] = flags;
             Ok(0)
         }
-        F_GETFL => match descriptor {
-            UserDescriptor::File(file) => {
-                let file = file.lock();
-                Ok((if !file.readable {
-                    O_WRONLY
-                } else if file.writable {
-                    O_RDWR
-                } else {
-                    O_RDONLY
-                } | if file.append { O_APPEND } else { 0 }) as u64)
-            }
-            UserDescriptor::Pipe(endpoint) => Ok(if endpoint.writable {
-                O_WRONLY
-            } else {
-                O_RDONLY
-            }),
-            _ => Ok(O_RDONLY),
-        },
+        F_GETFL => {
+            let status = process
+                .descriptor_flags
+                .get(fd)
+                .copied()
+                .unwrap_or(0) as u64
+                & (O_APPEND | O_NONBLOCK);
+            let access = match descriptor {
+                UserDescriptor::File(file) => {
+                    let file = file.lock();
+                    if !file.readable {
+                        O_WRONLY
+                    } else if file.writable {
+                        O_RDWR
+                    } else {
+                        O_RDONLY
+                    }
+                }
+                UserDescriptor::Pipe(endpoint) => {
+                    if endpoint.writable {
+                        O_WRONLY
+                    } else {
+                        O_RDONLY
+                    }
+                }
+                _ => O_RDONLY,
+            };
+            Ok(access | status)
+        }
         F_SETFL => {
-            if argument & !O_APPEND != 0 {
+            if argument & !(O_APPEND | O_NONBLOCK) != 0 {
                 return Err(EINVAL);
             }
-            match descriptor {
-                UserDescriptor::File(file) => {
-                    let mut file = file.lock();
-                    file.append = argument & O_APPEND != 0;
-                    Ok(0)
-                }
-                _ => Err(EINVAL),
+            if let UserDescriptor::File(file) = descriptor {
+                let mut file = file.lock();
+                file.append = argument & O_APPEND != 0;
             }
+            if fd >= process.descriptor_flags.len() {
+                let descriptor_count = process.descriptors.len();
+                process.descriptor_flags.resize(descriptor_count, 0);
+            }
+            let cloexec = process.descriptor_flags[fd] & FD_CLOEXEC;
+            process.descriptor_flags[fd] =
+                cloexec | (argument as u32 & (O_APPEND | O_NONBLOCK) as u32);
+            Ok(0)
         }
         _ => Err(EINVAL),
     }
@@ -5487,6 +6024,10 @@ fn syscall_fchmod(fd: u64, mode: u64) -> Result<u64, i32> {
             Some(UserDescriptor::Directory(directory)) => directory.lock().path.clone(),
             Some(
                 UserDescriptor::Pipe(_)
+                | UserDescriptor::SocketPair(_)
+                | UserDescriptor::Epoll(_)
+                | UserDescriptor::EventFd(_)
+                | UserDescriptor::TimerFd(_)
                 | UserDescriptor::UdpSocket(_)
                 | UserDescriptor::TcpSocket(_),
             ) => {
@@ -5531,17 +6072,129 @@ fn syscall_getcwd(address: u64, size: u64) -> Result<u64, i32> {
 }
 
 fn syscall_clock_gettime(clock_id: u64, address: u64) -> Result<u64, i32> {
-    if clock_id != 0 {
-        return Err(EINVAL);
-    }
     paging::validate_user_range(address, core::mem::size_of::<UserTimespec>(), true)
         .map_err(|_| EFAULT)?;
-    let time = UserTimespec {
-        seconds: crate::drivers::rtc::unix_seconds().map_err(|_| EIO)?,
-        nanoseconds: 0,
+    let time = match clock_id {
+        // CLOCK_REALTIME: RTC CMOS hanya punya resolusi satu detik.
+        0 => UserTimespec {
+            seconds: crate::drivers::rtc::unix_seconds().map_err(|_| EIO)?,
+            nanoseconds: 0,
+        },
+        // CLOCK_MONOTONIC, PROCESS_CPUTIME, THREAD_CPUTIME, MONOTONIC_RAW,
+        // BOOTTIME: semuanya memakai uptime TSC.
+        1 | 2 | 3 | 4 | 7 => {
+            let milliseconds = crate::arch::x86_64::monotonic_milliseconds();
+            UserTimespec {
+                seconds: (milliseconds / 1000) as i64,
+                nanoseconds: ((milliseconds % 1000) * 1_000_000) as i64,
+            }
+        }
+        _ => return Err(EINVAL),
     };
     unsafe { (address as *mut UserTimespec).write_unaligned(time) };
     Ok(0)
+}
+
+fn syscall_clock_getres(clock_id: u64, address: u64) -> Result<u64, i32> {
+    if address == 0 {
+        return Err(EFAULT);
+    }
+    paging::validate_user_range(address, core::mem::size_of::<UserTimespec>(), true)
+        .map_err(|_| EFAULT)?;
+    let resolution = match clock_id {
+        0 => UserTimespec {
+            seconds: 1,
+            nanoseconds: 0,
+        },
+        1 | 2 | 3 | 4 | 7 => UserTimespec {
+            seconds: 0,
+            nanoseconds: 1_000_000,
+        },
+        _ => return Err(EINVAL),
+    };
+    unsafe { (address as *mut UserTimespec).write_unaligned(resolution) };
+    Ok(0)
+}
+
+const GETRANDOM_MAX: usize = 256;
+static RANDOM_STATE: AtomicU64 = AtomicU64::new(0);
+
+fn next_random_u64() -> u64 {
+    let mut state = RANDOM_STATE.load(Ordering::Relaxed);
+    loop {
+        let current = state;
+        let mut next = if current == 0 {
+            crate::arch::x86_64::read_tsc() ^ 0x9E37_79B9_7F4A_7C15
+        } else {
+            current
+        };
+        next ^= next << 13;
+        next ^= next >> 7;
+        next ^= next << 17;
+        if next == 0 {
+            next = 0x9E37_79B9_7F4A_7C15;
+        }
+        match RANDOM_STATE.compare_exchange_weak(
+            current,
+            next,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return next,
+            Err(actual) => state = actual,
+        }
+    }
+}
+
+fn syscall_getrandom(buffer: u64, length: u64, _flags: u64) -> Result<u64, i32> {
+    let length = usize::try_from(length).map_err(|_| EINVAL)?;
+    let count = length.min(GETRANDOM_MAX);
+    if count == 0 {
+        return Ok(0);
+    }
+    paging::validate_user_range(buffer, count, true).map_err(|_| EFAULT)?;
+    let mut offset = 0usize;
+    while offset < count {
+        let value = next_random_u64().to_le_bytes();
+        let chunk = (count - offset).min(value.len());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                value.as_ptr(),
+                (buffer as usize + offset) as *mut u8,
+                chunk,
+            );
+        }
+        offset += chunk;
+    }
+    Ok(count as u64)
+}
+
+fn syscall_fsync(fd: u64) -> Result<u64, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let descriptor = process
+        .descriptors
+        .get(fd)
+        .and_then(Option::as_ref)
+        .ok_or(EBADF)?;
+    match descriptor {
+        // POSIX menolak fsync pada pipe, console, dan socket.
+        UserDescriptor::Pipe(_)
+        | UserDescriptor::SocketPair(_)
+        | UserDescriptor::Epoll(_)
+        | UserDescriptor::EventFd(_)
+        | UserDescriptor::TimerFd(_)
+        | UserDescriptor::ConsoleInput
+        | UserDescriptor::ConsoleOutput
+        | UserDescriptor::ConsoleError
+        | UserDescriptor::UdpSocket(_)
+        | UserDescriptor::TcpSocket(_) => Err(EINVAL),
+        // RAM filesystem tidak punya cache tulis yang perlu di-flush.
+        UserDescriptor::File(_) | UserDescriptor::Directory(_) => Ok(0),
+    }
 }
 
 // --- Implementasi syscall tambahan ---
@@ -5603,47 +6256,569 @@ fn syscall_gettimeofday(address: u64) -> Result<u64, i32> {
 }
 
 fn syscall_nanosleep(req: u64) -> Result<u64, i32> {
-    if req == 0 { return Ok(0); }
+    if take_interrupted_syscall(SYSCALL_NANOSLEEP) {
+        return Err(EINTR);
+    }
+    if req == 0 {
+        return Err(EFAULT);
+    }
     paging::validate_user_range(req, core::mem::size_of::<UserTimespec>(), false)
         .map_err(|_| EFAULT)?;
     let ts = unsafe { (req as *const UserTimespec).read_unaligned() };
-    let ms = (ts.seconds as u32).saturating_mul(1000)
-        .saturating_add((ts.nanoseconds / 1_000_000) as u32);
-    if ms > 0 && ms < 60_000 {
-        crate::arch::x86_64::delay_milliseconds(ms);
+    if ts.seconds < 0 || ts.nanoseconds < 0 || ts.nanoseconds >= 1_000_000_000 {
+        return Err(EINVAL);
+    }
+    let requested = (ts.seconds as u64)
+        .saturating_mul(1000)
+        .saturating_add((ts.nanoseconds / 1_000_000) as u64);
+    // Tidur berjalan di kernel dan belum scheduler-aware, jadi totalnya dibatasi
+    // satu menit agar satu proses tidak membekukan proses lain terlalu lama.
+    let milliseconds = requested.min(60_000);
+    if milliseconds > 0 {
+        crate::arch::x86_64::delay_milliseconds(milliseconds as u32);
     }
     Ok(0)
 }
 
-// futex: implementasi minimal — WAIT selalu sukses, WAKE selalu sukses
-fn syscall_futex(addr: u64, op: u64, _val: u64) -> Result<u64, i32> {
-    if addr == 0 { return Err(EFAULT); }
-    let _ = op;
-    Ok(0)
+const POLLIN: i16 = 0x0001;
+const POLLOUT: i16 = 0x0004;
+const POLLERR: i16 = 0x0008;
+const POLLHUP: i16 = 0x0010;
+const POLLNVAL: i16 = 0x0020;
+const SELECT_MAX_FDS: u64 = 1024;
+const SELECT_FD_SET_WORDS: usize = (SELECT_MAX_FDS as usize) / 64;
+const SOL_SOCKET: u64 = 1;
+const SO_TYPE: u64 = 3;
+const SO_ERROR: u64 = 4;
+const SOCK_STREAM_TYPE: i32 = 1;
+const SOCK_DGRAM_TYPE: i32 = 2;
+
+// Status siap satu descriptor, dihitung dari state yang benar-benar dimiliki
+// kernel: isi pipe, baris TTY yang sudah lengkap, dan socket yang masih terbuka.
+#[derive(Clone, Copy)]
+struct PollState {
+    readable: bool,
+    writable: bool,
+    hangup: bool,
+    error: bool,
 }
 
-fn syscall_poll(fds_addr: u64, nfds: u64) -> Result<u64, i32> {
-    if nfds == 0 { return Ok(0); }
-    if nfds > 1024 { return Err(EINVAL); }
-    let size = (nfds as usize).checked_mul(core::mem::size_of::<PollFd>()).ok_or(EINVAL)?;
-    paging::validate_user_range(fds_addr, size, true).map_err(|_| EFAULT)?;
-    // Semua fd langsung dianggap ready (non-blocking stub)
-    let mut ready = 0u64;
-    for i in 0..nfds as usize {
-        let pfd = unsafe {
-            &mut *((fds_addr as usize + i * core::mem::size_of::<PollFd>()) as *mut PollFd)
-        };
-        if pfd.fd >= 0 {
-            pfd.revents = pfd.events & 0x0005; // POLLIN|POLLOUT
-            if pfd.revents != 0 { ready += 1; }
+impl PollState {
+    const IDLE: Self = Self {
+        readable: false,
+        writable: false,
+        hangup: false,
+        error: false,
+    };
+    const BOTH: Self = Self {
+        readable: true,
+        writable: true,
+        hangup: false,
+        error: false,
+    };
+}
+
+fn descriptor_poll_state(process: &UserProcess, index: usize, fd: i32) -> Option<PollState> {
+    if fd < 0 {
+        return None;
+    }
+    let descriptor = process.descriptors.get(index).and_then(Option::as_ref)?;
+    let state = match descriptor {
+        UserDescriptor::ConsoleInput => PollState {
+            readable: fs::tty_readable(process.terminal),
+            ..PollState::IDLE
+        },
+        UserDescriptor::ConsoleOutput | UserDescriptor::ConsoleError => PollState {
+            writable: true,
+            ..PollState::IDLE
+        },
+        UserDescriptor::Directory(_) => PollState::BOTH,
+        UserDescriptor::Pipe(endpoint) => {
+            let pipe = endpoint.pipe.lock();
+            PollState {
+                readable: endpoint.readable && (pipe.length > 0 || pipe.writers == 0),
+                writable: endpoint.writable
+                    && (pipe.length < PIPE_CAPACITY || pipe.readers == 0),
+                hangup: endpoint.readable && pipe.writers == 0,
+                error: endpoint.writable && pipe.readers == 0,
+            }
         }
+        UserDescriptor::SocketPair(endpoint) => {
+            let pipe = endpoint.read_end.pipe.lock();
+            PollState {
+                readable: endpoint.read_end.readable
+                    && (pipe.length > 0 || pipe.writers == 0),
+                writable: endpoint.write_end.writable
+                    && (pipe.length < PIPE_CAPACITY || pipe.readers == 0),
+                hangup: endpoint.read_end.readable && pipe.writers == 0,
+                error: endpoint.write_end.writable && pipe.readers == 0,
+            }
+        }
+        UserDescriptor::Epoll(_) => PollState::IDLE,
+        UserDescriptor::EventFd(state) => {
+            let event = state.lock();
+            PollState {
+                readable: event.counter > 0,
+                writable: true,
+                ..PollState::IDLE
+            }
+        }
+        UserDescriptor::TimerFd(state) => {
+            let timer = state.lock();
+            let now = crate::arch::x86_64::monotonic_milliseconds();
+            PollState {
+                readable: timer
+                    .next_expiry_ms
+                    .is_some_and(|deadline| now >= deadline),
+                writable: true,
+                ..PollState::IDLE
+            }
+        }
+        UserDescriptor::UdpSocket(socket) => PollState {
+            readable: crate::network::udp_socket_readable(socket),
+            writable: true,
+            ..PollState::IDLE
+        },
+        UserDescriptor::TcpSocket(socket) => PollState {
+            readable: crate::network::tcp_socket_readable(socket),
+            writable: crate::network::tcp_socket_writable(socket),
+            hangup: crate::network::tcp_is_closed(socket),
+            error: crate::network::tcp_socket_error(socket).is_some(),
+        },
+        UserDescriptor::File(file) => {
+            let path = file.lock().path.clone();
+            match fs::tty_path_readable(&path) {
+                Some(readable) => PollState {
+                    readable,
+                    writable: true,
+                    ..PollState::IDLE
+                },
+                None => PollState::BOTH,
+            }
+        }
+    };
+    Some(state)
+}
+
+fn poll_revents(fd: i32, events: i16) -> i16 {
+    if fd < 0 {
+        return 0;
+    }
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return POLLERR;
+    }
+    let Ok(index) = usize::try_from(fd) else {
+        return POLLNVAL;
+    };
+    let Some(state) = descriptor_poll_state(&process, index, fd) else {
+        return POLLNVAL;
+    };
+    let mut revents = 0i16;
+    if events & POLLIN != 0 && state.readable {
+        revents |= POLLIN;
+    }
+    if events & POLLOUT != 0 && state.writable {
+        revents |= POLLOUT;
+    }
+    if state.hangup {
+        revents |= POLLHUP;
+    }
+    if state.error {
+        revents |= POLLERR;
+    }
+    revents
+}
+
+fn poll_user_fds(fds_addr: u64, nfds: u64) -> Result<u64, i32> {
+    if nfds > SELECT_MAX_FDS {
+        return Err(EINVAL);
+    }
+    let size = (nfds as usize)
+        .checked_mul(core::mem::size_of::<PollFd>())
+        .ok_or(EINVAL)?;
+    paging::validate_user_range(fds_addr, size, true).map_err(|_| EFAULT)?;
+    let mut ready = 0u64;
+    for index in 0..nfds as usize {
+        let pointer = (fds_addr as usize + index * core::mem::size_of::<PollFd>()) as *mut PollFd;
+        let mut descriptor = unsafe { pointer.read_unaligned() };
+        descriptor.revents = poll_revents(descriptor.fd, descriptor.events);
+        if descriptor.revents != 0 {
+            ready += 1;
+        }
+        unsafe { pointer.write_unaligned(descriptor) };
     }
     Ok(ready)
 }
 
-fn syscall_pipe2(pipefd: u64) -> Result<u64, i32> {
-    // flags (arg2) diabaikan — O_CLOEXEC/O_NONBLOCK tidak diimplementasikan
-    syscall_pipe(pipefd)
+fn wait_budget_milliseconds(timeout_ms: u64) -> u64 {
+    if timeout_ms == u64::MAX {
+        60_000
+    } else {
+        timeout_ms.min(60_000)
+    }
+}
+
+/// Sleep while leaving interrupts enabled so keyboard and timer IRQs keep
+/// running; poll/select must observe input that arrives during the wait.
+fn sleep_milliseconds(milliseconds: u64) {
+    if milliseconds == 0 {
+        return;
+    }
+    let flags: u64;
+    unsafe {
+        core::arch::asm!("pushfq", "pop {}", out(reg) flags,
+            options(nomem, nostack, preserves_flags));
+    }
+    let interrupts_were_enabled = flags & (1 << 9) != 0;
+    if !interrupts_were_enabled {
+        unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
+    }
+    crate::arch::x86_64::delay_milliseconds(milliseconds as u32);
+    if !interrupts_were_enabled {
+        unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
+    }
+}
+
+fn poll_deadline_for(timeout_ms: u64) -> u64 {
+    let now = crate::arch::x86_64::monotonic_milliseconds();
+    if timeout_ms == 0 {
+        now
+    } else {
+        now.saturating_add(wait_budget_milliseconds(timeout_ms))
+    }
+}
+
+/// Satu putaran `poll`: mengembalikan `EAGAIN` bila pemanggil harus menunggu.
+fn syscall_poll(fds_addr: u64, nfds: u64, timeout_ms: u64) -> Result<u64, i32> {
+    let deadline = {
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        match process.poll_deadline {
+            Some(deadline) => deadline,
+            None => {
+                let deadline = poll_deadline_for(timeout_ms);
+                process.poll_deadline = Some(deadline);
+                deadline
+            }
+        }
+    };
+    let now = crate::arch::x86_64::monotonic_milliseconds();
+    let ready = if nfds == 0 {
+        0
+    } else {
+        poll_user_fds(fds_addr, nfds)?
+    };
+    if ready != 0 || timeout_ms == 0 || now >= deadline {
+        USER_PROCESS.lock().poll_deadline = None;
+        return Ok(ready);
+    }
+    Err(EAGAIN)
+}
+
+fn syscall_poll_frame(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    if take_interrupted_syscall(SYSCALL_POLL) {
+        USER_PROCESS.lock().poll_deadline = None;
+        frame.rax = (-(EINTR as i64)) as u64;
+        return frame_pointer;
+    }
+    match syscall_poll(frame.rdi, frame.rsi, frame.rdx) {
+        Ok(value) => {
+            frame.rax = value;
+            frame_pointer
+        }
+        Err(EAGAIN) => {
+            let deadline =
+                crate::arch::x86_64::monotonic_milliseconds().saturating_add(1);
+            block_current_on_poll(frame, deadline)
+        }
+        Err(errno) => {
+            frame.rax = (-(errno as i64)) as u64;
+            frame_pointer
+        }
+    }
+}
+
+fn read_fd_set(address: u64, words: usize) -> Result<[u64; SELECT_FD_SET_WORDS], i32> {
+    let mut set = [0u64; SELECT_FD_SET_WORDS];
+    if address == 0 || words == 0 {
+        return Ok(set);
+    }
+    let bytes = words * core::mem::size_of::<u64>();
+    paging::validate_user_range(address, bytes, false).map_err(|_| EFAULT)?;
+    for index in 0..words {
+        set[index] = unsafe {
+            ((address as usize + index * core::mem::size_of::<u64>()) as *const u64).read_unaligned()
+        };
+    }
+    Ok(set)
+}
+
+fn write_fd_set(address: u64, set: &[u64; SELECT_FD_SET_WORDS], words: usize) -> Result<(), i32> {
+    if address == 0 || words == 0 {
+        return Ok(());
+    }
+    let bytes = words * core::mem::size_of::<u64>();
+    paging::validate_user_range(address, bytes, true).map_err(|_| EFAULT)?;
+    for index in 0..words {
+        unsafe {
+            ((address as usize + index * core::mem::size_of::<u64>()) as *mut u64)
+                .write_unaligned(set[index]);
+        }
+    }
+    Ok(())
+}
+
+fn timeval_milliseconds(timeout: u64) -> Result<u64, i32> {
+    if timeout == 0 {
+        return Ok(0);
+    }
+    paging::validate_user_range(timeout, core::mem::size_of::<Timeval>(), false)
+        .map_err(|_| EFAULT)?;
+    let tv = unsafe { (timeout as *const Timeval).read_unaligned() };
+    if tv.tv_sec < 0 || tv.tv_usec < 0 {
+        return Err(EINVAL);
+    }
+    Ok((tv.tv_sec as u64)
+        .saturating_mul(1000)
+        .saturating_add((tv.tv_usec / 1000) as u64))
+}
+
+fn select_scan(
+    nfds: u64,
+    read_set: &[u64; SELECT_FD_SET_WORDS],
+    write_set: &[u64; SELECT_FD_SET_WORDS],
+    except_set: &[u64; SELECT_FD_SET_WORDS],
+    read_out: &mut [u64; SELECT_FD_SET_WORDS],
+    write_out: &mut [u64; SELECT_FD_SET_WORDS],
+    except_out: &mut [u64; SELECT_FD_SET_WORDS],
+) -> u64 {
+    *read_out = [0; SELECT_FD_SET_WORDS];
+    *write_out = [0; SELECT_FD_SET_WORDS];
+    *except_out = [0; SELECT_FD_SET_WORDS];
+    let mut ready = 0u64;
+    for fd in 0..nfds as usize {
+        let word = fd / 64;
+        let bit = 1u64 << (fd % 64);
+        let wants_read = read_set[word] & bit != 0;
+        let wants_write = write_set[word] & bit != 0;
+        let wants_except = except_set[word] & bit != 0;
+        if !wants_read && !wants_write && !wants_except {
+            continue;
+        }
+        let mut events = 0i16;
+        if wants_read {
+            events |= POLLIN;
+        }
+        if wants_write {
+            events |= POLLOUT;
+        }
+        let revents = poll_revents(fd as i32, events);
+        let mut matched = false;
+        if wants_read && revents & POLLIN != 0 {
+            read_out[word] |= bit;
+            matched = true;
+        }
+        if wants_write && revents & POLLOUT != 0 {
+            write_out[word] |= bit;
+            matched = true;
+        }
+        if wants_except && revents & (POLLERR | POLLHUP | POLLNVAL) != 0 {
+            except_out[word] |= bit;
+            matched = true;
+        }
+        if matched {
+            ready += 1;
+        }
+    }
+    ready
+}
+
+fn syscall_select(
+    nfds: u64,
+    readfds: u64,
+    writefds: u64,
+    exceptfds: u64,
+    timeout: u64,
+) -> Result<u64, i32> {
+    if nfds > SELECT_MAX_FDS {
+        return Err(EINVAL);
+    }
+    let timeout_ms = timeval_milliseconds(timeout)?;
+    let deadline = {
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        match process.poll_deadline {
+            Some(deadline) => deadline,
+            None => {
+                let deadline = poll_deadline_for(timeout_ms);
+                process.poll_deadline = Some(deadline);
+                deadline
+            }
+        }
+    };
+    let now = crate::arch::x86_64::monotonic_milliseconds();
+    if nfds == 0 {
+        if now >= deadline || timeout_ms == 0 {
+            USER_PROCESS.lock().poll_deadline = None;
+            return Ok(0);
+        }
+        return Err(EAGAIN);
+    }
+    let words = (nfds as usize).div_ceil(64);
+    let read_set = read_fd_set(readfds, words)?;
+    let write_set = read_fd_set(writefds, words)?;
+    let except_set = read_fd_set(exceptfds, words)?;
+    let mut read_out = [0u64; SELECT_FD_SET_WORDS];
+    let mut write_out = [0u64; SELECT_FD_SET_WORDS];
+    let mut except_out = [0u64; SELECT_FD_SET_WORDS];
+    let ready = select_scan(
+        nfds,
+        &read_set,
+        &write_set,
+        &except_set,
+        &mut read_out,
+        &mut write_out,
+        &mut except_out,
+    );
+    write_fd_set(readfds, &read_out, words)?;
+    write_fd_set(writefds, &write_out, words)?;
+    write_fd_set(exceptfds, &except_out, words)?;
+    if ready != 0 || now >= deadline || timeout_ms == 0 {
+        USER_PROCESS.lock().poll_deadline = None;
+        return Ok(ready);
+    }
+    Err(EAGAIN)
+}
+
+fn syscall_select_frame(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    if take_interrupted_syscall(SYSCALL_SELECT) {
+        USER_PROCESS.lock().poll_deadline = None;
+        frame.rax = (-(EINTR as i64)) as u64;
+        return frame_pointer;
+    }
+    match syscall_select(frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8) {
+        Ok(value) => {
+            frame.rax = value;
+            frame_pointer
+        }
+        Err(EAGAIN) => {
+            let deadline =
+                crate::arch::x86_64::monotonic_milliseconds().saturating_add(1);
+            block_current_on_poll(frame, deadline)
+        }
+        Err(errno) => {
+            frame.rax = (-(errno as i64)) as u64;
+            frame_pointer
+        }
+    }
+}
+
+
+fn socket_descriptor_type(fd: u64) -> Result<i32, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    match process.descriptors.get(fd).and_then(Option::as_ref) {
+        Some(UserDescriptor::UdpSocket(_)) => Ok(SOCK_DGRAM_TYPE),
+        Some(UserDescriptor::TcpSocket(_)) => Ok(SOCK_STREAM_TYPE),
+        Some(_) => Err(ENOTSOCK),
+        None => Err(EBADF),
+    }
+}
+
+fn syscall_setsockopt(
+    fd: u64,
+    level: u64,
+    _option_name: u64,
+    option_value: u64,
+    option_length: u64,
+) -> Result<u64, i32> {
+    socket_descriptor_type(fd)?;
+    if level != SOL_SOCKET {
+        return Err(ENOPROTOOPT);
+    }
+    if option_length > 0 {
+        if option_value == 0 {
+            return Err(EFAULT);
+        }
+        let length = usize::try_from(option_length).map_err(|_| EINVAL)?;
+        paging::validate_user_range(option_value, length, false).map_err(|_| EFAULT)?;
+    }
+    // Opsi socket diterima tetapi belum mengubah perilaku jaringan.
+    Ok(0)
+}
+
+fn syscall_getsockopt(
+    fd: u64,
+    level: u64,
+    option_name: u64,
+    option_value: u64,
+    option_length: u64,
+) -> Result<u64, i32> {
+    let socket_type = socket_descriptor_type(fd)?;
+    if level != SOL_SOCKET {
+        return Err(ENOPROTOOPT);
+    }
+    if option_value == 0 || option_length == 0 {
+        return Err(EFAULT);
+    }
+    let length_size = core::mem::size_of::<u32>();
+    paging::validate_user_range(option_length, length_size, true).map_err(|_| EFAULT)?;
+    let capacity = unsafe { (option_length as *const u32).read_unaligned() } as usize;
+    let value = match option_name {
+        SO_TYPE => socket_type,
+        SO_ERROR => 0,
+        _ => return Err(ENOPROTOOPT),
+    };
+    let needed = core::mem::size_of::<i32>();
+    if capacity < needed {
+        return Err(EINVAL);
+    }
+    paging::validate_user_range(option_value, needed, true).map_err(|_| EFAULT)?;
+    unsafe {
+        (option_value as *mut i32).write_unaligned(value);
+        (option_length as *mut u32).write_unaligned(needed as u32);
+    }
+    Ok(0)
+}
+
+fn syscall_pipe2(pipefd: u64, flags: u64) -> Result<u64, i32> {
+    const ALLOWED: u64 = O_NONBLOCK | O_CLOEXEC;
+    if flags & !ALLOWED != 0 {
+        return Err(EINVAL);
+    }
+    paging::validate_user_range(pipefd, core::mem::size_of::<[i32; 2]>(), true)
+        .map_err(|_| EFAULT)?;
+    let (read_end, write_end) = create_pipe()?;
+    let (read_fd, write_fd) = {
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        let UserProcess {
+            descriptors,
+            descriptor_flags,
+            ..
+        } = &mut *process;
+        let fds = install_pipe_descriptors(descriptors, descriptor_flags, read_end, write_end)?;
+        let stored = (flags & ALLOWED) as u32;
+        descriptor_flags[fds.0] |= stored;
+        descriptor_flags[fds.1] |= stored;
+        fds
+    };
+    unsafe {
+        (pipefd as *mut [i32; 2]).write_unaligned([read_fd as i32, write_fd as i32]);
+    }
+    Ok(0)
 }
 
 fn syscall_dup3(oldfd: u64, newfd: u64, _flags: u64) -> Result<u64, i32> {
@@ -5701,17 +6876,18 @@ fn syscall_readv(fd: u64, iov_addr: u64, iovcnt: u64) -> Result<u64, i32> {
     Ok(total)
 }
 
-// sysconf: kembalikan nilai umum
+// sysconf: nilai mengikuti penomoran _SC_* gaya glibc
 fn syscall_sysconf(name: u64) -> Result<u64, i32> {
     match name {
-        1  => Ok(100),    // _SC_CHILD_MAX
-        2  => Ok(1000),   // _SC_CLK_TCK
-        3  => Ok(4096),   // _SC_PAGESIZE / PAGE_SIZE
-        4  => Ok(0),      // _SC_OPEN_MAX → not enforced
-        11 => Ok(4096),   // _SC_PAGE_SIZE
-        30 => Ok(8),      // _SC_NPROCESSORS_CONF
-        84 => Ok(8),      // _SC_NPROCESSORS_ONLN
-        _  => Ok(u64::MAX), // tidak diketahui → unlimited
+        0 => Ok(MAX_ARGUMENT_BYTES as u64),        // _SC_ARG_MAX
+        1 => Ok(MAX_SCHEDULED_PROCESSES as u64),   // _SC_CHILD_MAX
+        2 => Ok(100),                              // _SC_CLK_TCK
+        3 => Ok(0),                                // _SC_NGROUPS_MAX
+        4 => Ok(MAX_OPEN_FILES as u64),            // _SC_OPEN_MAX
+        30 => Ok(PAGE_SIZE),                       // _SC_PAGESIZE / _SC_PAGE_SIZE
+        83 => Ok(8),                               // _SC_NPROCESSORS_CONF
+        84 => Ok(8),                               // _SC_NPROCESSORS_ONLN
+        _ => Ok(u64::MAX),                         // tidak diketahui -> -1
     }
 }
 
@@ -6855,4 +8031,837 @@ mod tests {
             Err(ElfError::ArgumentsTooLarge)
         );
     }
+}
+
+// ==== epoll / eventfd / timerfd / socketpair / clock_nanosleep ====
+
+const EPOLLIN: u32 = 0x0001;
+const EPOLLOUT: u32 = 0x0004;
+const EPOLLERR: u32 = 0x0008;
+const EPOLLHUP: u32 = 0x0010;
+const EPOLLET: u32 = 0x8000_0000;
+const EPOLLONESHOT: u32 = 0x4000_0000;
+const EPOLL_CTL_ADD: u64 = 1;
+const EPOLL_CTL_DEL: u64 = 2;
+const EPOLL_CTL_MOD: u64 = 3;
+const EFD_SEMAPHORE: u64 = 1;
+const TFD_TIMER_ABSTIME: u64 = 1;
+const TIMER_ABSTIME: u64 = 1;
+const AF_UNIX: u64 = 1;
+const SOCK_STREAM: u64 = 1;
+const SOCK_TYPE_MASK: u64 = 0xF;
+
+fn install_descriptor(descriptor: UserDescriptor) -> Result<u64, i32> {
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let fd = reserve_descriptor_slot(&mut process.descriptors)?;
+    let descriptor_count = process.descriptors.len();
+    process.descriptor_flags.resize(descriptor_count, 0);
+    process.descriptors[fd] = Some(descriptor);
+    Ok(fd as u64)
+}
+
+fn timespec_to_milliseconds(ts: &UserTimespec) -> Result<u64, i32> {
+    if ts.seconds < 0 || ts.nanoseconds < 0 || ts.nanoseconds >= 1_000_000_000 {
+        return Err(EINVAL);
+    }
+    Ok((ts.seconds as u64)
+        .saturating_mul(1000)
+        .saturating_add((ts.nanoseconds / 1_000_000) as u64))
+}
+
+fn milliseconds_to_timespec(milliseconds: u64) -> UserTimespec {
+    UserTimespec {
+        seconds: (milliseconds / 1000) as i64,
+        nanoseconds: ((milliseconds % 1000) * 1_000_000) as i64,
+    }
+}
+
+fn timerfd_take_expirations(timer: &mut TimerFdState, now: u64) -> u64 {
+    let Some(deadline) = timer.next_expiry_ms else {
+        return 0;
+    };
+    if now < deadline {
+        return 0;
+    }
+    if timer.interval_ms == 0 {
+        timer.next_expiry_ms = None;
+        return 1;
+    }
+    let elapsed = now - deadline;
+    let expirations = 1 + elapsed / timer.interval_ms;
+    timer.next_expiry_ms = Some(
+        deadline
+            .saturating_add(expirations.saturating_mul(timer.interval_ms)),
+    );
+    expirations
+}
+
+fn syscall_eventfd(initial_value: u64, flags: u64) -> Result<u64, i32> {
+    install_descriptor(UserDescriptor::EventFd(Arc::new(Mutex::new(EventFdState {
+        counter: initial_value,
+        semaphore: flags & EFD_SEMAPHORE != 0,
+    }))))
+}
+
+fn syscall_timerfd_create(clock_id: u64, _flags: u64) -> Result<u64, i32> {
+    if clock_id != 0 && clock_id != 1 && clock_id != 7 {
+        return Err(EINVAL);
+    }
+    install_descriptor(UserDescriptor::TimerFd(Arc::new(Mutex::new(TimerFdState {
+        clock: clock_id,
+        interval_ms: 0,
+        next_expiry_ms: None,
+    }))))
+}
+
+fn timerfd_for_fd(fd: u64) -> Result<Arc<Mutex<TimerFdState>>, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    match process.descriptors.get(fd).and_then(Option::as_ref) {
+        Some(UserDescriptor::TimerFd(state)) => Ok(Arc::clone(state)),
+        Some(_) => Err(EINVAL),
+        None => Err(EBADF),
+    }
+}
+
+fn syscall_timerfd_settime(fd: u64, flags: u64, new_value: u64, old_value: u64) -> Result<u64, i32> {
+    if new_value == 0 {
+        return Err(EFAULT);
+    }
+    paging::validate_user_range(new_value, core::mem::size_of::<UserItimerspec>(), false)
+        .map_err(|_| EFAULT)?;
+    if old_value != 0 {
+        paging::validate_user_range(old_value, core::mem::size_of::<UserItimerspec>(), true)
+            .map_err(|_| EFAULT)?;
+    }
+    let spec = unsafe { (new_value as *const UserItimerspec).read_unaligned() };
+    let value_ms = timespec_to_milliseconds(&spec.value)?;
+    let interval_ms = timespec_to_milliseconds(&spec.interval)?;
+    let state = timerfd_for_fd(fd)?;
+    let now = crate::arch::x86_64::monotonic_milliseconds();
+    let mut timer = state.lock();
+    if old_value != 0 {
+        let previous = UserItimerspec {
+            interval: milliseconds_to_timespec(timer.interval_ms),
+            value: milliseconds_to_timespec(
+                timer
+                    .next_expiry_ms
+                    .map_or(0, |deadline| deadline.saturating_sub(now)),
+            ),
+        };
+        unsafe { (old_value as *mut UserItimerspec).write_unaligned(previous) };
+    }
+    timer.interval_ms = interval_ms;
+    timer.next_expiry_ms = if value_ms == 0 {
+        None
+    } else if flags & TFD_TIMER_ABSTIME != 0 {
+        Some(value_ms)
+    } else {
+        Some(now.saturating_add(value_ms))
+    };
+    Ok(0)
+}
+
+fn syscall_timerfd_gettime(fd: u64, current_value: u64) -> Result<u64, i32> {
+    if current_value == 0 {
+        return Err(EFAULT);
+    }
+    paging::validate_user_range(
+        current_value,
+        core::mem::size_of::<UserItimerspec>(),
+        true,
+    )
+    .map_err(|_| EFAULT)?;
+    let state = timerfd_for_fd(fd)?;
+    let now = crate::arch::x86_64::monotonic_milliseconds();
+    let timer = state.lock();
+    let spec = UserItimerspec {
+        interval: milliseconds_to_timespec(timer.interval_ms),
+        value: milliseconds_to_timespec(
+            timer
+                .next_expiry_ms
+                .map_or(0, |deadline| deadline.saturating_sub(now)),
+        ),
+    };
+    unsafe { (current_value as *mut UserItimerspec).write_unaligned(spec) };
+    Ok(0)
+}
+
+fn epoll_instance_for_fd(fd: u64) -> Result<Arc<Mutex<EpollInstance>>, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    match process.descriptors.get(fd).and_then(Option::as_ref) {
+        Some(UserDescriptor::Epoll(instance)) => Ok(Arc::clone(instance)),
+        Some(_) => Err(EINVAL),
+        None => Err(EBADF),
+    }
+}
+
+fn syscall_epoll_create1(_flags: u64) -> Result<u64, i32> {
+    let mut entries = Vec::new();
+    entries.try_reserve_exact(8).map_err(|_| ENOMEM)?;
+    install_descriptor(UserDescriptor::Epoll(Arc::new(Mutex::new(EpollInstance {
+        entries,
+    }))))
+}
+
+fn syscall_epoll_ctl(epfd: u64, operation: u64, fd: u64, event: u64) -> Result<u64, i32> {
+    let target = usize::try_from(fd).map_err(|_| EBADF)?;
+    {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        match process.descriptors.get(target).and_then(Option::as_ref) {
+            Some(_) => {}
+            None => return Err(EBADF),
+        }
+        if matches!(
+            process.descriptors.get(target).and_then(Option::as_ref),
+            Some(UserDescriptor::Epoll(_))
+        ) {
+            return Err(EINVAL);
+        }
+        if usize::try_from(epfd).ok() == Some(target) {
+            return Err(EINVAL);
+        }
+    }
+
+    let (events, data) = if operation == EPOLL_CTL_DEL {
+        (0u32, 0u64)
+    } else {
+        if event == 0 {
+            return Err(EFAULT);
+        }
+        paging::validate_user_range(event, core::mem::size_of::<UserEpollEvent>(), false)
+            .map_err(|_| EFAULT)?;
+        let user_event = unsafe { (event as *const UserEpollEvent).read_unaligned() };
+        (user_event.events, user_event.data)
+    };
+
+    let instance = epoll_instance_for_fd(epfd)?;
+    let mut epoll = instance.lock();
+    match operation {
+        EPOLL_CTL_ADD => {
+            if epoll.entries.iter().any(|entry| entry.fd == target) {
+                return Err(EEXIST);
+            }
+            epoll
+                .entries
+                .try_reserve(1)
+                .map_err(|_| ENOMEM)?;
+            epoll.entries.push(EpollEntry {
+                fd: target,
+                events,
+                data,
+                last_ready: 0,
+            });
+        }
+        EPOLL_CTL_MOD => {
+            let Some(entry) = epoll.entries.iter_mut().find(|entry| entry.fd == target) else {
+                return Err(ENOENT);
+            };
+            entry.events = events;
+            entry.data = data;
+            entry.last_ready = 0;
+        }
+        EPOLL_CTL_DEL => {
+            let Some(index) = epoll.entries.iter().position(|entry| entry.fd == target) else {
+                return Err(ENOENT);
+            };
+            epoll.entries.remove(index);
+        }
+        _ => return Err(EINVAL),
+    }
+    Ok(0)
+}
+
+fn collect_epoll_events(
+    instance: &Arc<Mutex<EpollInstance>>,
+    events_address: u64,
+    maxevents: usize,
+) -> Result<u64, i32> {
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let mut epoll = instance.lock();
+    let mut written = 0usize;
+    for entry in epoll.entries.iter_mut() {
+        let Some(state) = descriptor_poll_state(&process, entry.fd, entry.fd as i32) else {
+            continue;
+        };
+        let mut ready = 0u32;
+        if entry.events & EPOLLIN != 0 && state.readable {
+            ready |= EPOLLIN;
+        }
+        if entry.events & EPOLLOUT != 0 && state.writable {
+            ready |= EPOLLOUT;
+        }
+        if state.error {
+            ready |= EPOLLERR;
+        }
+        if state.hangup {
+            ready |= EPOLLHUP;
+        }
+        if entry.events & EPOLLET != 0 {
+            // Edge-triggered: laporkan hanya saat readiness berubah dari 0.
+            let report = ready != 0 && entry.last_ready == 0;
+            entry.last_ready = ready;
+            if !report {
+                continue;
+            }
+        }
+        if ready == 0 {
+            continue;
+        }
+        let user_event = UserEpollEvent {
+            events: ready,
+            data: entry.data,
+        };
+        unsafe {
+            (events_address as *mut UserEpollEvent)
+                .add(written)
+                .write_unaligned(user_event);
+        }
+        if entry.events & EPOLLONESHOT != 0 {
+            entry.events &= !(EPOLLIN | EPOLLOUT);
+        }
+        written += 1;
+        if written == maxevents {
+            break;
+        }
+    }
+    Ok(written as u64)
+}
+
+fn syscall_epoll_wait(epfd: u64, events: u64, maxevents: u64, timeout_ms: u64) -> Result<u64, i32> {
+    let maxevents = usize::try_from(maxevents).map_err(|_| EINVAL)?;
+    if maxevents == 0 {
+        return Err(EINVAL);
+    }
+    let bytes = maxevents
+        .checked_mul(core::mem::size_of::<UserEpollEvent>())
+        .ok_or(EINVAL)?;
+    paging::validate_user_range(events, bytes, true).map_err(|_| EFAULT)?;
+    let instance = epoll_instance_for_fd(epfd)?;
+    let ready = collect_epoll_events(&instance, events, maxevents)?;
+    if ready != 0 || timeout_ms == 0 {
+        return Ok(ready);
+    }
+    let budget = wait_budget_milliseconds(timeout_ms);
+    let mut waited = 0u64;
+    while waited < budget {
+        sleep_milliseconds(1);
+        waited += 1;
+        let ready = collect_epoll_events(&instance, events, maxevents)?;
+        if ready != 0 {
+            return Ok(ready);
+        }
+    }
+    Ok(0)
+}
+
+fn syscall_socketpair(domain: u64, socket_type: u64, protocol: u64, addresses: u64) -> Result<u64, i32> {
+    if domain != AF_UNIX {
+        return Err(EAFNOSUPPORT);
+    }
+    if protocol != 0 {
+        return Err(EPROTONOSUPPORT);
+    }
+    match socket_type & SOCK_TYPE_MASK {
+        SOCK_STREAM | 2 => {}
+        _ => return Err(EPROTOTYPE),
+    }
+    paging::validate_user_range(addresses, core::mem::size_of::<[i32; 2]>(), true)
+        .map_err(|_| EFAULT)?;
+    let (first_read, first_write) = create_pipe()?;
+    let (second_read, second_write) = create_pipe()?;
+    let first = install_descriptor(UserDescriptor::SocketPair(DuplexEnd {
+        read_end: first_read,
+        write_end: second_write,
+    }))?;
+    let second = match install_descriptor(UserDescriptor::SocketPair(DuplexEnd {
+        read_end: second_read,
+        write_end: first_write,
+    })) {
+        Ok(fd) => fd,
+        Err(error) => {
+            let mut process = USER_PROCESS.lock();
+            if let Some(slot) = process.descriptors.get_mut(first as usize) {
+                *slot = None;
+            }
+            return Err(error);
+        }
+    };
+    unsafe {
+        (addresses as *mut [i32; 2]).write_unaligned([first as i32, second as i32]);
+    }
+    Ok(0)
+}
+
+fn syscall_clock_nanosleep(clock_id: u64, flags: u64, request: u64, remain: u64) -> Result<u64, i32> {
+    if take_interrupted_syscall(SYSCALL_CLOCK_NANOSLEEP) {
+        return Err(EINTR);
+    }
+    if clock_id != 0 && clock_id != 1 && clock_id != 7 {
+        return Err(EINVAL);
+    }
+    if request == 0 {
+        return Err(EFAULT);
+    }
+    paging::validate_user_range(request, core::mem::size_of::<UserTimespec>(), false)
+        .map_err(|_| EFAULT)?;
+    let ts = unsafe { (request as *const UserTimespec).read_unaligned() };
+    let requested = timespec_to_milliseconds(&ts)?;
+    let milliseconds = if flags & TIMER_ABSTIME != 0 {
+        let now = if clock_id == 0 {
+            (crate::drivers::rtc::unix_seconds().map_err(|_| EIO)? as u64)
+                .saturating_mul(1000)
+        } else {
+            crate::arch::x86_64::monotonic_milliseconds()
+        };
+        requested.saturating_sub(now)
+    } else {
+        requested
+    };
+    if remain != 0 {
+        paging::validate_user_range(remain, core::mem::size_of::<UserTimespec>(), true)
+            .map_err(|_| EFAULT)?;
+        unsafe { (remain as *mut UserTimespec).write_unaligned(milliseconds_to_timespec(0)) };
+    }
+    sleep_milliseconds(milliseconds.min(60_000));
+    Ok(0)
+}
+
+// ==== signal delivery ====
+
+const SIGKILL_NUMBER: u64 = 9;
+const SIGSTOP_NUMBER: u64 = 19;
+const SIGNAL_TABLE_LENGTH: usize = 32;
+const SA_RESETHAND_FLAG: u64 = 0x8000_0000;
+const SA_RESTART_FLAG: u64 = 0x1000_0000;
+
+/// Memeriksa sinyal yang siap dikirim sebelum syscall memblokir. Bila ada,
+/// syscall harus gagal dengan `EINTR`; untuk handler ber-`SA_RESTART` syscall
+/// dicatat agar diulang setelah handler selesai.
+fn take_interrupted_syscall(number: u64) -> bool {
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return false;
+    }
+    ensure_signal_table(&mut process);
+    process.interrupted = false;
+    process.interrupt_signal = 0;
+    let pending = process.pending_signals & !process.blocked_signals;
+    if pending == 0 {
+        return false;
+    }
+    let signal = pending.trailing_zeros() as u64 + 1;
+    let action = process.signal_handlers[signal as usize];
+    if action.handler == 1 {
+        return false;
+    }
+    if action.handler > 1 && action.flags & SA_RESTART_FLAG != 0 {
+        process.restart_number = Some(number);
+    }
+    true
+}
+
+#[derive(Clone, Copy)]
+struct SignalAction {
+    handler: u64,
+    flags: u64,
+    mask: u64,
+    restorer: u64,
+}
+
+const SIGNAL_ACTION_DEFAULT: SignalAction = SignalAction {
+    handler: 0,
+    flags: 0,
+    mask: 0,
+    restorer: 0,
+};
+
+/// Konteks yang ditulis kernel ke stack user sebelum memanggil handler.
+/// `sigreturn` memulihkan seluruh isinya.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserSignalFrame {
+    rax: u64,
+    rbx: u64,
+    rcx: u64,
+    rdx: u64,
+    rsi: u64,
+    rdi: u64,
+    rbp: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+    rip: u64,
+    rflags: u64,
+    rsp: u64,
+    mask: u64,
+    signum: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserSigaction {
+    handler: u64,
+    mask: u64,
+    flags: i32,
+    padding: u32,
+    restorer: u64,
+}
+
+fn ensure_signal_table(process: &mut UserProcess) {
+    if process.signal_handlers.len() != SIGNAL_TABLE_LENGTH {
+        process.signal_handlers.clear();
+        process
+            .signal_handlers
+            .resize(SIGNAL_TABLE_LENGTH, SIGNAL_ACTION_DEFAULT);
+    }
+}
+
+fn signal_default_ignored(number: u64) -> bool {
+    matches!(number, 17 | 18 | 23 | 28)
+}
+
+fn syscall_kill(pid: u64, signal: u64) -> Result<u64, i32> {
+    if signal >= SIGNAL_TABLE_LENGTH as u64 {
+        return Err(EINVAL);
+    }
+    if signal == 0 {
+        return Ok(0);
+    }
+    let bit = 1u64 << (signal - 1);
+    let current_pid = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        process.pid
+    };
+    // kill ke diri sendiri tetap harus membangunkan thread saudara yang
+    // sedang menunggu, jadi jalurnya sama dengan kill ke pid lain.
+    let self_target = pid == 0 || pid == current_pid || pid == u64::MAX;
+    let target_pid = if self_target { current_pid } else { pid };
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current_index = scheduler.current;
+    let mut woke_blocked_thread = false;
+    for (index, process) in scheduler.processes.iter_mut().enumerate() {
+        if process.pid != target_pid || index == current_index {
+            continue;
+        }
+        if process.exit_status.is_some() {
+            continue;
+        }
+        ensure_signal_table(&mut process.state);
+        process.state.pending_signals |= bit;
+        let deliverable = process.state.blocked_signals & bit == 0
+            && process.state.signal_handlers[signal as usize].handler != 1;
+        if deliverable && process.waiting_for.is_some() {
+            process.waiting_for = None;
+            process.wait_deadline = None;
+            process.state.interrupted = true;
+            process.state.interrupt_signal = signal;
+            woke_blocked_thread = true;
+        }
+    }
+    drop(scheduler);
+
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    if process.pid != target_pid {
+        return Err(ESRCH);
+    }
+    if !woke_blocked_thread {
+        ensure_signal_table(&mut process);
+        process.pending_signals |= bit;
+    }
+    Ok(0)
+}
+
+fn syscall_sigaction(number: u64, action: u64, old_action: u64) -> Result<u64, i32> {
+    if number == 0 || number >= SIGNAL_TABLE_LENGTH as u64 {
+        return Err(EINVAL);
+    }
+    if number == SIGKILL_NUMBER || number == SIGSTOP_NUMBER {
+        return Err(EINVAL);
+    }
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    ensure_signal_table(&mut process);
+    if old_action != 0 {
+        paging::validate_user_range(old_action, core::mem::size_of::<UserSigaction>(), true)
+            .map_err(|_| EFAULT)?;
+        let previous = process.signal_handlers[number as usize];
+        let user_previous = UserSigaction {
+            handler: previous.handler,
+            mask: previous.mask,
+            flags: previous.flags as i32,
+            padding: 0,
+            restorer: previous.restorer,
+        };
+        unsafe { (old_action as *mut UserSigaction).write_unaligned(user_previous) };
+    }
+    if action != 0 {
+        paging::validate_user_range(action, core::mem::size_of::<UserSigaction>(), false)
+            .map_err(|_| EFAULT)?;
+        let user_action = unsafe { (action as *const UserSigaction).read_unaligned() };
+        process.signal_handlers[number as usize] = SignalAction {
+            handler: user_action.handler,
+            flags: user_action.flags as u64,
+            mask: user_action.mask,
+            restorer: user_action.restorer,
+        };
+    }
+    Ok(0)
+}
+
+fn syscall_signal(number: u64, handler: u64) -> Result<u64, i32> {
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    if number == 0 || number >= SIGNAL_TABLE_LENGTH as u64 {
+        return Err(EINVAL);
+    }
+    if number == SIGKILL_NUMBER || number == SIGSTOP_NUMBER {
+        return Err(EINVAL);
+    }
+    ensure_signal_table(&mut process);
+    let slot = &mut process.signal_handlers[number as usize];
+    let previous = slot.handler;
+    slot.handler = handler;
+    Ok(previous)
+}
+
+fn syscall_sigprocmask(how: u64, set: u64, old_set: u64) -> Result<u64, i32> {
+    if how > 2 {
+        return Err(EINVAL);
+    }
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    if old_set != 0 {
+        paging::validate_user_range(old_set, core::mem::size_of::<u64>(), true)
+            .map_err(|_| EFAULT)?;
+        unsafe { (old_set as *mut u64).write_unaligned(process.blocked_signals) };
+    }
+    if set != 0 {
+        paging::validate_user_range(set, core::mem::size_of::<u64>(), false)
+            .map_err(|_| EFAULT)?;
+        let mut mask = unsafe { (set as *const u64).read_unaligned() };
+        mask &= !((1u64 << (SIGKILL_NUMBER - 1)) | (1u64 << (SIGSTOP_NUMBER - 1)));
+        process.blocked_signals = match how {
+            0 => process.blocked_signals | mask,
+            1 => process.blocked_signals & !mask,
+            _ => mask,
+        };
+    }
+    Ok(0)
+}
+
+fn syscall_sigpending(set: u64) -> Result<u64, i32> {
+    paging::validate_user_range(set, core::mem::size_of::<u64>(), true).map_err(|_| EFAULT)?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let pending = process.pending_signals & process.blocked_signals;
+    unsafe { (set as *mut u64).write_unaligned(pending) };
+    Ok(0)
+}
+
+fn syscall_sigsuspend(mask_address: u64) -> Result<u64, i32> {
+    let mask = if mask_address == 0 {
+        0
+    } else {
+        paging::validate_user_range(mask_address, core::mem::size_of::<u64>(), false)
+            .map_err(|_| EFAULT)?;
+        unsafe { (mask_address as *const u64).read_unaligned() }
+    };
+    let previous = {
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        let previous = process.blocked_signals;
+        process.blocked_signals = mask;
+        previous
+    };
+    let mut waited = 0u64;
+    loop {
+        let ready = {
+            let process = USER_PROCESS.lock();
+            process.pending_signals & !process.blocked_signals != 0
+        };
+        if ready || waited >= 60_000 {
+            break;
+        }
+        sleep_milliseconds(1);
+        waited += 1;
+    }
+    let mut process = USER_PROCESS.lock();
+    process.blocked_signals = previous;
+    Ok(0)
+}
+
+fn syscall_sigreturn(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let stack_pointer = frame.stack_frame.stack_pointer;
+    if paging::validate_user_range(
+        stack_pointer,
+        core::mem::size_of::<UserSignalFrame>(),
+        false,
+    )
+    .is_err()
+    {
+        frame.rax = (-(EFAULT as i64)) as u64;
+        return frame_pointer;
+    }
+    let saved = unsafe { (stack_pointer as *const UserSignalFrame).read_unaligned() };
+    frame.rax = saved.rax;
+    frame.rbx = saved.rbx;
+    frame.rcx = saved.rcx;
+    frame.rdx = saved.rdx;
+    frame.rsi = saved.rsi;
+    frame.rdi = saved.rdi;
+    frame.rbp = saved.rbp;
+    frame.r8 = saved.r8;
+    frame.r9 = saved.r9;
+    frame.r10 = saved.r10;
+    frame.r11 = saved.r11;
+    frame.r12 = saved.r12;
+    frame.r13 = saved.r13;
+    frame.r14 = saved.r14;
+    frame.r15 = saved.r15;
+    frame.stack_frame.instruction_pointer = saved.rip;
+    frame.stack_frame.cpu_flags = saved.rflags;
+    frame.stack_frame.stack_pointer = saved.rsp;
+    let restart = {
+        let mut process = USER_PROCESS.lock();
+        process.blocked_signals = saved.mask;
+        process.restart_number.take()
+    };
+    if let Some(number) = restart {
+        // Ulangi syscall yang terinterupsi setelah handler selesai.
+        frame.rax = number;
+        frame.stack_frame.instruction_pointer =
+            frame.stack_frame.instruction_pointer.saturating_sub(2);
+    }
+    frame_pointer
+}
+
+/// Memilih sinyal pending yang bisa dikirim, lalu menyiapkan handler di stack
+/// user. Mengembalikan frame pengganti hanya bila proses dihentikan.
+fn deliver_pending_signal(frame: &mut InterruptFrame) -> Option<*mut InterruptFrame> {
+    for _ in 0..SIGNAL_TABLE_LENGTH {
+        let (number, action, blocked) = {
+            let mut process = USER_PROCESS.lock();
+            if !process.active {
+                return None;
+            }
+            ensure_signal_table(&mut process);
+            let kill_bit = 1u64 << (SIGKILL_NUMBER - 1);
+            let deliverable = if process.pending_signals & kill_bit != 0 {
+                kill_bit
+            } else {
+                process.pending_signals & !process.blocked_signals
+            };
+            if deliverable == 0 {
+                return None;
+            }
+            let number = deliverable.trailing_zeros() as u64 + 1;
+            let action = process.signal_handlers[number as usize];
+            let blocked = process.blocked_signals;
+            (number, action, blocked)
+        };
+
+        if action.handler == 1 {
+            let mut process = USER_PROCESS.lock();
+            process.pending_signals &= !(1u64 << (number - 1));
+            continue;
+        }
+
+        if action.handler == 0 {
+            if signal_default_ignored(number) {
+                let mut process = USER_PROCESS.lock();
+                process.pending_signals &= !(1u64 << (number - 1));
+                continue;
+            }
+            return Some(terminate_user_inner(frame, 128 + number));
+        }
+
+        let stack_pointer = frame.stack_frame.stack_pointer;
+        let frame_size = core::mem::size_of::<UserSignalFrame>();
+        let frame_address = stack_pointer.saturating_sub(frame_size as u64) & !0xF;
+        let restorer_address = frame_address.saturating_sub(8);
+        if paging::validate_user_range(restorer_address, frame_size + 8, true).is_err() {
+            frame.rax = (-(EFAULT as i64)) as u64;
+            return None;
+        }
+        let saved = UserSignalFrame {
+            rax: frame.rax,
+            rbx: frame.rbx,
+            rcx: frame.rcx,
+            rdx: frame.rdx,
+            rsi: frame.rsi,
+            rdi: frame.rdi,
+            rbp: frame.rbp,
+            r8: frame.r8,
+            r9: frame.r9,
+            r10: frame.r10,
+            r11: frame.r11,
+            r12: frame.r12,
+            r13: frame.r13,
+            r14: frame.r14,
+            r15: frame.r15,
+            rip: frame.stack_frame.instruction_pointer,
+            rflags: frame.stack_frame.cpu_flags,
+            rsp: stack_pointer,
+            mask: blocked,
+            signum: number,
+        };
+        unsafe {
+            (frame_address as *mut UserSignalFrame).write_unaligned(saved);
+            (restorer_address as *mut u64).write_unaligned(action.restorer);
+        }
+        frame.stack_frame.instruction_pointer = action.handler;
+        frame.stack_frame.stack_pointer = restorer_address;
+        frame.rdi = number;
+        frame.rsi = frame_address;
+        frame.rdx = frame_address;
+        frame.rax = 0;
+
+        let mut process = USER_PROCESS.lock();
+        process.pending_signals &= !(1u64 << (number - 1));
+        process.blocked_signals |= (1u64 << (number - 1)) | action.mask;
+        if action.flags & SA_RESETHAND_FLAG != 0 {
+            process.signal_handlers[number as usize].handler = 0;
+        }
+        return None;
+    }
+    None
 }

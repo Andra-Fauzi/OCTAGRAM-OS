@@ -4,6 +4,12 @@
 #include <sys/types.h>
 
 #define CLOCK_REALTIME 0
+#define CLOCK_MONOTONIC 1
+#define CLOCK_PROCESS_CPUTIME_ID 2
+#define CLOCK_THREAD_CPUTIME_ID 3
+#define CLOCK_MONOTONIC_RAW 4
+#define CLOCK_BOOTTIME 7
+#define TIMER_ABSTIME 1
 
 struct timespec {
     time_t tv_sec;
@@ -32,7 +38,12 @@ struct tm {
 
 time_t time(time_t *result);
 int clock_gettime(clockid_t clock_id, struct timespec *time_value);
+int clock_getres(clockid_t clock_id, struct timespec *resolution);
 struct tm *gmtime(const time_t *time_value);
 struct tm *localtime(const time_t *time_value);
+int nanosleep(const struct timespec *request, struct timespec *remaining);
+int clock_nanosleep(clockid_t clock_id, int flags,
+                    const struct timespec *request,
+                    struct timespec *remaining);
 
 #endif

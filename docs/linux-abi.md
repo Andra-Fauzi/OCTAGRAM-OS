@@ -114,6 +114,12 @@ langsung dari arsip zip karena build statis ini tidak menyertakan modul
 kompresi). Heap kernel dinaikkan ke 64 MiB agar toolchain dan runtime Python
 muat di RAM filesystem saat boot.
 
+Startup normal (tanpa `-S`) dan modul murni-Python juga bekerja, misalnya
+`import json` + `os.listdir('/')`, karena `openat` boleh membuka direktori
+read-only dan mengembalikan `DirectoryStream` yang dilayani `getdents64`.
+Modul ekstensi dinamis (`.so` seperti `math`, `_ssl`, `_sqlite3`) tetap belum
+ada karena membutuhkan `ld.so`.
+
 ## Batasan dan langkah berikutnya
 
 - Belum ada `ld-linux.so`: binary Linux **dinamis** (termasuk CPython/OpenJDK

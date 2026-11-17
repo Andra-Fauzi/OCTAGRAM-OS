@@ -4691,6 +4691,33 @@ fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32
     if flags & O_TRUNC != 0 && !writable || flags & O_APPEND != 0 && !writable {
         return Err(EINVAL);
     }
+    // Linux opens a directory read-only and serves it through getdents64.
+    // Python's import system relies on this to scan sys.path entries.
+    if let Ok(Ok(metadata)) = fs::with_vfs(|vfs| vfs.metadata(&path))
+        && metadata.node_type == NodeType::Directory
+    {
+        if writable {
+            return Err(errno_from_fs(FsError::IsDirectory));
+        }
+        let entries = fs::with_vfs(|vfs| vfs.read_dir(&path))
+            .map_err(errno_from_fs)?
+            .map_err(errno_from_fs)?;
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        let fd = reserve_descriptor_slot(&mut process.descriptors)?;
+        let descriptor_count = process.descriptors.len();
+        process.descriptor_flags.resize(descriptor_count, 0);
+        process.descriptors[fd] = Some(UserDescriptor::Directory(Arc::new(Mutex::new(
+            DirectoryStream {
+                path,
+                entries,
+                next_entry: 0,
+            },
+        ))));
+        return Ok(fd as u64);
+    }
     let process_terminal = USER_PROCESS.lock().terminal;
     if matches!(
         path.as_str(),

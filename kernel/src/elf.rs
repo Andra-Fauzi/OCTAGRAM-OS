@@ -123,6 +123,41 @@ const SYSCALL_SHUTDOWN: u64 = 78;
 const SYSCALL_GETSOCKNAME: u64 = 79;
 const SYSCALL_GETPEERNAME: u64 = 80;
 const SYSCALL_IOCTL: u64 = 81;
+const SYSCALL_GETUID: u64 = 82;
+const SYSCALL_GETGID: u64 = 83;
+const SYSCALL_GETEUID: u64 = 84;
+const SYSCALL_GETEGID: u64 = 85;
+const SYSCALL_UNAME: u64 = 86;
+const SYSCALL_GETPPID: u64 = 87;
+const SYSCALL_BRK: u64 = 88;
+const SYSCALL_GETTIMEOFDAY: u64 = 89;
+const SYSCALL_NANOSLEEP: u64 = 90;
+const SYSCALL_KILL: u64 = 91;
+const SYSCALL_SIGACTION: u64 = 92;
+const SYSCALL_SIGPROCMASK: u64 = 93;
+const SYSCALL_FUTEX: u64 = 94;
+const SYSCALL_SETSOCKOPT: u64 = 95;
+const SYSCALL_GETSOCKOPT: u64 = 96;
+const SYSCALL_POLL: u64 = 97;
+const SYSCALL_PIPE2: u64 = 98;
+const SYSCALL_DUP3: u64 = 99;
+const SYSCALL_EVENTFD: u64 = 100;
+const SYSCALL_TIMERFD_CREATE: u64 = 101;
+const SYSCALL_PREAD: u64 = 102;
+const SYSCALL_PWRITE: u64 = 103;
+const SYSCALL_WRITEV: u64 = 104;
+const SYSCALL_READV: u64 = 105;
+const SYSCALL_SENDMSG: u64 = 106;
+const SYSCALL_RECVMSG: u64 = 107;
+const SYSCALL_SYSCONF: u64 = 108;
+const SYSCALL_GETRLIMIT: u64 = 109;
+const SYSCALL_SETRLIMIT: u64 = 110;
+const SYSCALL_GETRUSAGE: u64 = 111;
+const SYSCALL_TIMES: u64 = 112;
+const SYSCALL_SIGRETURN: u64 = 113;
+const SYSCALL_SIGPENDING: u64 = 114;
+const SYSCALL_SIGSUSPEND: u64 = 115;
+const SYSCALL_SIGNAL: u64 = 116;
 const AT_FDCWD: i64 = -100;
 const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
 const AT_REMOVEDIR: u64 = 0x200;
@@ -213,6 +248,78 @@ struct Winsize {
     ws_col: u16,
     ws_xpixel: u16,
     ws_ypixel: u16,
+}
+
+#[repr(C)]
+struct Uname {
+    sysname:  [u8; 65],
+    nodename: [u8; 65],
+    release:  [u8; 65],
+    version:  [u8; 65],
+    machine:  [u8; 65],
+    domainname: [u8; 65],
+}
+
+impl Uname {
+    fn new() -> Self {
+        let mut u = Self { sysname: [0;65], nodename: [0;65], release: [0;65], version: [0;65], machine: [0;65], domainname: [0;65] };
+        copy_cstr(&mut u.sysname, b"OCTAGRAM-OS");
+        copy_cstr(&mut u.nodename, b"octagram");
+        copy_cstr(&mut u.release, b"1.0.0");
+        copy_cstr(&mut u.version, b"#1 POSIX");
+        copy_cstr(&mut u.machine, b"x86_64");
+        u
+    }
+}
+
+fn copy_cstr(buf: &mut [u8], src: &[u8]) {
+    let len = src.len().min(buf.len() - 1);
+    buf[..len].copy_from_slice(&src[..len]);
+}
+
+#[repr(C)]
+struct Timeval {
+    tv_sec: i64,
+    tv_usec: i64,
+}
+
+#[repr(C)]
+struct PollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
+const RLIM_INFINITY: u64 = u64::MAX;
+
+#[repr(C)]
+struct Rlimit {
+    rlim_cur: u64,
+    rlim_max: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct Rusage {
+    ru_utime:  [i64; 2],
+    ru_stime:  [i64; 2],
+    ru_rest:   [i64; 14],
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct Tms {
+    tms_utime:  i64,
+    tms_stime:  i64,
+    tms_cutime: i64,
+    tms_cstime: i64,
+}
+
+// IOVec for readv/writev
+#[repr(C)]
+struct IoVec {
+    base: u64,
+    len:  u64,
 }
 
 const O_RDONLY: u64 = 0;
@@ -2037,6 +2144,32 @@ fn dispatch_syscall(
                 None => Err(EBADF),
             }
         }
+        // --- syscall untuk kompatibilitas runtime (Python, Java, dsb) ---
+        SYSCALL_GETUID | SYSCALL_GETEUID => Ok(0),
+        SYSCALL_GETGID | SYSCALL_GETEGID => Ok(0),
+        SYSCALL_GETPPID => Ok(1),
+        SYSCALL_UNAME => syscall_uname(arg1),
+        SYSCALL_BRK => syscall_brk(arg1),
+        SYSCALL_GETTIMEOFDAY => syscall_gettimeofday(arg1),
+        SYSCALL_NANOSLEEP => syscall_nanosleep(arg1),
+        SYSCALL_KILL => Ok(0),
+        SYSCALL_SIGACTION | SYSCALL_SIGPROCMASK | SYSCALL_SIGRETURN
+        | SYSCALL_SIGPENDING | SYSCALL_SIGSUSPEND | SYSCALL_SIGNAL => Ok(0),
+        SYSCALL_FUTEX => syscall_futex(arg1, arg2, arg3),
+        SYSCALL_SETSOCKOPT | SYSCALL_GETSOCKOPT => Ok(0),
+        SYSCALL_POLL => syscall_poll(arg1, arg2),
+        SYSCALL_PIPE2 => syscall_pipe2(arg1),
+        SYSCALL_DUP3 => syscall_dup3(arg1, arg2, arg3),
+        SYSCALL_EVENTFD | SYSCALL_TIMERFD_CREATE => Err(ENOSYS),
+        SYSCALL_PREAD => syscall_pread(arg1, arg2, arg3, arg4),
+        SYSCALL_PWRITE => syscall_pwrite(arg1, arg2, arg3, arg4),
+        SYSCALL_WRITEV => syscall_writev(arg1, arg2, arg3),
+        SYSCALL_READV => syscall_readv(arg1, arg2, arg3),
+        SYSCALL_SENDMSG | SYSCALL_RECVMSG => Err(ENOSYS),
+        SYSCALL_SYSCONF => syscall_sysconf(arg1),
+        SYSCALL_GETRLIMIT | SYSCALL_SETRLIMIT => syscall_rlimit(frame.rax, arg1, arg2),
+        SYSCALL_GETRUSAGE => syscall_getrusage(arg1, arg2),
+        SYSCALL_TIMES => syscall_times(arg1),
         _ => Err(ENOSYS),
     }
 }
@@ -5408,6 +5541,206 @@ fn syscall_clock_gettime(clock_id: u64, address: u64) -> Result<u64, i32> {
         nanoseconds: 0,
     };
     unsafe { (address as *mut UserTimespec).write_unaligned(time) };
+    Ok(0)
+}
+
+// --- Implementasi syscall tambahan ---
+
+fn syscall_uname(address: u64) -> Result<u64, i32> {
+    paging::validate_user_range(address, core::mem::size_of::<Uname>(), true)
+        .map_err(|_| EFAULT)?;
+    unsafe { (address as *mut Uname).write_unaligned(Uname::new()) };
+    Ok(0)
+}
+
+// brk: return current mmap_cursor sebagai "program break"
+fn syscall_brk(addr: u64) -> Result<u64, i32> {
+    let memory = current_user_memory()?;
+    let cursor = *memory.mmap_cursor.lock();
+    if addr == 0 {
+        return Ok(cursor);
+    }
+    // Jika addr lebih besar, coba alokasi anonymous pages
+    if addr > cursor {
+        let pages = ((addr - cursor + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+        let mut mappings = memory.mmap_pages.lock();
+        let mut cur = *memory.mmap_cursor.lock();
+        mappings.try_reserve(pages).map_err(|_| ENOMEM)?;
+        for _ in 0..pages {
+            let physical = match allocate_mapping_frame(None) {
+                Ok((p, _)) => p,
+                Err(_) => return Ok(cur),
+            };
+            let page_flags = mapping_flags(PROT_READ | PROT_WRITE).unwrap_or_default();
+            if unsafe { paging::map_page(cur, physical, page_flags) }.is_err() {
+                free_frame(physical as usize);
+                return Ok(cur);
+            }
+            mappings.push(MappingPage {
+                address: cur,
+                shared_backing: None,
+                locked: false,
+                can_write: true,
+                anonymous: true,
+                is_device: false,
+            });
+            cur += PAGE_SIZE;
+        }
+        *memory.mmap_cursor.lock() = cur;
+        return Ok(cur);
+    }
+    Ok(cursor)
+}
+
+fn syscall_gettimeofday(address: u64) -> Result<u64, i32> {
+    if address == 0 { return Ok(0); }
+    paging::validate_user_range(address, core::mem::size_of::<Timeval>(), true)
+        .map_err(|_| EFAULT)?;
+    let secs = crate::drivers::rtc::unix_seconds().map_err(|_| EIO)?;
+    let tv = Timeval { tv_sec: secs, tv_usec: 0 };
+    unsafe { (address as *mut Timeval).write_unaligned(tv) };
+    Ok(0)
+}
+
+fn syscall_nanosleep(req: u64) -> Result<u64, i32> {
+    if req == 0 { return Ok(0); }
+    paging::validate_user_range(req, core::mem::size_of::<UserTimespec>(), false)
+        .map_err(|_| EFAULT)?;
+    let ts = unsafe { (req as *const UserTimespec).read_unaligned() };
+    let ms = (ts.seconds as u32).saturating_mul(1000)
+        .saturating_add((ts.nanoseconds / 1_000_000) as u32);
+    if ms > 0 && ms < 60_000 {
+        crate::arch::x86_64::delay_milliseconds(ms);
+    }
+    Ok(0)
+}
+
+// futex: implementasi minimal — WAIT selalu sukses, WAKE selalu sukses
+fn syscall_futex(addr: u64, op: u64, _val: u64) -> Result<u64, i32> {
+    if addr == 0 { return Err(EFAULT); }
+    let _ = op;
+    Ok(0)
+}
+
+fn syscall_poll(fds_addr: u64, nfds: u64) -> Result<u64, i32> {
+    if nfds == 0 { return Ok(0); }
+    if nfds > 1024 { return Err(EINVAL); }
+    let size = (nfds as usize).checked_mul(core::mem::size_of::<PollFd>()).ok_or(EINVAL)?;
+    paging::validate_user_range(fds_addr, size, true).map_err(|_| EFAULT)?;
+    // Semua fd langsung dianggap ready (non-blocking stub)
+    let mut ready = 0u64;
+    for i in 0..nfds as usize {
+        let pfd = unsafe {
+            &mut *((fds_addr as usize + i * core::mem::size_of::<PollFd>()) as *mut PollFd)
+        };
+        if pfd.fd >= 0 {
+            pfd.revents = pfd.events & 0x0005; // POLLIN|POLLOUT
+            if pfd.revents != 0 { ready += 1; }
+        }
+    }
+    Ok(ready)
+}
+
+fn syscall_pipe2(pipefd: u64) -> Result<u64, i32> {
+    // flags (arg2) diabaikan — O_CLOEXEC/O_NONBLOCK tidak diimplementasikan
+    syscall_pipe(pipefd)
+}
+
+fn syscall_dup3(oldfd: u64, newfd: u64, _flags: u64) -> Result<u64, i32> {
+    // Gunakan dup2 yang sudah ada
+    dispatch_syscall(SYSCALL_DUP2, oldfd, newfd, 0, 0, 0, 0)
+}
+
+fn syscall_pread(fd: u64, buf: u64, count: u64, offset: u64) -> Result<u64, i32> {
+    // lseek ke offset, baca, lseek kembali
+    let old_pos = dispatch_syscall(SYSCALL_LSEEK, fd, 0, 1 /* SEEK_CUR */, 0, 0, 0)?;
+    dispatch_syscall(SYSCALL_LSEEK, fd, offset, 0 /* SEEK_SET */, 0, 0, 0)?;
+    let n = dispatch_syscall(SYSCALL_READ, fd, buf, count, 0, 0, 0);
+    let _ = dispatch_syscall(SYSCALL_LSEEK, fd, old_pos, 0, 0, 0, 0);
+    n
+}
+
+fn syscall_pwrite(fd: u64, buf: u64, count: u64, offset: u64) -> Result<u64, i32> {
+    let old_pos = dispatch_syscall(SYSCALL_LSEEK, fd, 0, 1, 0, 0, 0)?;
+    dispatch_syscall(SYSCALL_LSEEK, fd, offset, 0, 0, 0, 0)?;
+    let n = dispatch_syscall(SYSCALL_WRITE, fd, buf, count, 0, 0, 0);
+    let _ = dispatch_syscall(SYSCALL_LSEEK, fd, old_pos, 0, 0, 0, 0);
+    n
+}
+
+fn syscall_writev(fd: u64, iov_addr: u64, iovcnt: u64) -> Result<u64, i32> {
+    if iovcnt > 1024 { return Err(EINVAL); }
+    let iov_size = (iovcnt as usize).checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
+    paging::validate_user_range(iov_addr, iov_size, false).map_err(|_| EFAULT)?;
+    let mut total = 0u64;
+    for i in 0..iovcnt as usize {
+        let iov = unsafe {
+            &*((iov_addr as usize + i * core::mem::size_of::<IoVec>()) as *const IoVec)
+        };
+        if iov.len == 0 { continue; }
+        let n = dispatch_syscall(SYSCALL_WRITE, fd, iov.base, iov.len, 0, 0, 0)?;
+        total = total.saturating_add(n);
+    }
+    Ok(total)
+}
+
+fn syscall_readv(fd: u64, iov_addr: u64, iovcnt: u64) -> Result<u64, i32> {
+    if iovcnt > 1024 { return Err(EINVAL); }
+    let iov_size = (iovcnt as usize).checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
+    paging::validate_user_range(iov_addr, iov_size, false).map_err(|_| EFAULT)?;
+    let mut total = 0u64;
+    for i in 0..iovcnt as usize {
+        let iov = unsafe {
+            &*((iov_addr as usize + i * core::mem::size_of::<IoVec>()) as *const IoVec)
+        };
+        if iov.len == 0 { continue; }
+        let n = dispatch_syscall(SYSCALL_READ, fd, iov.base, iov.len, 0, 0, 0)?;
+        total = total.saturating_add(n);
+        if n < iov.len { break; } // EOF
+    }
+    Ok(total)
+}
+
+// sysconf: kembalikan nilai umum
+fn syscall_sysconf(name: u64) -> Result<u64, i32> {
+    match name {
+        1  => Ok(100),    // _SC_CHILD_MAX
+        2  => Ok(1000),   // _SC_CLK_TCK
+        3  => Ok(4096),   // _SC_PAGESIZE / PAGE_SIZE
+        4  => Ok(0),      // _SC_OPEN_MAX → not enforced
+        11 => Ok(4096),   // _SC_PAGE_SIZE
+        30 => Ok(8),      // _SC_NPROCESSORS_CONF
+        84 => Ok(8),      // _SC_NPROCESSORS_ONLN
+        _  => Ok(u64::MAX), // tidak diketahui → unlimited
+    }
+}
+
+fn syscall_rlimit(syscall: u64, resource: u64, addr: u64) -> Result<u64, i32> {
+    if syscall == SYSCALL_SETRLIMIT { return Ok(0); }
+    // GETRLIMIT
+    if addr == 0 { return Err(EFAULT); }
+    paging::validate_user_range(addr, core::mem::size_of::<Rlimit>(), true)
+        .map_err(|_| EFAULT)?;
+    let rl = Rlimit { rlim_cur: RLIM_INFINITY, rlim_max: RLIM_INFINITY };
+    unsafe { (addr as *mut Rlimit).write_unaligned(rl) };
+    let _ = resource;
+    Ok(0)
+}
+
+fn syscall_getrusage(_who: u64, addr: u64) -> Result<u64, i32> {
+    if addr == 0 { return Err(EFAULT); }
+    paging::validate_user_range(addr, core::mem::size_of::<Rusage>(), true)
+        .map_err(|_| EFAULT)?;
+    unsafe { (addr as *mut Rusage).write_unaligned(Rusage::default()) };
+    Ok(0)
+}
+
+fn syscall_times(addr: u64) -> Result<u64, i32> {
+    if addr != 0 {
+        paging::validate_user_range(addr, core::mem::size_of::<Tms>(), true)
+            .map_err(|_| EFAULT)?;
+        unsafe { (addr as *mut Tms).write_unaligned(Tms::default()) };
+    }
     Ok(0)
 }
 

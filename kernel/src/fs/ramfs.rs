@@ -63,6 +63,19 @@ impl RamFs {
     }
 }
 
+/// Make room for `extra` more bytes.
+///
+/// `Vec::try_reserve` grows geometrically, which can ask the heap for up to
+/// twice the needed size and fail with `NoSpace` while plenty of memory is
+/// still free. Fall back to an exact reservation before giving up.
+fn grow_vec(data: &mut Vec<u8>, extra: usize) -> Result<(), FsError> {
+    if data.try_reserve(extra).is_ok() {
+        return Ok(());
+    }
+    data.try_reserve_exact(extra)
+        .map_err(|_| FsError::NoSpace)
+}
+
 impl Default for RamFs {
     fn default() -> Self {
         Self::new()
@@ -112,8 +125,7 @@ impl FileSystem for RamFs {
                     return Ok(0);
                 }
                 if end > data.len() {
-                    data.try_reserve(end - data.len())
-                        .map_err(|_| FsError::NoSpace)?;
+                    grow_vec(data, end - data.len())?;
                     data.resize(end, 0);
                 }
                 data[offset..end].copy_from_slice(bytes);
@@ -129,11 +141,12 @@ impl FileSystem for RamFs {
             Node::Directory { .. } => Err(FsError::IsDirectory),
             Node::File { data, .. } => {
                 if len > data.len() {
-                    data.try_reserve(len - data.len())
-                        .map_err(|_| FsError::NoSpace)?;
+                    grow_vec(data, len - data.len())?;
                     data.resize(len, 0);
                 } else {
                     data.truncate(len);
+                    // Give the memory back: it is the same heap every file shares.
+                    data.shrink_to_fit();
                 }
                 Ok(())
             }

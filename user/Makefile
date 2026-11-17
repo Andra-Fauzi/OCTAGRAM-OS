@@ -27,7 +27,10 @@ TCC_CONFIG := third_party/tinycc/config.h
 TCC_CONFIG_TEMPLATE := third_party/tinycc/config.h.octagram
 TCC_ELF := build/tcc.elf
 TCC_CFLAGS := $(CFLAGS) -w -DONE_SOURCE=0 -DCONFIG_TCC_STATIC \
-	-DTARGETOS_OCTAGRAM -Ithird_party/tinycc -Ithird_party/tinycc/include
+	-DTARGETOS_OCTAGRAM -Ithird_party/tinycc -Ithird_party/tinycc/include \
+	-DCONFIG_SYSROOT=\"\" -DCONFIG_TCCDIR=\"/lib/tcc\" \
+	-DCONFIG_TCC_CRTPREFIX=\"/lib/tcc\" -DCONFIG_TCC_LIBPATHS=\"{B}\" \
+	-DCONFIG_TCC_SYSINCLUDEPATHS=\"/include\"
 PIC_CFLAGS := $(filter-out -fno-pic -fno-pie -DOCTAGRAM_TLS_ERRNO,$(CFLAGS)) -fPIC
 RUNTIME_PIC_CFLAGS := $(PIC_CFLAGS) -DOCTAGRAM_SHARED
 TCC_SETJMP := build/setjmp.o

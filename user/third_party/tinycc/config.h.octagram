@@ -17,3 +17,14 @@
 #define TCC_TARGET_X86_64 1
 #define CONFIG_TCC_PREDEFS 1
 #define CONFIG_TCC_SEMLOCK 0
+
+/* Search paths inside OCTAGRAM-OS.  Without these, tcc.h falls back to the
+ * Linux defaults (crt1.o in /usr/lib, runtime in /usr/local/lib/tcc), none of
+ * which exist in the OS, and linking fails with "file 'crt1.o' not found".
+ * The kernel seeds crt1.o, libc.a and libtcc1.a in /lib/tcc and headers in
+ * /include (see kernel/src/fs/mod.rs). */
+#define CONFIG_SYSROOT ""
+#define CONFIG_TCCDIR "/lib/tcc"
+#define CONFIG_TCC_CRTPREFIX "/lib/tcc"
+#define CONFIG_TCC_LIBPATHS "{B}"
+#define CONFIG_TCC_SYSINCLUDEPATHS "/include"

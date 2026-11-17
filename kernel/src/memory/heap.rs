@@ -1,10 +1,13 @@
-//! Kernel global allocator backed by a statically mapped 4 MiB heap region.
+//! Kernel global allocator backed by a statically mapped 32 MiB heap region.
+//!
+//! The RAM root filesystem stores every file in this heap, so its size is also
+//! the capacity of `/` (boot files such as `/bin/tcc` already use a few MiB).
 
 use core::mem::MaybeUninit;
 use linked_list_allocator::LockedHeap;
 
 const FRAME_SIZE: usize = 4096;
-const HEAP_FRAMES: usize = 1024;
+const HEAP_FRAMES: usize = 8192;
 pub const HEAP_SIZE: usize = HEAP_FRAMES * FRAME_SIZE;
 
 #[repr(align(16))]

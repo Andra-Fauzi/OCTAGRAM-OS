@@ -614,6 +614,12 @@ pub fn init() {
             include_bytes!("../../../user/examples/selfhost/hello.c"),
             0o644,
         );
+        seed_file(
+            &mut vfs,
+            "/share/octagram/fb_demo.c",
+            include_bytes!("../../../user/examples/fb_demo.c"),
+            0o644,
+        );
         for (path, contents) in USER_HEADERS {
             seed_file(&mut vfs, path, contents, 0o644);
         }

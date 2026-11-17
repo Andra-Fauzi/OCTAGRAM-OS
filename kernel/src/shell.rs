@@ -8,8 +8,8 @@ use crate::fs::{FsError, Metadata, NodeType, Vfs};
 use crate::storage::{block, ext2::Ext2, fat32::Fat32};
 
 const MAX_COMMAND_LENGTH: usize = 256;
-const MAX_FILE_OPERATION: usize = 8192;
-const MAX_TOOLCHAIN_FILE: usize = 1024 * 1024;
+const MAX_FILE_OPERATION: usize = 64 * 1024;
+const MAX_TOOLCHAIN_FILE: usize = 4 * 1024 * 1024;
 const DEFAULT_PROGRAM_PATH: &[&str] = &["/bin", "/usr/bin", "/usr/local/bin"];
 
 pub async fn run(terminal: usize) {
@@ -91,7 +91,7 @@ async fn execute(
         "path" => print_program_path(program_path),
         "export" => set_environment(current_dir, arguments, program_path, environment),
         "cd" => change_directory(current_dir, arguments),
-        "echo" => crate::println!("{arguments}"),
+        "echo" => echo_command(current_dir, arguments),
         "ls" => list_directory(current_dir, arguments),
         "cat" => show_file(current_dir, arguments),
         "head" => show_line_selection(current_dir, arguments, false),
@@ -497,6 +497,60 @@ fn save_log(current_dir: &str, arguments: &str) {
     }
 }
 
+/// `echo text`, `echo text > file` (truncate) and `echo text >> file` (append).
+fn echo_command(current_dir: &str, arguments: &str) {
+    let Some(position) = arguments.find('>') else {
+        crate::println!("{arguments}");
+        return;
+    };
+    let append = arguments[position + 1..].starts_with('>');
+    let redirect_len = if append { 2 } else { 1 };
+    let target = arguments[position + redirect_len..].trim();
+    let mut text = arguments[..position].trim();
+    for quote in ['"', '\''] {
+        if text.len() >= 2 && text.starts_with(quote) && text.ends_with(quote) {
+            text = &text[1..text.len() - 1];
+            break;
+        }
+    }
+    let Some(path) = path_argument(current_dir, target) else {
+        crate::println!("usage: echo <text> [> | >>] <path>");
+        return;
+    };
+    let mut line = String::new();
+    if line.try_reserve(text.len() + 1).is_err() {
+        print_fs_error("echo", &path, FsError::NoSpace);
+        return;
+    }
+    line.push_str(text);
+    line.push('\n');
+    let result = with_vfs(|vfs| -> Result<(), FsError> {
+        let offset = match vfs.metadata(&path) {
+            Ok(metadata) if metadata.node_type == NodeType::File => {
+                if append {
+                    metadata.len
+                } else {
+                    vfs.truncate(&path, 0)?;
+                    0
+                }
+            }
+            Ok(_) => return Err(FsError::IsDirectory),
+            Err(FsError::NotFound) => {
+                vfs.create_file(&path)?;
+                0
+            }
+            Err(error) => return Err(error),
+        };
+        if vfs.write(&path, offset, line.as_bytes())? != line.len() {
+            return Err(FsError::NoSpace);
+        }
+        Ok(())
+    });
+    if let Err(error) = result {
+        print_fs_error("echo", &path, error);
+    }
+}
+
 fn show_file(current_dir: &str, arguments: &str) {
     let Some(path) = path_argument(current_dir, arguments) else {
         crate::println!("usage: cat <path>");
@@ -768,7 +822,7 @@ fn copy_file(current_dir: &str, arguments: &str) {
     };
 
     match with_vfs(|vfs| {
-        let data = read_file(vfs, &source)?;
+        let data = read_file_limited(vfs, &source, MAX_TOOLCHAIN_FILE)?;
         vfs.create_file(&target)?;
         if data.is_empty() {
             return Ok(());
@@ -1685,11 +1739,15 @@ fn position_at_column(text: &str, start: usize, end: usize, column: usize) -> us
 }
 
 fn read_file(vfs: &mut Vfs, path: &str) -> Result<Vec<u8>, FsError> {
+    read_file_limited(vfs, path, MAX_FILE_OPERATION)
+}
+
+fn read_file_limited(vfs: &mut Vfs, path: &str, limit: usize) -> Result<Vec<u8>, FsError> {
     let metadata = vfs.metadata(path)?;
     if metadata.node_type != NodeType::File {
         return Err(FsError::IsDirectory);
     }
-    if metadata.len > MAX_FILE_OPERATION {
+    if metadata.len > limit {
         return Err(FsError::NoSpace);
     }
     let mut bytes = Vec::new();
@@ -1757,6 +1815,12 @@ fn with_vfs<R>(operation: impl FnOnce(&mut Vfs) -> Result<R, FsError>) -> Result
 }
 
 fn print_fs_error(command: &str, path: &str, error: FsError) {
+    if error == FsError::NoSpace {
+        crate::println!(
+            "{command}: {path}: NoSpace (file too large for this command, or the RAM filesystem/heap is full; mount a disk and work there)"
+        );
+        return;
+    }
     crate::println!("{command}: {path}: {error:?}");
 }
 

@@ -503,4 +503,9 @@ static inline int64_t oct_dup2(int source_fd, int target_fd)
     return oct_syscall2(22, (uint64_t)source_fd, (uint64_t)target_fd);
 }
 
+static inline int64_t oct_ioctl(int fd, uint64_t request, void *argp)
+{
+    return oct_syscall3(81, (uint64_t)fd, request, (uint64_t)(uintptr_t)argp);
+}
+
 #endif

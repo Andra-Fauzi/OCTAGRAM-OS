@@ -7,7 +7,7 @@
 mod devfs;
 mod ramfs;
 
-pub(crate) use devfs::{DevFs, device_access, is_tty_path, read_tty};
+pub(crate) use devfs::{DevFs, device_access, is_fb_path, is_tty_path, read_tty};
 pub use ramfs::RamFs;
 
 use alloc::boxed::Box;
@@ -26,6 +26,7 @@ const TIME_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/time_demo.elf")
 const MMAP_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/mmap_demo.elf");
 const TLS_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/tls_demo.elf");
 const THREAD_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/thread_demo.elf");
+const FB_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/fb_demo.elf");
 const LDSO_ELF: &[u8] = include_bytes!("../../../user/build/ld-octagram.elf");
 const DYNAMIC_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/dynamic_demo.elf");
 const DYNAMIC_DEMO_LIB: &[u8] = include_bytes!("../../../user/build/libdyn_demo.so");
@@ -134,6 +135,10 @@ const USER_HEADERS: &[(&str, &[u8])] = &[
     (
         "/include/sys/mman.h",
         include_bytes!("../../../user/include/sys/mman.h"),
+    ),
+    (
+        "/include/sys/ioctl.h",
+        include_bytes!("../../../user/include/sys/ioctl.h"),
     ),
     (
         "/include/sys/stat.h",
@@ -587,6 +592,8 @@ pub fn init() {
         seed_file(&mut vfs, "/bin/mmap-demo", MMAP_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/tls-demo", TLS_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/thread-demo", THREAD_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/fb-demo", FB_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/fb_demo", FB_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/dynamic-demo", DYNAMIC_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/lib/ld-octagram.so", LDSO_ELF, 0o755);
         seed_file(&mut vfs, "/lib/liboctagram.so", SHARED_LIBC, 0o755);
@@ -841,7 +848,8 @@ mod tests {
         vfs.mount("/dev", DevFs::new()).unwrap();
 
         assert_eq!(vfs.metadata("/dev/tty").unwrap().node_type, NodeType::File);
-        assert_eq!(vfs.read_dir("/dev").unwrap().len(), 9);
+        assert_eq!(vfs.read_dir("/dev").unwrap().len(), 10);
+        assert_eq!(vfs.metadata("/dev/fb0").unwrap().node_type, NodeType::File);
         assert_eq!(vfs.metadata("/dev/tty3").unwrap().node_type, NodeType::File);
     }
 

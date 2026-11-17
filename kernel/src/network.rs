@@ -5,10 +5,17 @@ pub use tcp::{
     TcpSocket, accept_socket as accept_tcp_socket, bind_socket as bind_tcp_socket,
     close_socket as close_tcp_socket, connect_socket as connect_tcp_socket,
     create_socket as create_tcp_socket, listen_socket as listen_tcp_socket,
-    poll as poll_tcp,     is_last_descriptor as tcp_socket_is_last_descriptor,
+    poll as poll_tcp, is_last_descriptor as tcp_socket_is_last_descriptor,
     receive_socket as receive_tcp_socket, send_socket as send_tcp_socket,
     shutdown_socket as shutdown_tcp_socket, socket_name as tcp_socket_name,
+    is_established as tcp_is_established, is_closed as tcp_is_closed,
+    socket_error as tcp_socket_error, is_receive_eof as tcp_is_receive_eof,
 };
+
+pub mod dns;
+pub mod http;
+pub use dns::resolve as dns_resolve;
+pub use http::{http_get, parse_url, tcp_exchange, HttpResponse, HttpUrl};
 
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};

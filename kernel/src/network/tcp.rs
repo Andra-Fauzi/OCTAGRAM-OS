@@ -367,6 +367,24 @@ pub fn send_socket(socket: &Arc<Mutex<TcpSocket>>, payload: &[u8]) -> Result<usi
     Ok(pending.payload.len())
 }
 
+pub fn is_established(socket: &Arc<Mutex<TcpSocket>>) -> bool {
+    socket.lock().state == TcpState::Established
+}
+
+pub fn is_closed(socket: &Arc<Mutex<TcpSocket>>) -> bool {
+    let s = socket.lock();
+    s.state == TcpState::Closed || s.state == TcpState::Reset
+}
+
+pub fn socket_error(socket: &Arc<Mutex<TcpSocket>>) -> Option<&'static str> {
+    socket.lock().error
+}
+
+pub fn is_receive_eof(socket: &Arc<Mutex<TcpSocket>>) -> bool {
+    let s = socket.lock();
+    s.receive_eof || s.state == TcpState::Closed || s.state == TcpState::CloseWait
+}
+
 pub fn receive_socket(
     socket: &Arc<Mutex<TcpSocket>>,
     output: &mut [u8],

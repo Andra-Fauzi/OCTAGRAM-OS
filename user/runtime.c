@@ -15,6 +15,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <stdarg.h>
 #include <time.h>
 #include <unistd.h>
 #include <netinet/in.h>
@@ -1543,6 +1545,16 @@ int ftruncate(int fd, off_t length)
         return -1;
     }
     return (int)posix_result(oct_ftruncate(fd, (size_t)length));
+}
+
+int ioctl(int fd, unsigned long request, ...)
+{
+    va_list args;
+    va_start(args, request);
+    void *argp = va_arg(args, void *);
+    va_end(args);
+
+    return (int)posix_result(oct_ioctl(fd, (uint64_t)request, argp));
 }
 
 static int count_spawn_arguments(char *const arguments[], size_t *count)

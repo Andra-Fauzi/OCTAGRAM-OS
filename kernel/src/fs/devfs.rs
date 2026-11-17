@@ -14,6 +14,7 @@ enum Device {
     Stdout,
     Stderr,
     Console,
+    Fb0,
 }
 
 impl Device {
@@ -28,18 +29,19 @@ impl Device {
             "/stdout" => Some(Self::Stdout),
             "/stderr" => Some(Self::Stderr),
             "/console" => Some(Self::Console),
+            "/fb" | "/fb0" => Some(Self::Fb0),
             _ => None,
         }
     }
 
     fn readable(self) -> bool {
-        matches!(self, Self::Tty(_) | Self::Stdin | Self::Console)
+        matches!(self, Self::Tty(_) | Self::Stdin | Self::Console | Self::Fb0)
     }
 
     fn writable(self) -> bool {
         matches!(
             self,
-            Self::Tty(_) | Self::Stdout | Self::Stderr | Self::Console
+            Self::Tty(_) | Self::Stdout | Self::Stderr | Self::Console | Self::Fb0
         )
     }
 
@@ -52,7 +54,17 @@ impl Device {
 }
 
 pub(crate) fn is_tty_path(path: &str) -> bool {
-    device_access(path).is_some()
+    let Some(path) = path.strip_prefix("/dev") else {
+        return false;
+    };
+    matches!(
+        Device::from_path(path),
+        Some(Device::Tty(_) | Device::Stdin | Device::Stdout | Device::Stderr | Device::Console)
+    )
+}
+
+pub(crate) fn is_fb_path(path: &str) -> bool {
+    path == "/dev/fb0" || path == "/dev/fb"
 }
 
 pub(crate) fn device_access(path: &str) -> Option<(bool, bool)> {
@@ -160,11 +172,18 @@ impl DevFs {
             });
         }
         Device::from_path(path)
-            .map(|device| Metadata {
-                node_type: NodeType::File,
-                len: 0,
-                permissions: (if device.readable() { 0o444 } else { 0 })
-                    | (if device.writable() { 0o222 } else { 0 }),
+            .map(|device| {
+                let len = match device {
+                    Device::Fb0 => crate::graphics::Framebuffer::get()
+                        .map_or(0, |fb| (fb.pitch() * fb.height()) as usize),
+                    _ => 0,
+                };
+                Metadata {
+                    node_type: NodeType::File,
+                    len,
+                    permissions: (if device.readable() { 0o444 } else { 0 })
+                        | (if device.writable() { 0o222 } else { 0 }),
+                }
             })
             .ok_or(FsError::NotFound)
     }
@@ -176,24 +195,56 @@ impl FileSystem for DevFs {
         Self::metadata_for(&path)
     }
 
-    fn read(&self, path: &str, _offset: usize, buffer: &mut [u8]) -> Result<usize, FsError> {
+    fn read(&self, path: &str, offset: usize, buffer: &mut [u8]) -> Result<usize, FsError> {
         let path = normalize_path(path)?;
         let device = Device::from_path(&path).ok_or(FsError::NotFound)?;
         if !device.readable() {
             return Err(FsError::PermissionDenied);
         }
-        read_tty(device.terminal(), buffer)
+        match device {
+            Device::Fb0 => {
+                let fb = crate::graphics::Framebuffer::get().ok_or(FsError::NotFound)?;
+                let total_len = (fb.pitch() * fb.height()) as usize;
+                if offset >= total_len {
+                    return Ok(0);
+                }
+                let to_read = buffer.len().min(total_len - offset);
+                unsafe {
+                    let src = fb.addr().add(offset);
+                    core::ptr::copy_nonoverlapping(src, buffer.as_mut_ptr(), to_read);
+                }
+                Ok(to_read)
+            }
+            _ => read_tty(device.terminal(), buffer),
+        }
     }
 
-    fn write(&mut self, path: &str, _offset: usize, bytes: &[u8]) -> Result<usize, FsError> {
+    fn write(&mut self, path: &str, offset: usize, bytes: &[u8]) -> Result<usize, FsError> {
         let path = normalize_path(path)?;
         let device = Device::from_path(&path).ok_or(FsError::NotFound)?;
         if !device.writable() {
             return Err(FsError::PermissionDenied);
         }
-        let text = core::str::from_utf8(bytes).map_err(|_| FsError::InvalidData)?;
-        crate::terminal::terminal_print_to(device.terminal(), text);
-        Ok(bytes.len())
+        match device {
+            Device::Fb0 => {
+                let fb = crate::graphics::Framebuffer::get().ok_or(FsError::NotFound)?;
+                let total_len = (fb.pitch() * fb.height()) as usize;
+                if offset >= total_len {
+                    return Ok(0);
+                }
+                let to_write = bytes.len().min(total_len - offset);
+                unsafe {
+                    let dst = fb.addr().add(offset);
+                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, to_write);
+                }
+                Ok(to_write)
+            }
+            _ => {
+                let text = core::str::from_utf8(bytes).map_err(|_| FsError::InvalidData)?;
+                crate::terminal::terminal_print_to(device.terminal(), text);
+                Ok(bytes.len())
+            }
+        }
     }
 
     fn truncate(&mut self, path: &str, _len: usize) -> Result<(), FsError> {
@@ -226,6 +277,7 @@ impl FileSystem for DevFs {
         }
         Ok(alloc::vec![
             directory_entry("console"),
+            directory_entry("fb0"),
             directory_entry("stderr"),
             directory_entry("stdin"),
             directory_entry("stdout"),
@@ -314,7 +366,8 @@ mod tests {
             })
         );
         let entries = devfs.read_dir("/").unwrap();
-        assert_eq!(entries.len(), 9);
+        assert_eq!(entries.len(), 10);
+        assert!(entries.iter().any(|entry| entry.name == "fb0"));
         assert!(Device::from_path("/stdin").unwrap().readable());
         assert!(Device::from_path("/stdout").unwrap().writable());
         assert_eq!(device_access("/dev/stdin"), Some((true, false)));

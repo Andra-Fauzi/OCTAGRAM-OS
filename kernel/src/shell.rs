@@ -114,6 +114,8 @@ async fn execute(
         "drivers" => list_kernel_drivers(),
         "net" => run_network_command(arguments),
         "ping" => run_ping_command(arguments),
+        "dns" => run_dns_command(arguments),
+        "http" | "curl" => run_http_command(arguments),
         "mount" => mount_device(current_dir, arguments),
         "umount" => unmount_device(current_dir, arguments),
         "mkfs.fat" => format_fat32_device(arguments),
@@ -162,8 +164,11 @@ fn print_help() {
     crate::println!("  lsdev                  list bus devices and bound drivers");
     crate::println!("  drivers                list registered kernel drivers");
     crate::println!("  net status|dhcp        inspect interface or request an IPv4 lease");
+    crate::println!("  net tcp <host> <port> <text> send TCP payload and print response");
     crate::println!("  net udp <IP> <port> <text> send one UDP datagram");
-    crate::println!("  ping <IPv4 address>    send an ICMP echo request");
+    crate::println!("  dns <hostname>         resolve domain name to IPv4");
+    crate::println!("  http <url>             make HTTP GET request (curl also works)");
+    crate::println!("  ping <IPv4 | host>     send an ICMP echo request");
     crate::println!("  mount <device> <path> [fat32|ext2]  mount a filesystem read-write");
     crate::println!("  umount <path>          unmount a filesystem");
     crate::println!("  mkfs.fat <device> --yes  format a FAT32 superfloppy (erases data)");
@@ -207,9 +212,15 @@ fn run_network_command(arguments: &str) {
                 crate::println!("net dhcp: {error}");
             }
         }
+        Some("dns") => {
+            let mut parts = arguments.split_whitespace();
+            let _ = parts.next();
+            run_dns_command(parts.next().unwrap_or(""));
+        }
+        Some("tcp") => run_network_tcp_command(arguments),
         Some("udp") => run_network_udp_command(arguments),
         Some("wifi") => run_wifi_command(arguments),
-        Some(_) => crate::println!("usage: net [status|dhcp|udp <IPv4> <port> <text>|wifi <scan|connect <ssid>>]"),
+        Some(_) => crate::println!("usage: net [status|dhcp|dns <host>|tcp <IPv4|host> <port> <text>|udp <IPv4> <port> <text>|wifi <scan|connect <ssid>>]"),
     }
 }
 
@@ -297,12 +308,105 @@ fn run_network_udp_command(arguments: &str) {
     }
 }
 
-fn run_ping_command(arguments: &str) {
-    let Some(address) = parse_ipv4_address(arguments) else {
-        crate::println!("usage: ping <IPv4 address>");
+fn run_network_tcp_command(arguments: &str) {
+    let mut fields = arguments.split_whitespace();
+    let _ = fields.next(); // "tcp"
+    let (Some(target), Some(port)) = (fields.next(), fields.next()) else {
+        crate::println!("usage: net tcp <IPv4|hostname> <port> <text>");
         return;
     };
-    if let Err(error) = crate::network::ping(address) {
+    let payload = fields.collect::<Vec<_>>().join(" ");
+    if payload.is_empty() {
+        crate::println!("usage: net tcp <IPv4|hostname> <port> <text>");
+        return;
+    }
+    let Ok(port) = port.parse::<u16>() else {
+        crate::println!("net tcp: invalid port");
+        return;
+    };
+
+    let ip = match parse_ipv4_address(target) {
+        Some(ip) => ip,
+        None => match crate::network::dns_resolve(target) {
+            Ok(ip) => ip,
+            Err(e) => {
+                crate::println!("net tcp: cannot resolve '{target}': {e}");
+                return;
+            }
+        },
+    };
+
+    crate::println!("Connecting to {}.{}.{}.{}:{}...", ip[0], ip[1], ip[2], ip[3], port);
+    match crate::network::tcp_exchange(ip, port, payload.as_bytes(), 5000) {
+        Ok(resp) => {
+            if resp.is_empty() {
+                crate::println!("TCP: sent {} bytes, connection closed without response", payload.len());
+            } else {
+                crate::println!("TCP response ({} bytes):", resp.len());
+                if let Ok(text) = core::str::from_utf8(&resp) {
+                    crate::println!("{text}");
+                } else {
+                    crate::println!("<binary response: {} bytes>", resp.len());
+                }
+            }
+        }
+        Err(err) => crate::println!("net tcp: {err}"),
+    }
+}
+
+fn run_dns_command(arguments: &str) {
+    let hostname = arguments.trim();
+    if hostname.is_empty() {
+        crate::println!("usage: dns <hostname>");
+        return;
+    }
+    match crate::network::dns_resolve(hostname) {
+        Ok(ip) => {
+            crate::println!("{hostname} has address {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+        }
+        Err(err) => {
+            crate::println!("dns: cannot resolve '{hostname}': {err}");
+        }
+    }
+}
+
+fn run_http_command(arguments: &str) {
+    let url = arguments.trim();
+    if url.is_empty() {
+        crate::println!("usage: http <URL> (or curl <URL>)");
+        return;
+    }
+    crate::println!("Fetching {url}...");
+    match crate::network::http_get(url) {
+        Ok(resp) => {
+            crate::println!("HTTP Status: {}", resp.status_code);
+            for (k, v) in &resp.headers {
+                crate::println!("{k}: {v}");
+            }
+            crate::println!("");
+            crate::println!("{}", resp.body_str());
+        }
+        Err(err) => crate::println!("http error: {err}"),
+    }
+}
+
+fn run_ping_command(arguments: &str) {
+    let target = arguments.trim();
+    if target.is_empty() {
+        crate::println!("usage: ping <IPv4 address | hostname>");
+        return;
+    }
+    let ip = match parse_ipv4_address(target) {
+        Some(ip) => ip,
+        None => match crate::network::dns_resolve(target) {
+            Ok(ip) => ip,
+            Err(e) => {
+                crate::println!("ping: cannot resolve '{target}': {e}");
+                return;
+            }
+        },
+    };
+    if let Err(error) = crate::network::ping(ip) {
         crate::println!("ping: {error}");
     }
 }

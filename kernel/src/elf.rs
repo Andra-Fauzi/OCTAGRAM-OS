@@ -122,6 +122,7 @@ const SYSCALL_RECV: u64 = 77;
 const SYSCALL_SHUTDOWN: u64 = 78;
 const SYSCALL_GETSOCKNAME: u64 = 79;
 const SYSCALL_GETPEERNAME: u64 = 80;
+const SYSCALL_IOCTL: u64 = 81;
 const AT_FDCWD: i64 = -100;
 const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
 const AT_REMOVEDIR: u64 = 0x200;
@@ -136,6 +137,83 @@ const MAP_ANONYMOUS: u64 = 0x20;
 const MS_ASYNC: u64 = 1;
 const MS_INVALIDATE: u64 = 2;
 const MS_SYNC: u64 = 4;
+
+const FBIOGET_VSCREENINFO: u64 = 0x4600;
+const FBIOPUT_VSCREENINFO: u64 = 0x4601;
+const FBIOGET_FSCREENINFO: u64 = 0x4602;
+const FBIOBLANK: u64 = 0x4611;
+const TIOCGWINSZ: u64 = 0x5413;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FbBitfield {
+    offset: u32,
+    length: u32,
+    msb_right: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FbVarScreeninfo {
+    xres: u32,
+    yres: u32,
+    xres_virtual: u32,
+    yres_virtual: u32,
+    xoffset: u32,
+    yoffset: u32,
+    bits_per_pixel: u32,
+    grayscale: u32,
+    red: FbBitfield,
+    green: FbBitfield,
+    blue: FbBitfield,
+    transp: FbBitfield,
+    nonstd: u32,
+    activate: u32,
+    height: u32,
+    width: u32,
+    accel_flags: u32,
+    pixclock: u32,
+    left_margin: u32,
+    right_margin: u32,
+    upper_margin: u32,
+    lower_margin: u32,
+    hsync_len: u32,
+    vsync_len: u32,
+    sync: u32,
+    vmode: u32,
+    rotate: u32,
+    colorspace: u32,
+    reserved: [u32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FbFixScreeninfo {
+    id: [u8; 16],
+    smem_start: u64,
+    smem_len: u32,
+    fb_type: u32,
+    type_aux: u32,
+    visual: u32,
+    xpanstep: u16,
+    ypanstep: u16,
+    ywrapstep: u16,
+    line_length: u32,
+    mmio_start: u64,
+    mmio_len: u32,
+    accel: u32,
+    capabilities: u16,
+    reserved: [u16; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Winsize {
+    ws_row: u16,
+    ws_col: u16,
+    ws_xpixel: u16,
+    ws_ypixel: u16,
+}
 
 const O_RDONLY: u64 = 0;
 const O_WRONLY: u64 = 1;
@@ -422,6 +500,7 @@ struct MappingPage {
     locked: bool,
     can_write: bool,
     anonymous: bool,
+    is_device: bool,
 }
 
 struct SharedMmapPage {
@@ -1722,6 +1801,129 @@ fn syscall_get_thread_pointer() -> Result<u64, i32> {
     Ok(process.thread_pointer)
 }
 
+fn syscall_ioctl(fd: u64, request: u64, arg: u64) -> Result<u64, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let descriptor = process
+        .descriptors
+        .get(fd)
+        .and_then(Option::as_ref)
+        .ok_or(EBADF)?;
+
+    match descriptor {
+        UserDescriptor::File(file) => {
+            let path = file.lock().path.clone();
+            drop(process);
+            if fs::is_fb_path(&path) {
+                handle_fb_ioctl(request, arg)
+            } else if fs::is_tty_path(&path) {
+                handle_tty_ioctl(request, arg)
+            } else {
+                Err(ENOTTY)
+            }
+        }
+        UserDescriptor::ConsoleInput
+        | UserDescriptor::ConsoleOutput
+        | UserDescriptor::ConsoleError => {
+            drop(process);
+            handle_tty_ioctl(request, arg)
+        }
+        _ => Err(ENOTTY),
+    }
+}
+
+fn handle_fb_ioctl(request: u64, arg: u64) -> Result<u64, i32> {
+    let fb = crate::graphics::Framebuffer::get().ok_or(ENODEV)?;
+    match request {
+        FBIOGET_VSCREENINFO => {
+            paging::validate_user_range(arg, core::mem::size_of::<FbVarScreeninfo>(), true)
+                .map_err(|_| EFAULT)?;
+            let mut var = FbVarScreeninfo::default();
+            var.xres = fb.width() as u32;
+            var.yres = fb.height() as u32;
+            var.xres_virtual = fb.width() as u32;
+            var.yres_virtual = fb.height() as u32;
+            var.bits_per_pixel = 32;
+            var.red = FbBitfield { offset: 16, length: 8, msb_right: 0 };
+            var.green = FbBitfield { offset: 8, length: 8, msb_right: 0 };
+            var.blue = FbBitfield { offset: 0, length: 8, msb_right: 0 };
+            var.transp = FbBitfield { offset: 24, length: 8, msb_right: 0 };
+            var.width = fb.width() as u32;
+            var.height = fb.height() as u32;
+            unsafe { (arg as *mut FbVarScreeninfo).write_unaligned(var) };
+            Ok(0)
+        }
+        FBIOPUT_VSCREENINFO => {
+            paging::validate_user_range(arg, core::mem::size_of::<FbVarScreeninfo>(), false)
+                .map_err(|_| EFAULT)?;
+            let var = unsafe { (arg as *const FbVarScreeninfo).read_unaligned() };
+            if var.xres == fb.width() as u32 && var.yres == fb.height() as u32 {
+                Ok(0)
+            } else {
+                Err(EINVAL)
+            }
+        }
+        FBIOGET_FSCREENINFO => {
+            paging::validate_user_range(arg, core::mem::size_of::<FbFixScreeninfo>(), true)
+                .map_err(|_| EFAULT)?;
+            let smem_start = crate::memory::virtual_to_physical(fb.addr() as usize).unwrap_or(0) as u64;
+            let mut fix = FbFixScreeninfo {
+                id: [0; 16],
+                smem_start,
+                smem_len: (fb.pitch() * fb.height()) as u32,
+                fb_type: 0,
+                type_aux: 0,
+                visual: 2,
+                xpanstep: 0,
+                ypanstep: 0,
+                ywrapstep: 0,
+                line_length: fb.pitch() as u32,
+                mmio_start: 0,
+                mmio_len: 0,
+                accel: 0,
+                capabilities: 0,
+                reserved: [0; 2],
+            };
+            let name = b"octagram-fb\0";
+            fix.id[..name.len()].copy_from_slice(name);
+            unsafe { (arg as *mut FbFixScreeninfo).write_unaligned(fix) };
+            Ok(0)
+        }
+        FBIOBLANK => {
+            fb.clear();
+            Ok(0)
+        }
+        _ => Err(EINVAL),
+    }
+}
+
+fn handle_tty_ioctl(request: u64, arg: u64) -> Result<u64, i32> {
+    match request {
+        TIOCGWINSZ => {
+            paging::validate_user_range(arg, core::mem::size_of::<Winsize>(), true)
+                .map_err(|_| EFAULT)?;
+            let fb = crate::graphics::Framebuffer::get();
+            let (cols, rows) = if let Some(fb) = fb.as_ref() {
+                ((fb.width() / 8) as u16, (fb.height() / 16) as u16)
+            } else {
+                (80, 25)
+            };
+            let ws = Winsize {
+                ws_row: rows,
+                ws_col: cols,
+                ws_xpixel: fb.as_ref().map_or(640, |f| f.width() as u16),
+                ws_ypixel: fb.as_ref().map_or(400, |f| f.height() as u16),
+            };
+            unsafe { (arg as *mut Winsize).write_unaligned(ws) };
+            Ok(0)
+        }
+        _ => Err(EINVAL),
+    }
+}
+
 fn dispatch_syscall(
     number: u64,
     arg1: u64,
@@ -1743,6 +1945,7 @@ fn dispatch_syscall(
         SYSCALL_FTRUNCATE => syscall_ftruncate(arg1, arg2),
         SYSCALL_CHDIR => syscall_chdir(arg1),
         SYSCALL_GETCWD => syscall_getcwd(arg1, arg2),
+        SYSCALL_IOCTL => syscall_ioctl(arg1, arg2, arg3),
         SYSCALL_CHMOD => syscall_chmod(arg1, arg2),
         SYSCALL_GETPID => {
             let process = USER_PROCESS.lock();
@@ -2970,7 +3173,9 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
             let count = fs::with_vfs(|vfs| vfs.write(&file.path, offset, bytes))
                 .map_err(errno_from_fs)?
                 .map_err(errno_from_fs)?;
-            update_shared_mapping_pages(&file.path, offset, &bytes[..count]);
+            if !fs::is_fb_path(&file.path) {
+                update_shared_mapping_pages(&file.path, offset, &bytes[..count]);
+            }
             file.offset = offset.checked_add(count).ok_or(EINVAL)?;
             Ok(count as u64)
         }
@@ -3356,7 +3561,9 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
                 .map_err(errno_from_fs)?
                 .map_err(errno_from_fs)?;
             if !fs::is_tty_path(&file.path) {
-                overlay_shared_mapping_pages(&file.path, file.offset, &mut output[..count]);
+                if !fs::is_fb_path(&file.path) {
+                    overlay_shared_mapping_pages(&file.path, file.offset, &mut output[..count]);
+                }
                 file.offset = file.offset.checked_add(count).ok_or(EINVAL)?;
             }
             Ok(count as u64)
@@ -4412,11 +4619,11 @@ fn syscall_mmap(
 
     let shared = map_flags & MAP_SHARED != 0;
     let anonymous = map_flags & MAP_ANONYMOUS != 0;
-    let (file_path, file_length, can_write) = if anonymous {
+    let (file_path, file_length, can_write, is_device) = if anonymous {
         if descriptor as i64 != -1 || offset != 0 {
             return Err(EINVAL);
         }
-        (None, 0, true)
+        (None, 0, true, false)
     } else {
         let fd = usize::try_from(descriptor).map_err(|_| EBADF)?;
         let process = USER_PROCESS.lock();
@@ -4433,6 +4640,7 @@ fn syscall_mmap(
         }
         let path = file.path.clone();
         let can_write = !shared || file.writable;
+        let is_device = fs::is_fb_path(&path);
         drop(file);
         drop(process);
         let metadata = fs::with_vfs(|vfs| vfs.metadata(&path))
@@ -4441,7 +4649,7 @@ fn syscall_mmap(
         if metadata.node_type != NodeType::File {
             return Err(ENODEV);
         }
-        (Some(path), metadata.len as u64, can_write)
+        (Some(path), metadata.len as u64, can_write, is_device)
     };
     if !anonymous {
         offset.checked_add(mapped_size).ok_or(EINVAL)?;
@@ -4486,7 +4694,7 @@ fn syscall_mmap(
         let file_offset = offset
             .checked_add((index as u64).checked_mul(PAGE_SIZE).ok_or(EINVAL)?)
             .ok_or(EINVAL)?;
-        let backing = if shared {
+        let backing = if shared && !is_device {
             match shared_mapping_page(file_path.as_deref(), file_offset, file_length) {
                 Ok(backing) => Some(backing),
                 Err(error) => {
@@ -4497,7 +4705,11 @@ fn syscall_mmap(
         } else {
             None
         };
-        let physical = if let Some(backing) = &backing {
+        let physical = if is_device {
+            let fb = crate::graphics::Framebuffer::get().ok_or(ENODEV)?;
+            let fb_phys = crate::memory::virtual_to_physical(fb.addr() as usize).ok_or(EIO)? as u64;
+            fb_phys.checked_add(file_offset).ok_or(EINVAL)?
+        } else if let Some(backing) = &backing {
             backing.physical
         } else {
             match allocate_mapping_frame(file_path.as_deref().map(|path| (path, file_offset))) {
@@ -4509,7 +4721,7 @@ fn syscall_mmap(
             }
         };
         if let Err(error) = unsafe { paging::map_page(page_address, physical, page_flags) } {
-            if backing.is_none() {
+            if backing.is_none() && !is_device {
                 free_frame(physical as usize);
             }
             let cleanup = release_mmap_pages_from(&mut mappings, initial_page_count);
@@ -4526,6 +4738,7 @@ fn syscall_mmap(
             locked,
             can_write,
             anonymous,
+            is_device,
         });
     }
 
@@ -4729,7 +4942,7 @@ fn unmap_mapping_range(pages: &mut Vec<MappingPage>, address: u64, length: u64) 
         }
         let physical = unsafe { paging::unmap_page(pages[index].address) }.map_err(|_| EIO)?;
         let page = pages.remove(index);
-        if page.shared_backing.is_none() {
+        if page.shared_backing.is_none() && !page.is_device {
             free_frame(physical as usize);
         }
     }
@@ -4858,7 +5071,7 @@ fn release_mmap_pages_from(
         let physical = unsafe { paging::unmap_page(address) }.map_err(|_| EIO)?;
         let page = mapped_pages.pop().ok_or(EIO)?;
         debug_assert_eq!(page.address, address);
-        if page.shared_backing.is_none() {
+        if page.shared_backing.is_none() && !page.is_device {
             free_frame(physical as usize);
         }
     }
@@ -5815,8 +6028,9 @@ mod tests {
         create_pipe, dispatch_syscall, errno_from_fs, install_pipe_descriptors, mapping_flags,
         mapping_size, next_runnable, paging, parse, resolve_user_path, stat_mode, user_dirent,
         validate_mapping_range, wait_target_matches,
+        FBIOGET_VSCREENINFO, FbFixScreeninfo, FbVarScreeninfo, SYSCALL_IOCTL, Winsize,
     };
-    use crate::fs::{DirectoryEntry, FsError, Metadata};
+    use crate::fs::{self, DirectoryEntry, FsError, Metadata};
 
     #[test]
     fn creation_mode_is_advisory_when_filesystem_lacks_permissions() {
@@ -6005,6 +6219,22 @@ mod tests {
         for number in [10, 15, 18, 19, 23, 24, 26, 49] {
             assert_eq!(dispatch_syscall(number, 0, 0, 0, 0, 0, 0), Err(ENOSYS));
         }
+    }
+
+    #[test]
+    fn validates_ioctl_and_framebuffer_path_recognition() {
+        assert!(fs::is_fb_path("/dev/fb0"));
+        assert!(fs::is_fb_path("/dev/fb"));
+        assert!(!fs::is_fb_path("/dev/tty"));
+        assert!(!fs::is_tty_path("/dev/fb0"));
+        assert!(fs::is_tty_path("/dev/tty"));
+
+        assert_eq!(core::mem::size_of::<FbVarScreeninfo>(), 160);
+        assert_eq!(core::mem::size_of::<FbFixScreeninfo>(), 80);
+        assert_eq!(core::mem::size_of::<Winsize>(), 8);
+
+        // When no user process is active, syscall_ioctl safely returns EINTR
+        assert_eq!(dispatch_syscall(SYSCALL_IOCTL, 0, FBIOGET_VSCREENINFO, 0, 0, 0, 0), Err(EINTR));
     }
 
     #[test]

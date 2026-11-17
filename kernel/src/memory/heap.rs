@@ -1,13 +1,14 @@
-//! Kernel global allocator backed by a statically mapped 32 MiB heap region.
+//! Kernel global allocator backed by a statically mapped 64 MiB heap region.
 //!
 //! The RAM root filesystem stores every file in this heap, so its size is also
-//! the capacity of `/` (boot files such as `/bin/tcc` already use a few MiB).
+//! the capacity of `/` (the seeded toolchain and the CPython runtime use
+//! roughly 20 MiB).
 
 use core::mem::MaybeUninit;
 use linked_list_allocator::LockedHeap;
 
 const FRAME_SIZE: usize = 4096;
-const HEAP_FRAMES: usize = 8192;
+const HEAP_FRAMES: usize = 16384;
 pub const HEAP_SIZE: usize = HEAP_FRAMES * FRAME_SIZE;
 
 #[repr(align(16))]

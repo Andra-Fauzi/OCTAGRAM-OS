@@ -87,6 +87,35 @@ pub(crate) struct Termios {
     output_speed: u32,
 }
 
+/// Byte size of the Linux kernel `struct termios` used by `TCGETS`/`TCSETS`.
+/// It is smaller than glibc's `struct termios`: 16 flag bytes, one line byte
+/// and `NCCS = 19` control characters, with no speed fields. Linux binaries
+/// pass a buffer of this size, so writing the larger OCTAGRAM layout would
+/// overrun the caller's stack.
+pub(crate) const LINUX_TERMIOS_SIZE: usize = 36;
+
+pub(crate) fn linux_termios_bytes(termios: &Termios) -> [u8; LINUX_TERMIOS_SIZE] {
+    let mut bytes = [0u8; LINUX_TERMIOS_SIZE];
+    bytes[0..4].copy_from_slice(&termios.input_flags.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&termios.output_flags.to_ne_bytes());
+    bytes[8..12].copy_from_slice(&termios.control_flags.to_ne_bytes());
+    bytes[12..16].copy_from_slice(&termios.local_flags.to_ne_bytes());
+    bytes[16] = termios.line;
+    bytes[17..LINUX_TERMIOS_SIZE].copy_from_slice(&termios.control_characters[..19]);
+    bytes
+}
+
+pub(crate) fn termios_from_linux_bytes(bytes: &[u8; LINUX_TERMIOS_SIZE]) -> Termios {
+    let mut termios = console_termios();
+    termios.input_flags = u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    termios.output_flags = u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    termios.control_flags = u32::from_ne_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    termios.local_flags = u32::from_ne_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+    termios.line = bytes[16];
+    termios.control_characters[..19].copy_from_slice(&bytes[17..LINUX_TERMIOS_SIZE]);
+    termios
+}
+
 const ICRNL: u32 = 0x100;
 const IXON: u32 = 0x400;
 const OPOST: u32 = 0x1;

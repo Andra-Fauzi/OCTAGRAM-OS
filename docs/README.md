@@ -18,6 +18,9 @@ kontrak syscall, dan pola kontribusi subsystem.
   aturan pelepasan perangkat.
 - [Panduan port aplikasi](porting-apps.md): cara menyesuaikan program C kecil
   dengan runtime dan ABI OCTAGRAM.
+- [ABI Linux](linux-abi.md): instruksi `syscall`, translasi syscall Linux,
+  konversi struct, status pengujian binary glibc, dan batasan menuju
+  CPython/OpenJDK.
 
 Dokumentasi ini mencerminkan implementasi sekarang, bukan janji kompatibilitas
 Linux/POSIX. Periksa batasan di setiap halaman sebelum mengandalkan fitur untuk

@@ -22,7 +22,7 @@ use crate::memory::{
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const MAX_PROGRAM_HEADERS: usize = 128;
-const STACK_PAGES: u64 = 8;
+const STACK_PAGES: u64 = 256;
 const MAX_ARGUMENTS: usize = 64;
 const MAX_ARGUMENT_BYTES: usize = 4096;
 const MAX_ENVIRONMENT_VARIABLES: usize = 64;
@@ -35,6 +35,9 @@ const MMAP_START: u64 = 0x1_0000_0000;
 const MMAP_END: u64 = STACK_TOP - (STACK_PAGES + 1) * PAGE_SIZE;
 const MAX_USER_PATH: usize = 256;
 const MAX_SYSCALL_IO: usize = 4096;
+/// Largest single `read`/`write` payload.  Regular file I/O copies through
+/// the user buffer directly, so it does not need the small string limit.
+const MAX_FILE_IO: usize = 1024 * 1024;
 const MAX_OPEN_FILES: usize = 16;
 const MAX_SCHEDULED_PROCESSES: usize = 16;
 const PIPE_CAPACITY: usize = 4096;
@@ -612,6 +615,11 @@ pub struct LoadedElf {
 
 struct UserMemory {
     mmap_cursor: Mutex<u64>,
+    /// Top of the classic `brk` heap.  It is deliberately separate from
+    /// `mmap_cursor`: on Linux `brk` grows from the end of the loaded image and
+    /// must never be advanced over an existing mapping, or glibc's malloc
+    /// starts handing out memory a program already mapped.
+    brk_top: Mutex<u64>,
     mapped_pages: Mutex<Vec<u64>>,
     mmap_pages: Mutex<Vec<MappingPage>>,
     lock_future_mappings: AtomicBool,
@@ -1018,6 +1026,7 @@ impl LoadedElf {
         let mapped_pages = try_clone_pages(&self.memory.mapped_pages.lock())?;
         let mmap_pages = try_clone_mapping_pages(&self.memory.mmap_pages.lock())?;
         let mmap_cursor = *self.memory.mmap_cursor.lock();
+        let brk_top = *self.memory.brk_top.lock();
         let lock_future_mappings = self.memory.lock_future_mappings.load(Ordering::Acquire);
         Ok(Self {
             entry: self.entry,
@@ -1025,6 +1034,7 @@ impl LoadedElf {
             environment: try_clone_strings(&self.environment)?,
             memory: Arc::new(UserMemory {
                 mmap_cursor: Mutex::new(mmap_cursor),
+                brk_top: Mutex::new(brk_top),
                 mapped_pages: Mutex::new(mapped_pages),
                 mmap_pages: Mutex::new(mmap_pages),
                 lock_future_mappings: AtomicBool::new(lock_future_mappings),
@@ -1196,14 +1206,48 @@ pub fn load_with_args_and_environment(
                     .min()
             })
             .unwrap_or(0);
+        // Linux-compatible auxiliary data block at the low end of the stack
+        // (the initial stack contents live at the high end).  glibc's static
+        // startup expects AT_RANDOM for its stack guard and AT_PLATFORM.
+        let mut random = [0u8; 16];
+        let mut seed = crate::arch::x86_64::read_tsc()
+            ^ 0x9e37_79b9_7f4a_7c15
+            ^ stack_start
+            ^ (crate::drivers::rtc::unix_seconds().unwrap_or(0) as u64);
+        for slot in &mut random {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            *slot = seed as u8;
+        }
+        copy_to_user_pages(stack_start, &random)?;
+        copy_to_user_pages(stack_start + 16, b"x86_64\0")?;
+        let exec_name = arguments.first().map(String::as_str).unwrap_or("linux");
+        let exec_bytes = exec_name.as_bytes();
+        let exec_len = exec_bytes.len().min(200);
+        copy_to_user_pages(stack_start + 32, &exec_bytes[..exec_len])?;
+
         let auxv = [
-            (3, executable.program_headers),
-            (4, executable.program_header_size),
-            (5, executable.program_header_count),
-            (6, PAGE_SIZE),
-            (7, interpreter_base),
-            (9, executable.entry),
-            (0, 0),
+            (3, executable.program_headers),  // AT_PHDR
+            (4, executable.program_header_size), // AT_PHENT
+            (5, executable.program_header_count), // AT_PHNUM
+            (6, PAGE_SIZE),                   // AT_PAGESZ
+            (7, interpreter_base),            // AT_BASE
+            (8, 0),                           // AT_FLAGS
+            (9, executable.entry),            // AT_ENTRY
+            (11, 0),                          // AT_UID
+            (12, 0),                          // AT_EUID
+            (13, 0),                          // AT_GID
+            (14, 0),                          // AT_EGID
+            (15, stack_start + 16),           // AT_PLATFORM
+            (16, 0),                          // AT_HWCAP
+            (17, 100),                        // AT_CLKTCK
+            (23, 0),                          // AT_SECURE
+            (25, stack_start),                // AT_RANDOM
+            (26, 0),                          // AT_HWCAP2
+            (31, stack_start + 32),           // AT_EXECFN
+            (33, 0),                          // AT_SYSINFO_EHDR (no vDSO)
+            (0, 0),                           // AT_NULL
         ];
         let (user_stack, initial_stack) = build_initial_stack(
             stack_start,
@@ -1225,6 +1269,7 @@ pub fn load_with_args_and_environment(
                 environment: process_environment,
                 memory: Arc::new(UserMemory {
                     mmap_cursor: Mutex::new(mmap_cursor),
+                    brk_top: Mutex::new(HEAP_INITIAL_END),
                     mapped_pages: Mutex::new(mapped_pages),
                     mmap_pages: Mutex::new(Vec::new()),
                     lock_future_mappings: AtomicBool::new(false),
@@ -1849,10 +1894,23 @@ fn build_initial_stack(
 }
 
 pub fn handle_syscall(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    handle_syscall_common(frame, false)
+}
+
+/// Entry point for the Linux x86_64 ABI (`syscall` instruction, vector 129).
+pub fn handle_linux_syscall(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    handle_syscall_common(frame, true)
+}
+
+fn handle_syscall_common(frame: &mut InterruptFrame, linux: bool) -> *mut InterruptFrame {
     USER_SCHEDULER.lock().retired_kernel_stacks.clear();
     save_current_thread_pointer();
     save_current_user_fpu();
-    let mut next_frame = handle_syscall_inner(frame);
+    let mut next_frame = if linux {
+        crate::linux_abi::dispatch(frame)
+    } else {
+        handle_syscall_inner(frame)
+    };
     if next_frame == frame as *mut InterruptFrame
         && frame.stack_frame.code_segment & 3 == 3
     {
@@ -3695,7 +3753,7 @@ fn install_pipe_descriptors(
 fn syscall_write(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
     let fd = usize::try_from(fd).map_err(|_| EBADF)?;
     let length = usize::try_from(length).map_err(|_| EINVAL)?;
-    if length > MAX_SYSCALL_IO {
+    if length > MAX_FILE_IO {
         return Err(EINVAL);
     }
     if length == 0 {
@@ -3707,7 +3765,7 @@ fn syscall_write(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
 }
 
 fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
-    if bytes.len() > MAX_SYSCALL_IO {
+    if bytes.len() > MAX_FILE_IO {
         return Err(EINVAL);
     }
     if bytes.is_empty() {
@@ -4137,7 +4195,7 @@ fn append_printf_repeat(output: &mut Vec<u8>, byte: u8, count: usize) -> Result<
 fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
     let fd = usize::try_from(fd).map_err(|_| EBADF)?;
     let length = usize::try_from(length).map_err(|_| EINVAL)?;
-    if length > MAX_SYSCALL_IO {
+    if length > MAX_FILE_IO {
         return Err(EINVAL);
     }
     if length == 0 {
@@ -5290,7 +5348,9 @@ fn syscall_mmap(
     let shared = map_flags & MAP_SHARED != 0;
     let anonymous = map_flags & MAP_ANONYMOUS != 0;
     let (file_path, file_length, can_write, is_device) = if anonymous {
-        if descriptor as i64 != -1 || offset != 0 {
+        // Linux takes the descriptor as a 32-bit int: glibc passes -1 as
+        // 0xFFFF_FFFF, so compare the low word instead of the full register.
+        if descriptor as u32 as i32 != -1 || offset != 0 {
             return Err(EINVAL);
         }
         (None, 0, true, false)
@@ -6072,6 +6132,11 @@ fn syscall_getcwd(address: u64, size: u64) -> Result<u64, i32> {
 }
 
 fn syscall_clock_gettime(clock_id: u64, address: u64) -> Result<u64, i32> {
+    // Reject an unknown clock before touching user memory or the RTC.
+    match clock_id {
+        0 | 1 | 2 | 3 | 4 | 7 => {}
+        _ => return Err(EINVAL),
+    }
     paging::validate_user_range(address, core::mem::size_of::<UserTimespec>(), true)
         .map_err(|_| EFAULT)?;
     let time = match clock_id {
@@ -6082,14 +6147,13 @@ fn syscall_clock_gettime(clock_id: u64, address: u64) -> Result<u64, i32> {
         },
         // CLOCK_MONOTONIC, PROCESS_CPUTIME, THREAD_CPUTIME, MONOTONIC_RAW,
         // BOOTTIME: semuanya memakai uptime TSC.
-        1 | 2 | 3 | 4 | 7 => {
+        _ => {
             let milliseconds = crate::arch::x86_64::monotonic_milliseconds();
             UserTimespec {
                 seconds: (milliseconds / 1000) as i64,
                 nanoseconds: ((milliseconds % 1000) * 1_000_000) as i64,
             }
         }
-        _ => return Err(EINVAL),
     };
     unsafe { (address as *mut UserTimespec).write_unaligned(time) };
     Ok(0)
@@ -6206,28 +6270,34 @@ fn syscall_uname(address: u64) -> Result<u64, i32> {
     Ok(0)
 }
 
-// brk: return current mmap_cursor sebagai "program break"
+// brk: kelola program break terpisah dari mmap, seperti Linux.
 fn syscall_brk(addr: u64) -> Result<u64, i32> {
     let memory = current_user_memory()?;
-    let cursor = *memory.mmap_cursor.lock();
+    let cursor = *memory.brk_top.lock();
     if addr == 0 {
         return Ok(cursor);
     }
-    // Jika addr lebih besar, coba alokasi anonymous pages
+    // Grow the heap from its own cursor, never from the mmap cursor.
     if addr > cursor {
+        if addr > MMAP_START {
+            return Ok(cursor);
+        }
         let pages = ((addr - cursor + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
         let mut mappings = memory.mmap_pages.lock();
-        let mut cur = *memory.mmap_cursor.lock();
         mappings.try_reserve(pages).map_err(|_| ENOMEM)?;
+        let mut cur = cursor;
         for _ in 0..pages {
+            if !mapping_range_is_free(cur, PAGE_SIZE) {
+                break;
+            }
             let physical = match allocate_mapping_frame(None) {
-                Ok((p, _)) => p,
-                Err(_) => return Ok(cur),
+                Ok((physical, _)) => physical,
+                Err(_) => break,
             };
             let page_flags = mapping_flags(PROT_READ | PROT_WRITE).unwrap_or_default();
             if unsafe { paging::map_page(cur, physical, page_flags) }.is_err() {
                 free_frame(physical as usize);
-                return Ok(cur);
+                break;
             }
             mappings.push(MappingPage {
                 address: cur,
@@ -6239,7 +6309,7 @@ fn syscall_brk(addr: u64) -> Result<u64, i32> {
             });
             cur += PAGE_SIZE;
         }
-        *memory.mmap_cursor.lock() = cur;
+        *memory.brk_top.lock() = cur;
         return Ok(cur);
     }
     Ok(cursor)
@@ -6941,7 +7011,9 @@ fn resolve_at_path(dirfd: u64, path: &str) -> Result<String, i32> {
         if !process.active {
             return Err(EINTR);
         }
-        if dirfd as i64 == AT_FDCWD {
+        // Linux takes dirfd as a 32-bit int; glibc may pass AT_FDCWD as
+        // 0xFFFF_FF9C, so compare the low word rather than the register.
+        if dirfd as u32 as i32 == AT_FDCWD as i32 {
             process.cwd.clone()
         } else {
             let fd = usize::try_from(dirfd).map_err(|_| EBADF)?;
@@ -7116,6 +7188,203 @@ fn stat_mode(path: &str, node_type: NodeType, permissions: u16) -> u32 {
         }
     };
     node_mode | u32::from(permissions & 0o777)
+}
+
+
+// ---------------------------------------------------------------------------
+// Helpers for the Linux x86_64 ABI layer (kernel/src/linux_abi.rs).
+//
+// These expose just enough of the process, descriptor and VFS state for the
+// syscall translator without making the whole process table public.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn linux_current_pid() -> u64 {
+    let process = USER_PROCESS.lock();
+    if process.active { process.pid } else { 1 }
+}
+
+pub(crate) fn linux_internal_call(
+    number: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
+) -> Result<u64, i32> {
+    dispatch_syscall(number, arg1, arg2, arg3, arg4, arg5, arg6)
+}
+
+pub(crate) fn linux_internal_frame(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    handle_syscall_inner(frame)
+}
+
+pub(crate) fn linux_path_status(path_address: u64, follow: bool) -> Result<(u32, u64), i32> {
+    let path = resolve_process_path(&copy_user_path(path_address)?)?;
+    let metadata = fs::with_vfs(|vfs| {
+        if follow {
+            vfs.metadata(&path)
+        } else {
+            vfs.symlink_metadata(&path)
+        }
+    })
+    .map_err(errno_from_fs)?
+    .map_err(errno_from_fs)?;
+    Ok((
+        stat_mode(&path, metadata.node_type, metadata.permissions),
+        metadata.len as u64,
+    ))
+}
+
+pub(crate) fn linux_at_path_status(
+    dirfd: u64,
+    path_address: u64,
+    follow: bool,
+) -> Result<(u32, u64), i32> {
+    let path = resolve_at_path(dirfd, &copy_user_path(path_address)?)?;
+    let metadata = fs::with_vfs(|vfs| {
+        if follow {
+            vfs.metadata(&path)
+        } else {
+            vfs.symlink_metadata(&path)
+        }
+    })
+    .map_err(errno_from_fs)?
+    .map_err(errno_from_fs)?;
+    Ok((
+        stat_mode(&path, metadata.node_type, metadata.permissions),
+        metadata.len as u64,
+    ))
+}
+
+pub(crate) fn linux_fd_status(fd: u64) -> Result<(u32, u64), i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let path = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        match process.descriptors.get(fd).and_then(Option::as_ref) {
+            Some(UserDescriptor::File(file)) => file.lock().path.clone(),
+            Some(UserDescriptor::Directory(directory)) => directory.lock().path.clone(),
+            Some(
+                UserDescriptor::ConsoleInput
+                | UserDescriptor::ConsoleOutput
+                | UserDescriptor::ConsoleError,
+            ) => return Ok((0o020620, 0)),
+            Some(_) => return Ok((0o010600, 0)),
+            None => return Err(EBADF),
+        }
+    };
+    let metadata = fs::with_vfs(|vfs| vfs.metadata(&path))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    Ok((
+        stat_mode(&path, metadata.node_type, metadata.permissions),
+        metadata.len as u64,
+    ))
+}
+
+pub(crate) fn linux_getdents64(fd: u64, buffer: u64, count: u64) -> Result<u64, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let directory = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        match process.descriptors.get(fd).and_then(Option::as_ref) {
+            Some(UserDescriptor::Directory(directory)) => Arc::clone(directory),
+            Some(_) => return Err(ENOTDIR),
+            None => return Err(EBADF),
+        }
+    };
+    let count = usize::try_from(count).map_err(|_| EINVAL)?;
+    if count == 0 {
+        return Err(EINVAL);
+    }
+    paging::validate_user_range(buffer, count, true).map_err(|_| EFAULT)?;
+    let mut directory = directory.lock();
+    let mut written = 0usize;
+    while let Some(entry) = directory.entries.get(directory.next_entry) {
+        let name = entry.name.as_bytes();
+        let record = (19usize + name.len() + 1 + 7) & !7;
+        if written + record > count {
+            break;
+        }
+        let file_type = match entry.metadata.node_type {
+            NodeType::File => 8u8,
+            NodeType::Directory => 4u8,
+            NodeType::Symlink => 10u8,
+        };
+        let mut header = [0u8; 19];
+        header[0..8].copy_from_slice(&(u64::try_from(directory.next_entry).unwrap_or(0) + 1).to_le_bytes());
+        header[8..16].copy_from_slice(&(i64::try_from(directory.next_entry).unwrap_or(0) + 1).to_le_bytes());
+        header[16..18].copy_from_slice(&(record as u16).to_le_bytes());
+        header[18] = file_type;
+        let padding = record - 19 - name.len();
+        let zeros = [0u8; 8];
+        unsafe {
+            let base = buffer as *mut u8;
+            core::ptr::copy_nonoverlapping(header.as_ptr(), base.add(written), 19);
+            core::ptr::copy_nonoverlapping(name.as_ptr(), base.add(written + 19), name.len());
+            core::ptr::copy_nonoverlapping(
+                zeros.as_ptr(),
+                base.add(written + 19 + name.len()),
+                padding.min(zeros.len()),
+            );
+        }
+        written += record;
+        directory.next_entry += 1;
+    }
+    Ok(written as u64)
+}
+
+/// Linux `struct sigaction` (handler, flags, restorer, mask u64).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinuxSigaction {
+    handler: u64,
+    flags: u64,
+    restorer: u64,
+    mask: u64,
+}
+
+pub(crate) fn linux_sigaction(number: u64, action: u64, old_action: u64) -> Result<u64, i32> {
+    if number == 0 || number >= SIGNAL_TABLE_LENGTH as u64 {
+        return Err(EINVAL);
+    }
+    if number == SIGKILL_NUMBER || number == SIGSTOP_NUMBER {
+        return Err(EINVAL);
+    }
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    ensure_signal_table(&mut process);
+    if old_action != 0 {
+        paging::validate_user_range(old_action, core::mem::size_of::<LinuxSigaction>(), true)
+            .map_err(|_| EFAULT)?;
+        let previous = process.signal_handlers[number as usize];
+        let user_previous = LinuxSigaction {
+            handler: previous.handler,
+            flags: previous.flags,
+            restorer: previous.restorer,
+            mask: previous.mask,
+        };
+        unsafe { (old_action as *mut LinuxSigaction).write_unaligned(user_previous) };
+    }
+    if action != 0 {
+        paging::validate_user_range(action, core::mem::size_of::<LinuxSigaction>(), false)
+            .map_err(|_| EFAULT)?;
+        let user_action = unsafe { (action as *const LinuxSigaction).read_unaligned() };
+        process.signal_handlers[number as usize] = SignalAction {
+            handler: user_action.handler,
+            flags: user_action.flags,
+            mask: user_action.mask,
+            restorer: user_action.restorer,
+        };
+    }
+    Ok(0)
 }
 
 fn next_runnable(
@@ -7748,7 +8017,10 @@ mod tests {
 
     #[test]
     fn clock_gettime_accepts_realtime_and_rejects_unknown_clocks() {
-        assert_eq!(dispatch_syscall(50, 1, 1, 0, 0, 0, 0), Err(EINVAL));
+        // Clock ids 0..=4 and 7 are documented as supported (including
+        // CLOCK_MONOTONIC), so only an undefined id is rejected.  The clock id
+        // is checked before the timespec pointer, matching Linux.
+        assert_eq!(dispatch_syscall(50, 99, 1, 0, 0, 0, 0), Err(EINVAL));
         assert_eq!(dispatch_syscall(50, 0, 0, 0, 0, 0, 0), Err(super::EFAULT));
     }
 
@@ -8447,7 +8719,8 @@ fn syscall_clock_nanosleep(clock_id: u64, flags: u64, request: u64, remain: u64)
 
 const SIGKILL_NUMBER: u64 = 9;
 const SIGSTOP_NUMBER: u64 = 19;
-const SIGNAL_TABLE_LENGTH: usize = 32;
+// Signals 1..=64; the pending/blocked masks are u64 bitmaps.
+const SIGNAL_TABLE_LENGTH: usize = 65;
 const SA_RESETHAND_FLAG: u64 = 0x8000_0000;
 const SA_RESTART_FLAG: u64 = 0x1000_0000;
 

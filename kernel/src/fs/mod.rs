@@ -4,7 +4,10 @@
 //! filesystem interface. The initial root is a [`RamFs`], so its contents are
 //! volatile until a block-device driver and a persistent filesystem exist.
 
-pub(crate) use devfs::{Termios, console_termios, discard_pending_input, set_console_termios};
+pub(crate) use devfs::{
+    LINUX_TERMIOS_SIZE, Termios, console_termios, discard_pending_input, linux_termios_bytes,
+    set_console_termios, termios_from_linux_bytes,
+};
 mod devfs;
 mod ramfs;
 
@@ -36,6 +39,8 @@ const LDSO_ELF: &[u8] = include_bytes!("../../../user/build/ld-octagram.elf");
 const DYNAMIC_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/dynamic_demo.elf");
 const DYNAMIC_DEMO_LIB: &[u8] = include_bytes!("../../../user/build/libdyn_demo.so");
 const SHARED_LIBC: &[u8] = include_bytes!("../../../user/build/liboctagram.so");
+const PYTHON_ELF: &[u8] = include_bytes!("../../../user/build/python3.elf");
+const PYTHON_STDLIB_ZIP: &[u8] = include_bytes!("../../../user/build/python312.zip");
 const TCC_CRT1: &[u8] = include_bytes!("../../../user/build/crt0.o");
 const TCC_LIBC: &[u8] = include_bytes!("../../../user/build/libc.a");
 const TCC_LIBTCC1: &[u8] = include_bytes!("../../../user/build/libtcc1.a");
@@ -582,6 +587,12 @@ pub fn init() {
             .expect("creating the initial /include/sys directory must succeed");
         root.create_dir("/tmp")
             .expect("creating the initial /tmp directory must succeed");
+        root.create_dir("/usr")
+            .expect("creating the initial /usr directory must succeed");
+        root.create_dir("/usr/local")
+            .expect("creating the initial /usr/local directory must succeed");
+        root.create_dir("/usr/local/lib")
+            .expect("creating the initial /usr/local/lib directory must succeed");
         vfs.mount("/", root)
             .expect("mounting the initial root filesystem must succeed");
         vfs.mount("/dev", DevFs::new())
@@ -606,6 +617,13 @@ pub fn init() {
         seed_file(&mut vfs, "/bin/fb-demo", FB_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/fb_demo", FB_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/dynamic-demo", DYNAMIC_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/python3", PYTHON_ELF, 0o755);
+        seed_file(
+            &mut vfs,
+            "/usr/local/lib/python312.zip",
+            PYTHON_STDLIB_ZIP,
+            0o644,
+        );
         seed_file(&mut vfs, "/lib/ld-octagram.so", LDSO_ELF, 0o755);
         seed_file(&mut vfs, "/lib/liboctagram.so", SHARED_LIBC, 0o755);
         seed_file(&mut vfs, "/lib/libdyn_demo.so", DYNAMIC_DEMO_LIB, 0o755);

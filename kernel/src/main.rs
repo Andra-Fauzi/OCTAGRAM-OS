@@ -32,6 +32,7 @@ pub mod elf;
 pub mod fs;
 mod graphics;
 mod klog;
+mod linux_abi;
 mod memory;
 pub mod network;
 mod rsdp;
@@ -78,6 +79,8 @@ unsafe extern "C" fn kmain() -> ! {
     println!("GDT LOADED");
     unsafe { arch::x86_64::idt::load_idt() };
     println!("IDT LOADED");
+    unsafe { arch::x86_64::gdt::init_syscall_entry() };
+    println!("SYSCALL ENTRY READY");
     rsdp::test_rsdp();
     arch::x86_64::apic::disable_pic();
     arch::x86_64::apic::LAPIC.call_once(|| unsafe { arch::x86_64::apic::init_lapic() });

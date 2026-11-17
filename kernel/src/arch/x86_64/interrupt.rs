@@ -200,6 +200,10 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
         // The APIC spurious vector has no device source and must not send EOI.
         SPURIOUS_VECTOR_U64 => frame as *mut InterruptFrame,
         128 => crate::elf::handle_syscall(frame),
+        // Vector 129 is not reachable through the IDT: the `syscall` entry
+        // stub pushes it so the shared restore path can dispatch Linux ABI
+        // calls without confusing them with OCTAGRAM `int 0x80` calls.
+        129 => crate::elf::handle_linux_syscall(frame),
         // Unknown external IRQs are handled before the user-CPL exception arm:
         // a hardware interrupt may arrive while a user task is running.
         _ if frame.vector >= 32 => {
@@ -274,7 +278,11 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
     };
     // Acknowledge all external vectors handled above except the architectural
     // APIC spurious vector (255), which explicitly does not receive an EOI.
-    if frame.vector >= 32 && frame.vector != 128 && frame.vector != SPURIOUS_VECTOR_U64 {
+    if frame.vector >= 32
+        && frame.vector != 128
+        && frame.vector != 129
+        && frame.vector != SPURIOUS_VECTOR_U64
+    {
         if let Some(lapic) = apic::LAPIC.get() {
             unsafe {
                 lapic.send_eoi();
@@ -325,6 +333,37 @@ interrupt_stub!(xhci_irq_stub, 44, no_error_code);
 interrupt_stub!(qca9377_irq_stub, 45, no_error_code);
 interrupt_stub!(spurious_interrupt_stub, 255, no_error_code);
 interrupt_stub!(syscall_stub, 128, no_error_code);
+
+/// User stack pointer captured by the `syscall` entry stub.
+///
+/// `syscall` does not switch stacks, so the stub stores the ring-3 RSP here
+/// with interrupts disabled (IF is cleared by IA32_FMASK) before switching to
+/// the kernel stack and building an interrupt frame.
+static mut SYSCALL_USER_RSP: u64 = 0;
+
+/// Linux x86_64 system-call entry (`syscall` instruction).
+///
+/// On entry RCX holds the return RIP and R11 the user RFLAGS.  The stub
+/// synthesises the same frame layout as an interrupt gate and jumps to the
+/// shared restore path, which returns with `iretq`.
+#[unsafe(naked)]
+pub unsafe extern "C" fn syscall_entry() -> ! {
+    naked_asm!(
+        "mov qword ptr [rip + {user_rsp}], rsp",
+        "mov rsp, qword ptr [rip + {kernel_top}]",
+        "push 0x1b", // user data selector (RPL 3)
+        "push qword ptr [rip + {user_rsp}]",
+        "push r11",  // user RFLAGS
+        "push 0x23", // user code selector (RPL 3)
+        "push rcx",  // user RIP
+        "push 0",    // error-code slot
+        "push 129",  // Linux syscall vector marker
+        "jmp {common}",
+        user_rsp = sym SYSCALL_USER_RSP,
+        kernel_top = sym super::gdt::RING0_STACK_TOP,
+        common = sym stub_common,
+    )
+}
 
 #[cfg(test)]
 mod tests {

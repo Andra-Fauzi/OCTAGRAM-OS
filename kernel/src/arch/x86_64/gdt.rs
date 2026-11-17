@@ -1,6 +1,7 @@
 //! GDT, TSS, and the ring-3 entry/return path for x86_64.
 
 use core::arch::{asm, naked_asm};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 pub const KERNEL_CODE_SELECTOR: u16 = 0x08;
 pub const KERNEL_DATA_SELECTOR: u16 = 0x10;
@@ -42,7 +43,14 @@ impl TaskStateSegment {
     }
 }
 
+/// Ring-0 stack top used by the `syscall` entry stub, mirroring TSS.RSP0.
+///
+/// Hardware interrupts switch stacks through the TSS, while `syscall` does
+/// not, so the stub needs a readable copy of the current process stack top.
+pub(crate) static RING0_STACK_TOP: AtomicU64 = AtomicU64::new(0);
+
 unsafe fn set_ring0_stack(stack_top: u64) {
+    RING0_STACK_TOP.store(stack_top, Ordering::Release);
     let tss = core::ptr::addr_of_mut!(TSS).cast::<u8>();
     let rsp0 = unsafe {
         tss.add(core::mem::offset_of!(TaskStateSegment, rsp))
@@ -72,6 +80,61 @@ unsafe fn set_interrupt_stack(index: usize, stack_top: u64) {
 /// `stack_top` must be the top of a mapped, writable kernel stack.
 pub unsafe fn set_ring0_stack_top(stack_top: u64) {
     unsafe { set_ring0_stack(stack_top) }
+}
+
+pub fn ring0_stack_top() -> u64 {
+    RING0_STACK_TOP.load(Ordering::Acquire)
+}
+
+const IA32_EFER: u32 = 0xc000_0080;
+const IA32_STAR: u32 = 0xc000_0081;
+const IA32_LSTAR: u32 = 0xc000_0082;
+const IA32_FMASK: u32 = 0xc000_0084;
+
+unsafe fn read_msr(msr: u32) -> u64 {
+    let low: u32;
+    let high: u32;
+    unsafe {
+        asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack),
+        );
+    }
+    (u64::from(high) << 32) | u64::from(low)
+}
+
+unsafe fn write_msr(msr: u32, value: u64) {
+    unsafe {
+        asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") value as u32,
+            in("edx") (value >> 32) as u32,
+            options(nomem, nostack),
+        );
+    }
+}
+
+/// Enable the `syscall`/`sysret` pair so Linux x86_64 ELF binaries can enter
+/// the kernel through the ABI they were built for.
+///
+/// `syscall` loads CS from `STAR[47:32]` (the kernel code selector) and leaves
+/// the return selector arithmetic to `sysret`: CS = `STAR[63:48] + 16` and
+/// SS = `STAR[63:48] + 8`, both with RPL 3.  OCTAGRAM's GDT places user data
+/// at 0x18 and user code at 0x20, so the high half is 0x13.
+pub unsafe fn init_syscall_entry() {
+    let star = ((u64::from(USER_DATA_SELECTOR) - 8) << 48)
+        | (u64::from(KERNEL_CODE_SELECTOR) << 32);
+    unsafe {
+        write_msr(IA32_STAR, star);
+        write_msr(IA32_LSTAR, super::interrupt::syscall_entry as u64);
+        // Clear IF, TF, DF, AC and NT on entry, like Linux's SFMASK.
+        write_msr(IA32_FMASK, 0x4_4700);
+        write_msr(IA32_EFER, read_msr(IA32_EFER) | 1);
+    }
 }
 
 #[repr(align(16))]
@@ -179,6 +242,25 @@ unsafe extern "C" fn enter_user(entry: u64, user_stack: u64) -> u64 {
         "push 0x202",
         "push {user_code}",
         "push rdi",
+        // Linux enters a fresh program with the general-purpose registers
+        // zeroed (ELF_PLAT_INIT). Linux C runtimes read RDX as `rtld_fini`
+        // and would otherwise register a stale kernel value as an exit
+        // handler.
+        "xor eax, eax",
+        "xor ebx, ebx",
+        "xor ecx, ecx",
+        "xor edx, edx",
+        "xor esi, esi",
+        "xor edi, edi",
+        "xor ebp, ebp",
+        "xor r8d, r8d",
+        "xor r9d, r9d",
+        "xor r10d, r10d",
+        "xor r11d, r11d",
+        "xor r12d, r12d",
+        "xor r13d, r13d",
+        "xor r14d, r14d",
+        "xor r15d, r15d",
         "iretq",
         saved_rsp = sym USER_KERNEL_RSP,
         user_data = const USER_DATA_SELECTOR,

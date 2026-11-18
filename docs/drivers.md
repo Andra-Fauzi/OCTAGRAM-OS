@@ -59,7 +59,9 @@ deadlock spin-lock. `XHCI_ENABLED` bisa dimatikan sementara lewat konstanta di
 - `drivers/rtc.rs`: RTC CMOS, dipakai `date` dan `CLOCK_REALTIME` (resolusi
   satu detik).
 - `drivers/acpi/`: parser ACPI/AML dan power management; `shutdown` meminta S5
-  dan memerlukan tabel firmware dengan PM1 control legacy.
+  dan memerlukan tabel firmware dengan PM1 control legacy. `reboot` menulis
+  `RESET_REG`/`RESET_VALUE` dari FADT (I/O port atau MMIO), lalu fallback pulsa
+  reset 8042 dan triple fault bila register tidak ada.
 
 ## Wi-Fi QCA9377
 

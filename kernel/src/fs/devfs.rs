@@ -63,6 +63,19 @@ pub(crate) fn is_tty_path(path: &str) -> bool {
     )
 }
 
+/// Terminal yang dilayani sebuah path `/dev` yang bisa dibaca sebagai tty.
+/// `None` berarti path bukan tty yang bisa dibaca (mis. `/dev/fb0` atau file
+/// biasa), sehingga pembaca tidak boleh memblokir sebagai input console.
+pub(crate) fn tty_path_terminal(path: &str) -> Option<usize> {
+    let path = path.strip_prefix("/dev")?;
+    let device = Device::from_path(path)?;
+    if device.readable() && !matches!(device, Device::Fb0) {
+        Some(device.terminal())
+    } else {
+        None
+    }
+}
+
 pub(crate) fn is_fb_path(path: &str) -> bool {
     path == "/dev/fb0" || path == "/dev/fb"
 }
@@ -577,7 +590,24 @@ pub(crate) fn read_tty(terminal: usize, buffer: &mut [u8]) -> Result<usize, FsEr
 mod tests {
     use super::{
         DevFs, Device, FileSystem, FsError, LineDiscipline, Metadata, NodeType, device_access,
+        tty_path_terminal,
     };
+
+    #[test]
+    fn tty_path_terminal_matches_readable_terminals_only() {
+        assert_eq!(tty_path_terminal("/dev/tty2"), Some(2));
+        assert_eq!(
+            tty_path_terminal("/dev/stdin"),
+            Some(crate::terminal::active_terminal())
+        );
+        assert_eq!(
+            tty_path_terminal("/dev/console"),
+            Some(crate::terminal::active_terminal())
+        );
+        assert_eq!(tty_path_terminal("/dev/fb0"), None);
+        assert_eq!(tty_path_terminal("/dev/stdout"), None);
+        assert_eq!(tty_path_terminal("/etc/hosts"), None);
+    }
 
     #[test]
     fn devfs_exposes_tty_and_standard_stream_devices() {

@@ -189,6 +189,8 @@ const SYSCALL_SETEGID: u64 = 143;
 const SYSCALL_CAPGET: u64 = 144;
 const SYSCALL_CAPSET: u64 = 145;
 const PRIO_PROCESS: u64 = 0;
+const PRIO_PGRP: u64 = 1;
+const PRIO_USER: u64 = 2;
 
 /// Bit kemampuan proses. Saat ini hanya metadata: belum diperiksa di jalur akses.
 pub(crate) const CAP_VFS_WRITE: u64 = 1 << 0;
@@ -659,53 +661,144 @@ fn syscall_setsid() -> Result<u64, i32> {
     Ok(process.pid)
 }
 
-fn syscall_setpriority(which: u64, who: u64, priority: i64) -> Result<u64, i32> {
-    if which != PRIO_PROCESS {
-        return Err(EINVAL);
+/// Nilai `who` efektif untuk `setpriority`/`getpriority`; `None` berarti
+/// `which` tidak dikenal. `who == 0` berarti pemanggil sendiri.
+fn effective_priority_target(
+    which: u64,
+    who: u64,
+    caller_pid: u64,
+    caller_group: u64,
+    caller_uid: u32,
+) -> Option<u64> {
+    match which {
+        PRIO_PROCESS => Some(if who == 0 { caller_pid } else { who }),
+        PRIO_PGRP => Some(if who == 0 { caller_group } else { who }),
+        PRIO_USER => Some(if who == 0 { caller_uid as u64 } else { who }),
+        _ => None,
     }
+}
+
+/// Apakah satu task cocok dengan target `which`/`who` yang sudah efektif.
+fn priority_target_matches(
+    which: u64,
+    target: u64,
+    pid: u64,
+    process_group: u64,
+    euid: u32,
+) -> bool {
+    match which {
+        PRIO_PROCESS => pid == target,
+        PRIO_PGRP => process_group == target,
+        PRIO_USER => euid as u64 == target,
+        _ => false,
+    }
+}
+
+/// Izin mengubah prioritas task lain: butuh `CAP_SCHED_NICE`, atau euid sama
+/// dan hanya menurunkan prioritas (nice membesar).
+fn priority_change_allowed(
+    caller_euid: u32,
+    caller_capabilities: u64,
+    target_euid: u32,
+    old_priority: i32,
+    new_priority: i32,
+) -> bool {
+    if caller_capabilities & CAP_SCHED_NICE != 0 {
+        return true;
+    }
+    caller_euid == target_euid && new_priority >= old_priority
+}
+
+fn syscall_setpriority(which: u64, who: u64, priority: i64) -> Result<u64, i32> {
     let mut scheduler = USER_SCHEDULER.lock();
     if !scheduler.active || scheduler.processes.is_empty() {
         return Err(EINTR);
     }
     let current = scheduler.current;
-    let caller_pid = scheduler
-        .processes
-        .get(current)
-        .map(|process| process.pid)
-        .ok_or(EINTR)?;
-    let target_pid = if who == 0 { caller_pid } else { who };
+    let caller = scheduler.processes.get(current).ok_or(EINTR)?;
+    let (caller_pid, caller_uid, caller_capabilities) =
+        (caller.pid, caller.euid, caller.capabilities);
+    // Grup proses pemanggil ada di state aktif, bukan salinan scheduler.
+    let caller_group = {
+        let active = USER_PROCESS.lock();
+        if active.active {
+            active.process_group
+        } else {
+            caller.state.process_group
+        }
+    };
+    let target = effective_priority_target(which, who, caller_pid, caller_group, caller_uid)
+        .ok_or(EINVAL)?;
     let priority = clamp_priority(priority.clamp(PRIORITY_MIN as i64, PRIORITY_MAX as i64) as i32);
     let mut found = false;
     for process in &mut scheduler.processes {
-        if process.pid == target_pid && process.exit_status.is_none() {
-            process.priority = priority;
-            found = true;
+        if process.exit_status.is_some()
+            || !priority_target_matches(
+                which,
+                target,
+                process.pid,
+                if process.pid == caller_pid {
+                    caller_group
+                } else {
+                    process.state.process_group
+                },
+                process.euid,
+            )
+        {
+            continue;
         }
+        if !priority_change_allowed(
+            caller_uid,
+            caller_capabilities,
+            process.euid,
+            process.priority,
+            priority,
+        ) {
+            return Err(EPERM);
+        }
+        process.priority = priority;
+        found = true;
     }
     if found { Ok(0) } else { Err(ESRCH) }
 }
 
 fn syscall_getpriority(which: u64, who: u64) -> Result<u64, i32> {
-    if which != PRIO_PROCESS {
-        return Err(EINVAL);
-    }
     let scheduler = USER_SCHEDULER.lock();
     if !scheduler.active || scheduler.processes.is_empty() {
         return Err(EINTR);
     }
     let current = scheduler.current;
-    let caller_pid = scheduler
-        .processes
-        .get(current)
-        .map(|process| process.pid)
-        .ok_or(EINTR)?;
-    let target_pid = if who == 0 { caller_pid } else { who };
-    scheduler
-        .processes
-        .iter()
-        .find(|process| process.pid == target_pid && process.exit_status.is_none())
-        // Nilai nice dibias +20 agar hasil syscall tidak terlihat seperti error.
-        .map(|process| (process.priority - PRIORITY_MIN) as u64)
+    let caller = scheduler.processes.get(current).ok_or(EINTR)?;
+    let caller_group = {
+        let active = USER_PROCESS.lock();
+        if active.active {
+            active.process_group
+        } else {
+            caller.state.process_group
+        }
+    };
+    let target = effective_priority_target(which, who, caller.pid, caller_group, caller.euid)
+        .ok_or(EINVAL)?;
+    let mut best: Option<i32> = None;
+    for process in &scheduler.processes {
+        if process.exit_status.is_none()
+            && priority_target_matches(
+                which,
+                target,
+                process.pid,
+                if process.pid == caller.pid {
+                    caller_group
+                } else {
+                    process.state.process_group
+                },
+                process.euid,
+            )
+        {
+            best = Some(best.map_or(process.priority, |priority| priority.min(process.priority)));
+        }
+    }
+    // Nilai nice dibias +20 agar hasil syscall tidak terlihat seperti error.
+    best.map(|priority| (priority - PRIORITY_MIN) as u64)
         .ok_or(ESRCH)
 }
 
@@ -3569,6 +3662,9 @@ fn console_wait_target(fd: u64) -> Option<usize> {
     }
     match process.descriptors.get(fd).and_then(Option::as_ref) {
         Some(UserDescriptor::ConsoleInput) => Some(process.terminal),
+        // `/dev/stdin`, `/dev/tty*`, dan `/dev/console` juga menunggu input
+        // console, bukan menahan CPU di jalur VFS.
+        Some(UserDescriptor::File(file)) => fs::tty_path_terminal(&file.lock().path),
         _ => None,
     }
 }
@@ -4821,6 +4917,15 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
             let mut file = file.lock();
             if !file.readable {
                 return Err(EBADF);
+            }
+            // Terminal yang dibuka lewat path (`/dev/stdin`, `/dev/tty`) dibaca
+            // tanpa menunggu di kernel; `EAGAIN` memicu `ProcessWait::ConsoleInput`.
+            if let Some(tty_terminal) = fs::tty_path_terminal(&file.path) {
+                return match fs::poll_tty(tty_terminal, output) {
+                    Ok(Some(count)) => Ok(count as u64),
+                    Ok(None) => Err(EAGAIN),
+                    Err(error) => Err(errno_from_fs(error)),
+                };
             }
             let count = fs::with_vfs(|vfs| vfs.read(&file.path, file.offset, output))
                 .map_err(errno_from_fs)?
@@ -8345,7 +8450,9 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, ElfError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPERM, EPIPE, ESRCH,
+        EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPERM,
+        EPIPE, PRIO_PGRP, PRIO_PROCESS, PRIO_USER, effective_priority_target,
+        priority_change_allowed, priority_target_matches,
         SCHED_OTHER, ElfError,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
         PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_PAGES, STACK_RANDOM_PAGES,
@@ -8827,6 +8934,36 @@ mod tests {
             ),
             Some(1)
         );
+    }
+
+    #[test]
+    fn priority_targets_cover_process_group_and_user() {
+        assert_eq!(effective_priority_target(PRIO_PROCESS, 0, 7, 3, 0), Some(7));
+        assert_eq!(effective_priority_target(PRIO_PROCESS, 9, 7, 3, 0), Some(9));
+        assert_eq!(effective_priority_target(PRIO_PGRP, 0, 7, 3, 0), Some(3));
+        assert_eq!(effective_priority_target(PRIO_PGRP, 12, 7, 3, 0), Some(12));
+        assert_eq!(effective_priority_target(PRIO_USER, 0, 7, 3, 1000), Some(1000));
+        assert_eq!(effective_priority_target(PRIO_USER, 42, 7, 3, 0), Some(42));
+        assert_eq!(effective_priority_target(99, 0, 7, 3, 0), None);
+
+        assert!(priority_target_matches(PRIO_PROCESS, 7, 7, 3, 0));
+        assert!(!priority_target_matches(PRIO_PROCESS, 7, 8, 3, 0));
+        assert!(priority_target_matches(PRIO_PGRP, 3, 8, 3, 0));
+        assert!(!priority_target_matches(PRIO_PGRP, 3, 8, 4, 0));
+        assert!(priority_target_matches(PRIO_USER, 1000, 8, 4, 1000));
+        assert!(!priority_target_matches(PRIO_USER, 1000, 8, 4, 0));
+    }
+
+    #[test]
+    fn priority_changes_need_matching_euid_or_capability() {
+        // Root boleh menaikkan prioritas siapa pun.
+        assert!(priority_change_allowed(0, CAP_ALL, 1000, 5, -5));
+        // Non-root hanya untuk euid sendiri, dan hanya menurunkan prioritas.
+        assert!(priority_change_allowed(1000, 0, 1000, 5, 10));
+        assert!(priority_change_allowed(1000, 0, 1000, 5, 5));
+        assert!(!priority_change_allowed(1000, 0, 1000, 5, 0));
+        assert!(!priority_change_allowed(1000, 0, 1001, 5, 10));
+        assert!(!priority_change_allowed(1000, 0, 1001, 5, 0));
     }
 
     #[test]

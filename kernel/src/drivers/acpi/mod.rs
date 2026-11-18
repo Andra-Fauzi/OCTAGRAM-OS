@@ -21,6 +21,12 @@ const DSDT_ADDRESS_OFFSET: usize = 40;
 const PM1A_CONTROL_OFFSET: usize = 64;
 const PM1B_CONTROL_OFFSET: usize = 68;
 const PM1_CONTROL_LENGTH_OFFSET: usize = 89;
+const RESET_REGISTER_OFFSET: usize = 116;
+const RESET_VALUE_OFFSET: usize = 128;
+const GENERIC_ADDRESS_LENGTH: usize = 12;
+/// `AddressSpaceId` GAS untuk memori dan I/O port.
+const GAS_SYSTEM_MEMORY: u8 = 0;
+const GAS_SYSTEM_IO: u8 = 1;
 const SCI_ENABLE: u16 = 1;
 const SLEEP_TYPE_SHIFT: u16 = 10;
 const SLEEP_TYPE_MASK: u16 = 0b111 << SLEEP_TYPE_SHIFT;
@@ -40,6 +46,7 @@ pub enum AcpiError {
     UnsupportedPowerInterface,
     AcpiEnableTimeout,
     PowerOffFailed,
+    RebootFailed,
     MemoryMappingFailed,
 }
 
@@ -50,6 +57,16 @@ struct PowerConfig {
     smi_command: Option<(u16, u8)>,
     sleep_type_a: u8,
     sleep_type_b: u8,
+    reset: Option<ResetRegister>,
+}
+
+/// Register reset FADT (`RESET_REG`/`RESET_VALUE`) yang dipakai `reboot`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResetRegister {
+    address_space: u8,
+    access_size: u8,
+    address: u64,
+    value: u8,
 }
 
 /// Discover and validate the ACPI tables needed by the shutdown command.
@@ -82,6 +99,97 @@ pub fn power_off() -> Result<(), AcpiError> {
         unsafe { asm!("sti", options(nomem, nostack, preserves_flags)) };
     }
     Err(AcpiError::PowerOffFailed)
+}
+
+/// Baca register reset dari FADT. `None` bila firmware tidak menyediakan
+/// register yang bisa dipakai (mis. hanya ACPI 1.0 atau bit width aneh).
+fn reset_register(fadt: &[u8]) -> Option<ResetRegister> {
+    if fadt.len() < RESET_VALUE_OFFSET + 1
+        || RESET_REGISTER_OFFSET + GENERIC_ADDRESS_LENGTH > fadt.len()
+    {
+        return None;
+    }
+    let address_space = fadt[RESET_REGISTER_OFFSET];
+    let bit_width = fadt[RESET_REGISTER_OFFSET + 1];
+    let bit_offset = fadt[RESET_REGISTER_OFFSET + 2];
+    let access_size = fadt[RESET_REGISTER_OFFSET + 3];
+    let address = u64_at(fadt, RESET_REGISTER_OFFSET + 4).ok()?;
+    if address == 0
+        || bit_width != 8
+        || bit_offset != 0
+        || !matches!(address_space, GAS_SYSTEM_MEMORY | GAS_SYSTEM_IO)
+        || !matches!(access_size, 1 | 2 | 4)
+    {
+        return None;
+    }
+    Some(ResetRegister {
+        address_space,
+        access_size,
+        address,
+        value: fadt[RESET_VALUE_OFFSET],
+    })
+}
+
+/// Tulis nilai reset ke register FADT. Tidak ada yang bisa memverifikasi hasilnya
+/// selain melihat mesin benar-benar reset.
+fn write_reset_register(register: &ResetRegister) {
+    match register.address_space {
+        GAS_SYSTEM_IO if register.address <= u16::MAX as u64 => {
+            let port = register.address as u16;
+            unsafe {
+                match register.access_size {
+                    1 => crate::arch::x86_64::io::outb(port, register.value),
+                    2 => crate::arch::x86_64::io::outw(port, register.value as u16),
+                    _ => crate::arch::x86_64::io::outl(port, register.value as u32),
+                }
+            }
+        }
+        GAS_SYSTEM_MEMORY => {
+            let Some(address) = crate::memory::physical_to_virtual(register.address as usize) else {
+                return;
+            };
+            unsafe {
+                match register.access_size {
+                    1 => (address as *mut u8).write_volatile(register.value),
+                    2 => (address as *mut u16).write_volatile(register.value as u16),
+                    _ => (address as *mut u32).write_volatile(register.value as u32),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Jalan terakhir bila tidak ada register reset: pulsa garis reset keyboard
+/// controller 8042, lalu paksa triple fault (IDT kosong + `int3`).
+fn fallback_reset() {
+    unsafe { crate::arch::x86_64::io::outb(0x64, 0xFE) };
+    for _ in 0..MAX_POLL_ATTEMPTS {
+        spin_loop();
+    }
+    unsafe {
+        let empty_idt = [0u8; 10];
+        asm!("lidt [{}]", in(reg) empty_idt.as_ptr(), options(nostack, readonly));
+        asm!("int3", options(nostack));
+    }
+    loop {
+        spin_loop();
+    }
+}
+
+/// Minta reset sistem lewat FADT `RESET_REG`, dengan fallback 8042/triple fault.
+/// Tidak pernah kembali dengan normal; `Err` hanya bila triple fault juga gagal.
+pub fn reboot() -> Result<(), AcpiError> {
+    if let Ok(config) = power_config()
+        && let Some(register) = config.reset
+    {
+        write_reset_register(&register);
+        for _ in 0..MAX_POLL_ATTEMPTS {
+            spin_loop();
+        }
+    }
+    fallback_reset();
+    Err(AcpiError::RebootFailed)
 }
 
 fn power_config() -> Result<&'static PowerConfig, AcpiError> {
@@ -202,6 +310,7 @@ fn locate_power_config() -> Result<PowerConfig, AcpiError> {
         smi_command,
         sleep_type_a,
         sleep_type_b,
+        reset: reset_register(fadt),
     })
 }
 
@@ -445,7 +554,44 @@ fn decode_integer(bytes: &[u8], offset: usize) -> Option<(u8, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_integer, decode_package_length, find_s5};
+    use super::{
+        GAS_SYSTEM_IO, RESET_REGISTER_OFFSET, RESET_VALUE_OFFSET, decode_integer,
+        decode_package_length, find_s5, reset_register,
+    };
+
+    fn fadt_with_reset(address: u64, access_size: u8, bit_width: u8) -> [u8; 140] {
+        let mut fadt = [0u8; 140];
+        fadt[RESET_REGISTER_OFFSET] = GAS_SYSTEM_IO;
+        fadt[RESET_REGISTER_OFFSET + 1] = bit_width;
+        fadt[RESET_REGISTER_OFFSET + 3] = access_size;
+        fadt[RESET_REGISTER_OFFSET + 4..RESET_REGISTER_OFFSET + 12]
+            .copy_from_slice(&address.to_le_bytes());
+        fadt[RESET_VALUE_OFFSET] = 0x06;
+        fadt
+    }
+
+    #[test]
+    fn fadt_reset_register_is_parsed_when_well_formed() {
+        let fadt = fadt_with_reset(0x0CF9, 1, 8);
+        let register = reset_register(&fadt).expect("reset register");
+        assert_eq!(register.address, 0x0CF9);
+        assert_eq!(register.address_space, GAS_SYSTEM_IO);
+        assert_eq!(register.access_size, 1);
+        assert_eq!(register.value, 0x06);
+    }
+
+    #[test]
+    fn fadt_reset_register_is_rejected_when_unusable() {
+        let mut no_address = fadt_with_reset(0, 1, 8);
+        assert_eq!(reset_register(&no_address), None);
+        no_address[RESET_REGISTER_OFFSET + 4] = 0x10;
+        assert!(reset_register(&no_address).is_some());
+        let wide = fadt_with_reset(0x0CF9, 1, 16);
+        assert_eq!(reset_register(&wide), None);
+        let bad_size = fadt_with_reset(0x0CF9, 3, 8);
+        assert_eq!(reset_register(&bad_size), None);
+        assert_eq!(reset_register(&[0u8; 64]), None);
+    }
 
     #[test]
     fn finds_s5_package_with_byte_constants() {

@@ -23,7 +23,9 @@ aktif dan dapat dipindah dengan Ctrl+Alt+F1..F4.
 `edit`.
 
 **Sistem**
-`date`, `shutdown`, `sched`, `devices`, `lsdev`, `drivers`, `savelog`.
+`date`, `shutdown`, `reboot`, `sched`, `devices`, `lsdev`, `drivers`, `savelog`.
+`shutdown` meminta S5 lewat PM1 control; `reboot` memakai register reset FADT
+(`RESET_REG`/`RESET_VALUE`) dengan fallback pulsa 8042 lalu triple fault.
 
 `sched` menampilkan PID/TID, nice, policy, umur tunggu (`AGE`), dan status tiap
 task terjadwal. Penanda `WATCHDOG` muncul bila umur tunggu proses runnable

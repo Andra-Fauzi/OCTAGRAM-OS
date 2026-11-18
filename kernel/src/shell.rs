@@ -112,6 +112,7 @@ async fn execute(
         "edit" => edit_file(current_dir, arguments, terminal).await,
         "date" => show_date(),
         "shutdown" => shutdown(),
+        "reboot" => reboot(),
         "devices" => list_block_devices(),
         "savelog" => save_log(current_dir, arguments),
         "lsdev" => list_kernel_devices(),
@@ -210,6 +211,7 @@ fn print_help() {
     crate::println!("  edit <path>            edit a UTF-8 file");
     crate::println!("  date                   show date and time from the RTC");
     crate::println!("  shutdown               power off using ACPI");
+    crate::println!("  reboot                 reset using the ACPI reset register");
     crate::println!("  sched                  show scheduler priorities, aging, and watchdog flags");
     crate::println!("  devices                list detected storage devices");
     crate::println!("  lsdev                  list bus devices and bound drivers");
@@ -259,6 +261,13 @@ fn shutdown() {
     crate::println!("shutdown: requesting ACPI power-off");
     if let Err(error) = crate::drivers::acpi::power_off() {
         crate::println!("shutdown: power-off failed: {error:?}");
+    }
+}
+
+fn reboot() {
+    crate::println!("reboot: requesting ACPI reset");
+    if let Err(error) = crate::drivers::acpi::reboot() {
+        crate::println!("reboot: reset failed: {error:?}");
     }
 }
 

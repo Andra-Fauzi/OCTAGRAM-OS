@@ -104,13 +104,14 @@ services, and a package/application ecosystem.
   - [x] Prioritas nice (-20..19) per proses/thread di `ScheduledProcess`, diwarisi anak `fork` dan thread baru
   - [x] Aging anti-starvasi: umur tunggu naik tiap pemilihan, boost maksimum 39 level, seri diputus umur terlama; uji host `scheduler_prefers_higher_nice_priority` dan `scheduler_aging_prevents_starvation`
   - [x] Syscall `setpriority`/`getpriority` (134/135, `PRIO_PROCESS`), `nice()` libc memakai keduanya
-  - [ ] `PRIO_PGRP`/`PRIO_USER` dan real-time scheduling (`SCHED_FIFO`/`SCHED_RR`; `sched_*` kini hanya menerima `SCHED_OTHER`)
+  - [x] `PRIO_PGRP`/`PRIO_USER` pada `setpriority`/`getpriority`, dengan izin `CAP_SCHED_NICE` atau euid sama untuk menurunkan prioritas; uji host `priority_targets_cover_process_group_and_user` dan `priority_changes_need_matching_euid_or_capability`
+  - [ ] Real-time scheduling (`SCHED_FIFO`/`SCHED_RR`; `sched_*` kini hanya menerima `SCHED_OTHER`)
 - [x] Make blocking syscalls scheduler-aware
   - [x] `read()` descriptor console memakai `ProcessWait::ConsoleInput(terminal)`; `poll_tty()` non-blocking menggantikan loop busy-wait di kernel
   - [x] `pump_console_input()` memindahkan event keyboard ke line discipline tiap putaran idle scheduler dan membangunkan penunggu lewat bitmask terminal, termasuk cabang saat semua proses tidur
   - [x] EOF (`Ctrl-D` baris kosong) disimpan sebagai `eof_pending` sehingga `read` mengembalikan 0 dan `poll` melaporkan siap; uji host `canonical_eof_is_reported_once_when_the_line_is_empty`
   - [x] Proses tunggal tanpa proses lain memakai jalur blocking kernel `fs::read_tty` agar shell tidak menerima `EDEADLK`
-  - [ ] `read()` dari `/dev/stdin` yang dibuka sebagai file VFS masih blocking di kernel
+  - [x] `read()` dari tty yang dibuka lewat path VFS (`/dev/stdin`, `/dev/tty*`, `/dev/console`) juga scheduler-aware lewat `tty_path_terminal()` + `poll_tty()`; uji host `tty_path_terminal_matches_readable_terminals_only`
 - [ ] Implement wakeup cancellation and robust timed waits
 - [ ] Improve mutex/condvar/futex implementation
   - [x] Real `FUTEX_WAIT`/`FUTEX_WAKE` with LAPIC timeout handling
@@ -199,6 +200,8 @@ services, and a package/application ecosystem.
   - [x] `/apps` registry directory
   - [x] `apps` shell command
 - [ ] Power/session settings
+  - [x] Power-off `shutdown` (ACPI S5) dan reset `reboot` (FADT `RESET_REG`, fallback 8042/triple fault)
+  - [ ] Pengaturan sesi/pengguna yang persisten (mis. zona waktu, preferensi terminal)
 
 ## CPython 3.11/3.12
 

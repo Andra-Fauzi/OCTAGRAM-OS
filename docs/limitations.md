@@ -18,12 +18,13 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
 
 ## Proses dan scheduler
 
-- Prioritas nice dan aging tersedia lewat `setpriority`/`getpriority`, tetapi
-  tanpa real-time scheduling (`SCHED_FIFO`/`SCHED_RR`), tanpa
-  `PRIO_PGRP`/`PRIO_USER`, dan tanpa watchdog.
+- Prioritas nice, aging, dan watchdog starvasi/idle tersedia, tetapi tanpa
+  real-time scheduling (`SCHED_FIFO`/`SCHED_RR`) dan tanpa
+  `PRIO_PGRP`/`PRIO_USER`.
 - Tanpa SMP; hanya satu CPU.
-- `read()` console sudah scheduler-aware, tetapi `read()` dari `/dev/stdin`
-  sebagai file VFS masih menunggu di kernel dan bisa menunda proses lain.
+- `read()` console dan `read()` dari tty yang dibuka lewat path
+  (`/dev/stdin`, `/dev/tty*`, `/dev/console`) sama-sama scheduler-aware; tidak
+  ada jalur tty yang menahan CPU di kernel saat masih ada proses lain.
 - Tanpa robust futex, tanpa `clone3`, tanpa `vfork`.
 - Batas 64 proses terjadwal dan 64 KiB kernel stack per proses.
 

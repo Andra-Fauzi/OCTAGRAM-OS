@@ -47,10 +47,14 @@ dibatasi pada -20 agar tidak melewati rentang nice, seri diputus oleh umur tungg
 terlama, lalu oleh urutan round-robin mulai dari proses saat ini. Anak `fork` dan
 thread baru mewarisi prioritas induknya.
 
-Syscall `setpriority`/`getpriority` (134/135) hanya mendukung `PRIO_PROCESS`
-(`who` 0 berarti proses pemanggil); `PRIO_PGRP`/`PRIO_USER` mengembalikan `EINVAL`
-dan PID yang tidak ada mengembalikan `ESRCH`. `nice()` di libc memakai kedua
-syscall tersebut dan menjepit hasilnya ke rentang -20..19.
+Syscall `setpriority`/`getpriority` (134/135) menerima `PRIO_PROCESS`,
+`PRIO_PGRP`, dan `PRIO_USER`; `who` 0 berarti pemanggil/grup/euid pemanggil dan
+`which` tak dikenal mengembalikan `EINVAL`. Target yang tidak ada menghasilkan
+`ESRCH`. Mengubah prioritas task lain butuh `CAP_SCHED_NICE`; non-root hanya boleh
+untuk euid sendiri dan hanya menurunkan prioritas (nice membesar), selain itu
+`EPERM`. `getpriority` untuk grup/user mengembalikan nice terkecil (prioritas
+tertinggi) di antara task yang cocok. `nice()` di libc memakai kedua syscall
+tersebut dan menjepit hasilnya ke rentang -20..19.
 
 Pengawasan scheduler: shell `sched` mencetak PID/TID, nice, policy, `AGE`, dan
 status setiap task (`scheduler_status()` menyalin snapshot dengan
@@ -73,9 +77,12 @@ busy-loop: `Child(pid)`, `Thread(tid)`, `PipeReadable(pipe)`,
 `PipeWritable(pipe)`, `Futex { address, bitset }`, `PollWait`, `Sleep`, dan
 `ConsoleInput(terminal)`.
 
-`read()` dari descriptor console tidak lagi berputar di kernel. `poll_tty()`
-mengembalikan `Ok(None)` bila belum ada data; syscall lalu menyimpan state dan
-memilih proses lain. Setiap putaran idle scheduler memanggil
+`read()` dari descriptor console tidak lagi berputar di kernel; hal yang sama
+berlaku untuk tty yang dibuka lewat path (`/dev/stdin`, `/dev/tty*`,
+`/dev/console`) karena `fs::tty_path_terminal()` memetakan path ke terminal dan
+`syscall_read` memakai `poll_tty()` di jalur file. `poll_tty()` mengembalikan
+`Ok(None)` bila belum ada data; syscall lalu menyimpan state dan memilih proses
+lain. Setiap putaran idle scheduler memanggil
 `pump_console_input()`, yang memindahkan event keyboard ke line discipline semua
 terminal dan mengembalikan bitmask terminal siap baca; penunggu dengan terminal
 yang cocok dibangunkan (`wake_console_waiters`). Bila tidak ada proses lain yang
@@ -138,12 +145,12 @@ syscall `futex` (94). Kernel mendukung:
   `FUTEX_WAKE_BITSET`, dan `FUTEX_REQUEUE`;
 - flag private (`FUTEX_PRIVATE_FLAG`).
 
-Robust futex (daftar `FUTEX_OWNER_DIED`) belum ada, begitu pula watchdog.
+Robust futex (daftar `FUTEX_OWNER_DIED`) belum ada; watchdog starvasi/idle sudah
+ada.
 
 ## Batasan
 
-- Prioritas hanya `SCHED_OTHER`; tanpa real-time scheduling dan tanpa
-  `PRIO_PGRP`/`PRIO_USER`.
+- Prioritas hanya `SCHED_OTHER`; tanpa real-time scheduling.
 - `sched_*` hanya menerima `SCHED_OTHER`/prioritas 0; tidak ada penjadwalan
   real-time.
 - Tanpa SMP dan tanpa migrasi thread antar CPU.

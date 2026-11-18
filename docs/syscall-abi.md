@@ -136,8 +136,8 @@ menyediakan inline wrappers.
 | 131 | `getsid` | `RDI=pid` atau 0 | Session ID |
 | 132 | `setsid` | — | Session/process group ID baru |
 | 133 | `sigaltstack` | `RDI=stack_t* baru` (0 untuk baca), `RSI=stack_t* lama` | 0, `-EINVAL`, `-EPERM` bila stack alternatif sedang dipakai |
-| 134 | `setpriority` | `RDI=which` (hanya 0 = `PRIO_PROCESS`), `RSI=who` (0 = pemanggil), `RDX=priority` (-20..19, dijepit) | 0, `-EINVAL`, `-ESRCH` |
-| 135 | `getpriority` | `RDI=which`, `RSI=who` | Prioritas nice yang dibias +20 (0..39), `-EINVAL`, `-ESRCH` |
+| 134 | `setpriority` | `RDI=which` (0 `PRIO_PROCESS`, 1 `PRIO_PGRP`, 2 `PRIO_USER`), `RSI=who` (0 = pemanggil/grup/euid pemanggil), `RDX=priority` (-20..19, dijepit) | 0, `-EINVAL`, `-EPERM` (butuh `CAP_SCHED_NICE` untuk task lain), `-ESRCH` |
+| 135 | `getpriority` | `RDI=which`, `RSI=who` | Prioritas nice yang dibias +20 (0..39) dari task dengan prioritas tertinggi yang cocok, `-EINVAL`, `-ESRCH` |
 | 136 | `sched_setscheduler` | `RDI=pid` (0 = pemanggil), `RSI=policy`, `RDX=sched_param*` | 0, `-EPERM` (hanya `SCHED_OTHER`), `-EINVAL`, `-ESRCH` |
 | 137 | `sched_getscheduler` | `RDI=pid` | Policy (selalu 0 = `SCHED_OTHER`), `-ESRCH` |
 | 138 | `sched_getparam` | `RDI=pid`, `RSI=sched_param*` | 0 setelah menulis prioritas 0, `-EFAULT`, `-ESRCH` |
@@ -575,8 +575,9 @@ tersedia untuk executable PIE dan batas formatnya dijelaskan di
 berjalan di ring 3; thread dalam proses yang sama berbagi address space tersebut.
 Batas total task terjadwal (proses dan thread) adalah 64. Penjadwalan memakai
 prioritas nice dengan aging; lihat [`docs/process.md`](process.md#penjadwalan).
-`read()` dari descriptor console memblokir secara scheduler-aware
-(`ProcessWait::ConsoleInput`), tetapi `read()` dari `/dev/stdin` yang dibuka
-sebagai file VFS masih menunggu di kernel. Menambahkan nomor syscall adalah
+`read()` dari descriptor console dan dari tty yang dibuka lewat path
+(`/dev/stdin`, `/dev/tty*`, `/dev/console`) memblokir secara scheduler-aware
+(`ProcessWait::ConsoleInput`); jalur VFS memakai `poll_tty()` dan mengembalikan
+`EAGAIN` ketika belum ada input. Menambahkan nomor syscall adalah
 perubahan ABI; jaga nomor lama dan update header, tabel ini, implementasi, dan
 contoh program secara bersamaan.

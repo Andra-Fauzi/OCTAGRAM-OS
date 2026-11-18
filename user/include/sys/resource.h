@@ -46,7 +46,9 @@ int getrlimit(int resource, struct rlimit *limit);
 int setrlimit(int resource, const struct rlimit *limit);
 int getrusage(int who, struct rusage *usage);
 
-/* Kernel hanya mendukung PRIO_PROCESS; which lain mengembalikan EINVAL. */
+/* PRIO_PROCESS, PRIO_PGRP, dan PRIO_USER didukung; `who` 0 = pemanggil.
+ * Mengubah prioritas task lain butuh CAP_SCHED_NICE atau euid yang sama dengan
+ * arah penurunan prioritas saja (nice membesar). */
 int getpriority(int which, id_t who);
 int setpriority(int which, id_t who, int priority);
 

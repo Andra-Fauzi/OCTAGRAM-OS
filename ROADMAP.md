@@ -29,7 +29,11 @@ services, and a package/application ecosystem.
   - [x] Penegakan `CAP_VFS_WRITE` untuk `open` bertulis, `write` file, `mkdir`, `unlink`, `rmdir`, `unlinkat`, `rename`, `symlink`, `chmod`, dan `ftruncate`
   - [x] Penegakan `CAP_NETWORK` pada `socket()` AF_INET dan `CAP_SCHED_NICE` pada prioritas task lain; uji host `capability_checks_require_the_requested_bit`
   - [ ] Penegakan untuk mount/device, akses console, dan descriptor yang sudah terbuka sebelum uid diturunkan
-- [ ] Test kernel faults, invalid mappings, and cross-process memory access
+- [x] Test kernel faults, invalid mappings, and cross-process memory access
+  - [x] Batas validasi alamat: panjang 0, di bawah `USER_ADDRESS_MIN`, melewati `USER_ADDRESS_MAX`, dan overflow (`user_range_validation_rejects_overflow_and_non_user_addresses`)
+  - [x] `PT_LOAD` invalid: di luar user space, W+X, align tidak wajar, `filesz > memsz`, dan file terpotong (`rejects_load_segments_outside_the_user_address_space`, `rejects_malformed_load_segments`)
+  - [x] `mapping_size` membulatkan halaman ke atas dan menolak panjang nol/overflow (`mapping_size_rounds_pages_and_rejects_bad_lengths`)
+  - [ ] Uji runtime untuk page fault nyata, akses ke mapping yang sudah di-`munmap`, dan isolasi lintas proses (butuh QEMU, tidak bisa di uji host)
 
 ## Priority 2: POSIX runtime
 

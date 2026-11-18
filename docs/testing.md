@@ -70,6 +70,13 @@ cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-li
 Uji di QEMU memerlukan image, OVMF, dan perangkat yang sesuai; perilaku driver
 atau jaringan nyata tidak bisa disimpulkan dari uji host.
 
+Cakupan uji host untuk kesalahan memori sengaja dibatasi pada jalur yang tidak
+menyentuh page table: batas `validate_user_range`/`validate_mapping_range`,
+penolakan `PT_LOAD` tidak valid oleh `parse`, dan pembulatan `mapping_size`.
+Page fault sungguhan, akses ke mapping yang sudah di-`munmap`, dan isolasi
+lintas proses hanya bisa dibuktikan di QEMU karena memerlukan CR3 dan frame
+allocator nyata.
+
 ## Direktori `tests/`
 
 `tests/pp` dan `tests/tests2` berisi symlink `Makefile` ke

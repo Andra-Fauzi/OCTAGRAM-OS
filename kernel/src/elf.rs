@@ -8536,6 +8536,7 @@ mod tests {
         build_initial_stack, try_clone_mapping_pages,
         create_pipe, dispatch_syscall, errno_from_fs, install_pipe_descriptors, mapping_flags,
         mapping_size, next_runnable, paging, parse, resolve_user_path, stat_mode, user_dirent,
+        validate_user_mapping_range,
         CAP_ALL, capabilities_for_uid, credential_change_allowed, effective_priority,
         MAX_AGING_BOOST, STARVATION_WATCHDOG_AGE, sched_priority_for,
         scheduler_policy_supported, starvation_watchdog_trips,
@@ -8692,6 +8693,78 @@ mod tests {
         assert_eq!(parsed.entry, 0x400000);
         assert_eq!(parsed.segments.len(), 1);
         assert_eq!(parsed.segments[0].file_size, 1);
+    }
+
+    #[test]
+    fn rejects_load_segments_outside_the_user_address_space() {
+        let mut below = sample_elf();
+        put_u64(&mut below, 80, paging::USER_ADDRESS_MIN - PAGE_SIZE);
+        assert_eq!(parse(&below).err(), Some(ElfError::AddressRange));
+
+        let mut above = sample_elf();
+        put_u64(&mut above, 80, paging::USER_ADDRESS_MAX - PAGE_SIZE);
+        put_u64(&mut above, 104, 2 * PAGE_SIZE);
+        assert_eq!(parse(&above).err(), Some(ElfError::AddressRange));
+    }
+
+    #[test]
+    fn rejects_malformed_load_segments() {
+        let mut writable_executable = sample_elf();
+        put_u32(&mut writable_executable, 68, 7);
+        assert_eq!(
+            parse(&writable_executable).err(),
+            Some(ElfError::WritableExecutableSegment)
+        );
+
+        let mut misaligned = sample_elf();
+        put_u64(&mut misaligned, 112, 3);
+        assert_eq!(parse(&misaligned).err(), Some(ElfError::InvalidSegment));
+
+        let mut oversized_file = sample_elf();
+        put_u64(&mut oversized_file, 96, 0x2000);
+        assert_eq!(parse(&oversized_file).err(), Some(ElfError::InvalidSegment));
+
+        let mut truncated = sample_elf();
+        put_u64(&mut truncated, 72, 0x1001);
+        put_u64(&mut truncated, 112, 1);
+        assert_eq!(parse(&truncated).err(), Some(ElfError::OutOfBounds));
+    }
+
+    #[test]
+    fn mapping_size_rounds_pages_and_rejects_bad_lengths() {
+        assert_eq!(mapping_size(0), Err(EINVAL));
+        assert_eq!(mapping_size(PAGE_SIZE), Ok((PAGE_SIZE, 1)));
+        assert_eq!(mapping_size(PAGE_SIZE + 1), Ok((2 * PAGE_SIZE, 2)));
+        assert_eq!(mapping_size(u64::MAX), Err(EINVAL));
+        assert_eq!(mapping_size(u64::MAX - PAGE_SIZE + 2), Err(EINVAL));
+    }
+
+    #[test]
+    fn user_range_validation_rejects_overflow_and_non_user_addresses() {
+        use crate::memory::paging::{PagingError, USER_ADDRESS_MAX, USER_ADDRESS_MIN};
+        assert_eq!(paging::validate_user_range(0, 0, false), Ok(()));
+        assert_eq!(
+            paging::validate_user_range(USER_ADDRESS_MIN - 1, 8, false),
+            Err(PagingError::UserAddressOutOfRange)
+        );
+        assert_eq!(
+            paging::validate_user_range(USER_ADDRESS_MAX, 1, false),
+            Err(PagingError::UserAddressOutOfRange)
+        );
+        assert_eq!(
+            paging::validate_user_range(u64::MAX - 3, 8, true),
+            Err(PagingError::AddressOverflow)
+        );
+        assert_eq!(
+            validate_mapping_range(paging::USER_ADDRESS_MIN - 1, 8),
+            Err(EINVAL)
+        );
+        assert_eq!(
+            validate_mapping_range(MMAP_START, MMAP_END - MMAP_START + 1),
+            Err(EINVAL)
+        );
+        assert_eq!(validate_user_mapping_range(0, 8), Err(EINVAL));
+        assert_eq!(validate_user_mapping_range(MMAP_START, u64::MAX), Err(EINVAL));
     }
 
     #[test]

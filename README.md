@@ -98,12 +98,13 @@ volume before disconnecting its device.
 
 ## Running ELF programs
 
-The x86_64 kernel has an initial user-mode ELF64 loader in `kernel/src/elf.rs`.
-It accepts little-endian, static `ET_EXEC` binaries only; interpreters,
-dynamic linking, and writable-executable segments are rejected. Loaded program
-pages are user-accessible, the stack is
-non-executable, and user faults terminate the program. ELF files can be loaded
-from the VFS with
+The x86_64 kernel has a user-mode ELF64 loader in `kernel/src/elf.rs`.
+It accepts little-endian static `ET_EXEC` binaries and a limited dynamic
+`ET_DYN` format using `PT_INTERP` and the OCTAGRAM runtime loader. This is not
+a Linux/glibc ABI: applications must be built for the OCTAGRAM syscall ABI and
+the supported runtime. Writable-executable segments are rejected. Loaded
+program pages are user-accessible, the stack is non-executable, and user faults
+terminate the program. ELF files can be loaded from the VFS with
 `elf::run_file("/bin/program")` after the file has been written there through
 the VFS API.
 

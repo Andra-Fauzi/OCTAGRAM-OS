@@ -818,6 +818,18 @@ int main(void)
     ((char *)block)[4095] = 'y';
     check(sbrk(0) == (char *)block + 4096, "sbrk advanced by one page");
 
+    void *grown_break = sbrk(0);
+    check(sbrk(-128) == grown_break, "sbrk shrink returns previous break");
+    check(sbrk(0) == (char *)grown_break - 128,
+          "sbrk shrink updates byte-granular break");
+    check(brk(grown_break) == 0 && sbrk(0) == grown_break,
+          "brk restores an exact unaligned break");
+    void *stable_break = sbrk(0);
+    errno = 0;
+    check(brk((void *)(uintptr_t)1) == -1 && errno == ENOMEM &&
+              sbrk(0) == stable_break,
+          "brk rejects an address outside the heap without moving it");
+
     int pipe_fds[2];
     check(pipe(pipe_fds) == 0, "pipe()");
 

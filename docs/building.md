@@ -153,10 +153,12 @@ mendukung `addclose`, `adddup2`, dan `addopen` (maksimal 8 aksi dengan path
 127 byte); attributes mendukung `POSIX_SPAWN_SETPGROUP`,
 `POSIX_SPAWN_SETSIGDEF`, `POSIX_SPAWN_SETSIGMASK`, dan `POSIX_SPAWN_RESETIDS`
 (`setgid` lalu `setuid` ke id nyata di anak; kernel selalu uid 0 sehingga belum
-berdampak), sementara atribut scheduling (`POSIX_SPAWN_SETSCHEDPARAM`/
-`SETSCHEDULER`) mengembalikan `ENOTSUP` dan aksi diterapkan di anak setelah
-`fork` sebelum `execve`. Contoh `posix_spawn_demo` menguji
-redirection file/pipe, process group, dan kasus gagal tersebut. `waitpid`
+berdampak), dan atribut scheduling (`POSIX_SPAWN_SETSCHEDPARAM`/
+`SETSCHEDULER`) yang hanya menerima `SCHED_OTHER` dengan prioritas 0 (nice
+mengatur bobot); `SCHED_FIFO`/`SCHED_RR` menggagalkan spawn dengan `EPERM`. Aksi
+diterapkan di anak setelah `fork` sebelum `execve`. Contoh `posix_spawn_demo`
+menguji redirection file/pipe, process group, atribut scheduling, dan kasus
+gagal tersebut. `waitpid`
 mendukung `WNOHANG`, sedangkan opsi lain belum didukung. `unlink` menghapus
 file/symlink, sedangkan `rmdir` menghapus
 direktori kosong. `readlink` tidak menambahkan NUL ke buffer. Flag open dan
@@ -176,8 +178,9 @@ didukung, sehingga `sendmsg` mengembalikan `ENOTSUP` bila `msg_control` diisi
 dan `recvmsg` selalu mengosongkan `msg_controllen`. Kernel melaporkan panjang
 datagram UDP asli, sehingga `recvmsg` mengisi `msg_flags` dengan `MSG_TRUNC`
 bila data dipotong; `MSG_CTRUNC` tidak pernah diisi karena tidak ada data
-kontrol. Socket TCP mengirim satu segmen terkirim pada satu waktu, dibatasi
-`peer_mss` dan `peer_window`; segmen yang belum di-ACK dikirim ulang dengan RTO
+kontrol. Socket TCP memakai pipeline sampai 4 segmen dengan congestion window
+1→4 MSS, dibatasi `peer_mss` dan `peer_window`; segmen tertua yang belum di-ACK
+dikirim ulang dengan RTO
 eksponensial 30→60→120→240→480 tick, maksimal 5 percobaan sebelum socket
 di-RST dengan error `TCP connection timed out`. Saat jendela peer nol, kernel
 mengirim probe 1 byte setiap 60 tick agar pembukaan jendela tidak hilang.
@@ -415,9 +418,9 @@ run /mnt/stdio_demo.elf
 
 `posix_spawn_demo` menguji environment khusus child, encoding status
 `waitpid`, file actions `addopen`/`adddup2`/`addclose`, attribute
-`POSIX_SPAWN_SETPGROUP`, `POSIX_SPAWN_SETSIGMASK`, `POSIX_SPAWN_SETSIGDEF`, dan
-`POSIX_SPAWN_RESETIDS` beserta getter-nya, serta penolakan path terlalu panjang
-dan atribut scheduling yang belum didukung:
+`POSIX_SPAWN_SETPGROUP`, `POSIX_SPAWN_SETSIGMASK`, `POSIX_SPAWN_SETSIGDEF`,
+`POSIX_SPAWN_RESETIDS`, dan `POSIX_SPAWN_SETSCHEDULER`/`SETSCHEDPARAM` beserta
+getter-nya, serta penolakan path terlalu panjang dan policy `SCHED_FIFO`:
 
 ```text
 run /mnt/posix_spawn_demo.elf

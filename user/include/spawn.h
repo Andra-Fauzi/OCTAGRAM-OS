@@ -3,12 +3,13 @@
 
 #include <sys/types.h>
 #include <signal.h>
+#include <sched.h>
 
 #define POSIX_SPAWN_RESETIDS 0x0001
 #define POSIX_SPAWN_SETPGROUP 0x0002
 #define POSIX_SPAWN_SETSIGDEF 0x0004
 #define POSIX_SPAWN_SETSIGMASK 0x0008
-/* Atribut scheduling belum didukung kernel; posix_spawn mengembalikan ENOTSUP. */
+/* Didukung untuk SCHED_OTHER (prioritas 0); SCHED_FIFO/SCHED_RR -> EPERM. */
 #define POSIX_SPAWN_SETSCHEDPARAM 0x0040
 #define POSIX_SPAWN_SETSCHEDULER 0x0080
 
@@ -44,6 +45,8 @@ struct octagram_posix_spawn_attributes {
     pid_t pgroup;
     sigset_t sigmask;
     sigset_t sigdefault;
+    struct sched_param schedparam;
+    int scheduler;
 };
 
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t *actions);
@@ -71,6 +74,13 @@ int posix_spawnattr_setsigmask(posix_spawnattr_t *attributes,
                                const sigset_t *mask);
 int posix_spawnattr_getsigmask(const posix_spawnattr_t *attributes,
                                sigset_t *mask);
+int posix_spawnattr_setschedparam(posix_spawnattr_t *attributes,
+                                  const struct sched_param *param);
+int posix_spawnattr_getschedparam(const posix_spawnattr_t *attributes,
+                                  struct sched_param *param);
+int posix_spawnattr_setscheduler(posix_spawnattr_t *attributes, int policy);
+int posix_spawnattr_getscheduler(const posix_spawnattr_t *attributes,
+                                 int *policy);
 
 int posix_spawn(pid_t *restrict pid, const char *restrict path,
                 const posix_spawn_file_actions_t *restrict file_actions,

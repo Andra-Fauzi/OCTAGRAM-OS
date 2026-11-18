@@ -34,7 +34,12 @@ services, and a package/application ecosystem.
   - [x] Attributes `POSIX_SPAWN_SETPGROUP`, `SETSIGDEF`, and `SETSIGMASK`
   - [x] `posix_spawn_demo` covers file/pipe redirection, process group, mask/default signal attributes, and failures
   - [x] `POSIX_SPAWN_RESETIDS` (`setgid`/`setuid` ke id nyata di anak)
-  - [ ] Atribut scheduling (`POSIX_SPAWN_SETSCHEDPARAM`/`SETSCHEDULER`)
+  - [x] Atribut scheduling (`POSIX_SPAWN_SETSCHEDPARAM`/`SETSCHEDULER`)
+    - [x] Syscall `sched_setscheduler`/`sched_getscheduler`/`sched_setparam`/`sched_getparam` (136–139) dan header `sched.h` + `sched_yield`
+    - [x] `posix_spawnattr_setscheduler`/`setschedparam` beserta getter; diterapkan di anak sebelum `execve`
+    - [x] `SCHED_OTHER` prioritas 0 diterima, `SCHED_FIFO`/`SCHED_RR` ditolak `EPERM`; uji host `scheduler_policy_limits_to_sched_other`
+    - [x] `posix_spawn_demo` memeriksa policy/param di anak dan menolak `SCHED_FIFO`
+    - [ ] Penjadwalan real-time (`SCHED_FIFO`/`SCHED_RR`) dengan prioritas RT sesungguhnya
 - [x] Implement basic process groups and `setsid`
 - [x] Implement alternate signal stacks (`sigaltstack` 133, `SA_ONSTACK`, `SS_ONSTACK`/`SS_DISABLE`, diwarisi tanpa status aktif saat `fork`)
 - [x] Implement dynamic shared module loading
@@ -87,8 +92,17 @@ services, and a package/application ecosystem.
 
 - [x] Replace the fixed 16-task limit with a 64-task scheduler limit
 - [x] Add basic thread attributes and detached-state handling
-- [ ] Add scheduler priorities and aging
-- [ ] Make blocking syscalls scheduler-aware
+- [x] Add scheduler priorities and aging
+  - [x] Prioritas nice (-20..19) per proses/thread di `ScheduledProcess`, diwarisi anak `fork` dan thread baru
+  - [x] Aging anti-starvasi: umur tunggu naik tiap pemilihan, boost maksimum 39 level, seri diputus umur terlama; uji host `scheduler_prefers_higher_nice_priority` dan `scheduler_aging_prevents_starvation`
+  - [x] Syscall `setpriority`/`getpriority` (134/135, `PRIO_PROCESS`), `nice()` libc memakai keduanya
+  - [ ] `PRIO_PGRP`/`PRIO_USER` dan real-time scheduling (`SCHED_FIFO`/`SCHED_RR`; `sched_*` kini hanya menerima `SCHED_OTHER`)
+- [x] Make blocking syscalls scheduler-aware
+  - [x] `read()` descriptor console memakai `ProcessWait::ConsoleInput(terminal)`; `poll_tty()` non-blocking menggantikan loop busy-wait di kernel
+  - [x] `pump_console_input()` memindahkan event keyboard ke line discipline tiap putaran idle scheduler dan membangunkan penunggu lewat bitmask terminal, termasuk cabang saat semua proses tidur
+  - [x] EOF (`Ctrl-D` baris kosong) disimpan sebagai `eof_pending` sehingga `read` mengembalikan 0 dan `poll` melaporkan siap; uji host `canonical_eof_is_reported_once_when_the_line_is_empty`
+  - [x] Proses tunggal tanpa proses lain memakai jalur blocking kernel `fs::read_tty` agar shell tidak menerima `EDEADLK`
+  - [ ] `read()` dari `/dev/stdin` yang dibuka sebagai file VFS masih blocking di kernel
 - [ ] Implement wakeup cancellation and robust timed waits
 - [ ] Improve mutex/condvar/futex implementation
   - [x] Real `FUTEX_WAIT`/`FUTEX_WAKE` with LAPIC timeout handling
@@ -99,12 +113,17 @@ services, and a package/application ecosystem.
 
 ## Priority 5: Networking
 
-- [ ] TCP IPv4 reliability and socket lifecycle hardening
+- [x] TCP IPv4 reliability and socket lifecycle hardening
   - [x] Retransmisi satu segmen dengan RTO eksponensial (30→60→120→240→480 tick, maks 5 percobaan; uji host `retransmit_backoff`)
   - [x] `send` menghormati `peer_mss` dan `peer_window`, serta mengembalikan `EAGAIN` saat jendela penuh
   - [x] Zero-window probing tiap 60 tick saat `peer_window` nol (probe 1 byte di bawah `send_next`; uji host `zero_window_probe_due`)
   - [x] Keepalive opt-in lewat `SO_KEEPALIVE` (probe ACK tiap 60.000 tick idle, maksimal 9 probe lalu RST; uji host `keepalive_due`)
-  - [ ] Antrean lebih dari satu segmen terkirim (pipeline/congestion window)
+  - [x] Antrean lebih dari satu segmen terkirim (pipeline/congestion window)
+    - [x] Pipeline hingga 4 segmen di luar segmen tertua (`VecDeque<PendingSegment>`), ACK kumulatif melepas beberapa segmen sekaligus
+    - [x] Congestion window byte: 1 MSS awal, +1 MSS per ACK sampai 4 MSS, reset saat RTO; dibatasi bersama `peer_window`
+    - [x] Rollback `send_next` bila transmisi segmen gagal (segmen tertua maupun pipeline)
+    - [x] Uji host `tcp_pipeline_advances_cumulative_acknowledgements`, `tcp_send_capacity_respects_peer_window_and_congestion_window`, `tcp_congestion_window_grows_per_ack_and_resets_on_timeout`
+    - [ ] Segmentasi ulang saat peer MSS lebih kecil dari sisa buffer kirim (belum ada buffer kirim antrean penuh)
 - [x] UDP POSIX API for socket/bind/sendto/recvfrom
 - [ ] IPv6
 - [x] Nonblocking socket support via SOCK_NONBLOCK and MSG_DONTWAIT

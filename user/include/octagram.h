@@ -850,4 +850,37 @@ static inline int64_t oct_setsid(void)
     return oct_syscall0(132);
 }
 
+static inline int64_t oct_setpriority(int64_t which, uint64_t who,
+                                      int64_t priority)
+{
+    return oct_syscall3(134, (uint64_t)which, who, (uint64_t)priority);
+}
+
+static inline int64_t oct_getpriority(int64_t which, uint64_t who)
+{
+    return oct_syscall2(135, (uint64_t)which, who);
+}
+
+static inline int64_t oct_sched_setscheduler(uint64_t pid, int64_t policy,
+                                             const void *param)
+{
+    return oct_syscall3(136, pid, (uint64_t)policy,
+                        (uint64_t)(uintptr_t)param);
+}
+
+static inline int64_t oct_sched_getscheduler(uint64_t pid)
+{
+    return oct_syscall1(137, pid);
+}
+
+static inline int64_t oct_sched_setparam(uint64_t pid, const void *param)
+{
+    return oct_syscall2(139, pid, (uint64_t)(uintptr_t)param);
+}
+
+static inline int64_t oct_sched_getparam(uint64_t pid, void *param)
+{
+    return oct_syscall2(138, pid, (uint64_t)(uintptr_t)param);
+}
+
 #endif

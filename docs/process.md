@@ -35,14 +35,46 @@ mewarisi cwd dari shell dan berbagi namespace VFS serta daftar mount global.
 ### Penjadwalan
 
 `run` menjalankan satu program sampai selesai. `runp a.elf b.elf ...` menjalankan
-beberapa program dengan round-robin yang dipicu timer LAPIC periodik. Preemption
-hanya terjadi bila interrupt datang dari ring 3; interrupt saat kernel menjalankan
-syscall tidak mempreempt agar operasi yang memegang lock tidak terputus.
+beberapa program dengan scheduler berprioritas yang dipicu timer LAPIC periodik.
+Preemption hanya terjadi bila interrupt datang dari ring 3; interrupt saat kernel
+menjalankan syscall tidak mempreempt agar operasi yang memegang lock tidak terputus.
 
-Syscall yang menunggu (pipe, `poll`, futex, `waitpid`, tidur) memakai
-`ProcessWait` sehingga proses tidur sampai event atau deadline, bukan busy-loop:
-`Child(pid)`, `Thread(tid)`, `PipeReadable(pipe)`, `PipeWritable(pipe)`,
-`Futex { address, bitset }`, `PollWait`, dan `Sleep`.
+Setiap proses/thread menyimpan prioritas nice (-20..19, makin kecil makin tinggi)
+dan umur tunggu (`age`). Setiap kali scheduler memilih, proses runnable yang tidak
+terpilih mendapat `age` +1 sehingga prioritas efektifnya naik sampai 39 level;
+proses terpilih atau yang tidak runnable mengembalikan `age` ke 0. Nilai efektif
+dibatasi pada -20 agar tidak melewati rentang nice, seri diputus oleh umur tunggu
+terlama, lalu oleh urutan round-robin mulai dari proses saat ini. Anak `fork` dan
+thread baru mewarisi prioritas induknya.
+
+Syscall `setpriority`/`getpriority` (134/135) hanya mendukung `PRIO_PROCESS`
+(`who` 0 berarti proses pemanggil); `PRIO_PGRP`/`PRIO_USER` mengembalikan `EINVAL`
+dan PID yang tidak ada mengembalikan `ESRCH`. `nice()` di libc memakai kedua
+syscall tersebut dan menjepit hasilnya ke rentang -20..19.
+
+Kebijakan penjadwalan tersedia lewat `sched_setscheduler`/`sched_getscheduler`
+(136/137) dan `sched_setparam`/`sched_getparam` (138/139), ditambah `sched.h`
+(`sched_yield` memakai syscall 65). Hanya `SCHED_OTHER` dengan `sched_priority` 0
+yang diterima; `SCHED_FIFO`/`SCHED_RR` ditolak `EPERM`. `posix_spawn` menerapkan
+`POSIX_SPAWN_SETSCHEDULER`/`SETSCHEDPARAM` di anak sebelum `execve`, dan
+prioritas bobot tetap diatur nice.
+
+Syscall yang menunggu (pipe, `poll`, futex, `waitpid`, tidur, input console)
+memakai `ProcessWait` sehingga proses tidur sampai event atau deadline, bukan
+busy-loop: `Child(pid)`, `Thread(tid)`, `PipeReadable(pipe)`,
+`PipeWritable(pipe)`, `Futex { address, bitset }`, `PollWait`, `Sleep`, dan
+`ConsoleInput(terminal)`.
+
+`read()` dari descriptor console tidak lagi berputar di kernel. `poll_tty()`
+mengembalikan `Ok(None)` bila belum ada data; syscall lalu menyimpan state dan
+memilih proses lain. Setiap putaran idle scheduler memanggil
+`pump_console_input()`, yang memindahkan event keyboard ke line discipline semua
+terminal dan mengembalikan bitmask terminal siap baca; penunggu dengan terminal
+yang cocok dibangunkan (`wake_console_waiters`). Bila tidak ada proses lain yang
+runnable, jalur lama `fs::read_tty` (blocking dengan `hlt`) dipakai agar proses
+tunggal seperti shell tidak menerima `EDEADLK`. EOF (`Ctrl-D` pada baris kosong)
+disimpan sebagai `eof_pending` sehingga `read()` mengembalikan 0 dan `poll`
+melaporkan siap.
 
 ### Membuat dan mengakhiri proses
 
@@ -80,12 +112,14 @@ syscall `futex` (94). Kernel mendukung:
   `FUTEX_WAKE_BITSET`, dan `FUTEX_REQUEUE`;
 - flag private (`FUTEX_PRIVATE_FLAG`).
 
-Robust futex (daftar `FUTEX_OWNER_DIED`) belum ada, begitu pula prioritas
-scheduler/aging dan watchdog.
+Robust futex (daftar `FUTEX_OWNER_DIED`) belum ada, begitu pula watchdog.
 
 ## Batasan
 
-- Tanpa prioritas, tanpa real-time scheduling, tanpa fairness terukur.
+- Prioritas hanya `SCHED_OTHER`; tanpa real-time scheduling dan tanpa
+  `PRIO_PGRP`/`PRIO_USER`.
+- `sched_*` hanya menerima `SCHED_OTHER`/prioritas 0; tidak ada penjadwalan
+  real-time.
 - Tanpa SMP dan tanpa migrasi thread antar CPU.
 - Thread user berbagi address space tetapi belum punya TLS dinamis penuh untuk
   shared object (lihat [dynamic-linker.md](dynamic-linker.md)).

@@ -176,6 +176,15 @@ const SYSCALL_GETPGRP: u64 = 129;
 const SYSCALL_SETPGRP: u64 = 130;
 const SYSCALL_GETSID: u64 = 131;
 const SYSCALL_SETSID: u64 = 132;
+const SYSCALL_SETPRIORITY: u64 = 134;
+const SYSCALL_GETPRIORITY: u64 = 135;
+const SYSCALL_SCHED_SETSCHEDULER: u64 = 136;
+const SYSCALL_SCHED_GETSCHEDULER: u64 = 137;
+const SYSCALL_SCHED_GETPARAM: u64 = 138;
+const SYSCALL_SCHED_SETPARAM: u64 = 139;
+const PRIO_PROCESS: u64 = 0;
+/// Satu-satunya kebijakan penjadwalan yang didukung; SCHED_FIFO/RR ditolak.
+const SCHED_OTHER: u64 = 0;
 const AT_FDCWD: i64 = -100;
 const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
 const AT_REMOVEDIR: u64 = 0x200;
@@ -627,6 +636,162 @@ fn syscall_setsid() -> Result<u64, i32> {
     Ok(process.pid)
 }
 
+fn syscall_setpriority(which: u64, who: u64, priority: i64) -> Result<u64, i32> {
+    if which != PRIO_PROCESS {
+        return Err(EINVAL);
+    }
+    let mut scheduler = USER_SCHEDULER.lock();
+    if !scheduler.active || scheduler.processes.is_empty() {
+        return Err(EINTR);
+    }
+    let current = scheduler.current;
+    let caller_pid = scheduler
+        .processes
+        .get(current)
+        .map(|process| process.pid)
+        .ok_or(EINTR)?;
+    let target_pid = if who == 0 { caller_pid } else { who };
+    let priority = clamp_priority(priority.clamp(PRIORITY_MIN as i64, PRIORITY_MAX as i64) as i32);
+    let mut found = false;
+    for process in &mut scheduler.processes {
+        if process.pid == target_pid && process.exit_status.is_none() {
+            process.priority = priority;
+            found = true;
+        }
+    }
+    if found { Ok(0) } else { Err(ESRCH) }
+}
+
+fn syscall_getpriority(which: u64, who: u64) -> Result<u64, i32> {
+    if which != PRIO_PROCESS {
+        return Err(EINVAL);
+    }
+    let scheduler = USER_SCHEDULER.lock();
+    if !scheduler.active || scheduler.processes.is_empty() {
+        return Err(EINTR);
+    }
+    let current = scheduler.current;
+    let caller_pid = scheduler
+        .processes
+        .get(current)
+        .map(|process| process.pid)
+        .ok_or(EINTR)?;
+    let target_pid = if who == 0 { caller_pid } else { who };
+    scheduler
+        .processes
+        .iter()
+        .find(|process| process.pid == target_pid && process.exit_status.is_none())
+        // Nilai nice dibias +20 agar hasil syscall tidak terlihat seperti error.
+        .map(|process| (process.priority - PRIORITY_MIN) as u64)
+        .ok_or(ESRCH)
+}
+
+fn read_user_i32(address: u64) -> Result<i32, i32> {
+    paging::validate_user_range(address, core::mem::size_of::<i32>(), false)
+        .map_err(|_| EFAULT)?;
+    Ok(unsafe { (address as *const i32).read_unaligned() })
+}
+
+fn write_user_i32(address: u64, value: i32) -> Result<(), i32> {
+    paging::validate_user_range(address, core::mem::size_of::<i32>(), true)
+        .map_err(|_| EFAULT)?;
+    unsafe { (address as *mut i32).write_unaligned(value) };
+    Ok(())
+}
+
+/// Hanya `SCHED_OTHER` yang tersedia; `SCHED_FIFO`/`SCHED_RR` ditolak `EPERM`.
+fn scheduler_policy_supported(policy: u64) -> bool {
+    policy == SCHED_OTHER
+}
+
+/// `SCHED_OTHER` hanya menerima `sched_priority` 0 (prioritas diatur nice).
+fn sched_priority_for(policy: u64, priority: i32) -> Result<i32, i32> {
+    if !scheduler_policy_supported(policy) {
+        return Err(EPERM);
+    }
+    if priority != 0 {
+        return Err(EINVAL);
+    }
+    Ok(0)
+}
+
+fn sched_target_pid(pid: u64, scheduler: &UserScheduler) -> Result<u64, i32> {
+    let caller = scheduler
+        .processes
+        .get(scheduler.current)
+        .ok_or(EINTR)?;
+    Ok(if pid == 0 { caller.pid } else { pid })
+}
+
+fn syscall_sched_setscheduler(pid: u64, policy: u64, param_address: u64) -> Result<u64, i32> {
+    let priority = read_user_i32(param_address)?;
+    sched_priority_for(policy, priority)?;
+    let mut scheduler = USER_SCHEDULER.lock();
+    if !scheduler.active {
+        return Err(EINTR);
+    }
+    let target = sched_target_pid(pid, &scheduler)?;
+    let mut found = false;
+    for process in &mut scheduler.processes {
+        if process.pid == target && process.exit_status.is_none() {
+            process.policy = SCHED_OTHER as u32;
+            found = true;
+        }
+    }
+    if found { Ok(0) } else { Err(ESRCH) }
+}
+
+fn syscall_sched_getscheduler(pid: u64) -> Result<u64, i32> {
+    let scheduler = USER_SCHEDULER.lock();
+    if !scheduler.active {
+        return Err(EINTR);
+    }
+    let target = sched_target_pid(pid, &scheduler)?;
+    scheduler
+        .processes
+        .iter()
+        .find(|process| process.pid == target && process.exit_status.is_none())
+        .map(|process| process.policy as u64)
+        .ok_or(ESRCH)
+}
+
+fn syscall_sched_setparam(pid: u64, param_address: u64) -> Result<u64, i32> {
+    let priority = read_user_i32(param_address)?;
+    sched_priority_for(SCHED_OTHER, priority)?;
+    let scheduler = USER_SCHEDULER.lock();
+    if !scheduler.active {
+        return Err(EINTR);
+    }
+    let target = sched_target_pid(pid, &scheduler)?;
+    if scheduler
+        .processes
+        .iter()
+        .any(|process| process.pid == target && process.exit_status.is_none())
+    {
+        Ok(0)
+    } else {
+        Err(ESRCH)
+    }
+}
+
+fn syscall_sched_getparam(pid: u64, param_address: u64) -> Result<u64, i32> {
+    let scheduler = USER_SCHEDULER.lock();
+    if !scheduler.active {
+        return Err(EINTR);
+    }
+    let target = sched_target_pid(pid, &scheduler)?;
+    if !scheduler
+        .processes
+        .iter()
+        .any(|process| process.pid == target && process.exit_status.is_none())
+    {
+        return Err(ESRCH);
+    }
+    drop(scheduler);
+    write_user_i32(param_address, 0)?;
+    Ok(0)
+}
+
 fn syscall_umask(mask: u64) -> Result<u64, i32> {
     let mask = (mask & 0o777) as u16;
     let mut process = USER_PROCESS.lock();
@@ -879,6 +1044,8 @@ enum ProcessWait {
     Futex { address: u64, bitset: u32 },
     PollWait,
     Sleep,
+    /// Menunggu input console pada terminal tertentu.
+    ConsoleInput(usize),
 }
 
 struct UserProcess {
@@ -972,6 +1139,12 @@ struct ScheduledProcess {
     wait_deadline: Option<u64>,
     resume_context: Option<UserResumeContext>,
     wait_status_pointer: u64,
+    /// Prioritas nice POSIX (-20..19); makin kecil, makin sering dijadwalkan.
+    priority: i32,
+    /// Kebijakan penjadwalan; saat ini selalu `SCHED_OTHER`.
+    policy: u32,
+    /// Berapa kali proses runnable ini dilewati scheduler (aging anti-starvasi).
+    age: u32,
     reaped: bool,
 }
 
@@ -1548,6 +1721,9 @@ fn run_loaded_processes(
             wait_deadline: None,
             resume_context: None,
             wait_status_pointer: 0,
+            priority: 0,
+            policy: SCHED_OTHER as u32,
+            age: 0,
             reaped: false,
         });
     }
@@ -1585,6 +1761,7 @@ fn run_loaded_processes(
             }
             unsafe { crate::drivers::poll_deferred() };
             crate::network::poll_tcp();
+            wake_console_waiters(crate::fs::pump_console_input());
             let only_current_process_runnable = {
                 let scheduler = USER_SCHEDULER.lock();
                 is_process_runnable(&scheduler.processes[scheduler.current])
@@ -1601,6 +1778,7 @@ fn run_loaded_processes(
                 }
                 unsafe { crate::drivers::poll_deferred() };
                 crate::network::poll_tcp();
+                wake_console_waiters(crate::fs::pump_console_input());
             }
 
             let next = {
@@ -1612,10 +1790,7 @@ fn run_loaded_processes(
                 {
                     break;
                 }
-                next_runnable(scheduler.processes.len(), scheduler.current, |index| {
-                    is_process_runnable(&scheduler.processes[index])
-                })
-                .map(|next| {
+                schedule_next(&mut scheduler).map(|next| {
                     let frame_pointer = scheduler.processes[next].frame_pointer;
                     if let Some(context) = scheduler.processes[next].resume_context.take() {
                         let frame = unsafe { &mut *(frame_pointer as *mut InterruptFrame) };
@@ -1638,6 +1813,9 @@ fn run_loaded_processes(
                 unsafe {
                     core::arch::asm!("sti; hlt");
                 }
+                // Semua proses tidur: layani input agar penunggu console bangun.
+                unsafe { crate::drivers::poll_deferred() };
+                wake_console_waiters(crate::fs::pump_console_input());
                 continue;
             };
             thread_pointer::write(thread_pointer_value);
@@ -1973,7 +2151,12 @@ fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
                     _ => None,
                 };
                 if let Some((_, wait_reason)) = pipe_wait {
-                    return block_current_on_pipe(frame, wait_reason);
+                    return block_current_on_wait(frame, wait_reason);
+                }
+                if number == SYSCALL_READ
+                    && let Some(terminal) = console_wait_target(frame.rdi)
+                {
+                    return block_current_on_wait(frame, ProcessWait::ConsoleInput(terminal));
                 }
             }
             frame.rax = match result {
@@ -2050,9 +2233,7 @@ fn handle_timer_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         return frame_pointer;
     }
     scheduler.processes[current].frame_pointer = frame_pointer as usize;
-    let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-        is_process_runnable(&scheduler.processes[index])
-    }) else {
+    let Some(next) = schedule_next(&mut scheduler) else {
         return frame_pointer;
     };
     if next == current {
@@ -2391,6 +2572,12 @@ fn dispatch_syscall(
         SYSCALL_SETPGRP => syscall_setpgrp(arg1, arg2),
         SYSCALL_GETSID => syscall_getsid(arg1),
         SYSCALL_SETSID => syscall_setsid(),
+        SYSCALL_SETPRIORITY => syscall_setpriority(arg1, arg2, arg3 as i64),
+        SYSCALL_GETPRIORITY => syscall_getpriority(arg1, arg2),
+        SYSCALL_SCHED_SETSCHEDULER => syscall_sched_setscheduler(arg1, arg2, arg3),
+        SYSCALL_SCHED_GETSCHEDULER => syscall_sched_getscheduler(arg1),
+        SYSCALL_SCHED_SETPARAM => syscall_sched_setparam(arg1, arg2),
+        SYSCALL_SCHED_GETPARAM => syscall_sched_getparam(arg1, arg2),
         SYSCALL_PREAD => syscall_pread(arg1, arg2, arg3, arg4),
         SYSCALL_PWRITE => syscall_pwrite(arg1, arg2, arg3, arg4),
         SYSCALL_WRITEV => syscall_writev(arg1, arg2, arg3),
@@ -2544,6 +2731,8 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         }
     };
 
+    let inherited_priority = scheduler.processes[current].priority;
+    let inherited_policy = scheduler.processes[current].policy;
     scheduler.next_tid = next_tid;
     scheduler.processes.push(ScheduledProcess {
         image,
@@ -2561,6 +2750,9 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         wait_deadline: None,
         resume_context: None,
         wait_status_pointer: 0,
+        priority: inherited_priority,
+        policy: inherited_policy,
+        age: 0,
         reaped: false,
     });
     frame.rax = tid;
@@ -2658,9 +2850,7 @@ fn syscall_thread_join(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         &mut *active_process,
         &mut scheduler.processes[current].state,
     );
-    let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-        is_process_runnable(&scheduler.processes[index])
-    }) else {
+    let Some(next) = schedule_next(&mut scheduler) else {
         core::mem::swap(
             &mut *active_process,
             &mut scheduler.processes[current].state,
@@ -2730,9 +2920,7 @@ fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         break;
     }
 
-    if let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-        is_process_runnable(&scheduler.processes[index])
-    }) {
+    if let Some(next) = schedule_next(&mut scheduler) {
         core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
         scheduler.current = next;
         let next_process = &scheduler.processes[next];
@@ -2855,6 +3043,8 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
             return Err(cleanup_failed_fork(child_image, child_state, EINTR));
         }
     }
+    let inherited_priority = scheduler.processes[current].priority;
+    let inherited_policy = scheduler.processes[current].policy;
     scheduler.next_pid = next_pid;
     scheduler.processes.push(ScheduledProcess {
         image: child_image,
@@ -2872,6 +3062,9 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
         wait_deadline: None,
         resume_context: None,
         wait_status_pointer: 0,
+        priority: inherited_priority,
+        policy: inherited_policy,
+        age: 0,
         reaped: false,
     });
     Ok(child_pid)
@@ -3123,9 +3316,7 @@ fn syscall_waitpid(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         &mut *active_process,
         &mut scheduler.processes[current].state,
     );
-    let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-        is_process_runnable(&scheduler.processes[index])
-    }) else {
+    let Some(next) = schedule_next(&mut scheduler) else {
         core::mem::swap(
             &mut *active_process,
             &mut scheduler.processes[current].state,
@@ -3182,7 +3373,19 @@ fn pipe_wait_target(fd: u64, reading: bool) -> Option<(u64, ProcessWait)> {
     Some((pipe_id, wait))
 }
 
-fn block_current_on_pipe(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut InterruptFrame {
+fn console_wait_target(fd: u64) -> Option<usize> {
+    let fd = usize::try_from(fd).ok()?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return None;
+    }
+    match process.descriptors.get(fd).and_then(Option::as_ref) {
+        Some(UserDescriptor::ConsoleInput) => Some(process.terminal),
+        _ => None,
+    }
+}
+
+fn block_current_on_wait(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
     let Some(retry_address) = frame.stack_frame.instruction_pointer.checked_sub(2) else {
         frame.rax = (-(EINVAL as i64)) as u64;
@@ -3200,22 +3403,42 @@ fn block_current_on_pipe(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut 
 
     scheduler.processes[current].frame_pointer = frame_pointer as usize;
     scheduler.processes[current].waiting_for = Some(wait);
-    // Retry the int 0x80 instruction when the pipe becomes ready.
+    // Ulangi instruksi int 0x80 setelah event yang ditunggu siap.
     frame.stack_frame.instruction_pointer = retry_address;
     let mut active_process = USER_PROCESS.lock();
     core::mem::swap(
         &mut *active_process,
         &mut scheduler.processes[current].state,
     );
-    let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-        is_process_runnable(&scheduler.processes[index])
-    }) else {
+    let Some(next) = schedule_next(&mut scheduler) else {
         core::mem::swap(
             &mut *active_process,
             &mut scheduler.processes[current].state,
         );
         scheduler.processes[current].waiting_for = None;
         frame.stack_frame.instruction_pointer = retry_address + 2;
+        if let ProcessWait::ConsoleInput(terminal) = wait {
+            // Tidak ada proses lain: baca console secara blocking di kernel.
+            drop(active_process);
+            drop(scheduler);
+            let address = frame.rsi;
+            let length = frame.rdx as usize;
+            let result = paging::validate_user_range(address, length, true)
+                .map_err(|_| EFAULT)
+                .and_then(|()| {
+                    let buffer = unsafe {
+                        core::slice::from_raw_parts_mut(address as *mut u8, length)
+                    };
+                    fs::read_tty(terminal, buffer)
+                        .map(|count| count as u64)
+                        .map_err(errno_from_fs)
+                });
+            frame.rax = match result {
+                Ok(value) => value,
+                Err(errno) => (-(errno as i64)) as u64,
+            };
+            return frame_pointer;
+        }
         frame.rax = (-(EDEADLK as i64)) as u64;
         return frame_pointer;
     };
@@ -3341,9 +3564,7 @@ fn block_current_on_futex(
     scheduler.processes[current].wait_deadline = deadline;
     frame.stack_frame.instruction_pointer = retry_address;
     let mut active_process = USER_PROCESS.lock();
-    if let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-        is_process_runnable(&scheduler.processes[index])
-    }) {
+    if let Some(next) = schedule_next(&mut scheduler) {
         core::mem::swap(
             &mut *active_process,
             &mut scheduler.processes[current].state,
@@ -3388,9 +3609,7 @@ fn block_current_on_futex(
             }
             return frame_pointer;
         }
-        let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-            is_process_runnable(&scheduler.processes[index])
-        }) else {
+        let Some(next) = schedule_next(&mut scheduler) else {
             continue;
         };
         let mut active = USER_PROCESS.lock();
@@ -3434,9 +3653,7 @@ fn block_current_on_poll(frame: &mut InterruptFrame, deadline: u64) -> *mut Inte
         &mut *active_process,
         &mut scheduler.processes[current].state,
     );
-    let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-        is_process_runnable(&scheduler.processes[index])
-    }) else {
+    let Some(next) = schedule_next(&mut scheduler) else {
         core::mem::swap(
             &mut *active_process,
             &mut scheduler.processes[current].state,
@@ -3628,6 +3845,22 @@ fn syscall_futex(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         _ => {
             frame.rax = (-(ENOSYS as i64)) as u64;
             frame_pointer
+        }
+    }
+}
+
+/// Bangunkan proses yang menunggu input pada terminal yang kini punya data.
+fn wake_console_waiters(readable_terminals: u32) {
+    if readable_terminals == 0 {
+        return;
+    }
+    let mut scheduler = USER_SCHEDULER.lock();
+    for process in &mut scheduler.processes {
+        if let Some(ProcessWait::ConsoleInput(terminal)) = process.waiting_for
+            && terminal < u32::BITS as usize
+            && readable_terminals & (1 << terminal) != 0
+        {
+            process.waiting_for = None;
         }
     }
 }
@@ -4384,9 +4617,11 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
         .ok_or(EBADF)?;
     let mut pipe_id = None;
     let result = match descriptor {
-        UserDescriptor::ConsoleInput => fs::read_tty(terminal, output)
-            .map(|count| count as u64)
-            .map_err(errno_from_fs),
+        UserDescriptor::ConsoleInput => match fs::poll_tty(terminal, output) {
+            Ok(Some(count)) => Ok(count as u64),
+            Ok(None) => Err(EAGAIN),
+            Err(error) => Err(errno_from_fs(error)),
+        },
         UserDescriptor::File(file) => {
             let mut file = file.lock();
             if !file.readable {
@@ -7402,21 +7637,77 @@ fn stat_mode(path: &str, node_type: NodeType, permissions: u16) -> u32 {
     node_mode | u32::from(permissions & 0o777)
 }
 
+/// Rentang prioritas nice POSIX: makin kecil nilainya, makin tinggi prioritasnya.
+const PRIORITY_MIN: i32 = -20;
+const PRIORITY_MAX: i32 = 19;
+/// Boost aging maksimum; cukup untuk mengalahkan seluruh rentang nice.
+const MAX_AGING_BOOST: u32 = (PRIORITY_MAX - PRIORITY_MIN) as u32;
+
+fn clamp_priority(priority: i32) -> i32 {
+    priority.clamp(PRIORITY_MIN, PRIORITY_MAX)
+}
+
+/// Prioritas efektif: prioritas dasar dikurangi boost aging, sehingga proses
+/// yang lama tidak dijadwalkan naik prioritasnya secara bertahap.
+fn effective_priority(priority: i32, age: u32) -> i32 {
+    let boosted = clamp_priority(priority).saturating_sub(age.min(MAX_AGING_BOOST) as i32);
+    boosted.max(PRIORITY_MIN)
+}
+
+/// Pilih proses runnable dengan prioritas efektif terbaik. Seri diputus oleh
+/// umur tunggu terlama, lalu urutan round-robin mulai dari proses saat ini.
 fn next_runnable(
     process_count: usize,
     current: usize,
     mut is_runnable: impl FnMut(usize) -> bool,
+    mut priority_of: impl FnMut(usize) -> (i32, u32),
 ) -> Option<usize> {
     if process_count == 0 || current >= process_count {
         return None;
     }
+    let mut best: Option<(usize, i32, u32)> = None;
     for offset in 1..=process_count {
         let candidate = (current + offset) % process_count;
-        if is_runnable(candidate) {
-            return Some(candidate);
+        if !is_runnable(candidate) {
+            continue;
+        }
+        let (priority, age) = priority_of(candidate);
+        let effective = effective_priority(priority, age);
+        let better = match best {
+            None => true,
+            Some((_, best_effective, best_age)) => {
+                effective < best_effective || (effective == best_effective && age > best_age)
+            }
+        };
+        if better {
+            best = Some((candidate, effective, age));
         }
     }
-    None
+    best.map(|(index, _, _)| index)
+}
+
+/// Pilih proses berikutnya menurut prioritas dan aging, lalu perbarui umur
+/// tunggu setiap proses runnable (yang terpilih atau tidak runnable kembali 0).
+fn schedule_next(scheduler: &mut UserScheduler) -> Option<usize> {
+    let chosen = next_runnable(
+        scheduler.processes.len(),
+        scheduler.current,
+        |index| is_process_runnable(&scheduler.processes[index]),
+        |index| {
+            let process = &scheduler.processes[index];
+            (process.priority, process.age)
+        },
+    );
+    if let Some(chosen) = chosen {
+        for (index, process) in scheduler.processes.iter_mut().enumerate() {
+            if index == chosen || !is_process_runnable(process) {
+                process.age = 0;
+            } else {
+                process.age = process.age.saturating_add(1);
+            }
+        }
+    }
+    chosen
 }
 
 fn is_process_runnable(process: &ScheduledProcess) -> bool {
@@ -7521,9 +7812,7 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
                 return parent_frame;
             }
 
-            if let Some(next) = next_runnable(scheduler.processes.len(), current, |index| {
-                is_process_runnable(&scheduler.processes[index])
-            }) {
+            if let Some(next) = schedule_next(&mut scheduler) {
                 core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
                 scheduler.current = next;
                 let next_process = &scheduler.processes[next];
@@ -7814,13 +8103,15 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, ElfError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPIPE, ElfError,
+        EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPERM, EPIPE, ESRCH,
+        SCHED_OTHER, ElfError,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
         PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_PAGES, STACK_RANDOM_PAGES,
         STACK_TOP, SYSCALL_MMAP, SYSCALL_MUNMAP, UserDescriptor, signal_stack_top, stack_layout,
         UserDirent, WAIT_ANY_PID, apply_creation_mode, apply_load_bias, build_initial_stack,
         create_pipe, dispatch_syscall, errno_from_fs, install_pipe_descriptors, mapping_flags,
         mapping_size, next_runnable, paging, parse, resolve_user_path, stat_mode, user_dirent,
+        effective_priority, MAX_AGING_BOOST, sched_priority_for, scheduler_policy_supported,
         validate_mapping_range, wait_target_matches, futex_bitset_matches,
         FBIOGET_VSCREENINFO, FbFixScreeninfo, FbVarScreeninfo, SYSCALL_IOCTL, Winsize,
     };
@@ -8250,31 +8541,77 @@ mod tests {
     #[test]
     fn scheduler_selects_runnable_processes_in_round_robin_order() {
         let runnable = [true, true, false];
+        let equal = |_| (0, 0);
         assert_eq!(
-            next_runnable(runnable.len(), 0, |index| runnable[index]),
+            next_runnable(runnable.len(), 0, |index| runnable[index], equal),
             Some(1)
         );
         assert_eq!(
-            next_runnable(runnable.len(), 1, |index| runnable[index]),
+            next_runnable(runnable.len(), 1, |index| runnable[index], equal),
             Some(0)
         );
         let runnable = [true, false, true];
         assert_eq!(
-            next_runnable(runnable.len(), 0, |index| runnable[index]),
+            next_runnable(runnable.len(), 0, |index| runnable[index], equal),
             Some(2)
         );
-        assert_eq!(next_runnable(1, 0, |_| true), Some(0));
-        assert_eq!(next_runnable(0, 0, |_| true), None);
-        assert_eq!(next_runnable(2, 2, |_| true), None);
+        assert_eq!(next_runnable(1, 0, |_| true, equal), Some(0));
+        assert_eq!(next_runnable(0, 0, |_| true, equal), None);
+        assert_eq!(next_runnable(2, 2, |_| true, equal), None);
     }
 
     #[test]
     fn scheduler_returns_none_when_every_process_has_exited() {
         let runnable = [false, false, false];
         assert_eq!(
-            next_runnable(runnable.len(), 1, |index| runnable[index]),
+            next_runnable(runnable.len(), 1, |index| runnable[index], |_| (0, 0)),
             None
         );
+    }
+
+    #[test]
+    fn scheduler_prefers_higher_nice_priority() {
+        let priorities = [5, -10, 0];
+        let ages = [0, 0, 0];
+        assert_eq!(
+            next_runnable(
+                3,
+                2,
+                |_| true,
+                |index| (priorities[index], ages[index])
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn scheduler_aging_prevents_starvation() {
+        assert_eq!(effective_priority(19, 0), 19);
+        assert_eq!(effective_priority(19, MAX_AGING_BOOST), -20);
+        assert_eq!(effective_priority(-20, MAX_AGING_BOOST), -20);
+        // Proses nice 19 yang sudah lama menunggu menyamai nice -20 dan menang
+        // karena umur tunggunya lebih besar.
+        assert_eq!(
+            next_runnable(2, 0, |_| true, |index| {
+                if index == 1 {
+                    (19, MAX_AGING_BOOST)
+                } else {
+                    (-20, 0)
+                }
+            }),
+            Some(1)
+        );
+        assert_eq!(effective_priority(19, u32::MAX), -20);
+    }
+
+    #[test]
+    fn scheduler_policy_limits_to_sched_other() {
+        assert!(scheduler_policy_supported(SCHED_OTHER));
+        assert!(!scheduler_policy_supported(1));
+        assert!(!scheduler_policy_supported(2));
+        assert_eq!(sched_priority_for(SCHED_OTHER, 0), Ok(0));
+        assert_eq!(sched_priority_for(SCHED_OTHER, 1), Err(EINVAL));
+        assert_eq!(sched_priority_for(1, 0), Err(EPERM));
     }
 
     #[test]

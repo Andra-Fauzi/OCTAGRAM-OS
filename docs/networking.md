@@ -47,12 +47,18 @@ disimpan ke disk, jadi reboot memerlukan DHCP ulang.
 
 - API: `socket`, `bind`, `listen` (backlog 8), `accept`, `connect`, `send`,
   `recv`, `shutdown`, `close`.
-- MSS awal 1460, buffer terima 8192 byte. `send` dibatasi `peer_mss` dan
-  `peer_window`, mengembalikan `EAGAIN` saat jendela penuh atau ada segmen
-  tertunda.
-- Satu segmen terkirim pada satu waktu. Segmen yang belum di-ACK dikirim ulang
-  dengan RTO eksponensial 30 → 60 → 120 → 240 → 480 tick, maksimum 5 percobaan;
-  setelah itu socket di-RST dengan `TCP connection timed out`.
+- MSS awal 1460, buffer terima 8192 byte. `send` dibatasi `peer_mss`,
+  `peer_window`, dan congestion window; `EAGAIN` dikembalikan saat kapasitas
+  habis atau antrean pipeline penuh.
+- Pipeline sampai 4 segmen di luar segmen tertua (`pending` + `pipeline`). ACK
+  kumulatif memajukan antrean sekaligus: selama ACK mencakup ujung segmen
+  tertua, segmen itu dilepas dan segmen berikutnya menjadi tertua.
+- Congestion window byte sederhana (slow start): mulai 1 MSS, naik 1 MSS per
+  ACK sampai 4 MSS, dan kembali ke 1 MSS saat RTO. Byte in-flight dihitung dari
+  `send_next - send_unacknowledged`.
+- Retransmisi bersifat go-back-N: hanya segmen tertua yang dikirim ulang, dengan
+  RTO eksponensial 30 → 60 → 120 → 240 → 480 tick, maksimum 5 percobaan; setelah
+  itu socket di-RST dengan `TCP connection timed out`.
 - Saat jendela peer nol, kernel mengirim probe setiap 60 tick.
 - Keepalive opt-in lewat `setsockopt(SO_KEEPALIVE)`: probe ACK setelah 60.000
   tick idle, maksimum 9 probe.
@@ -84,7 +90,8 @@ permintaan HTTP/1.0 sederhana dengan `Host` header. Shell memakainya lewat
 - Tanpa stack IPv6 (hanya primitif alamat dan resolve AAAA).
 - Tanpa ARP cache lebih dari satu entri, tanpa routing table, tanpa netmask
   panjang variabel selain dari DHCP.
-- Tanpa congestion control, SACK, window scaling, atau pipeline multi-segmen.
+- Congestion window sederhana (slow start 1→4 MSS, reset saat RTO), tanpa fast
+  retransmit, congestion avoidance penuh, SACK, atau window scaling.
 - Tanpa network namespace atau policy layer; semua proses berbagi konfigurasi.
 - Lease dan rute tidak persisten antar reboot.
 

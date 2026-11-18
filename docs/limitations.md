@@ -17,10 +17,12 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
 
 ## Proses dan scheduler
 
-- Tanpa prioritas, aging, real-time scheduling, atau watchdog.
+- Prioritas nice dan aging tersedia lewat `setpriority`/`getpriority`, tetapi
+  tanpa real-time scheduling (`SCHED_FIFO`/`SCHED_RR`), tanpa
+  `PRIO_PGRP`/`PRIO_USER`, dan tanpa watchdog.
 - Tanpa SMP; hanya satu CPU.
-- Blocking syscall tertentu masih menunggu di kernel dan bisa menunda proses
-  lain sampai input tiba.
+- `read()` console sudah scheduler-aware, tetapi `read()` dari `/dev/stdin`
+  sebagai file VFS masih menunggu di kernel dan bisa menunda proses lain.
 - Tanpa robust futex, tanpa `clone3`, tanpa `vfork`.
 - Batas 64 proses terjadwal dan 64 KiB kernel stack per proses.
 
@@ -42,8 +44,8 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
 ## Jaringan
 
 - Tanpa stack IPv6 (hanya primitif alamat dan AAAA di resolver).
-- Tanpa congestion control, SACK, window scaling, atau pipeline multi-segmen;
-  satu segmen terkirim dalam satu waktu.
+- Congestion window masih sederhana (slow start 1→4 MSS, tanpa fast retransmit
+  atau congestion avoidance penuh); tanpa SACK dan window scaling.
 - Tanpa ARP cache besar, routing table, atau network namespace.
 - Lease DHCP dan rute tidak persisten antar reboot.
 - Tanpa TLS di klien HTTP; hanya HTTP/1.0 sederhana.

@@ -23,6 +23,11 @@
 #define RLIMIT_RTTIME 15
 #define RLIM_INFINITY ((uint64_t)-1)
 
+/* Prioritas nice: makin kecil nilainya, makin tinggi prioritasnya. */
+#define PRIO_PROCESS 0
+#define PRIO_PGRP 1
+#define PRIO_USER 2
+
 #define RUSAGE_SELF 0
 #define RUSAGE_CHILDREN -1
 #define RUSAGE_THREAD 1
@@ -40,5 +45,9 @@ struct rusage {
 int getrlimit(int resource, struct rlimit *limit);
 int setrlimit(int resource, const struct rlimit *limit);
 int getrusage(int who, struct rusage *usage);
+
+/* Kernel hanya mendukung PRIO_PROCESS; which lain mengembalikan EINVAL. */
+int getpriority(int which, id_t who);
+int setpriority(int which, id_t who, int priority);
 
 #endif

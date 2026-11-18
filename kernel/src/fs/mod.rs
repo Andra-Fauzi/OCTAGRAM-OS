@@ -9,7 +9,8 @@ mod devfs;
 mod ramfs;
 
 pub(crate) use devfs::{
-    DevFs, device_access, is_fb_path, is_tty_path, read_tty, tty_path_readable, tty_readable,
+    DevFs, device_access, is_fb_path, is_tty_path, poll_tty, pump_console_input, read_tty,
+    tty_path_readable, tty_readable,
 };
 pub use ramfs::RamFs;
 

@@ -12,6 +12,11 @@ const RETRANSMIT_TICKS: u32 = 30;
 const MAX_RETRANSMIT_TIMEOUT: u32 = 480;
 const MAX_RETRANSMITS: u8 = 5;
 const ZERO_WINDOW_PROBE_TICKS: u32 = 60;
+/// Congestion window awal dan batasnya (slow start per ACK, reset saat RTO).
+const INITIAL_CWND: u32 = TCP_MSS as u32;
+const MAX_CWND: u32 = TCP_MSS as u32 * 4;
+/// Batas jumlah segmen yang boleh menunggu ACK di luar segmen tertua.
+const MAX_PIPELINE_SEGMENTS: usize = 4;
 const DEFAULT_KEEPALIVE_IDLE: u32 = 60_000;
 const DEFAULT_KEEPALIVE_COUNT: u8 = 9;
 
@@ -75,6 +80,10 @@ pub struct TcpSocket {
     write_shutdown: bool,
     error: Option<&'static str>,
     pending: Option<PendingSegment>,
+    /// Segmen yang sudah dikirim setelah `pending` dan menunggu ACK kumulatif.
+    pipeline: VecDeque<PendingSegment>,
+    /// Congestion window dalam byte; tumbuh per ACK dan kembali ke 1 MSS saat RTO.
+    cwnd: u32,
     /// Tick berikutnya untuk mengirim probe jendela nol.
     next_probe_tick: u32,
     /// Keepalive opt-in lewat `SO_KEEPALIVE`.
@@ -109,6 +118,8 @@ impl TcpSocket {
             write_shutdown: false,
             error: None,
             pending: None,
+            pipeline: VecDeque::new(),
+            cwnd: INITIAL_CWND,
             next_probe_tick: 0,
             keepalive: false,
             keepalive_idle: DEFAULT_KEEPALIVE_IDLE,
@@ -344,11 +355,43 @@ pub fn keepalive_enabled(socket: &Arc<Mutex<TcpSocket>>) -> bool {
     socket.lock().keepalive
 }
 
+/// Sequence satu byte setelah segmen ini (payload + SYN/FIN).
+fn segment_end(segment: &PendingSegment) -> u32 {
+    segment.sequence.wrapping_add(
+        segment.payload.len() as u32
+            + u32::from(segment.flags & SYN != 0)
+            + u32::from(segment.flags & FIN != 0),
+    )
+}
+
+/// True bila ACK kumulatif sudah mencakup `end` (perbandingan sequence wrapping).
+fn acknowledge_covers(acknowledgement: u32, end: u32) -> bool {
+    (acknowledgement.wrapping_sub(end) as i32) >= 0
+}
+
+/// Ruang kirim yang diizinkan: minimum dari jendela peer dan congestion window
+/// setelah dikurangi byte yang belum di-ACK.
+fn send_capacity(peer_window: u16, cwnd: u32, in_flight: u32) -> u32 {
+    let window = u32::from(peer_window).saturating_sub(in_flight);
+    let congestion = cwnd.saturating_sub(in_flight);
+    window.min(congestion)
+}
+
+/// Slow start sederhana: satu MSS per ACK, dibatasi `MAX_CWND`.
+fn cwnd_after_ack(cwnd: u32) -> u32 {
+    cwnd.saturating_add(TCP_MSS as u32).min(MAX_CWND)
+}
+
+/// Timeout dianggap kongesti: kembali ke satu segmen.
+fn cwnd_after_timeout() -> u32 {
+    INITIAL_CWND
+}
+
 pub fn send_socket(socket: &Arc<Mutex<TcpSocket>>, payload: &[u8]) -> Result<usize, &'static str> {
     if payload.is_empty() {
         return Ok(0);
     }
-    let pending = {
+    let segment = {
         let mut socket = socket.lock();
         if socket.write_shutdown {
             return Err("TCP write side is shut down");
@@ -359,13 +402,15 @@ pub fn send_socket(socket: &Arc<Mutex<TcpSocket>>, payload: &[u8]) -> Result<usi
             TcpState::Closed => return Err("TCP socket is closed"),
             _ => return Err("TCP socket is not connected"),
         }
-        if socket.pending.is_some() {
+        let in_flight = socket.send_next.wrapping_sub(socket.send_unacknowledged);
+        let capacity = send_capacity(socket.peer_window, socket.cwnd, in_flight);
+        if capacity == 0 || socket.pipeline.len() >= MAX_PIPELINE_SEGMENTS {
             return Err("TCP send would block");
         }
         let length = payload
             .len()
             .min(socket.peer_mss as usize)
-            .min(socket.peer_window as usize);
+            .min(capacity as usize);
         if length == 0 {
             return Err("TCP send would block");
         }
@@ -374,7 +419,7 @@ pub fn send_socket(socket: &Arc<Mutex<TcpSocket>>, payload: &[u8]) -> Result<usi
         socket.send_next = socket.send_next.wrapping_add(length as u32);
         socket.last_activity = TICK.load(Ordering::Relaxed);
         socket.keepalive_probes = 0;
-        socket.pending = Some(PendingSegment {
+        let segment = PendingSegment {
             sequence,
             acknowledgement: socket.receive_next,
             flags: ACK | PSH,
@@ -383,24 +428,41 @@ pub fn send_socket(socket: &Arc<Mutex<TcpSocket>>, payload: &[u8]) -> Result<usi
             last_sent: TICK.load(Ordering::Relaxed),
             timeout: RETRANSMIT_TICKS,
             retransmits: 0,
-        });
-        socket.pending.clone().unwrap()
+        };
+        if socket.pending.is_none() {
+            socket.pending = Some(segment.clone());
+        } else {
+            socket.pipeline.push_back(segment.clone());
+        }
+        segment
     };
-    if let Err(error) = transmit_pending(socket, pending.clone()) {
+    if let Err(error) = transmit_pending(socket, segment.clone()) {
         if error != "ARP request sent; retry after the neighbor responds" {
             let mut socket = socket.lock();
-            if socket
+            let rollback = if socket
                 .pending
                 .as_ref()
-                .is_some_and(|queued| queued.sequence == pending.sequence)
+                .is_some_and(|queued| queued.sequence == segment.sequence)
             {
                 socket.pending = None;
-                socket.send_next = pending.sequence;
+                true
+            } else if socket
+                .pipeline
+                .back()
+                .is_some_and(|queued| queued.sequence == segment.sequence)
+            {
+                socket.pipeline.pop_back();
+                true
+            } else {
+                false
+            };
+            if rollback {
+                socket.send_next = segment.sequence;
             }
             return Err(error);
         }
     }
-    Ok(pending.payload.len())
+    Ok(segment.payload.len())
 }
 
 pub fn is_established(socket: &Arc<Mutex<TcpSocket>>) -> bool {
@@ -488,7 +550,7 @@ pub fn shutdown_socket(socket: &Arc<Mutex<TcpSocket>>, how: u64) -> Result<(), &
                 _ => return Err("TCP socket is not connected"),
             }
             socket.write_shutdown = true;
-            if socket.pending.is_some() {
+            if socket.pending.is_some() || !socket.pipeline.is_empty() {
                 socket.close_after_pending = true;
                 return Ok(());
             }
@@ -542,11 +604,13 @@ pub fn close_socket(socket: &Arc<Mutex<TcpSocket>>) {
                 socket_state.half_open.clear();
                 socket_state.state = TcpState::Closed;
                 socket_state.pending = None;
+                socket_state.pipeline.clear();
                 children
             }
             _ => {
                 socket_state.state = TcpState::Closed;
                 socket_state.pending = None;
+                socket_state.pipeline.clear();
                 Vec::new()
             }
         }
@@ -577,7 +641,10 @@ pub fn poll() {
     for socket in sockets {
         let action = {
             let mut socket_state = socket.lock();
-            if socket_state.close_after_pending && socket_state.pending.is_none() {
+            if socket_state.close_after_pending
+                && socket_state.pending.is_none()
+                && socket_state.pipeline.is_empty()
+            {
                 socket_state.close_after_pending = false;
                 Some(queue_fin_locked(&mut socket_state))
             } else if let Some(pending) = socket_state.pending.as_ref() {
@@ -585,10 +652,12 @@ pub fn poll() {
                     None
                 } else if pending.retransmits >= MAX_RETRANSMITS {
                     socket_state.pending = None;
+                    socket_state.pipeline.clear();
                     socket_state.state = TcpState::Reset;
                     socket_state.error = Some("TCP connection timed out");
                     continue;
                 } else {
+                    socket_state.cwnd = cwnd_after_timeout();
                     let pending = socket_state.pending.as_mut().unwrap();
                     pending.retransmits += 1;
                     /* RTO mundur eksponensial agar jaringan lambat tidak dibanjiri. */
@@ -992,6 +1061,7 @@ fn process_connected_segment(
             socket.state = TcpState::Reset;
             socket.error = Some(error);
             socket.pending = None;
+            socket.pipeline.clear();
             return;
         }
         socket.peer_window = window;
@@ -1011,6 +1081,7 @@ fn process_connected_segment(
                     socket.receive_next = sequence.wrapping_add(1);
                     socket.send_unacknowledged = acknowledgement;
                     socket.pending = None;
+                    socket.pipeline.clear();
                     socket.state = TcpState::Established;
                     send_ack = true;
                 } else if flags & RST != 0 {
@@ -1027,6 +1098,7 @@ fn process_connected_segment(
                 {
                     socket.send_unacknowledged = acknowledgement;
                     socket.pending = None;
+                    socket.pipeline.clear();
                     socket.state = TcpState::Established;
                     accepted_child = true;
                 } else {
@@ -1039,29 +1111,33 @@ fn process_connected_segment(
             | TcpState::CloseWait
             | TcpState::LastAck => {
                 if flags & ACK != 0 {
-                    if let Some(pending) = socket.pending.as_ref() {
-                        let end = pending.sequence.wrapping_add(
-                            pending.payload.len() as u32
-                                + u32::from(pending.flags & SYN != 0)
-                                + u32::from(pending.flags & FIN != 0),
-                        );
-                        if acknowledgement == end {
-                            let fin_was_pending = pending.flags & FIN != 0;
-                            socket.send_unacknowledged = acknowledgement;
-                            socket.pending = None;
-                            if fin_was_pending {
-                                socket.state = match socket.state {
-                                    TcpState::FinWait1 if socket.receive_eof => TcpState::Closed,
-                                    TcpState::FinWait1 => TcpState::FinWait2,
-                                    TcpState::LastAck => TcpState::Closed,
-                                    state => state,
-                                };
-                            }
-                            if socket.close_after_pending {
-                                socket.close_after_pending = false;
-                                close_pending = Some(queue_fin_locked(&mut socket));
-                            }
+                    /* ACK kumulatif dapat mencakup beberapa segmen pipeline sekaligus. */
+                    while let Some(end) = socket.pending.as_ref().map(segment_end) {
+                        if !acknowledge_covers(acknowledgement, end) {
+                            break;
                         }
+                        let fin_was_pending = socket
+                            .pending
+                            .as_ref()
+                            .is_some_and(|pending| pending.flags & FIN != 0);
+                        socket.send_unacknowledged = end;
+                        socket.pending = socket.pipeline.pop_front();
+                        socket.cwnd = cwnd_after_ack(socket.cwnd);
+                        if fin_was_pending {
+                            socket.state = match socket.state {
+                                TcpState::FinWait1 if socket.receive_eof => TcpState::Closed,
+                                TcpState::FinWait1 => TcpState::FinWait2,
+                                TcpState::LastAck => TcpState::Closed,
+                                state => state,
+                            };
+                        }
+                    }
+                    if socket.pending.is_none()
+                        && socket.pipeline.is_empty()
+                        && socket.close_after_pending
+                    {
+                        socket.close_after_pending = false;
+                        close_pending = Some(queue_fin_locked(&mut socket));
                     }
                 }
                 let payload_end = sequence.wrapping_add(payload.len() as u32);
@@ -1183,9 +1259,10 @@ fn send_reset(
 #[cfg(test)]
 mod tests {
     use super::{
-        ACK, MAX_RETRANSMIT_TIMEOUT, PendingSegment, RETRANSMIT_TICKS, SOCKETS, SYN, TCP_MSS,
-        TcpSocket, TcpState, build_tcp_segment, close_socket, is_last_descriptor, parse_mss,
-        keepalive_due, register_socket_locked, retransmit_backoff, tcp_checksum,
+        ACK, INITIAL_CWND, MAX_CWND, MAX_RETRANSMIT_TIMEOUT, PendingSegment, RETRANSMIT_TICKS,
+        SOCKETS, SYN, TCP_MSS, TcpSocket, TcpState, acknowledge_covers, build_tcp_segment,
+        close_socket, cwnd_after_ack, cwnd_after_timeout, is_last_descriptor, keepalive_due,
+        parse_mss, register_socket_locked, retransmit_backoff, send_capacity, tcp_checksum,
         zero_window_probe_due,
     };
     use alloc::sync::{Arc, Weak};
@@ -1243,6 +1320,33 @@ mod tests {
         assert_eq!(retransmit_backoff(240), MAX_RETRANSMIT_TIMEOUT);
         assert_eq!(retransmit_backoff(MAX_RETRANSMIT_TIMEOUT), MAX_RETRANSMIT_TIMEOUT);
         assert_eq!(retransmit_backoff(u32::MAX), MAX_RETRANSMIT_TIMEOUT);
+    }
+
+    #[test]
+    fn tcp_pipeline_advances_cumulative_acknowledgements() {
+        assert!(acknowledge_covers(0, 0));
+        assert!(acknowledge_covers(1460, 1460));
+        assert!(acknowledge_covers(2920, 1460));
+        assert!(!acknowledge_covers(1459, 1460));
+        assert!(!acknowledge_covers(1000, 2000));
+    }
+
+    #[test]
+    fn tcp_send_capacity_respects_peer_window_and_congestion_window() {
+        assert_eq!(send_capacity(8192, INITIAL_CWND, 0), TCP_MSS as u32);
+        assert_eq!(send_capacity(0, INITIAL_CWND, 0), 0);
+        assert_eq!(send_capacity(8192, INITIAL_CWND, INITIAL_CWND), 0);
+        assert_eq!(send_capacity(1000, INITIAL_CWND, 0), 1000);
+        assert_eq!(send_capacity(8192, INITIAL_CWND * 2, INITIAL_CWND), TCP_MSS as u32);
+        // Byte in-flight melebihi jendela tidak boleh underflow.
+        assert_eq!(send_capacity(500, INITIAL_CWND, 900), 0);
+    }
+
+    #[test]
+    fn tcp_congestion_window_grows_per_ack_and_resets_on_timeout() {
+        assert_eq!(cwnd_after_ack(INITIAL_CWND), INITIAL_CWND + TCP_MSS as u32);
+        assert_eq!(cwnd_after_ack(MAX_CWND), MAX_CWND);
+        assert_eq!(cwnd_after_timeout(), INITIAL_CWND);
     }
 
     #[test]

@@ -171,6 +171,8 @@ struct LineDiscipline {
     ready: [u8; TTY_BUFFER_SIZE],
     ready_start: usize,
     ready_len: usize,
+    /// `Ctrl-D` pada baris kosong; `read` berikutnya mengembalikan 0 (EOF).
+    eof_pending: bool,
 }
 
 impl LineDiscipline {
@@ -181,6 +183,7 @@ impl LineDiscipline {
             ready: [0; TTY_BUFFER_SIZE],
             ready_start: 0,
             ready_len: 0,
+            eof_pending: false,
         }
     }
 
@@ -191,7 +194,10 @@ impl LineDiscipline {
                 TtyAction::Erase
             }
             '\x08' | '\x7f' => TtyAction::Ignore,
-            '\x04' if self.line_len == 0 => TtyAction::EndOfFile,
+            '\x04' if self.line_len == 0 => {
+                self.eof_pending = true;
+                TtyAction::EndOfFile
+            }
             '\x04' => {
                 self.finish_line(false);
                 TtyAction::Ignore
@@ -242,6 +248,12 @@ impl LineDiscipline {
         self.line_len = 0;
         self.ready_start = 0;
         self.ready_len = 0;
+        self.eof_pending = false;
+    }
+
+    /// True bila ada data siap dibaca atau EOF tertunda.
+    fn has_input(&self) -> bool {
+        self.ready_start < self.ready_len || self.eof_pending
     }
 
     /// Mode raw: byte langsung masuk ke buffer siap baca tanpa editing baris.
@@ -273,7 +285,14 @@ impl LineDiscipline {
     }
 
     fn read_ready(&mut self, output: &mut [u8]) -> Option<usize> {
-        if self.ready_start == self.ready_len || output.is_empty() {
+        if output.is_empty() {
+            return None;
+        }
+        if self.ready_start == self.ready_len {
+            if self.eof_pending {
+                self.eof_pending = false;
+                return Some(0);
+            }
             return None;
         }
         let count = output.len().min(self.ready_len - self.ready_start);
@@ -460,7 +479,7 @@ fn pump_keyboard_into_line(terminal: usize) -> bool {
     let Some(tty) = TTY.get(terminal) else {
         return false;
     };
-    unsafe { crate::drivers::poll_input() };
+    let mut eof = false;
     while let Some(event) = crate::drivers::keyboard::pop_event_for(terminal) {
         let crate::drivers::keyboard::KeyEvent::Character(character) = event else {
             continue;
@@ -482,22 +501,33 @@ fn pump_keyboard_into_line(terminal: usize) -> bool {
                 }
             }
             TtyAction::Erase => crate::terminal::terminal_backspace_for(terminal),
-            TtyAction::EndOfFile => return true,
+            TtyAction::EndOfFile => eof = true,
             TtyAction::Ignore => {}
         }
     }
-    false
+    eof
 }
 
 /// True when a complete canonical line (or EOF) is waiting on the terminal.
 pub(crate) fn tty_readable(terminal: usize) -> bool {
-    if pump_keyboard_into_line(terminal) {
-        return true;
+    unsafe { crate::drivers::poll_input() };
+    pump_keyboard_into_line(terminal);
+    TTY.get(terminal).is_some_and(|tty| tty.lock().has_input())
+}
+
+/// Salin event keyboard yang tersedia ke line discipline semua terminal tanpa
+/// menunggu, lalu kembalikan bitmask terminal yang punya data/EOF siap dibaca.
+pub(crate) fn pump_console_input() -> u32 {
+    unsafe { crate::drivers::poll_input() };
+    let mut mask = 0u32;
+    for terminal in 0..crate::terminal::TERMINAL_COUNT {
+        pump_keyboard_into_line(terminal);
+        let ready = TTY.get(terminal).is_some_and(|tty| tty.lock().has_input());
+        if ready && terminal < u32::BITS as usize {
+            mask |= 1 << terminal;
+        }
     }
-    TTY.get(terminal).is_some_and(|tty| {
-        let tty = tty.lock();
-        tty.ready_start < tty.ready_len
-    })
+    mask
 }
 
 /// Readiness of a `/dev` path used by poll/select. `None` means the path is
@@ -511,54 +541,34 @@ pub(crate) fn tty_path_readable(path: &str) -> Option<bool> {
     }
 }
 
+/// Baca terminal tanpa menunggu: `Ok(Some(0))` berarti EOF, `Ok(None)` berarti
+/// belum ada input. Semua efek samping (echo, backspace, EOF) tetap dijalankan.
+pub(crate) fn poll_tty(terminal: usize, buffer: &mut [u8]) -> Result<Option<usize>, FsError> {
+    if buffer.is_empty() {
+        return Ok(Some(0));
+    }
+    let tty = TTY.get(terminal).ok_or(FsError::InvalidPath)?;
+    if let Some(count) = tty.lock().read_ready(buffer) {
+        return Ok(Some(count));
+    }
+    // Keyboard USB tidak lagi diproses di ISR (lihat `xhci::INTERRUPT_PENDING`),
+    // jadi event ring harus di-poll sebelum menyatakan belum ada input.
+    unsafe { crate::drivers::poll_input() };
+    pump_keyboard_into_line(terminal);
+    Ok(tty.lock().read_ready(buffer))
+}
+
+/// Versi blocking untuk pemanggil kernel (mis. `/dev/stdin` lewat VFS).
 pub(crate) fn read_tty(terminal: usize, buffer: &mut [u8]) -> Result<usize, FsError> {
     if buffer.is_empty() {
         return Ok(0);
     }
-    let tty = TTY.get(terminal).ok_or(FsError::InvalidPath)?;
     loop {
-        if let Some(count) = tty.lock().read_ready(buffer) {
+        if let Some(count) = poll_tty(terminal, buffer)? {
             return Ok(count);
         }
-
-        let event = match crate::drivers::keyboard::pop_event_for(terminal) {
-            Some(event) => event,
-            None => {
-                // Keyboard USB tidak lagi diproses di ISR (lihat
-                // `xhci::INTERRUPT_PENDING`), jadi event ring harus di-poll
-                // di sini sebelum tidur -- tanpa ini `read(0)` dari program
-                // user akan menunggu selamanya walaupun tombol ditekan.
-                unsafe { crate::drivers::poll_input() };
-                unsafe {
-                    asm!("sti; hlt; cli", options(nomem, nostack));
-                }
-                continue;
-            }
-        };
-        let (canonical, echo) = console_mode();
-        let action = match event {
-            crate::drivers::keyboard::KeyEvent::Character(character) => {
-                if canonical {
-                    tty.lock().push_character(character)
-                } else {
-                    tty.lock().push_raw(character)
-                }
-            }
-            _ => TtyAction::Ignore,
-        };
-        match action {
-            TtyAction::Echo(character) => {
-                if echo {
-                    let mut encoded = [0; 4];
-                    crate::terminal::terminal_print_to(
-                        terminal,
-                        character.encode_utf8(&mut encoded),
-                    );
-                }
-            }
-            TtyAction::Erase => crate::terminal::terminal_backspace_for(terminal),
-            TtyAction::EndOfFile => return Ok(0),
-            TtyAction::Ignore => {}
+        unsafe {
+            asm!("sti; hlt; cli", options(nomem, nostack));
         }
     }
 }
@@ -597,6 +607,20 @@ mod tests {
             devfs.write("/stdout", 0, &[0xff]),
             Err(FsError::InvalidData)
         );
+    }
+
+    #[test]
+    fn canonical_eof_is_reported_once_when_the_line_is_empty() {
+        let mut tty = LineDiscipline::new();
+        assert!(matches!(
+            tty.push_character('\x04'),
+            super::TtyAction::EndOfFile
+        ));
+        assert!(tty.has_input());
+        let mut buffer = [0u8; 4];
+        assert_eq!(tty.read_ready(&mut buffer), Some(0));
+        assert!(!tty.has_input());
+        assert_eq!(tty.read_ready(&mut buffer), None);
     }
 
     #[test]

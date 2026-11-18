@@ -48,6 +48,14 @@ int main(int argc, char **argv)
         /* POSIX_SPAWN_RESETIDS: id efektif harus sama dengan id nyata. */
         return getuid() == geteuid() && getgid() == getegid() ? 0 : 1;
     }
+    if (argc == 2 && strcmp(argv[1], "sched-child") == 0) {
+        struct sched_param param = {-1};
+        return sched_getscheduler(0) == SCHED_OTHER &&
+                       sched_getparam(0, &param) == 0 &&
+                       param.sched_priority == 0
+                   ? 0
+                   : 1;
+    }
     if (argc == 2 && strcmp(argv[1], "attribute-child") == 0) {
         sigset_t current;
         if (sigprocmask(SIG_SETMASK, NULL, &current) != 0) {
@@ -188,15 +196,37 @@ int main(int argc, char **argv)
     if (error != 0 || wait_for_child(child_pid) != 0) {
         return 23;
     }
-    /* Atribut scheduling belum didukung kernel dan harus ditolak. */
-    if (posix_spawnattr_setflags(&attributes, POSIX_SPAWN_RESETIDS
-                                                 | POSIX_SPAWN_SETSCHEDPARAM) !=
-        0) {
+    /* Atribut scheduling: SCHED_OTHER dengan prioritas 0 harus diterapkan. */
+    struct sched_param schedparam = {0};
+    if (posix_spawnattr_init(&attributes) != 0 ||
+        posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSCHEDULER |
+                                                 POSIX_SPAWN_SETSCHEDPARAM) != 0 ||
+        posix_spawnattr_setscheduler(&attributes, SCHED_OTHER) != 0 ||
+        posix_spawnattr_setschedparam(&attributes, &schedparam) != 0) {
         return 32;
     }
-    if (posix_spawn(&child_pid, argv[0], NULL, &attributes, resetid_arguments,
-                    environment) != ENOTSUP) {
+    int read_policy = -1;
+    struct sched_param read_param = {-1};
+    if (posix_spawnattr_getscheduler(&attributes, &read_policy) != 0 ||
+        read_policy != SCHED_OTHER ||
+        posix_spawnattr_getschedparam(&attributes, &read_param) != 0 ||
+        read_param.sched_priority != 0) {
         return 33;
+    }
+    char *sched_arguments[] = {argv[0], "sched-child", NULL};
+    error = posix_spawn(&child_pid, argv[0], NULL, &attributes, sched_arguments,
+                        environment);
+    if (error != 0 || wait_for_child(child_pid) != 0) {
+        return 34;
+    }
+    /* SCHED_FIFO belum didukung kernel (EPERM) dan harus menggagalkan spawn. */
+    if (posix_spawnattr_setscheduler(&attributes, SCHED_FIFO) != 0) {
+        return 35;
+    }
+    error = posix_spawn(&child_pid, argv[0], NULL, &attributes, sched_arguments,
+                        environment);
+    if (error != EPERM) {
+        return 36;
     }
     if (posix_spawn_file_actions_destroy(&actions) != 0 ||
         posix_spawnattr_destroy(&attributes) != 0) {
@@ -245,7 +275,7 @@ int main(int argc, char **argv)
     }
 
     return printf("posix_spawn environment/status/WNOHANG/file actions/"
-                  "signal attributes/resetids passed\n") < 0
+                  "signal attributes/scheduling/resetids passed\n") < 0
                ? 31
                : 0;
 }

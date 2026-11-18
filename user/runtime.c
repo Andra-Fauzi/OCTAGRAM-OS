@@ -8,6 +8,7 @@
 #include <grp.h>
 #include <limits.h>
 #include <pwd.h>
+#include <sched.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <spawn.h>
@@ -32,6 +33,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/random.h>
+#include <sys/resource.h>
 #include <sys/semaphore.h>
 #include <locale.h>
 #include <wchar.h>
@@ -3690,7 +3692,8 @@ static int count_spawn_arguments(char *const arguments[], size_t *count)
 
 #define OCTAGRAM_SPAWN_SUPPORTED_FLAGS                                          \
     (POSIX_SPAWN_RESETIDS | POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF       \
-     | POSIX_SPAWN_SETSIGMASK)
+     | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSCHEDPARAM                       \
+     | POSIX_SPAWN_SETSCHEDULER)
 
 /* Runs in the forked child before execve; failures are reported to the parent. */
 static int apply_spawn_file_actions(
@@ -3780,6 +3783,18 @@ static int apply_spawn_attributes(const posix_spawnattr_t *attributes)
                 sigaction(signal_number, &default_action, NULL) != 0) {
                 return errno;
             }
+        }
+    }
+    if ((attributes->flags & POSIX_SPAWN_SETSCHEDULER) != 0) {
+        struct sched_param param = attributes->schedparam;
+        if (sched_setscheduler(0, attributes->scheduler, &param) != 0) {
+            return errno;
+        }
+    }
+    if ((attributes->flags & POSIX_SPAWN_SETSCHEDPARAM) != 0) {
+        struct sched_param param = attributes->schedparam;
+        if (sched_setparam(0, &param) != 0) {
+            return errno;
         }
     }
     return 0;
@@ -4049,6 +4064,8 @@ int posix_spawnattr_init(posix_spawnattr_t *attributes)
         return EINVAL;
     }
     memset(attributes, 0, sizeof(*attributes));
+    attributes->scheduler = SCHED_OTHER;
+    attributes->schedparam.sched_priority = 0;
     return 0;
 }
 
@@ -4136,6 +4153,45 @@ int posix_spawnattr_getsigmask(const posix_spawnattr_t *attributes,
         return EINVAL;
     }
     *mask = attributes->sigmask;
+    return 0;
+}
+
+int posix_spawnattr_setschedparam(posix_spawnattr_t *attributes,
+                                  const struct sched_param *param)
+{
+    if (attributes == NULL || param == NULL) {
+        return EINVAL;
+    }
+    attributes->schedparam = *param;
+    return 0;
+}
+
+int posix_spawnattr_getschedparam(const posix_spawnattr_t *attributes,
+                                  struct sched_param *param)
+{
+    if (attributes == NULL || param == NULL) {
+        return EINVAL;
+    }
+    *param = attributes->schedparam;
+    return 0;
+}
+
+int posix_spawnattr_setscheduler(posix_spawnattr_t *attributes, int policy)
+{
+    if (attributes == NULL || policy < 0) {
+        return EINVAL;
+    }
+    attributes->scheduler = policy;
+    return 0;
+}
+
+int posix_spawnattr_getscheduler(const posix_spawnattr_t *attributes,
+                                 int *policy)
+{
+    if (attributes == NULL || policy == NULL) {
+        return EINVAL;
+    }
+    *policy = attributes->scheduler;
     return 0;
 }
 
@@ -7042,10 +7098,99 @@ pid_t setsid(void)
     return result < 0 ? (pid_t)posix_result(result) : (pid_t)result;
 }
 
+#define OCT_PRIORITY_MIN (-20)
+#define OCT_PRIORITY_MAX 19
+
+int sched_setscheduler(pid_t pid, int policy, const struct sched_param *param)
+{
+    if (param == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    int64_t result = oct_sched_setscheduler(pid < 0 ? 0 : (uint64_t)pid,
+                                            (int64_t)policy, param);
+    return result < 0 ? (int)posix_result(result) : 0;
+}
+
+int sched_getscheduler(pid_t pid)
+{
+    int64_t result = oct_sched_getscheduler(pid < 0 ? 0 : (uint64_t)pid);
+    return result < 0 ? (int)posix_result(result) : (int)result;
+}
+
+int sched_setparam(pid_t pid, const struct sched_param *param)
+{
+    if (param == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    int64_t result = oct_sched_setparam(pid < 0 ? 0 : (uint64_t)pid, param);
+    return result < 0 ? (int)posix_result(result) : 0;
+}
+
+int sched_getparam(pid_t pid, struct sched_param *param)
+{
+    if (param == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    int64_t result = oct_sched_getparam(pid < 0 ? 0 : (uint64_t)pid, param);
+    return result < 0 ? (int)posix_result(result) : 0;
+}
+
+int sched_get_priority_max(int policy)
+{
+    (void)policy;
+    return 0;
+}
+
+int sched_get_priority_min(int policy)
+{
+    (void)policy;
+    return 0;
+}
+
+int sched_yield(void)
+{
+    int64_t result = oct_yield();
+    return result < 0 ? (int)posix_result(result) : 0;
+}
+
+int getpriority(int which, id_t who)
+{
+    /* Kernel mengembalikan nice yang dibias +20 agar selalu non-negatif. */
+    int64_t biased = oct_getpriority((int64_t)which, (uint64_t)(int64_t)who);
+    if (biased < 0) {
+        return (int)posix_result(biased);
+    }
+    /* POSIX mengembalikan 20 - nice agar nilainya selalu positif. */
+    return (int)(40 - biased);
+}
+
+int setpriority(int which, id_t who, int priority)
+{
+    int64_t result = oct_setpriority((int64_t)which, (uint64_t)(int64_t)who,
+                                     (int64_t)priority);
+    return result < 0 ? (int)posix_result(result) : 0;
+}
+
 int nice(int increment)
 {
-    (void)increment;
-    return 0;
+    int64_t biased = oct_getpriority(PRIO_PROCESS, 0);
+    if (biased < 0) {
+        return (int)posix_result(biased);
+    }
+    int64_t target = (biased + OCT_PRIORITY_MIN) + (int64_t)increment;
+    if (target < OCT_PRIORITY_MIN) {
+        target = OCT_PRIORITY_MIN;
+    } else if (target > OCT_PRIORITY_MAX) {
+        target = OCT_PRIORITY_MAX;
+    }
+    int64_t result = oct_setpriority(PRIO_PROCESS, 0, target);
+    if (result < 0) {
+        return (int)posix_result(result);
+    }
+    return (int)(20 - target);
 }
 
 int chown(const char *path, uid_t owner, gid_t group)

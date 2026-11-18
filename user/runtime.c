@@ -3865,13 +3865,17 @@ int brk(void *address)
     if (program_break == 0 && refresh_program_break() != 0) {
         return -1;
     }
-    int64_t result = oct_brk((uint64_t)(uintptr_t)address);
+
+    uintptr_t requested = (uintptr_t)address;
+    int64_t result = oct_brk((uint64_t)requested);
     if (result < 0) {
         errno = (int)-result;
         return -1;
     }
+
     program_break = (uintptr_t)result;
-    if ((uintptr_t)address > program_break) {
+    /* The kernel reports the previous break when a request cannot be met. */
+    if (requested != 0 && program_break != requested) {
         errno = ENOMEM;
         return -1;
     }
@@ -3883,36 +3887,42 @@ void *sbrk(intptr_t increment)
     if (program_break == 0 && refresh_program_break() != 0) {
         return (void *)-1;
     }
+
     uintptr_t previous = program_break;
     if (increment == 0) {
         return (void *)previous;
     }
+
+    uintptr_t requested;
     if (increment > 0) {
-        uintptr_t requested = previous + (uintptr_t)increment;
-        if (requested < previous) {
+        uintptr_t increase = (uintptr_t)increment;
+        if (increase > UINTPTR_MAX - previous) {
             errno = ENOMEM;
             return (void *)-1;
         }
-        int64_t result = oct_brk(requested);
-        if (result < 0) {
-            errno = (int)-result;
-            return (void *)-1;
-        }
-        if ((uintptr_t)result != requested) {
+        requested = previous + increase;
+    } else {
+        /* Avoid negating INTPTR_MIN, which would overflow signed intptr_t. */
+        uintptr_t decrease = (uintptr_t)(-(increment + 1)) + 1;
+        if (decrease > previous) {
             errno = ENOMEM;
             return (void *)-1;
         }
-        program_break = requested;
-        return (void *)previous;
+        requested = previous - decrease;
     }
-    /* Kernel belum menyusutkan heap; break yang dilaporkan kernel dipakai. */
-    uintptr_t requested = previous - (uintptr_t)(-increment);
-    int64_t result = oct_brk(requested);
+
+    int64_t result = oct_brk((uint64_t)requested);
     if (result < 0) {
         errno = (int)-result;
         return (void *)-1;
     }
-    program_break = (uintptr_t)result;
+    if ((uintptr_t)result != requested) {
+        program_break = (uintptr_t)result;
+        errno = ENOMEM;
+        return (void *)-1;
+    }
+
+    program_break = requested;
     return (void *)previous;
 }
 

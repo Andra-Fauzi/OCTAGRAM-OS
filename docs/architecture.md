@@ -88,5 +88,16 @@ terminal control job, window system, atau filesystem terisolasi per proses.
   dan koneksi Wi-Fi belum berjalan.
 - `task.rs`: executor kooperatif.
 
+## Lihat juga
+
+- [Boot dan inisialisasi](boot.md) — urutan `kmain` dan idle loop.
+- [Memori](memory.md) — frame allocator, paging, ASLR.
+- [Proses, thread, dan sinyal](process.md) — scheduler dan futex.
+- [Filesystem dan VFS](filesystem.md) — RAMFS, devfs, mount.
+- [Jaringan](networking.md) — link layer sampai DNS/HTTP.
+- [Driver](drivers.md) dan [grafis/terminal](graphics-terminal.md).
+- [Shell](shell.md), [program user](userspace.md), [dynamic linker](dynamic-linker.md),
+  [toolchain](toolchain.md), [pengujian](testing.md), [batasan](limitations.md).
+
 Sebelum mengubah subsystem, baca implementasi modul dan tesnya; jangan
 menganggap API-nya setara Linux.

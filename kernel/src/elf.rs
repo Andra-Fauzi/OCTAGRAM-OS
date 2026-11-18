@@ -610,8 +610,16 @@ pub struct LoadedElf {
     memory: Arc<UserMemory>,
 }
 
+#[derive(Clone, Copy)]
+struct BrkState {
+    current: u64,
+    mapped_end: u64,
+    limit: u64,
+}
+
 struct UserMemory {
     mmap_cursor: Mutex<u64>,
+    brk_state: Mutex<BrkState>,
     mapped_pages: Mutex<Vec<u64>>,
     mmap_pages: Mutex<Vec<MappingPage>>,
     lock_future_mappings: AtomicBool,
@@ -1015,6 +1023,7 @@ impl LoadedElf {
     }
 
     fn fork_clone(&self, user_pages: &[u64], shared_pages: &[u64]) -> Result<Self, ElfError> {
+        let brk_state = *self.memory.brk_state.lock();
         let mapped_pages = try_clone_pages(&self.memory.mapped_pages.lock())?;
         let mmap_pages = try_clone_mapping_pages(&self.memory.mmap_pages.lock())?;
         let mmap_cursor = *self.memory.mmap_cursor.lock();
@@ -1025,6 +1034,7 @@ impl LoadedElf {
             environment: try_clone_strings(&self.environment)?,
             memory: Arc::new(UserMemory {
                 mmap_cursor: Mutex::new(mmap_cursor),
+                brk_state: Mutex::new(brk_state),
                 mapped_pages: Mutex::new(mapped_pages),
                 mmap_pages: Mutex::new(mmap_pages),
                 lock_future_mappings: AtomicBool::new(lock_future_mappings),
@@ -1225,6 +1235,11 @@ pub fn load_with_args_and_environment(
                 environment: process_environment,
                 memory: Arc::new(UserMemory {
                     mmap_cursor: Mutex::new(mmap_cursor),
+                    brk_state: Mutex::new(BrkState {
+                        current: HEAP_START,
+                        mapped_end: HEAP_INITIAL_END,
+                        limit: heap_limit,
+                    }),
                     mapped_pages: Mutex::new(mapped_pages),
                     mmap_pages: Mutex::new(Vec::new()),
                     lock_future_mappings: AtomicBool::new(false),
@@ -6206,43 +6221,56 @@ fn syscall_uname(address: u64) -> Result<u64, i32> {
     Ok(0)
 }
 
-// brk: return current mmap_cursor sebagai "program break"
-fn syscall_brk(addr: u64) -> Result<u64, i32> {
+// `brk` has its own region and logical byte-granular cursor. It must not
+// share `mmap_cursor`: POSIX allocators may use both interfaces in one process.
+fn syscall_brk(address: u64) -> Result<u64, i32> {
     let memory = current_user_memory()?;
-    let cursor = *memory.mmap_cursor.lock();
-    if addr == 0 {
-        return Ok(cursor);
+    let mut state = memory.brk_state.lock();
+
+    if address == 0 {
+        return Ok(state.current);
     }
-    // Jika addr lebih besar, coba alokasi anonymous pages
-    if addr > cursor {
-        let pages = ((addr - cursor + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-        let mut mappings = memory.mmap_pages.lock();
-        let mut cur = *memory.mmap_cursor.lock();
-        mappings.try_reserve(pages).map_err(|_| ENOMEM)?;
-        for _ in 0..pages {
-            let physical = match allocate_mapping_frame(None) {
-                Ok((p, _)) => p,
-                Err(_) => return Ok(cur),
-            };
-            let page_flags = mapping_flags(PROT_READ | PROT_WRITE).unwrap_or_default();
-            if unsafe { paging::map_page(cur, physical, page_flags) }.is_err() {
-                free_frame(physical as usize);
-                return Ok(cur);
+
+    // The initial heap is reserved by the ELF loader. Reject requests that
+    // would move the break before that region or into another ELF segment.
+    if address < HEAP_START || address > state.limit {
+        return Ok(state.current);
+    }
+
+    let required_end = address
+        .checked_add(PAGE_SIZE - 1)
+        .map(|end| end & !(PAGE_SIZE - 1))
+        .ok_or(EINVAL)?;
+    if required_end > state.limit {
+        return Ok(state.current);
+    }
+
+    // The first MiB is mapped with the image. Grow lazily beyond it; retain
+    // pages on shrink so a later growth within the high-water mark is cheap.
+    if required_end > state.mapped_end {
+        let mut mapped_pages = memory.mapped_pages.lock();
+        while state.mapped_end < required_end {
+            if mapped_pages.try_reserve(1).is_err() {
+                return Ok(state.current);
             }
-            mappings.push(MappingPage {
-                address: cur,
-                shared_backing: None,
-                locked: false,
-                can_write: true,
-                anonymous: true,
-                is_device: false,
-            });
-            cur += PAGE_SIZE;
+            let virtual_address = state.mapped_end;
+            let Some(physical) = allocate_frame().map(|frame| frame as u64) else {
+                return Ok(state.current);
+            };
+            let flags = paging::flags::USER
+                | paging::flags::WRITABLE
+                | paging::flags::NO_EXECUTE;
+            if unsafe { paging::map_page(virtual_address, physical, flags) }.is_err() {
+                free_frame(physical as usize);
+                return Ok(state.current);
+            }
+            mapped_pages.push(virtual_address);
+            state.mapped_end += PAGE_SIZE;
         }
-        *memory.mmap_cursor.lock() = cur;
-        return Ok(cur);
     }
-    Ok(cursor)
+
+    state.current = address;
+    Ok(address)
 }
 
 fn syscall_gettimeofday(address: u64) -> Result<u64, i32> {

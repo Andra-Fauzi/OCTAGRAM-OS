@@ -142,12 +142,16 @@ Java. `getuid`, `getgid`, `geteuid`, dan `getegid` selalu mengembalikan 0 karena
 OS belum punya konsep user; `getppid` mengembalikan 1. `uname` mengisi struct
 `utsname` berisi enam field 65 byte dengan identitas OCTAGRAM.
 
-`brk` mengelola program break: alamat 0 membaca nilai saat ini, alamat yang lebih
-tinggi memetakan halaman anonim RW, dan alamat yang lebih rendah tidak
-menyusutkan heap. `gettimeofday` melaporkan detik Unix dari RTC dengan `tv_usec`
-selalu 0. `nanosleep` menunggu secara sibuk di kernel (belum scheduler-aware),
-dibatasi total 60 detik per panggilan; `sleep` dan `usleep` di runtime memakai
-syscall ini.
+`brk` memiliki cursor byte-granular terpisah dari cursor `mmap`: alamat 0
+membaca break saat ini; alamat valid di rentang heap mengatur break tepat ke
+alamat yang diminta. Kernel memetakan halaman RW tambahan saat break tumbuh.
+Break dapat diturunkan; halaman yang sudah dipetakan dipertahankan sampai proses
+berakhir agar pertumbuhan berikutnya dapat memakai ulang halaman tersebut.
+Permintaan di luar rentang heap mengembalikan break lama, sehingga wrapper
+POSIX mengubahnya menjadi `-1/ENOMEM`. `gettimeofday` melaporkan detik Unix
+dari RTC dengan `tv_usec` selalu 0. `nanosleep` menunggu secara sibuk di kernel
+(belum scheduler-aware), dibatasi total 60 detik per panggilan; `sleep` dan
+`usleep` di runtime memakai syscall ini.
 
 Signal sudah nyata. Setiap proses menyimpan `pending_signals`, `blocked_signals`,
 dan tabel 31 handler. `kill` menambahkan bit pending pada proses target (diri

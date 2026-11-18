@@ -62,5 +62,7 @@ extern int errno;
 #define ENOLCK 37
 #define EROFS 30
 #define ESPIPE 29
+#define EOWNERDEAD 130
+#define ENOTRECOVERABLE 131
 
 #endif

@@ -1663,23 +1663,6 @@ void pthread_exit(void *result)
     }
 }
 
-int pthread_mutex_init(pthread_mutex_t *mutex, const void *attributes)
-{
-    if (mutex == NULL || attributes != NULL) {
-        return EINVAL;
-    }
-    mutex->state = 0;
-    return 0;
-}
-
-int pthread_mutex_destroy(pthread_mutex_t *mutex)
-{
-    if (mutex == NULL) {
-        return EINVAL;
-    }
-    return mutex->state == 0 ? 0 : EBUSY;
-}
-
 static int oct_futex_wait_uint(volatile unsigned int *address,
                                unsigned int expected)
 {
@@ -1691,10 +1674,297 @@ static void oct_futex_wake_uint(volatile unsigned int *address, int count)
     oct_futex((uint32_t *)address, 1 /* FUTEX_WAKE */, (uint32_t)count);
 }
 
+/* Tata letak kata futex mutex robust harus sama dengan yang dipakai kernel. */
+#define OCT_FUTEX_WAITERS 0x80000000u
+#define OCT_FUTEX_OWNER_DIED 0x40000000u
+#define OCT_FUTEX_TID_MASK 0x3fffffffu
+#define OCT_MUTEX_FLAG_ROBUST 0x1u
+#define OCT_MUTEX_FLAG_NOTRECOVERABLE 0x2u
+#define OCT_ROBUST_HEAD_LENGTH 24u
+#define OCT_MAX_ROBUST_HEADS 64u
+
+/* `robust_list_head` per thread; isi 24 byte pertama adalah kontrak kernel. */
+struct oct_robust_head {
+    struct oct_pthread_robust_entry *next;
+    int64_t futex_offset;
+    uint64_t list_op_pending;
+    unsigned long tid;
+    int registered;
+};
+
+static struct oct_robust_head oct_robust_heads[OCT_MAX_ROBUST_HEADS];
+static volatile int oct_robust_head_lock;
+
+static struct oct_robust_head *oct_robust_head_for_self(void)
+{
+    unsigned long tid = (unsigned long)pthread_self();
+    if (tid == 0) {
+        return NULL;
+    }
+    for (unsigned int i = 0; i < OCT_MAX_ROBUST_HEADS; ++i) {
+        if (oct_robust_heads[i].tid == tid && oct_robust_heads[i].registered) {
+            return &oct_robust_heads[i];
+        }
+    }
+
+    while (__sync_lock_test_and_set(&oct_robust_head_lock, 1)) {
+        /* putaran pendek; pemilik lock hanya mengisi satu slot */
+    }
+    struct oct_robust_head *head = NULL;
+    for (unsigned int i = 0; i < OCT_MAX_ROBUST_HEADS; ++i) {
+        if (oct_robust_heads[i].tid == tid && oct_robust_heads[i].registered) {
+            head = &oct_robust_heads[i];
+            break;
+        }
+    }
+    /* Slot milik task yang sudah tidak ada boleh dipakai ulang; TID kernel
+     * monoton sehingga tidak bertabrakan dengan thread yang masih hidup. */
+    for (unsigned int i = 0; head == NULL && i < OCT_MAX_ROBUST_HEADS; ++i) {
+        unsigned long other = oct_robust_heads[i].tid;
+        if (other == 0) {
+            head = &oct_robust_heads[i];
+            break;
+        }
+        uint64_t address = 0;
+        uint64_t length = 0;
+        if (oct_get_robust_list(other, &address, &length) == -ESRCH) {
+            head = &oct_robust_heads[i];
+        }
+    }
+    if (head != NULL) {
+        head->next = (struct oct_pthread_robust_entry *)head;
+        head->futex_offset = (int64_t)offsetof(pthread_mutex_t, state);
+        head->list_op_pending = 0;
+        head->tid = tid;
+        head->registered = 0;
+    }
+    __sync_lock_release(&oct_robust_head_lock);
+    if (head == NULL) {
+        return NULL;
+    }
+    if (oct_set_robust_list((uint64_t)(uintptr_t)head, OCT_ROBUST_HEAD_LENGTH) < 0) {
+        return NULL;
+    }
+    head->registered = 1;
+    return head;
+}
+
+static void oct_robust_list_push(struct oct_robust_head *head,
+                                 pthread_mutex_t *mutex)
+{
+    mutex->list.next = head->next;
+    head->next = &mutex->list;
+}
+
+static void oct_robust_list_remove(struct oct_robust_head *head,
+                                   pthread_mutex_t *mutex)
+{
+    struct oct_pthread_robust_entry **link = &head->next;
+    while (*link != NULL && *link != (struct oct_pthread_robust_entry *)head) {
+        if (*link == &mutex->list) {
+            *link = mutex->list.next;
+            break;
+        }
+        link = &(*link)->next;
+    }
+    mutex->list.next = NULL;
+}
+
+int pthread_mutexattr_init(pthread_mutexattr_t *attributes)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    attributes->robustness = PTHREAD_MUTEX_STALLED;
+    return 0;
+}
+
+int pthread_mutexattr_destroy(pthread_mutexattr_t *attributes)
+{
+    return attributes == NULL ? EINVAL : 0;
+}
+
+int pthread_mutexattr_setrobust(pthread_mutexattr_t *attributes, int robustness)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    if (robustness != PTHREAD_MUTEX_STALLED && robustness != PTHREAD_MUTEX_ROBUST) {
+        return EINVAL;
+    }
+    attributes->robustness = robustness;
+    return 0;
+}
+
+int pthread_mutexattr_getrobust(const pthread_mutexattr_t *attributes,
+                                int *robustness)
+{
+    if (attributes == NULL || robustness == NULL) {
+        return EINVAL;
+    }
+    *robustness = attributes->robustness;
+    return 0;
+}
+
+int pthread_mutex_init(pthread_mutex_t *mutex,
+                       const pthread_mutexattr_t *attributes)
+{
+    if (mutex == NULL) {
+        return EINVAL;
+    }
+    mutex->list.next = NULL;
+    mutex->state = 0;
+    mutex->flags = 0;
+    if (attributes != NULL) {
+        if (attributes->robustness == PTHREAD_MUTEX_ROBUST) {
+            mutex->flags = OCT_MUTEX_FLAG_ROBUST;
+        } else if (attributes->robustness != PTHREAD_MUTEX_STALLED) {
+            return EINVAL;
+        }
+    }
+    return 0;
+}
+
+int pthread_mutex_destroy(pthread_mutex_t *mutex)
+{
+    if (mutex == NULL) {
+        return EINVAL;
+    }
+    if ((mutex->flags & OCT_MUTEX_FLAG_ROBUST) != 0) {
+        return (mutex->state & OCT_FUTEX_TID_MASK) == 0 ? 0 : EBUSY;
+    }
+    return mutex->state == 0 ? 0 : EBUSY;
+}
+
+/* Mutex robust menyimpan TID pemilik di kata futex supaya kernel bisa
+ * menandainya FUTEX_OWNER_DIED saat thread pemilik keluar. */
+static int oct_mutex_lock_robust(pthread_mutex_t *mutex)
+{
+    if ((mutex->flags & OCT_MUTEX_FLAG_NOTRECOVERABLE) != 0) {
+        return ENOTRECOVERABLE;
+    }
+    struct oct_robust_head *head = oct_robust_head_for_self();
+    if (head == NULL) {
+        return EAGAIN;
+    }
+    unsigned int tid = (unsigned int)pthread_self() & OCT_FUTEX_TID_MASK;
+    if (tid == 0) {
+        return EINVAL;
+    }
+    for (;;) {
+        unsigned int word = __atomic_load_n(&mutex->state, __ATOMIC_ACQUIRE);
+        if ((word & OCT_FUTEX_TID_MASK) != 0) {
+            if ((word & OCT_FUTEX_TID_MASK) == tid) {
+                return EDEADLK;
+            }
+            if ((word & OCT_FUTEX_WAITERS) == 0) {
+                __sync_bool_compare_and_swap(&mutex->state, word,
+                                             word | OCT_FUTEX_WAITERS);
+            }
+            /* -EINTR/-EAGAIN hanya berarti ulangi; kunci tetap dicoba. */
+            oct_futex_wait_uint((volatile unsigned int *)&mutex->state,
+                                word | OCT_FUTEX_WAITERS);
+            continue;
+        }
+        unsigned int desired =
+            tid | (word & (OCT_FUTEX_WAITERS | OCT_FUTEX_OWNER_DIED));
+        if (!__sync_bool_compare_and_swap(&mutex->state, word, desired)) {
+            continue;
+        }
+        oct_robust_list_push(head, mutex);
+        if ((mutex->flags & OCT_MUTEX_FLAG_NOTRECOVERABLE) != 0) {
+            /* Balapan dengan unlock pemilik sebelumnya. */
+            oct_robust_list_remove(head, mutex);
+            if (__sync_lock_test_and_set(&mutex->state, 0) & OCT_FUTEX_WAITERS) {
+                oct_futex_wake_uint((volatile unsigned int *)&mutex->state, 1);
+            }
+            return ENOTRECOVERABLE;
+        }
+        return (word & OCT_FUTEX_OWNER_DIED) != 0 ? EOWNERDEAD : 0;
+    }
+}
+
+static int oct_mutex_trylock_robust(pthread_mutex_t *mutex)
+{
+    if ((mutex->flags & OCT_MUTEX_FLAG_NOTRECOVERABLE) != 0) {
+        return ENOTRECOVERABLE;
+    }
+    struct oct_robust_head *head = oct_robust_head_for_self();
+    if (head == NULL) {
+        return EAGAIN;
+    }
+    unsigned int tid = (unsigned int)pthread_self() & OCT_FUTEX_TID_MASK;
+    if (tid == 0) {
+        return EINVAL;
+    }
+    unsigned int word = __atomic_load_n(&mutex->state, __ATOMIC_ACQUIRE);
+    if ((word & OCT_FUTEX_TID_MASK) != 0) {
+        return (word & OCT_FUTEX_TID_MASK) == tid ? EDEADLK : EBUSY;
+    }
+    unsigned int desired =
+        tid | (word & (OCT_FUTEX_WAITERS | OCT_FUTEX_OWNER_DIED));
+    if (!__sync_bool_compare_and_swap(&mutex->state, word, desired)) {
+        return EBUSY;
+    }
+    oct_robust_list_push(head, mutex);
+    return (word & OCT_FUTEX_OWNER_DIED) != 0 ? EOWNERDEAD : 0;
+}
+
+static int oct_mutex_unlock_robust(pthread_mutex_t *mutex)
+{
+    unsigned int tid = (unsigned int)pthread_self() & OCT_FUTEX_TID_MASK;
+    unsigned int word = __atomic_load_n(&mutex->state, __ATOMIC_ACQUIRE);
+    if (tid == 0 || (word & OCT_FUTEX_TID_MASK) != tid) {
+        return EPERM;
+    }
+    if ((word & OCT_FUTEX_OWNER_DIED) != 0) {
+        /* Pemilik sebelumnya tidak memanggil pthread_mutex_consistent(). */
+        mutex->flags |= OCT_MUTEX_FLAG_NOTRECOVERABLE;
+    } else {
+        mutex->flags &= ~OCT_MUTEX_FLAG_NOTRECOVERABLE;
+    }
+    __atomic_store_n(&mutex->state, 0, __ATOMIC_RELEASE);
+    if ((word & OCT_FUTEX_WAITERS) != 0) {
+        oct_futex_wake_uint((volatile unsigned int *)&mutex->state, 1);
+    }
+    /* Kata futex sudah 0, jadi penanda kernel untuk entri yang masih tersisa
+     * tidak lagi cocok; entri dilepas setelah kunci benar-benar bebas. */
+    struct oct_robust_head *head = oct_robust_head_for_self();
+    if (head != NULL) {
+        oct_robust_list_remove(head, mutex);
+    }
+    return 0;
+}
+
+int pthread_mutex_consistent(pthread_mutex_t *mutex)
+{
+    if (mutex == NULL || (mutex->flags & OCT_MUTEX_FLAG_ROBUST) == 0) {
+        return EINVAL;
+    }
+    unsigned int tid = (unsigned int)pthread_self() & OCT_FUTEX_TID_MASK;
+    if (tid == 0) {
+        return EINVAL;
+    }
+    for (;;) {
+        unsigned int word = __atomic_load_n(&mutex->state, __ATOMIC_ACQUIRE);
+        if ((word & OCT_FUTEX_TID_MASK) != tid ||
+            (word & OCT_FUTEX_OWNER_DIED) == 0) {
+            return EINVAL;
+        }
+        if (__sync_bool_compare_and_swap(&mutex->state, word,
+                                         word & ~OCT_FUTEX_OWNER_DIED)) {
+            return 0;
+        }
+    }
+}
+
 int pthread_mutex_lock(pthread_mutex_t *mutex)
 {
     if (mutex == NULL) {
         return EINVAL;
+    }
+    if ((mutex->flags & OCT_MUTEX_FLAG_ROBUST) != 0) {
+        return oct_mutex_lock_robust(mutex);
     }
     if (__sync_bool_compare_and_swap(&mutex->state, 0, 1)) {
         return 0;
@@ -1715,6 +1985,9 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
     if (mutex == NULL) {
         return EINVAL;
     }
+    if ((mutex->flags & OCT_MUTEX_FLAG_ROBUST) != 0) {
+        return oct_mutex_trylock_robust(mutex);
+    }
     /* CAS, bukan xchg: menimpa state 2 akan menghilangkan wakeup untuk waiter. */
     return __sync_bool_compare_and_swap(&mutex->state, 0, 1) ? 0 : EBUSY;
 }
@@ -1723,6 +1996,9 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex)
 {
     if (mutex == NULL) {
         return EINVAL;
+    }
+    if ((mutex->flags & OCT_MUTEX_FLAG_ROBUST) != 0) {
+        return oct_mutex_unlock_robust(mutex);
     }
     if (__sync_lock_test_and_set(&mutex->state, 0) == 2) {
         oct_futex_wake_uint((volatile unsigned int *)&mutex->state, 1);

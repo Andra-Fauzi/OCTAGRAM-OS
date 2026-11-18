@@ -164,9 +164,24 @@ Robust futex didukung di sisi kernel: `set_robust_list`/`get_robust_list`
 Saat task keluar, `release_robust_list()` menelusuri daftar (maksimum 64 entri,
 melewati `list_op_pending`) dan untuk setiap futex yang TID-nya masih dimiliki
 task itu menulis `FUTEX_OWNER_DIED`, mempertahankan `FUTEX_WAITERS`, melepas TID,
-lalu membangunkan waiter pada alamat tersebut. API libc seperti
-`pthread_mutexattr_setrobust` dan `EOWNERDEAD` belum ada, jadi program memakai
-syscall langsung lewat `octagram.h`.
+lalu membangunkan waiter pada alamat tersebut.
+
+Di sisi libc, `pthread_mutex_t` menyimpan kata futex di offset 8 dan tautan
+`robust_list_head` di offset 0 (`futex_offset` = 8). Setiap thread mendaftarkan
+satu `robust_list_head` dari kumpulan 64 slot saat pertama kali mengunci mutex
+robust (slot milik TID yang sudah tidak ada dipakai ulang lewat pemeriksaan
+`get_robust_list` → `ESRCH`), menambah/menghapus entri saat lock/unlock, dan
+kata futex berisi TID pemilik sehingga penandaan kernel cocok. Mutex robust
+dibuat dengan `pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST)`:
+`pthread_mutex_lock` mengembalikan `EOWNERDEAD` bila pemilik sebelumnya keluar,
+`pthread_mutex_consistent()` membersihkan `FUTEX_OWNER_DIED`, dan unlock tanpa
+konsisten membuat pengunci berikutnya mendapat `ENOTRECOVERABLE`. Contohnya
+`user/examples/robust_mutex_demo.c`.
+
+Batasan: entri dilepas dari daftar robust setelah kata futex dibebaskan, jadi
+`pthread_mutex_destroy` tidak boleh berbalapan dengan unlock; dan bila thread
+terbunuh tepat di antara pengambilan kunci dan penambahan entri, mutex tetap
+terkunci (perilaku `PTHREAD_MUTEX_STALLED`).
 
 ## Batasan
 

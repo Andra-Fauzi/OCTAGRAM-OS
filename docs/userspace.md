@@ -38,7 +38,8 @@ syscall `int $0x80` langsung.
 - sinyal (`sigaction`, `sigprocmask`, `sigaltstack`, `sigreturn`);
 - socket (`socket`, `bind`, `connect`, `sendmsg`/`recvmsg`, `poll`, `select`,
   `epoll`), resolver (`getaddrinfo`, `gethostbyname`, A/AAAA/PTR);
-- `pthread` (mutex, condvar, semaphore) di atas futex;
+- `pthread` (mutex termasuk mutex robust dengan `EOWNERDEAD`, condvar,
+  semaphore) di atas futex;
 - dynamic loading (`dlopen`, `dlsym`, `dlclose`, `dlerror`);
 - locale/multibyte UTF-8, termios, `time`, `setjmp`, `stdatomic`.
 
@@ -67,7 +68,7 @@ Program contoh yang dibangun (`PROGRAMS` di `user/Makefile`):
 `file_api_demo`, `path_api_demo`, `at_api_demo`, `execve_demo`, `fork_demo`,
 `time_demo`, `mmap_demo`, `scanf_demo`, `tls_demo`, `thread_demo`, `fb_demo`,
 `syscall_compat_demo`, `account_demo`, `socket_msg_demo`, `netdb_demo`,
-`dns_demo`, `cxa_atexit_demo`.
+`dns_demo`, `cxa_atexit_demo`, `credential_demo`, `robust_mutex_demo`.
 
 Selain itu dibangun `dynamic_demo`, `copy_reloc_demo`, `versioned_demo`,
 `dlopen_demo`, `aslr_demo`, `ld-octagram.so`, `liboctagram.so`,

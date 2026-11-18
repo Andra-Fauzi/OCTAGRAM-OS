@@ -130,7 +130,9 @@ services, and a package/application ecosystem.
     - [x] Syscall `set_robust_list`/`get_robust_list` (146/147) dan field per task (panjang head wajib 24 byte)
     - [x] `release_robust_list()` saat task keluar menandai `FUTEX_OWNER_DIED`, melepas TID, membangunkan waiter; batas 64 entri dan melewati `list_op_pending`
     - [x] Uji host `robust_list_marks_only_the_owner_as_dead`
-    - [ ] API libc `pthread_mutexattr_setrobust`/`pthread_mutex_consistent` dengan `EOWNERDEAD`
+    - [x] API libc `pthread_mutexattr_setrobust`/`pthread_mutex_consistent` dengan `EOWNERDEAD`
+      - [x] `pthread_mutex_t` menyimpan TID pemilik di kata futex dan tautan `robust_list_head` di offset 0; daftar per thread didaftarkan lewat `set_robust_list` (146) dengan `futex_offset` = `offsetof(state)`
+      - [x] `pthread_mutex_lock` mengembalikan `EOWNERDEAD` setelah pemiliknya keluar, `pthread_mutex_consistent()` membersihkan `FUTEX_OWNER_DIED`, dan unlock tanpa konsisten membuat kunci berikutnya `ENOTRECOVERABLE`; contoh `robust_mutex_demo`
 - [x] Add kernel task fairness and watchdog monitoring
   - [x] Fairness lewat aging: setiap proses runnable yang dilewati mendapat `age` +1 dan prioritas efektif naik sampai 39 level
   - [x] Snapshot `scheduler_status()` dan shell `sched` menampilkan PID/TID, nice, policy, `AGE`, serta status runnable/waiting/exited

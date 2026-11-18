@@ -6,8 +6,16 @@
 #include <time.h>
 
 typedef uint64_t pthread_t;
+
+/* Tautan daftar robust kernel; harus berada di offset 0 dari mutex. */
+struct oct_pthread_robust_entry {
+    struct oct_pthread_robust_entry *next;
+};
+
 typedef struct {
-    volatile int state;
+    struct oct_pthread_robust_entry list; /* offset 0 */
+    volatile unsigned int state;          /* offset 8: kata futex */
+    volatile unsigned int flags;
 } pthread_mutex_t;
 typedef struct {
     uintptr_t opaque;
@@ -20,8 +28,15 @@ typedef struct {
 } pthread_condattr_t;
 typedef unsigned int pthread_key_t;
 
-#define PTHREAD_MUTEX_INITIALIZER {0}
+typedef struct {
+    int robustness;
+} pthread_mutexattr_t;
+
+#define PTHREAD_MUTEX_INITIALIZER {{0}, 0, 0}
 #define PTHREAD_COND_INITIALIZER {0}
+
+#define PTHREAD_MUTEX_STALLED 0
+#define PTHREAD_MUTEX_ROBUST 1
 
 int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
                    void *(*start_routine)(void *), void *argument);
@@ -29,11 +44,20 @@ int pthread_join(pthread_t thread, void **result);
 pthread_t pthread_self(void);
 __attribute__((noreturn)) void pthread_exit(void *result);
 
-int pthread_mutex_init(pthread_mutex_t *mutex, const void *attributes);
+int pthread_mutex_init(pthread_mutex_t *mutex,
+                       const pthread_mutexattr_t *attributes);
 int pthread_mutex_destroy(pthread_mutex_t *mutex);
 int pthread_mutex_lock(pthread_mutex_t *mutex);
 int pthread_mutex_trylock(pthread_mutex_t *mutex);
 int pthread_mutex_unlock(pthread_mutex_t *mutex);
+int pthread_mutex_consistent(pthread_mutex_t *mutex);
+
+int pthread_mutexattr_init(pthread_mutexattr_t *attributes);
+int pthread_mutexattr_destroy(pthread_mutexattr_t *attributes);
+int pthread_mutexattr_setrobust(pthread_mutexattr_t *attributes,
+                                int robustness);
+int pthread_mutexattr_getrobust(const pthread_mutexattr_t *attributes,
+                                int *robustness);
 
 int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attributes);
 int pthread_cond_destroy(pthread_cond_t *cond);

@@ -8,8 +8,10 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
 
 - Tanpa copy-on-write; `fork` menyalin seluruh halaman user.
 - Kredensial (uid/euid/gid/egid) dan metadata kemampuan per pid sudah ada
-  (`setuid`, `capget`/`capset`), tetapi bit kemampuan belum ditegakkan di jalur
-  akses; semua proses masih berbagi VFS, mount, dan konfigurasi jaringan.
+  (`setuid`, `capget`/`capset`). Kemampuan sudah ditegakkan untuk penulisan VFS
+  (`CAP_VFS_WRITE`), `socket()` AF_INET (`CAP_NETWORK`), dan prioritas task lain
+  (`CAP_SCHED_NICE`), tetapi belum untuk mount/device, console, atau descriptor
+  yang sudah terbuka; semua proses masih berbagi mount dan konfigurasi jaringan.
 - Tanpa permission enforcement penuh; mode berkas disimpan tetapi tidak selalu
   diperiksa.
 - Tanpa autentikasi password (`passwd` belum diimplementasikan); `login` hanya

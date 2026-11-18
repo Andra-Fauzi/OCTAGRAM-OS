@@ -159,7 +159,9 @@ Java. `getuid`, `getgid`, `geteuid`, dan `getegid` membaca kredensial proses
 (awalnya 0); `getppid` mengembalikan 1. `setuid`/`seteuid`/`setgid`/`setegid`
 (140–143) mengubahnya untuk seluruh thread satu pid: root bebas, non-root hanya
 boleh kembali ke id nyata/efektifnya. `capget`/`capset` (144/145) mengelola bit
-kemampuan (`CAP_VFS_WRITE`, `CAP_NETWORK`, `CAP_SYS_ADMIN`, `CAP_SCHED_NICE`). `uname` mengisi struct
+kemampuan (`CAP_VFS_WRITE`, `CAP_NETWORK`, `CAP_SYS_ADMIN`, `CAP_SCHED_NICE`).
+Penulisan VFS, `socket()` AF_INET, dan prioritas task lain mengembalikan `-EPERM`
+bila proses tidak memegang bit yang sesuai (root memegang `CAP_ALL`). `uname` mengisi struct
 `utsname` berisi enam field 65 byte dengan identitas OCTAGRAM.
 
 `brk` mengelola program break: alamat 0 membaca nilai saat ini, alamat yang lebih

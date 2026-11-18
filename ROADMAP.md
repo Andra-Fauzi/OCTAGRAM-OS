@@ -26,7 +26,9 @@ services, and a package/application ecosystem.
   - [x] `getuid` family membaca kredensial nyata; syscall `setuid`/`seteuid`/`setgid`/`setegid` (140–143) dengan aturan root vs non-root (`credential_change_allowed`)
   - [x] Bitmask kemampuan `CAP_VFS_WRITE`/`CAP_NETWORK`/`CAP_SYS_ADMIN`/`CAP_SCHED_NICE`, diturunkan dari uid, `capget`/`capset` (144/145) dengan `CAP_SYS_ADMIN` untuk menulis
   - [x] Header `sys/capability.h`, contoh `credential_demo`, uji host `credentials_and_capabilities_follow_uid_rules`
-  - [ ] Penegakan kemampuan di jalur akses VFS, jaringan, dan prioritas
+  - [x] Penegakan `CAP_VFS_WRITE` untuk `open` bertulis, `write` file, `mkdir`, `unlink`, `rmdir`, `unlinkat`, `rename`, `symlink`, `chmod`, dan `ftruncate`
+  - [x] Penegakan `CAP_NETWORK` pada `socket()` AF_INET dan `CAP_SCHED_NICE` pada prioritas task lain; uji host `capability_checks_require_the_requested_bit`
+  - [ ] Penegakan untuk mount/device, akses console, dan descriptor yang sudah terbuka sebelum uid diturunkan
 - [ ] Test kernel faults, invalid mappings, and cross-process memory access
 
 ## Priority 2: POSIX runtime
@@ -112,7 +114,10 @@ services, and a package/application ecosystem.
   - [x] EOF (`Ctrl-D` baris kosong) disimpan sebagai `eof_pending` sehingga `read` mengembalikan 0 dan `poll` melaporkan siap; uji host `canonical_eof_is_reported_once_when_the_line_is_empty`
   - [x] Proses tunggal tanpa proses lain memakai jalur blocking kernel `fs::read_tty` agar shell tidak menerima `EDEADLK`
   - [x] `read()` dari tty yang dibuka lewat path VFS (`/dev/stdin`, `/dev/tty*`, `/dev/console`) juga scheduler-aware lewat `tty_path_terminal()` + `poll_tty()`; uji host `tty_path_terminal_matches_readable_terminals_only`
-- [ ] Implement wakeup cancellation and robust timed waits
+- [x] Implement wakeup cancellation and robust timed waits
+  - [x] `poll`/`select` dibangunkan segera saat isi pipe, input console, atau `eventfd` berubah (`is_poll_wait` / `wake_poll_waiters`), tidak lagi menunggu deadline 1 ms
+  - [x] Wait tanpa batas waktu mengosongkan `wait_deadline` lama dan setiap pembangunanan wait membatalkan deadline, sehingga tidak ada timeout palsu
+  - [ ] Sumber lain yang dipantau `poll` (socket TCP/UDP, timerfd) masih memakai scan ulang 1 ms
 - [ ] Improve mutex/condvar/futex implementation
   - [x] Real `FUTEX_WAIT`/`FUTEX_WAKE` with LAPIC timeout handling
   - [x] `pthread_mutex`, condition variables, and semaphores built on futex
@@ -155,7 +160,8 @@ services, and a package/application ecosystem.
 - [ ] Network namespace or policy layer
 - [ ] DHCP/client and routing persistence
   - [x] DHCP client lease request through `net dhcp`
-  - [ ] Saved routing/lease persistence across reboot
+  - [x] Lease DHCP disimpan ke `/var/lib/octagram/net/lease` saat bound dan dimuat lagi oleh `restore_saved_lease()` setelah driver siap
+  - [ ] Tabel routing statis yang persisten (saat ini hanya alamat/netmask/gateway/DNS yang disimpan)
 
 ## Priority 6: Storage
 

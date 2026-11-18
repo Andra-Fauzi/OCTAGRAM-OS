@@ -29,8 +29,15 @@ mengaksesnya lewat syscall socket di [syscall-abi.md](syscall-abi.md).
 
 `net dhcp` menjalankan klien DHCP (`start_dhcp()`): mengirim DHCPDISCOVER dari
 port 68 ke port 67, memproses DHCPOFFER/ACK, lalu menyimpan alamat, netmask,
-gateway, dan DNS. Status terlihat dengan `net` / `net status`. Lease tidak
-disimpan ke disk, jadi reboot memerlukan DHCP ulang.
+gateway, dan DNS. Status terlihat dengan `net` / `net status`.
+
+Saat lease diterima, `persist_lease()` menulis berkas teks
+`/var/lib/octagram/net/lease` (kunci `address`, `netmask`, `gateway`, `dns`),
+setelah membuat direktorinya bila perlu. Setelah driver jaringan siap, boot
+memanggil `network::restore_saved_lease()`; berkas yang tidak lengkap atau
+mengandung oktet tidak valid diabaikan dengan pesan. `register_link()` memakai
+ulang lease tersimpan sehingga konfigurasi bertahan tanpa DHCP ulang. Tabel
+routing statis belum ikut disimpan karena konfigurasi tetap hanya satu gateway.
 
 ## Socket UDP
 

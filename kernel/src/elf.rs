@@ -548,6 +548,7 @@ fn syscall_renameat(
 }
 
 fn syscall_rename_paths(source: String, target: String) -> Result<u64, i32> {
+    require_capability(CAP_VFS_WRITE)?;
     fs::with_vfs(|vfs| vfs.rename(&source, &target))
         .map_err(errno_from_fs)?
         .map_err(errno_from_fs)?;
@@ -800,6 +801,30 @@ fn syscall_getpriority(which: u64, who: u64) -> Result<u64, i32> {
     // Nilai nice dibias +20 agar hasil syscall tidak terlihat seperti error.
     best.map(|priority| (priority - PRIORITY_MIN) as u64)
         .ok_or(ESRCH)
+}
+
+/// Apakah bit kemampuan yang diminta ada di bitmask proses.
+fn capability_present(capabilities: u64, capability: u64) -> Result<(), i32> {
+    if capabilities & capability != 0 {
+        Ok(())
+    } else {
+        Err(EPERM)
+    }
+}
+
+/// Wajibkan kemampuan pada proses pemanggil syscall.
+fn require_capability(capability: u64) -> Result<(), i32> {
+    capability_present(current_capabilities()?, capability)
+}
+
+/// Bitmask kemampuan proses yang sedang berjalan.
+fn current_capabilities() -> Result<u64, i32> {
+    let scheduler = USER_SCHEDULER.lock();
+    scheduler
+        .processes
+        .get(scheduler.current)
+        .map(|process| process.capabilities)
+        .ok_or(EINTR)
 }
 
 fn read_user_u64(address: u64) -> Result<u64, i32> {
@@ -3687,6 +3712,9 @@ fn block_current_on_wait(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut 
 
     scheduler.processes[current].frame_pointer = frame_pointer as usize;
     scheduler.processes[current].waiting_for = Some(wait);
+    // Wait ini tidak punya batas waktu; batalkan deadline lama agar tidak
+    // terbangun sebagai "timeout" palsu.
+    scheduler.processes[current].wait_deadline = None;
     // Ulangi instruksi int 0x80 setelah event yang ditunggu siap.
     frame.stack_frame.instruction_pointer = retry_address;
     let mut active_process = USER_PROCESS.lock();
@@ -4133,18 +4161,42 @@ fn syscall_futex(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     }
 }
 
-/// Bangunkan proses yang menunggu input pada terminal yang kini punya data.
+/// Bangunkan proses yang menunggu input pada terminal yang kini punya data,
+/// termasuk `poll`/`select` yang memantau descriptor console.
 fn wake_console_waiters(readable_terminals: u32) {
     if readable_terminals == 0 {
         return;
     }
     let mut scheduler = USER_SCHEDULER.lock();
     for process in &mut scheduler.processes {
-        if let Some(ProcessWait::ConsoleInput(terminal)) = process.waiting_for
-            && terminal < u32::BITS as usize
-            && readable_terminals & (1 << terminal) != 0
-        {
+        let console_ready = matches!(
+            process.waiting_for,
+            Some(ProcessWait::ConsoleInput(terminal))
+                if terminal < u32::BITS as usize && readable_terminals & (1 << terminal) != 0
+        );
+        if console_ready || is_poll_wait(process.waiting_for) {
             process.waiting_for = None;
+            process.wait_deadline = None;
+        }
+    }
+}
+
+/// Penunggu `poll`/`select` tidak menyimpan fd yang dipantau, jadi kernel cukup
+/// membangunkan semuanya dan membiarkan scan ulang.
+fn is_poll_wait(waiting: Option<ProcessWait>) -> bool {
+    matches!(waiting, Some(ProcessWait::PollWait))
+}
+
+fn wake_poll_waiters() {
+    let mut scheduler = USER_SCHEDULER.lock();
+    wake_poll_waiters_in_scheduler(&mut scheduler);
+}
+
+fn wake_poll_waiters_in_scheduler(scheduler: &mut UserScheduler) {
+    for process in &mut scheduler.processes {
+        if is_poll_wait(process.waiting_for) {
+            process.waiting_for = None;
+            process.wait_deadline = None;
         }
     }
 }
@@ -4166,8 +4218,10 @@ fn wake_pipe_waiters_in_scheduler(
             Some(ProcessWait::PipeWritable(waiting_id)) => writers_ready && waiting_id == pipe_id,
             _ => false,
         };
-        if ready {
+        // Perubahan isi pipe bisa membuat `poll`/`select` siap.
+        if ready || is_poll_wait(process.waiting_for) {
             process.waiting_for = None;
+            process.wait_deadline = None;
         }
     }
 }
@@ -4464,6 +4518,9 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
     if bytes.is_empty() {
         return Ok(0);
     }
+    // Diambil sebelum mengunci `USER_PROCESS` agar urutan kunci tetap konsisten;
+    // hanya penulisan ke file biasa yang menuntut `CAP_VFS_WRITE`.
+    let caller_capabilities = current_capabilities()?;
     let mut process = USER_PROCESS.lock();
     if !process.active {
         return Err(EINTR);
@@ -4475,6 +4532,7 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
         .and_then(Option::as_mut)
         .ok_or(EBADF)?;
     let mut pipe_id = None;
+    let mut poll_event = false;
     let result = match descriptor {
         UserDescriptor::ConsoleOutput | UserDescriptor::ConsoleError => {
             let text = core::str::from_utf8(bytes).map_err(|_| EILSEQ)?;
@@ -4484,6 +4542,7 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
             Ok(bytes.len() as u64)
         }
         UserDescriptor::File(file) => {
+            capability_present(caller_capabilities, CAP_VFS_WRITE)?;
             let mut file = file.lock();
             if !file.writable {
                 return Err(EBADF);
@@ -4543,6 +4602,7 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
                     .filter(|counter| *counter < u64::MAX)
                     .ok_or(EAGAIN)?;
             }
+            poll_event = true;
             Ok(bytes.len() as u64)
         }
         UserDescriptor::TcpSocket(socket) => crate::network::send_tcp_socket(socket, bytes)
@@ -4557,6 +4617,9 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
     drop(process);
     if let Some(pipe_id) = pipe_id {
         wake_pipe_waiters(pipe_id, true, false);
+    }
+    if poll_event {
+        wake_poll_waiters();
     }
     result
 }
@@ -5137,6 +5200,7 @@ fn tcp_socket_for_fd(fd: u64) -> Result<Arc<Mutex<crate::network::TcpSocket>>, i
 }
 
 fn syscall_socket(domain: u64, socket_type: u64, protocol: u64) -> Result<u64, i32> {
+    require_capability(CAP_NETWORK)?;
     if domain != 2 {
         return Err(EAFNOSUPPORT);
     }
@@ -5398,6 +5462,9 @@ fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32
     const ALLOWED_FLAGS: u64 = O_ACCESS_MASK | O_CREAT | O_TRUNC | O_APPEND | O_NONBLOCK;
     if flags & !ALLOWED_FLAGS != 0 || flags & O_ACCESS_MASK == 3 {
         return Err(EINVAL);
+    }
+    if flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND) != 0 {
+        require_capability(CAP_VFS_WRITE)?;
     }
     let mode = if flags & O_CREAT != 0 {
         let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
@@ -5920,6 +5987,7 @@ fn syscall_mkdirat(dirfd: u64, path_address: u64, mode: u64) -> Result<u64, i32>
 }
 
 fn syscall_mkdir_path(path: String, mode: u64) -> Result<u64, i32> {
+    require_capability(CAP_VFS_WRITE)?;
     let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
     if mode & !0o777 != 0 {
         return Err(EINVAL);
@@ -5944,6 +6012,7 @@ fn syscall_mkdir_path(path: String, mode: u64) -> Result<u64, i32> {
 }
 
 fn syscall_unlink(path_address: u64) -> Result<u64, i32> {
+    require_capability(CAP_VFS_WRITE)?;
     let path = resolve_process_path(&copy_user_path(path_address)?)?;
     fs::with_vfs(|vfs| vfs.remove_file(&path))
         .map_err(errno_from_fs)?
@@ -5953,6 +6022,7 @@ fn syscall_unlink(path_address: u64) -> Result<u64, i32> {
 }
 
 fn syscall_rmdir(path_address: u64) -> Result<u64, i32> {
+    require_capability(CAP_VFS_WRITE)?;
     let path = resolve_process_path(&copy_user_path(path_address)?)?;
     fs::with_vfs(|vfs| vfs.remove_dir(&path))
         .map_err(errno_from_fs)?
@@ -5961,6 +6031,7 @@ fn syscall_rmdir(path_address: u64) -> Result<u64, i32> {
 }
 
 fn syscall_unlinkat(dirfd: u64, path_address: u64, flags: u64) -> Result<u64, i32> {
+    require_capability(CAP_VFS_WRITE)?;
     if flags & !AT_REMOVEDIR != 0 {
         return Err(EINVAL);
     }
@@ -5993,6 +6064,7 @@ fn syscall_symlinkat(target_address: u64, dirfd: u64, link_address: u64) -> Resu
 }
 
 fn syscall_symlink_path(target: String, link_path: String) -> Result<u64, i32> {
+    require_capability(CAP_VFS_WRITE)?;
     fs::with_vfs(|vfs| vfs.symlink(&target, &link_path))
         .map_err(errno_from_fs)?
         .map_err(errno_from_fs)?;
@@ -6031,6 +6103,7 @@ fn syscall_readlink_path(path: String, buffer_address: u64, size: u64) -> Result
 }
 
 fn syscall_ftruncate(fd: u64, length: u64) -> Result<u64, i32> {
+    require_capability(CAP_VFS_WRITE)?;
     let fd = usize::try_from(fd).map_err(|_| EBADF)?;
     let length = usize::try_from(length).map_err(|_| EINVAL)?;
     let process = USER_PROCESS.lock();
@@ -6781,6 +6854,7 @@ fn syscall_chdir(path_address: u64) -> Result<u64, i32> {
 }
 
 fn syscall_chmod(path_address: u64, mode: u64) -> Result<u64, i32> {
+    require_capability(CAP_VFS_WRITE)?;
     let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
     if mode & !0o777 != 0 {
         return Err(EINVAL);
@@ -8451,8 +8525,9 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, ElfError> {
 mod tests {
     use super::{
         EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPERM,
-        EPIPE, PRIO_PGRP, PRIO_PROCESS, PRIO_USER, effective_priority_target,
-        priority_change_allowed, priority_target_matches,
+        CAP_NETWORK, CAP_VFS_WRITE, EPIPE, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
+        ProcessWait, capability_present, is_poll_wait,
+        effective_priority_target, priority_change_allowed, priority_target_matches,
         SCHED_OTHER, ElfError,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
         PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_PAGES, STACK_RANDOM_PAGES,
@@ -8934,6 +9009,23 @@ mod tests {
             ),
             Some(1)
         );
+    }
+
+    #[test]
+    fn only_poll_waiters_are_woken_by_poll_events() {
+        assert!(is_poll_wait(Some(ProcessWait::PollWait)));
+        assert!(!is_poll_wait(None));
+        assert!(!is_poll_wait(Some(ProcessWait::Sleep)));
+        assert!(!is_poll_wait(Some(ProcessWait::ConsoleInput(0))));
+        assert!(!is_poll_wait(Some(ProcessWait::PipeReadable(1))));
+    }
+
+    #[test]
+    fn capability_checks_require_the_requested_bit() {
+        assert_eq!(capability_present(CAP_ALL, CAP_VFS_WRITE), Ok(()));
+        assert_eq!(capability_present(CAP_ALL, CAP_NETWORK), Ok(()));
+        assert_eq!(capability_present(CAP_VFS_WRITE, CAP_NETWORK), Err(EPERM));
+        assert_eq!(capability_present(0, CAP_VFS_WRITE), Err(EPERM));
     }
 
     #[test]

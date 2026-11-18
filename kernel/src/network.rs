@@ -20,6 +20,8 @@ pub use dns::resolve as dns_resolve;
 pub use http::{http_get, parse_url, tcp_exchange, HttpResponse, HttpUrl};
 
 use alloc::collections::VecDeque;
+use alloc::format;
+use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
@@ -131,6 +133,13 @@ pub fn register_link(device: Arc<dyn LinkDevice>) -> Result<(), &'static str> {
     state.neighbor_mac = [0; 6];
     state.pending_ping = None;
     state.next_sequence = 1;
+    if let Some(lease) = *SAVED_LEASE.lock() {
+        state.config.address = lease.address;
+        state.config.netmask = lease.netmask;
+        state.config.gateway = lease.gateway;
+        state.config.dns = lease.dns;
+        state.config.configured = true;
+    }
     *link = Some(device);
     Ok(())
 }
@@ -144,6 +153,141 @@ pub fn unregister_link(slot_id: u32) {
         *link = None;
         *STATE.lock() = NetworkState::default();
     }
+}
+
+const LEASE_PATH: &str = "/var/lib/octagram/net/lease";
+const LEASE_DIRECTORY: &str = "/var/lib/octagram/net";
+const LEASE_BUFFER_LENGTH: usize = 256;
+
+/// Lease terakhir yang dibaca dari disk; dipakai lagi bila link didaftarkan
+/// setelah restore agar `register_link` tidak menimpanya dengan default.
+static SAVED_LEASE: Mutex<Option<SavedLease>> = Mutex::new(None);
+
+/// Lease DHCP yang disimpan ke disk agar tidak hilang saat reboot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SavedLease {
+    address: [u8; 4],
+    netmask: [u8; 4],
+    gateway: [u8; 4],
+    dns: [u8; 4],
+}
+
+fn format_ipv4(address: [u8; 4]) -> String {
+    format!("{}.{}.{}.{}", address[0], address[1], address[2], address[3])
+}
+
+fn parse_ipv4(text: &str) -> Option<[u8; 4]> {
+    let mut octets = [0u8; 4];
+    let mut count = 0;
+    for part in text.split('.') {
+        if count == 4 || part.is_empty() || part.len() > 3 {
+            return None;
+        }
+        if part.len() > 1 && part.starts_with('0') {
+            return None;
+        }
+        octets[count] = part.parse::<u8>().ok()?;
+        count += 1;
+    }
+    (count == 4).then_some(octets)
+}
+
+fn format_lease(lease: &SavedLease) -> String {
+    format!(
+        "# OCTAGRAM DHCP lease\naddress={}\nnetmask={}\ngateway={}\ndns={}\n",
+        format_ipv4(lease.address),
+        format_ipv4(lease.netmask),
+        format_ipv4(lease.gateway),
+        format_ipv4(lease.dns)
+    )
+}
+
+/// Parse berkas lease; semua kunci wajib ada agar tidak ada konfigurasi separuh.
+fn parse_lease(text: &str) -> Option<SavedLease> {
+    let mut lease = SavedLease {
+        address: [0; 4],
+        netmask: [0; 4],
+        gateway: [0; 4],
+        dns: [0; 4],
+    };
+    let mut found = 0u8;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line.split_once('=')?;
+        let address = parse_ipv4(value.trim())?;
+        match key.trim() {
+            "address" => lease.address = address,
+            "netmask" => lease.netmask = address,
+            "gateway" => lease.gateway = address,
+            "dns" => lease.dns = address,
+            _ => continue,
+        }
+        found += 1;
+    }
+    (found == 4 && lease.address != [0; 4]).then_some(lease)
+}
+
+fn ensure_lease_directory() -> Result<(), crate::fs::FsError> {
+    for path in ["/var/lib/octagram", LEASE_DIRECTORY] {
+        let exists = matches!(crate::fs::with_vfs(|vfs| vfs.metadata(path)), Ok(Ok(_)));
+        if !exists {
+            crate::fs::with_vfs(|vfs| vfs.create_dir(path))??;
+        }
+    }
+    Ok(())
+}
+
+/// Tulis lease ke `/var/lib/octagram/net/lease`; kegagalan hanya dicatat.
+fn persist_lease(lease: &SavedLease) {
+    let text = format_lease(lease);
+    let result = ensure_lease_directory().and_then(|()| {
+        crate::fs::with_vfs(|vfs| {
+            match vfs.remove_file(LEASE_PATH) {
+                Ok(()) | Err(crate::fs::FsError::NotFound) => Ok(()),
+                Err(error) => Err(error),
+            }?;
+            vfs.create_file(LEASE_PATH)?;
+            vfs.write(LEASE_PATH, 0, text.as_bytes()).map(|_| ())
+        })?
+    });
+    if let Err(error) = result {
+        crate::println!("network: saving lease failed: {error:?}");
+    }
+}
+
+/// Muat lease yang tersimpan saat boot. Dipanggil setelah driver jaringan siap
+/// agar konfigurasi dari DHCP sebelumnya langsung dipakai.
+pub fn restore_saved_lease() {
+    let mut buffer = [0u8; LEASE_BUFFER_LENGTH];
+    let count = match crate::fs::with_vfs(|vfs| vfs.read(LEASE_PATH, 0, &mut buffer)) {
+        Ok(Ok(count)) => count,
+        Ok(Err(crate::fs::FsError::NotFound)) | Err(_) => return,
+        Ok(Err(_)) => return,
+    };
+    let Ok(text) = core::str::from_utf8(&buffer[..count.min(buffer.len())]) else {
+        return;
+    };
+    let Some(lease) = parse_lease(text) else {
+        crate::println!("network: ignoring malformed saved lease");
+        return;
+    };
+    *SAVED_LEASE.lock() = Some(lease);
+    let mut state = STATE.lock();
+    state.config.address = lease.address;
+    state.config.netmask = lease.netmask;
+    state.config.gateway = lease.gateway;
+    state.config.dns = lease.dns;
+    state.config.configured = true;
+    crate::println!(
+        "network: restored saved lease {}.{}.{}.{}",
+        lease.address[0],
+        lease.address[1],
+        lease.address[2],
+        lease.address[3]
+    );
 }
 
 pub fn config() -> NetworkConfig {
@@ -687,26 +831,37 @@ fn handle_dhcp_packet(source_ip: [u8; 4], packet: &[u8]) {
             }
         }
         (Some(DhcpState::Requesting), 5) | (Some(DhcpState::Discovering), 5) => {
-            let mut state = STATE.lock();
-            state.config.address = message.address;
-            state.config.netmask = message.netmask.unwrap_or([255, 255, 255, 0]);
-            state.config.gateway = message.router.unwrap_or([0; 4]);
-            state.config.dns = message.dns.unwrap_or([0; 4]);
-            state.config.configured = message.address != [0; 4];
-            state.dhcp_state = Some(DhcpState::Bound);
-            state.neighbor_ip = [0; 4];
-            state.neighbor_mac = [0; 6];
+            let lease = SavedLease {
+                address: message.address,
+                netmask: message.netmask.unwrap_or([255, 255, 255, 0]),
+                gateway: message.router.unwrap_or([0; 4]),
+                dns: message.dns.unwrap_or([0; 4]),
+            };
+            {
+                let mut state = STATE.lock();
+                state.config.address = lease.address;
+                state.config.netmask = lease.netmask;
+                state.config.gateway = lease.gateway;
+                state.config.dns = lease.dns;
+                state.config.configured = lease.address != [0; 4];
+                state.dhcp_state = Some(DhcpState::Bound);
+                state.neighbor_ip = [0; 4];
+                state.neighbor_mac = [0; 6];
+            }
             crate::println!(
                 "DHCP bound: {}.{}.{}.{} gateway {}.{}.{}.{}",
-                message.address[0],
-                message.address[1],
-                message.address[2],
-                message.address[3],
-                state.config.gateway[0],
-                state.config.gateway[1],
-                state.config.gateway[2],
-                state.config.gateway[3]
+                lease.address[0],
+                lease.address[1],
+                lease.address[2],
+                lease.address[3],
+                lease.gateway[0],
+                lease.gateway[1],
+                lease.gateway[2],
+                lease.gateway[3]
             );
+            if lease.address != [0; 4] {
+                persist_lease(&lease);
+            }
         }
         (Some(DhcpState::Requesting), 6) | (Some(DhcpState::Discovering), 6) => {
             let mut state = STATE.lock();
@@ -1006,7 +1161,58 @@ mod tests {
         receive_ethernet, receive_udp_socket, receive_udp_socket_length, register_link,
         send_udp_socket_connected,
         send_udp_socket, unregister_link,
+        SavedLease, format_lease, format_ipv4, parse_ipv4, parse_lease,
     };
+
+    #[test]
+    fn lease_round_trips_through_text() {
+        let lease = SavedLease {
+            address: [192, 168, 1, 10],
+            netmask: [255, 255, 255, 0],
+            gateway: [192, 168, 1, 1],
+            dns: [1, 1, 1, 1],
+        };
+        let text = format_lease(&lease);
+        assert_eq!(parse_lease(&text), Some(lease));
+        assert!(text.contains("address=192.168.1.10"));
+        assert_eq!(format_ipv4([10, 0, 0, 2]), "10.0.0.2");
+    }
+
+    #[test]
+    fn lease_parser_rejects_incomplete_or_invalid_files() {
+        assert_eq!(parse_lease(""), None);
+        assert_eq!(
+            parse_lease("address=192.168.1.10\nnetmask=255.255.255.0\ngateway=192.168.1.1\n"),
+            None
+        );
+        assert_eq!(
+            parse_lease(
+                "address=999.1.1.1\nnetmask=255.255.255.0\ngateway=192.168.1.1\ndns=1.1.1.1\n"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_lease(
+                "address=192.168.1.10\nnetmask=255.255.255.0\ngateway=192.168.1.1\ndns=1.1.1.1\n"
+            ),
+            Some(SavedLease {
+                address: [192, 168, 1, 10],
+                netmask: [255, 255, 255, 0],
+                gateway: [192, 168, 1, 1],
+                dns: [1, 1, 1, 1],
+            })
+        );
+    }
+
+    #[test]
+    fn ipv4_parser_rejects_bad_octets() {
+        assert_eq!(parse_ipv4("192.168.1.1"), Some([192, 168, 1, 1]));
+        assert_eq!(parse_ipv4("192.168.1"), None);
+        assert_eq!(parse_ipv4("192.168.01.1"), None);
+        assert_eq!(parse_ipv4("256.1.1.1"), None);
+        assert_eq!(parse_ipv4("a.b.c.d"), None);
+        assert_eq!(parse_ipv4("..."), None);
+    }
     use alloc::collections::VecDeque;
     use alloc::sync::Arc;
     use spin::Mutex;

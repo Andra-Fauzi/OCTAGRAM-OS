@@ -91,6 +91,14 @@ tunggal seperti shell tidak menerima `EDEADLK`. EOF (`Ctrl-D` pada baris kosong)
 disimpan sebagai `eof_pending` sehingga `read()` mengembalikan 0 dan `poll`
 melaporkan siap.
 
+`poll`/`select` yang belum siap menyimpan `ProcessWait::PollWait` dengan deadline
+retry 1 ms. Sejak wait itu dibangunkan oleh perubahan isi pipe, input console,
+dan penulisan `eventfd` (`wake_poll_waiters`/`is_poll_wait`), scan ulang terjadi
+segera; deadline 1 ms tetap ada sebagai jaring pengaman untuk sumber lain
+(socket, timerfd). Setiap wait tanpa batas waktu mengosongkan `wait_deadline`
+lama, dan setiap pembangunanan wait membatalkan deadline-nya, sehingga proses
+tidak pernah terbangun oleh timeout yang sudah basi.
+
 ### Membuat dan mengakhiri proses
 
 - `fork` menyalin halaman user secara eager (tanpa copy-on-write). Kunci memori
@@ -131,9 +139,15 @@ mencabut semua kemampuan (`capabilities_for_uid`).
 
 Kemampuan yang didefinisikan: `CAP_VFS_WRITE`, `CAP_NETWORK`, `CAP_SYS_ADMIN`,
 `CAP_SCHED_NICE`. `capget` (144) membaca bitmask, `capset` (145) menulisnya dan
-membutuhkan `CAP_SYS_ADMIN`; bit di luar `CAP_ALL` ditolak `EINVAL`. **Semua ini
-baru metadata**: jalur VFS, jaringan, dan prioritas belum memeriksa bitmask.
-Header userspace-nya `sys/capability.h`, contoh `credential_demo`.
+membutuhkan `CAP_SYS_ADMIN`; bit di luar `CAP_ALL` ditolak `EINVAL`.
+
+Penegakan baru sebagian: `CAP_VFS_WRITE` diperlukan untuk `open` dengan niat tulis
+(`O_WRONLY`/`O_RDWR`/`O_CREAT`/`O_TRUNC`/`O_APPEND`), `write` ke file biasa,
+`mkdir`, `unlink`, `rmdir`, `unlinkat`, `rename`, `symlink`, `chmod`, dan
+`ftruncate`; `CAP_NETWORK` diperlukan untuk `socket()` AF_INET; `CAP_SCHED_NICE`
+untuk menaikkan prioritas task lain. Pelanggaran mengembalikan `EPERM`. Yang belum
+diperiksa: mount/device, akses console, dan descriptor yang sudah terbuka sebelum
+uid diturunkan. Header userspace-nya `sys/capability.h`, contoh `credential_demo`.
 
 ## Sinkronisasi dan futex
 

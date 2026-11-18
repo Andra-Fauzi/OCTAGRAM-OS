@@ -87,6 +87,7 @@ unsafe extern "C" fn kmain() -> ! {
     memory::init();
     fs::init();
     unsafe { drivers::initialize() };
+    network::restore_saved_lease();
 
     let lapic = arch::x86_64::apic::LAPIC
         .get()

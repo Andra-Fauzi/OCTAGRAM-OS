@@ -159,8 +159,14 @@ syscall `futex` (94). Kernel mendukung:
   `FUTEX_WAKE_BITSET`, dan `FUTEX_REQUEUE`;
 - flag private (`FUTEX_PRIVATE_FLAG`).
 
-Robust futex (daftar `FUTEX_OWNER_DIED`) belum ada; watchdog starvasi/idle sudah
-ada.
+Robust futex didukung di sisi kernel: `set_robust_list`/`get_robust_list`
+(146/147) menyimpan alamat `robust_list_head` per task (panjang wajib 24 byte).
+Saat task keluar, `release_robust_list()` menelusuri daftar (maksimum 64 entri,
+melewati `list_op_pending`) dan untuk setiap futex yang TID-nya masih dimiliki
+task itu menulis `FUTEX_OWNER_DIED`, mempertahankan `FUTEX_WAITERS`, melepas TID,
+lalu membangunkan waiter pada alamat tersebut. API libc seperti
+`pthread_mutexattr_setrobust` dan `EOWNERDEAD` belum ada, jadi program memakai
+syscall langsung lewat `octagram.h`.
 
 ## Batasan
 

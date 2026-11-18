@@ -598,6 +598,18 @@ static inline int64_t oct_capset(uint64_t pid, uint64_t mask)
     return oct_syscall2(145, pid, mask);
 }
 
+static inline int64_t oct_set_robust_list(uint64_t head, uint64_t length)
+{
+    return oct_syscall2(146, head, length);
+}
+
+static inline int64_t oct_get_robust_list(uint64_t pid, uint64_t *head,
+                                         uint64_t *length)
+{
+    return oct_syscall3(147, pid, (uint64_t)(uintptr_t)head,
+                        (uint64_t)(uintptr_t)length);
+}
+
 static inline int64_t oct_uname(struct oct_utsname *name)
 {
     return oct_syscall1(86, (uint64_t)(uintptr_t)name);

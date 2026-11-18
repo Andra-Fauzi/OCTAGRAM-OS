@@ -126,7 +126,11 @@ services, and a package/application ecosystem.
   - [x] Real `FUTEX_WAIT`/`FUTEX_WAKE` with LAPIC timeout handling
   - [x] `pthread_mutex`, condition variables, and semaphores built on futex
   - [x] `FUTEX_REQUEUE`, `FUTEX_WAIT_BITSET`, dan `FUTEX_WAKE_BITSET` (timeout absolut, `FUTEX_CLOCK_REALTIME`, uji host pencocokan bitset)
-  - [ ] Robust futex (daftar `FUTEX_OWNER_DIED` milik userspace)
+  - [x] Robust futex (daftar `FUTEX_OWNER_DIED` milik userspace)
+    - [x] Syscall `set_robust_list`/`get_robust_list` (146/147) dan field per task (panjang head wajib 24 byte)
+    - [x] `release_robust_list()` saat task keluar menandai `FUTEX_OWNER_DIED`, melepas TID, membangunkan waiter; batas 64 entri dan melewati `list_op_pending`
+    - [x] Uji host `robust_list_marks_only_the_owner_as_dead`
+    - [ ] API libc `pthread_mutexattr_setrobust`/`pthread_mutex_consistent` dengan `EOWNERDEAD`
 - [x] Add kernel task fairness and watchdog monitoring
   - [x] Fairness lewat aging: setiap proses runnable yang dilewati mendapat `age` +1 dan prioritas efektif naik sampai 39 level
   - [x] Snapshot `scheduler_status()` dan shell `sched` menampilkan PID/TID, nice, policy, `AGE`, serta status runnable/waiting/exited

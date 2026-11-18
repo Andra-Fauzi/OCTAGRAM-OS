@@ -148,6 +148,8 @@ menyediakan inline wrappers.
 | 143 | `setegid` | `RDI=gid` | 0, `-EPERM` |
 | 144 | `capget` | `RDI=pid` (0 = pemanggil), `RSI=uint64_t*` | 0 setelah menulis bitmask, `-EFAULT`, `-ESRCH` |
 | 145 | `capset` | `RDI=pid`, `RSI=mask` | 0, `-EPERM` tanpa `CAP_SYS_ADMIN`, `-EINVAL`, `-ESRCH` |
+| 146 | `set_robust_list` | `RDI=head`, `RSI=length` (wajib 24) | 0, `-EINVAL`, `-EFAULT` |
+| 147 | `get_robust_list` | `RDI=tid` (0 = pemanggil), `RSI=head*`, `RDX=length*` | 0, `-EFAULT`, `-ESRCH` |
 
 Nomor 10, 15, 18, 19, 23, 24, 26, dan 49 sudah dicabut dan tetap
 dicadangkan agar nomor syscall berikutnya tidak bergeser; pemanggilannya

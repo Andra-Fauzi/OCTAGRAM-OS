@@ -188,6 +188,8 @@ const SYSCALL_SETGID: u64 = 142;
 const SYSCALL_SETEGID: u64 = 143;
 const SYSCALL_CAPGET: u64 = 144;
 const SYSCALL_CAPSET: u64 = 145;
+const SYSCALL_SET_ROBUST_LIST: u64 = 146;
+const SYSCALL_GET_ROBUST_LIST: u64 = 147;
 const PRIO_PROCESS: u64 = 0;
 const PRIO_PGRP: u64 = 1;
 const PRIO_USER: u64 = 2;
@@ -1392,6 +1394,9 @@ struct ScheduledProcess {
     priority: i32,
     /// Kebijakan penjadwalan; saat ini selalu `SCHED_OTHER`.
     policy: u32,
+    /// `set_robust_list`: alamat `robust_list_head` milik task ini (0 = tidak ada).
+    robust_list: u64,
+    robust_list_length: u64,
     /// Kredensial proses (diwarisi anak/thread, dibagi semua thread satu pid).
     uid: u32,
     euid: u32,
@@ -1978,6 +1983,8 @@ fn run_loaded_processes(
             wait_status_pointer: 0,
             priority: 0,
             policy: SCHED_OTHER as u32,
+            robust_list: 0,
+            robust_list_length: 0,
             uid: 0,
             euid: 0,
             gid: 0,
@@ -2854,6 +2861,8 @@ fn dispatch_syscall(
         SYSCALL_SETEGID => set_credential(CredentialField::Egid, arg1),
         SYSCALL_CAPGET => syscall_capget(arg1, arg2),
         SYSCALL_CAPSET => syscall_capset(arg1, arg2),
+        SYSCALL_SET_ROBUST_LIST => syscall_set_robust_list(arg1, arg2),
+        SYSCALL_GET_ROBUST_LIST => syscall_get_robust_list(arg1, arg2, arg3),
         SYSCALL_PREAD => syscall_pread(arg1, arg2, arg3, arg4),
         SYSCALL_PWRITE => syscall_pwrite(arg1, arg2, arg3, arg4),
         SYSCALL_WRITEV => syscall_writev(arg1, arg2, arg3),
@@ -3038,6 +3047,8 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         wait_status_pointer: 0,
         priority: inherited_priority,
         policy: inherited_policy,
+        robust_list: 0,
+        robust_list_length: 0,
         uid: inherited_credentials.0,
         euid: inherited_credentials.1,
         gid: inherited_credentials.2,
@@ -3365,6 +3376,8 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
         wait_status_pointer: 0,
         priority: inherited_priority,
         policy: inherited_policy,
+        robust_list: 0,
+        robust_list_length: 0,
         uid: inherited_credentials.0,
         euid: inherited_credentials.1,
         gid: inherited_credentials.2,
@@ -3796,6 +3809,12 @@ const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
 const FUTEX_PRIVATE_FLAG: u64 = 128;
 const FUTEX_CLOCK_REALTIME: u64 = 256;
 const FUTEX_OPERATION_MASK: u64 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+const FUTEX_WAITERS: u32 = 0x8000_0000;
+const FUTEX_OWNER_DIED: u32 = 0x4000_0000;
+const FUTEX_TID_MASK: u32 = 0x3FFF_FFFF;
+/// `struct robust_list_head`: `list.next`, `futex_offset` (i64), `list_op_pending`.
+const ROBUST_LIST_HEAD_LENGTH: u64 = 24;
+const MAX_ROBUST_LIST_ENTRIES: usize = 64;
 
 fn futex_deadline(timeout: u64) -> Result<Option<u64>, i32> {
     if timeout == 0 {
@@ -3993,6 +4012,16 @@ fn block_current_on_poll(frame: &mut InterruptFrame, deadline: u64) -> *mut Inte
 /// Bangunkan waiter futex pada `address` yang bit tunggunya beririsan.
 fn wake_futex_waiters(pid: u64, address: u64, wake_bits: u32, limit: u64) -> u64 {
     let mut scheduler = USER_SCHEDULER.lock();
+    wake_futex_waiters_in_scheduler(&mut scheduler, pid, address, wake_bits, limit)
+}
+
+fn wake_futex_waiters_in_scheduler(
+    scheduler: &mut UserScheduler,
+    pid: u64,
+    address: u64,
+    wake_bits: u32,
+    limit: u64,
+) -> u64 {
     let mut woken = 0u64;
     for waiting in &mut scheduler.processes {
         if woken >= limit {
@@ -4013,6 +4042,112 @@ fn wake_futex_waiters(pid: u64, address: u64, wake_bits: u32, limit: u64) -> u64
         }
     }
     woken
+}
+
+/// Kata futex milik `tid` setelah pemiliknya keluar: TID dilepas dan
+/// `FUTEX_OWNER_DIED` diset, sementara bit `FUTEX_WAITERS` dipertahankan.
+/// `None` berarti futex itu bukan milik thread yang keluar.
+fn robust_word_after_exit(word: u32, tid: u32) -> Option<u32> {
+    if tid == 0 || word & FUTEX_TID_MASK != tid & FUTEX_TID_MASK {
+        return None;
+    }
+    Some((word & FUTEX_WAITERS) | FUTEX_OWNER_DIED)
+}
+
+/// Telusuri `robust_list` task yang sedang keluar dan tandai futex miliknya,
+/// lalu bangunkan waiter-nya. Dipanggil dengan USER_SCHEDULER terkunci dan
+/// address space task yang keluar masih aktif.
+fn release_robust_list(scheduler: &mut UserScheduler, index: usize) {
+    let (head, length, tid, pid) = {
+        let process = &scheduler.processes[index];
+        (
+            process.robust_list,
+            process.robust_list_length,
+            process.tid as u32,
+            process.pid,
+        )
+    };
+    if head == 0 || length != ROBUST_LIST_HEAD_LENGTH {
+        return;
+    }
+    if paging::validate_user_range(head, ROBUST_LIST_HEAD_LENGTH as usize, false).is_err() {
+        return;
+    }
+    let next_head = unsafe { (head as *const u64).read_unaligned() };
+    let futex_offset = unsafe { ((head + 8) as *const i64).read_unaligned() };
+    let pending = unsafe { ((head + 16) as *const u64).read_unaligned() };
+    let mut entry = next_head;
+    for _ in 0..MAX_ROBUST_LIST_ENTRIES {
+        if entry == 0 || entry == head {
+            return;
+        }
+        if paging::validate_user_range(entry, core::mem::size_of::<u64>(), false).is_err() {
+            return;
+        }
+        let next_entry = unsafe { (entry as *const u64).read_unaligned() };
+        if entry != pending {
+            let address = (entry as i64)
+                .checked_add(futex_offset)
+                .and_then(|address| u64::try_from(address).ok());
+            if let Some(address) = address
+                && paging::validate_user_range(address, core::mem::size_of::<u32>(), true).is_ok()
+            {
+                let word = unsafe { (address as *const u32).read_unaligned() };
+                if let Some(new_word) = robust_word_after_exit(word, tid) {
+                    unsafe { (address as *mut u32).write_unaligned(new_word) };
+                    wake_futex_waiters_in_scheduler(
+                        scheduler,
+                        pid,
+                        address,
+                        FUTEX_BITSET_MATCH_ANY,
+                        u64::MAX,
+                    );
+                }
+            }
+        }
+        entry = next_entry;
+    }
+}
+
+fn syscall_set_robust_list(head: u64, length: u64) -> Result<u64, i32> {
+    if length != ROBUST_LIST_HEAD_LENGTH {
+        return Err(EINVAL);
+    }
+    if head != 0 {
+        paging::validate_user_range(head, ROBUST_LIST_HEAD_LENGTH as usize, true)
+            .map_err(|_| EFAULT)?;
+    }
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    let process = scheduler.processes.get_mut(current).ok_or(EINTR)?;
+    process.robust_list = head;
+    process.robust_list_length = length;
+    Ok(0)
+}
+
+fn syscall_get_robust_list(
+    pid: u64,
+    head_address: u64,
+    length_address: u64,
+) -> Result<u64, i32> {
+    let scheduler = USER_SCHEDULER.lock();
+    let pid = if pid == 0 {
+        scheduler
+            .processes
+            .get(scheduler.current)
+            .map(|process| process.tid)
+            .ok_or(EINTR)?
+    } else {
+        pid
+    };
+    let Some(process) = scheduler.processes.iter().find(|process| process.tid == pid) else {
+        return Err(ESRCH);
+    };
+    let (head, length) = (process.robust_list, process.robust_list_length);
+    drop(scheduler);
+    write_user_u64(head_address, head)?;
+    write_user_u64(length_address, length)?;
+    Ok(0)
 }
 
 /// Bangunkan `wake_limit` waiter lalu pindahkan sisanya ke `target`.
@@ -8151,6 +8286,9 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
     if scheduler.active && !scheduler.processes.is_empty() {
         let current = scheduler.current;
         if current < scheduler.processes.len() {
+            // Robust futex: tandai futex milik task ini sebelum address space-nya
+            // dilepas, dengan address space-nya masih aktif.
+            release_robust_list(&mut scheduler, current);
             let child_pid = scheduler.processes[current].pid;
             let parent_pid = scheduler.processes[current].parent_pid;
             for (index, process) in scheduler.processes.iter_mut().enumerate() {
@@ -8526,7 +8664,8 @@ mod tests {
     use super::{
         EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPERM,
         CAP_NETWORK, CAP_VFS_WRITE, EPIPE, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
-        ProcessWait, capability_present, is_poll_wait,
+        ProcessWait, capability_present, is_poll_wait, robust_word_after_exit,
+        FUTEX_OWNER_DIED, FUTEX_WAITERS,
         effective_priority_target, priority_change_allowed, priority_target_matches,
         SCHED_OTHER, ElfError,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
@@ -9082,6 +9221,20 @@ mod tests {
             ),
             Some(1)
         );
+    }
+
+    #[test]
+    fn robust_list_marks_only_the_owner_as_dead() {
+        let tid = 7;
+        assert_eq!(robust_word_after_exit(7, tid), Some(FUTEX_OWNER_DIED));
+        assert_eq!(
+            robust_word_after_exit(7 | FUTEX_WAITERS, tid),
+            Some(FUTEX_WAITERS | FUTEX_OWNER_DIED)
+        );
+        assert_eq!(robust_word_after_exit(FUTEX_OWNER_DIED, tid), None);
+        assert_eq!(robust_word_after_exit(0, tid), None);
+        assert_eq!(robust_word_after_exit(8, tid), None);
+        assert_eq!(robust_word_after_exit(7, 0), None);
     }
 
     #[test]

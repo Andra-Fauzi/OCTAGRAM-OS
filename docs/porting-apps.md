@@ -36,8 +36,48 @@ resolusi simbol, serta relocation.
 Jalankan `run /bin/thread-demo` untuk menguji thread preemptive dan TLS.
 Shared library dicari di `/lib`; executable dan library dapat memakai SysV
 atau GNU ELF hash. Loader menangani relocation x86_64 `RELATIVE`, `GLOB_DAT`,
-`JUMP_SLOT`, `64`, `PC32`, `32`, dan `32S`. PIE saat ini memakai load bias
-tetap; ASLR belum tersedia.
+`JUMP_SLOT`, `64`, `PC32`, `32`, `32S`, dan `COPY`; simbol weak yang tidak
+terdefinisi diselesaikan sebagai 0. Symbol versioning didukung: loader membaca
+`DT_VERSYM`, `DT_VERDEF`, dan `DT_VERNEED`, lalu memilih definisi yang cocok
+dengan versi yang diminta (`simbol@VERSI`) atau versi default (`simbol@@VERSI`)
+untuk referensi tanpa versi. PIE memakai load bias acak dari kernel (`0x4000_0000`–`0x7000_0000`, kelipatan
+halaman), dan shared library mengikuti kursor mmap berentropi (hingga 128
+halaman) sehingga alamat muat berbeda tiap eksekusi. Puncak stack user juga
+digeser 0–63 halaman per eksekusi, dan heap tumbuh dari cursor `mmap` yang juga
+ber-entropi (tidak ada heap image beralamat tetap). Interpreter dinamis masih
+di alamat tetap. Jalankan `run /bin/aslr-demo` dua kali untuk melihat perbedaan
+alamat `main`, fungsi library, `mmap`, heap, dan variabel stack.
+
+Pemuatan modul saat runtime tersedia lewat `<dlfcn.h>`: `dlopen` mencari
+library di `LD_LIBRARY_PATH` lalu `/lib`, memetakan dan merelokasinya,
+menjalankan initializer, dan memakai ulang library yang sudah dimuat (berdasarkan
+nama yang diminta). `dlsym` mencari simbol pada handle hasil `dlopen`, pada
+seluruh objek yang dimuat dengan `RTLD_DEFAULT`, atau pada objek setelah
+pemanggil dengan `RTLD_NEXT` (objek pemanggil dikenali dari alamat
+kembalinya). `dlerror` mengembalikan pesan terakhir, dan `dlclose` menurunkan hitungan
+referensi lalu menjalankan destructor library serta `munmap` seluruh rentang
+petanya saat referensi habis. Pointer simbol yang diperoleh sebelumnya menjadi
+tidak valid setelah unload, dan library lain yang sudah direlokasi ke simbol itu
+tidak diperbarui. Keempat fungsi libc bersifat weak agar stub
+`dlopen` milik TinyCC (`CONFIG_TCC_STATIC`) tetap menang saat menautkan
+`tcc.elf`. Dependency `DT_NEEDED` library yang di-dlopen belum dimuat otomatis.
+
+Destructor didukung: `crt0` memanggil `exit()` setelah `main`, libc menjalankan
+handler `atexit` dan `__cxa_atexit` dari satu daftar terbalik (maksimal 64
+entri, argumen dan DSO dicatat), `__cxa_finalize(dso)` hanya menjalankan handler
+milik DSO tersebut dan mengosongkannya agar tidak berjalan dua kali, dan loader
+mendaftarkan `run_finalizers` lewat `atexit` sehingga `DT_FINI_ARRAY`/`DT_FINI`
+library berjalan setelah handler aplikasi — executable lebih dulu, lalu library
+dalam urutan muat terbalik. `_exit` dan `abort` tetap melewati handler.
+
+Contoh `versioned_demo.elf` memakai library dengan version script
+`ldso/dynlib.versions`; jalankan `run /bin/versioned-demo` untuk menguji dua
+versi dari satu nama simbol. Executable non-PIC `ET_EXEC` yang mengakses data
+dari shared library memakai relokasi `COPY`: loader menyalin nilai awal dari library ke salinan milik
+executable, dan simbol data itu diekspor executable sehingga referensi library
+menunjuk salinan yang sama. Contoh `make -C user dynamic` juga membangun
+`copy_reloc_demo.elf`; jalankan `run /bin/copy-reloc-demo` untuk menguji salinan
+data dua arah dan simbol weak yang tidak tersedia.
 
 Untuk membuat shared object gunakan objek PIC dan GNU hash, lalu tautkan
 executable PIE dengan interpreter OCTAGRAM:
@@ -63,9 +103,10 @@ task terjadwal dibatasi 16. Atribut thread selain default belum didukung.
 Descriptor, cwd, dan environment disalin saat thread dibuat, sehingga perubahan
 tabel descriptor tidak terlihat otomatis oleh thread lain. TLS pada shared
 object dan TLS relocation pada dynamic loader belum didukung. Ini fondasi,
-bukan `ld.so` Linux penuh: symbol versioning, lazy
-binding, constructor/destructor, `COPY` relocation, dan pencarian library di
-luar `/lib` belum didukung. Binary tetap harus menggunakan syscall dan runtime
+bukan `ld.so` Linux penuh: lazy binding dan pencarian library di luar `/lib`
+belum didukung. Saat `dlclose` melepas library, loader menjalankan
+`__cxa_finalize` untuk `__dso_handle` library itu agar destructor C++ ikut
+berjalan. Binary tetap harus menggunakan syscall dan runtime
 OCTAGRAM, bukan Linux ABI atau glibc.
 Pada build statis, `errno` dan allocator free-list memakai TLS per thread;
 `liboctagram.so` saat ini masih memakai `errno` global.
@@ -98,7 +139,10 @@ Pada build statis, `errno` dan allocator free-list memakai TLS per thread;
    `oct_udp_recvfrom`) di `octagram.h`. API socket masih terbatas: tidak ada
    IPv6, UDP POSIX, atau mode nonblocking. Operasi socket blocking mengulang
    `-EAGAIN` setelah `oct_yield()`. `oct_dns_server()` mengambil alamat DNS dari
-   DHCP; runtime Rust menyediakan `dns_lookup()` untuk hostname dengan hasil
+   DHCP; libc C memakai alamat itu untuk resolver A-record dan PTR IPv4 dengan
+   cache TTL (8 entri per arah, timeout 2 detik) yang dipakai
+   `getaddrinfo`/`gethostbyname`/`gethostbyaddr`/`getnameinfo`, sedangkan
+   runtime Rust menyediakan `dns_lookup()` untuk hostname dengan hasil
    IPv4 A-record. Dynamic executable dengan `PT_INTERP` dapat memakai loader
    terbatas yang dijelaskan di atas.
 8. `clock_gettime(CLOCK_REALTIME)` dan `time()` membaca RTC dengan resolusi

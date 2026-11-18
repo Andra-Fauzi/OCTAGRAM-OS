@@ -2,6 +2,7 @@
 .global _start
 .type _start,@function
 .weak __oct_tls_initialize
+.weak exit
 _start:
     xor %rbp, %rbp
     mov (%rsp), %rdi
@@ -23,8 +24,16 @@ _start:
     pop %rdi
     call main
     mov %rax, %rdi
+    mov exit@GOTPCREL(%rip), %rax
+    test %rax, %rax
+    jz .Ldirect_exit
+    call *%rax
+.Ldirect_exit:
     xor %rax, %rax
     int $0x80
+2:
+    pause
+    jmp 2b
 .Lstartup_failure:
     mov $127, %rdi
     xor %rax, %rax

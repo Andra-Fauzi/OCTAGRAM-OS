@@ -2,9 +2,12 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <limits.h>
+#include <pwd.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <spawn.h>
@@ -78,8 +81,10 @@ FILE *stderr = &standard_error;
 char **environ;
 #if defined(OCTAGRAM_TLS_ERRNO) && !defined(OCTAGRAM_SHARED)
 __thread int errno;
+__thread int h_errno;
 #else
 int errno;
+int h_errno;
 #endif
 
 extern unsigned char __oct_tls_start[] __attribute__((weak));
@@ -166,9 +171,169 @@ in_addr_t inet_addr(const char *text)
     return htonl(result);
 }
 
+/* Parse alamat IPv6 (grup heksadesimal dengan satu "::"). */
+static int oct_parse_ipv6(const char *text, uint8_t address[16])
+{
+    if (text == NULL || address == NULL) {
+        return -1;
+    }
+    uint16_t groups[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    int count = 0;
+    int compressed = -1;
+    const char *cursor = text;
+    if (*cursor == ':') {
+        if (cursor[1] != ':') {
+            return -1;
+        }
+        compressed = 0;
+        cursor += 2;
+        if (*cursor == '\0') {
+            memset(address, 0, 16);
+            return 0;
+        }
+    }
+    while (*cursor != '\0') {
+        if (count >= 8) {
+            return -1;
+        }
+        unsigned value = 0;
+        int digits = 0;
+        for (;;) {
+            char character = *cursor;
+            unsigned digit;
+            if (character >= '0' && character <= '9') {
+                digit = (unsigned)(character - '0');
+            } else if (character >= 'a' && character <= 'f') {
+                digit = (unsigned)(character - 'a' + 10);
+            } else if (character >= 'A' && character <= 'F') {
+                digit = (unsigned)(character - 'A' + 10);
+            } else {
+                break;
+            }
+            value = (value << 4) | digit;
+            if (value > 0xffffu) {
+                return -1;
+            }
+            ++digits;
+            ++cursor;
+            if (digits > 4) {
+                return -1;
+            }
+        }
+        if (digits == 0) {
+            return -1;
+        }
+        groups[count++] = (uint16_t)value;
+        if (*cursor == '\0') {
+            break;
+        }
+        if (*cursor != ':') {
+            return -1;
+        }
+        ++cursor;
+        if (*cursor == ':') {
+            if (compressed >= 0) {
+                return -1;
+            }
+            compressed = count;
+            ++cursor;
+            if (*cursor == '\0') {
+                break;
+            }
+        } else if (*cursor == '\0') {
+            return -1;
+        }
+    }
+    if (compressed >= 0) {
+        int missing = 8 - count;
+        if (missing <= 0) {
+            return -1;
+        }
+        for (int index = count - 1; index >= compressed; --index) {
+            groups[index + missing] = groups[index];
+        }
+        for (int index = 0; index < missing; ++index) {
+            groups[compressed + index] = 0;
+        }
+        count = 8;
+    }
+    if (count != 8) {
+        return -1;
+    }
+    for (int index = 0; index < 8; ++index) {
+        address[index * 2] = (uint8_t)(groups[index] >> 8);
+        address[index * 2 + 1] = (uint8_t)(groups[index] & 0xff);
+    }
+    return 0;
+}
+
+/* Format alamat IPv6 dengan kompresi nol terpanjang (RFC 5952). */
+static int oct_format_ipv6(const uint8_t address[16], char *buffer, size_t size)
+{
+    uint16_t groups[8];
+    for (int index = 0; index < 8; ++index) {
+        groups[index] = (uint16_t)(((uint16_t)address[index * 2] << 8)
+                                   | address[index * 2 + 1]);
+    }
+    int best_start = -1;
+    int best_length = 0;
+    for (int index = 0; index < 8;) {
+        if (groups[index] != 0) {
+            ++index;
+            continue;
+        }
+        int start = index;
+        while (index < 8 && groups[index] == 0) {
+            ++index;
+        }
+        if (index - start > best_length) {
+            best_length = index - start;
+            best_start = start;
+        }
+    }
+    if (best_length < 2) {
+        best_start = -1;
+    }
+    size_t written = 0;
+    for (int index = 0; index < 8; ++index) {
+        if (best_start == index) {
+            if (written + 2 >= size) {
+                return -1;
+            }
+            buffer[written++] = ':';
+            buffer[written++] = ':';
+            index += best_length - 1;
+            continue;
+        }
+        if (written != 0 && buffer[written - 1] != ':') {
+            if (written + 1 >= size) {
+                return -1;
+            }
+            buffer[written++] = ':';
+        }
+        int length = snprintf(buffer + written, size - written, "%x",
+                              (unsigned)groups[index]);
+        if (length < 0 || (size_t)length >= size - written) {
+            return -1;
+        }
+        written += (size_t)length;
+    }
+    if (written >= size) {
+        return -1;
+    }
+    buffer[written] = '\0';
+    return 0;
+}
+
 int inet_pton(int family, const char *text, void *address)
 {
-    if (family != AF_INET || text == NULL || address == NULL) {
+    if (text == NULL || address == NULL) {
+        return -1;
+    }
+    if (family == AF_INET6) {
+        return oct_parse_ipv6(text, (uint8_t *)address) == 0 ? 1 : 0;
+    }
+    if (family != AF_INET) {
         return -1;
     }
     in_addr_t value = inet_addr(text);
@@ -199,8 +364,19 @@ char *inet_ntoa(struct in_addr address)
 const char *inet_ntop(int family, const void *address,
                       char *buffer, unsigned int length)
 {
-    if (family != AF_INET || address == NULL || buffer == NULL ||
-        length < 16) {
+    if (address == NULL || buffer == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (family == AF_INET6) {
+        if (length < 46
+            || oct_format_ipv6((const uint8_t *)address, buffer, length) != 0) {
+            errno = EINVAL;
+            return NULL;
+        }
+        return buffer;
+    }
+    if (family != AF_INET || length < 16) {
         errno = EINVAL;
         return NULL;
     }
@@ -211,6 +387,883 @@ const char *inet_ntop(int family, const void *address,
     return buffer;
 }
 
+static int oct_format_ipv4(in_addr_t address, char *buffer, size_t size)
+{
+    uint32_t host = ntohl(address);
+    int length = snprintf(buffer, size, "%u.%u.%u.%u",
+                          (unsigned)((host >> 24) & 0xff),
+                          (unsigned)((host >> 16) & 0xff),
+                          (unsigned)((host >> 8) & 0xff),
+                          (unsigned)(host & 0xff));
+    if (length < 0 || (size_t)length >= size) {
+        return -1;
+    }
+    return 0;
+}
+
+static int oct_parse_numeric_service(const char *service, unsigned short *port)
+{
+    if (service == NULL || service[0] == '\0') {
+        *port = 0;
+        return 0;
+    }
+    unsigned int parsed = 0;
+    for (const char *cursor = service; *cursor != '\0'; ++cursor) {
+        if (*cursor < '0' || *cursor > '9') {
+            return -1;
+        }
+        parsed = parsed * 10u + (unsigned int)(*cursor - '0');
+        if (parsed > 65535u) {
+            return -1;
+        }
+    }
+    *port = (unsigned short)parsed;
+    return 0;
+}
+
+#define OCT_DNS_CACHE_ENTRIES 8
+#define OCT_DNS_MAX_PACKET 512
+#define OCT_DNS_TIMEOUT_MILLISECONDS 2000
+#define OCT_DNS_DEFAULT_TTL 60
+#define OCT_DNS_MAX_TTL 86400
+#define OCT_DNS_MAX_CANON_NAME 128
+
+typedef struct {
+    char name[128];
+    in_addr_t address;
+    uint64_t expires;
+    int used;
+} oct_dns_cache_entry;
+
+static oct_dns_cache_entry oct_dns_cache[OCT_DNS_CACHE_ENTRIES];
+static unsigned int oct_dns_query_identifier;
+static unsigned int oct_dns_cache_cursor;
+
+static int oct_dns_name_equal(const char *left, const char *right)
+{
+    for (;;) {
+        unsigned char a = (unsigned char)*left++;
+        unsigned char b = (unsigned char)*right++;
+        if (tolower(a) != tolower(b)) {
+            return 0;
+        }
+        if (a == 0) {
+            return 1;
+        }
+    }
+}
+
+static int oct_dns_cache_lookup(const char *name, in_addr_t *address)
+{
+    uint64_t now = (uint64_t)time(NULL);
+    for (int index = 0; index < OCT_DNS_CACHE_ENTRIES; ++index) {
+        oct_dns_cache_entry *entry = &oct_dns_cache[index];
+        if (!entry->used) {
+            continue;
+        }
+        if (entry->expires <= now) {
+            entry->used = 0;
+            continue;
+        }
+        if (oct_dns_name_equal(entry->name, name)) {
+            *address = entry->address;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static void oct_dns_cache_store(const char *name, in_addr_t address,
+                                uint32_t ttl)
+{
+    if (ttl < OCT_DNS_DEFAULT_TTL) {
+        ttl = OCT_DNS_DEFAULT_TTL;
+    }
+    if (ttl > OCT_DNS_MAX_TTL) {
+        ttl = OCT_DNS_MAX_TTL;
+    }
+    uint64_t now = (uint64_t)time(NULL);
+    int slot = -1;
+    for (int index = 0; index < OCT_DNS_CACHE_ENTRIES; ++index) {
+        oct_dns_cache_entry *entry = &oct_dns_cache[index];
+        if (entry->used && entry->expires > now
+            && oct_dns_name_equal(entry->name, name)) {
+            slot = index;
+            break;
+        }
+        if (slot < 0 && (!entry->used || entry->expires <= now)) {
+            slot = index;
+        }
+    }
+    if (slot < 0) {
+        slot = (int)(oct_dns_cache_cursor++ % OCT_DNS_CACHE_ENTRIES);
+    }
+    oct_dns_cache_entry *entry = &oct_dns_cache[slot];
+    size_t name_length = strlen(name);
+    memcpy(entry->name, name, name_length + 1);
+    entry->address = address;
+    entry->expires = now + ttl;
+    entry->used = 1;
+}
+
+static int oct_dns_encode_name(const char *name, uint8_t *packet,
+                               size_t capacity, size_t *length)
+{
+    size_t position = 0;
+    while (name[position] != '\0') {
+        size_t label_start = position;
+        while (name[position] != '\0' && name[position] != '.') {
+            ++position;
+        }
+        size_t label_length = position - label_start;
+        if (label_length == 0 || label_length > 63
+            || *length + 1 + label_length >= capacity) {
+            return -1;
+        }
+        packet[*length] = (uint8_t)label_length;
+        ++*length;
+        memcpy(packet + *length, name + label_start, label_length);
+        *length += label_length;
+        if (name[position] == '.') {
+            ++position;
+            if (name[position] == '\0') {
+                return -1;
+            }
+        }
+    }
+    if (*length + 1 >= capacity) {
+        return -1;
+    }
+    packet[*length] = 0;
+    ++*length;
+    return 0;
+}
+
+static int oct_dns_skip_name(const uint8_t *packet, size_t length,
+                             size_t *offset)
+{
+    while (*offset < length) {
+        uint8_t label = packet[*offset];
+        if ((label & 0xc0) == 0xc0) {
+            *offset += 2;
+            return *offset <= length ? 0 : -1;
+        }
+        if ((label & 0xc0) != 0) {
+            return -1;
+        }
+        ++*offset;
+        if (label == 0) {
+            return 0;
+        }
+        if (*offset + label > length) {
+            return -1;
+        }
+        *offset += label;
+    }
+    return -1;
+}
+
+/// Parse jawaban DNS untuk record `qtype` (1 = IPv4, 28 = IPv6) dan salin
+/// alamatnya. Dipakai juga oleh uji host.
+int oct_dns_parse_address(const uint8_t *packet, size_t length,
+                          uint16_t identifier, uint16_t qtype,
+                          uint8_t *address, size_t address_capacity,
+                          uint32_t *ttl)
+{
+    if (address == NULL || ttl == NULL) {
+        return -1;
+    }
+    if (length < 12) {
+        return -1;
+    }
+    if ((((uint16_t)packet[0] << 8) | packet[1]) != identifier) {
+        return -1;
+    }
+    uint16_t flags = (uint16_t)(((uint16_t)packet[2] << 8) | packet[3]);
+    if ((flags & 0x8000) == 0 || (flags & 0x000f) != 0) {
+        return -1;
+    }
+    uint16_t questions = (uint16_t)(((uint16_t)packet[4] << 8) | packet[5]);
+    uint16_t answers = (uint16_t)(((uint16_t)packet[6] << 8) | packet[7]);
+    size_t offset = 12;
+    for (uint16_t question = 0; question < questions; ++question) {
+        if (oct_dns_skip_name(packet, length, &offset) != 0
+            || offset + 4 > length) {
+            return -1;
+        }
+        offset += 4;
+    }
+    for (uint16_t answer = 0; answer < answers; ++answer) {
+        if (oct_dns_skip_name(packet, length, &offset) != 0
+            || offset + 10 > length) {
+            return -1;
+        }
+        uint16_t type = (uint16_t)(((uint16_t)packet[offset] << 8)
+                                   | packet[offset + 1]);
+        uint16_t class_value = (uint16_t)(((uint16_t)packet[offset + 2] << 8)
+                                          | packet[offset + 3]);
+        uint32_t record_ttl = ((uint32_t)packet[offset + 4] << 24)
+            | ((uint32_t)packet[offset + 5] << 16)
+            | ((uint32_t)packet[offset + 6] << 8)
+            | (uint32_t)packet[offset + 7];
+        uint16_t data_length = (uint16_t)(((uint16_t)packet[offset + 8] << 8)
+                                          | packet[offset + 9]);
+        offset += 10;
+        if (offset + data_length > length) {
+            return -1;
+        }
+        if (type == qtype && class_value == 1 && data_length == address_capacity) {
+            memcpy(address, packet + offset, address_capacity);
+            *ttl = record_ttl;
+            return 0;
+        }
+        offset += data_length;
+    }
+    return -1;
+}
+
+#define OCT_RESOLV_CONF_MAX 1024
+
+/// Parse baris `nameserver <IPv4>` pertama dari isi resolv.conf. Mengembalikan
+/// 1 bila alamat ditemukan, 0 bila tidak. Dipakai juga oleh uji host.
+int oct_resolv_parse_nameserver(const char *text, uint8_t server[4])
+{
+    if (text == NULL || server == NULL) {
+        return 0;
+    }
+    const char *cursor = text;
+    while (*cursor != '\0') {
+        const char key[] = "nameserver";
+        const size_t key_length = sizeof(key) - 1;
+        while (*cursor == ' ' || *cursor == '\t') {
+            ++cursor;
+        }
+        size_t matched = 0;
+        while (matched < key_length && cursor[matched] == key[matched]) {
+            ++matched;
+        }
+        if (matched == key_length
+            && (cursor[key_length] == ' ' || cursor[key_length] == '\t')) {
+            cursor += key_length;
+            while (*cursor == ' ' || *cursor == '\t') {
+                ++cursor;
+            }
+            unsigned values[4] = {0, 0, 0, 0};
+            int count = 0;
+            int valid = 1;
+            while (count < 4) {
+                unsigned value = 0;
+                int digits = 0;
+                while (*cursor >= '0' && *cursor <= '9') {
+                    value = value * 10u + (unsigned)(*cursor - '0');
+                    ++cursor;
+                    ++digits;
+                    if (value > 255u) {
+                        valid = 0;
+                        break;
+                    }
+                }
+                if (!valid || digits == 0) {
+                    valid = 0;
+                    break;
+                }
+                values[count++] = value;
+                if (count < 4) {
+                    if (*cursor != '.') {
+                        valid = 0;
+                        break;
+                    }
+                    ++cursor;
+                }
+            }
+            char terminator = *cursor;
+            if (valid && count == 4
+                && (terminator == '\0' || terminator == ' ' || terminator == '\t'
+                    || terminator == '\r' || terminator == '\n'
+                    || terminator == '#' || terminator == ';')) {
+                for (int index = 0; index < 4; ++index) {
+                    server[index] = (uint8_t)values[index];
+                }
+                return 1;
+            }
+        }
+        while (*cursor != '\0' && *cursor != '\n') {
+            ++cursor;
+        }
+        if (*cursor == '\n') {
+            ++cursor;
+        }
+    }
+    return 0;
+}
+
+static uint8_t oct_resolv_server[4];
+static int oct_resolv_state; /* 0 belum dibaca, 1 file dipakai, -1 fallback kernel */
+
+static int oct_resolv_read_server(uint8_t server[4])
+{
+    int descriptor = open("/etc/resolv.conf", O_RDONLY);
+    if (descriptor < 0) {
+        return 0;
+    }
+    char buffer[OCT_RESOLV_CONF_MAX + 1];
+    size_t total = 0;
+    while (total < OCT_RESOLV_CONF_MAX) {
+        ssize_t amount = read(descriptor, buffer + total,
+                              (size_t)(OCT_RESOLV_CONF_MAX - total));
+        if (amount < 0) {
+            close(descriptor);
+            return 0;
+        }
+        if (amount == 0) {
+            break;
+        }
+        total += (size_t)amount;
+    }
+    close(descriptor);
+    buffer[total] = '\0';
+    return oct_resolv_parse_nameserver(buffer, server);
+}
+
+/* Server DNS efektif: /etc/resolv.conf bila ada, lalu konfigurasi kernel. */
+static int oct_dns_resolver_server(uint8_t server[4])
+{
+    if (oct_resolv_state == 0) {
+        oct_resolv_state = oct_resolv_read_server(oct_resolv_server) ? 1 : -1;
+    }
+    if (oct_resolv_state == 1) {
+        for (int index = 0; index < 4; ++index) {
+            server[index] = oct_resolv_server[index];
+        }
+        return 0;
+    }
+    return oct_dns_server(server) < 0 ? -1 : 0;
+}
+
+/* Kirim satu query DNS (QTYPE bebas) dan ambil respons mentah. */
+static int oct_dns_query(const char *qname, uint16_t qtype,
+                         uint16_t *identifier_out,
+                         uint8_t *response, size_t *response_length)
+{
+    uint8_t server[4];
+    if (oct_dns_resolver_server(server) < 0) {
+        return -1;
+    }
+
+    uint8_t query[OCT_DNS_MAX_PACKET];
+    memset(query, 0, 12);
+    uint16_t identifier = (uint16_t)(++oct_dns_query_identifier & 0xffffu);
+    query[0] = (uint8_t)(identifier >> 8);
+    query[1] = (uint8_t)(identifier & 0xff);
+    query[2] = 0x01; /* recursion desired */
+    query[5] = 0x01; /* satu pertanyaan */
+    size_t length = 12;
+    if (oct_dns_encode_name(qname, query, sizeof(query) - 4, &length) != 0) {
+        return -1;
+    }
+    query[length++] = (uint8_t)(qtype >> 8);
+    query[length++] = (uint8_t)(qtype & 0xff);
+    query[length++] = 0; /* QCLASS IN */
+    query[length++] = 1;
+
+    int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (socket_fd < 0) {
+        return -1;
+    }
+    struct sockaddr_in destination;
+    memset(&destination, 0, sizeof(destination));
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons(53);
+    destination.sin_addr.s_addr =
+        htonl(((uint32_t)server[0] << 24) | ((uint32_t)server[1] << 16)
+              | ((uint32_t)server[2] << 8) | (uint32_t)server[3]);
+
+    ssize_t sent = sendto(socket_fd, query, length, 0,
+                          (const struct sockaddr *)&destination,
+                          sizeof(destination));
+    if (sent != (ssize_t)length) {
+        close(socket_fd);
+        return -1;
+    }
+
+    struct pollfd descriptor;
+    descriptor.fd = socket_fd;
+    descriptor.events = POLLIN;
+    descriptor.revents = 0;
+    if (poll(&descriptor, 1, OCT_DNS_TIMEOUT_MILLISECONDS) <= 0) {
+        close(socket_fd);
+        return -1;
+    }
+
+    ssize_t received = recvfrom(socket_fd, response, OCT_DNS_MAX_PACKET, 0,
+                                NULL, NULL);
+    close(socket_fd);
+    if (received < 12) {
+        return -1;
+    }
+    *identifier_out = identifier;
+    *response_length = (size_t)received;
+    return 0;
+}
+
+/* Baca nama pada record jawaban, termasuk pointer kompresi. */
+static int oct_dns_read_name(const uint8_t *packet, size_t length,
+                             size_t *offset, char *output, size_t capacity)
+{
+    size_t position = *offset;
+    size_t written = 0;
+    int jumped = 0;
+    int jumps = 0;
+    for (;;) {
+        if (position >= length) {
+            return -1;
+        }
+        uint8_t label = packet[position];
+        if ((label & 0xc0) == 0xc0) {
+            if (position + 1 >= length) {
+                return -1;
+            }
+            size_t target = (size_t)(((size_t)label & 0x3fu) << 8)
+                | packet[position + 1];
+            if (!jumped) {
+                *offset = position + 2;
+                jumped = 1;
+            }
+            if (target >= position || ++jumps > 8) {
+                return -1;
+            }
+            position = target;
+            continue;
+        }
+        if ((label & 0xc0) != 0) {
+            return -1;
+        }
+        ++position;
+        if (label == 0) {
+            if (!jumped) {
+                *offset = position;
+            }
+            if (written == 0) {
+                if (capacity < 1) {
+                    return -1;
+                }
+                output[0] = '\0';
+            } else {
+                output[written - 1] = '\0';
+            }
+            return 0;
+        }
+        if (position + label > length || written + label + 2 > capacity) {
+            return -1;
+        }
+        if (written != 0) {
+            output[written++] = '.';
+        }
+        memcpy(output + written, packet + position, label);
+        written += label;
+        output[written++] = '.';
+        position += label;
+    }
+}
+
+static int oct_dns_parse_ptr(const uint8_t *packet, size_t length,
+                             uint16_t identifier, char *name,
+                             size_t name_capacity, uint32_t *ttl)
+{
+    if (length < 12) {
+        return -1;
+    }
+    if ((((uint16_t)packet[0] << 8) | packet[1]) != identifier) {
+        return -1;
+    }
+    uint16_t flags = (uint16_t)(((uint16_t)packet[2] << 8) | packet[3]);
+    if ((flags & 0x8000) == 0 || (flags & 0x000f) != 0) {
+        return -1;
+    }
+    uint16_t questions = (uint16_t)(((uint16_t)packet[4] << 8) | packet[5]);
+    uint16_t answers = (uint16_t)(((uint16_t)packet[6] << 8) | packet[7]);
+    size_t offset = 12;
+    for (uint16_t question = 0; question < questions; ++question) {
+        if (oct_dns_skip_name(packet, length, &offset) != 0
+            || offset + 4 > length) {
+            return -1;
+        }
+        offset += 4;
+    }
+    for (uint16_t answer = 0; answer < answers; ++answer) {
+        if (oct_dns_skip_name(packet, length, &offset) != 0
+            || offset + 10 > length) {
+            return -1;
+        }
+        uint16_t type = (uint16_t)(((uint16_t)packet[offset] << 8)
+                                   | packet[offset + 1]);
+        uint16_t class_value = (uint16_t)(((uint16_t)packet[offset + 2] << 8)
+                                          | packet[offset + 3]);
+        uint32_t record_ttl = ((uint32_t)packet[offset + 4] << 24)
+            | ((uint32_t)packet[offset + 5] << 16)
+            | ((uint32_t)packet[offset + 6] << 8)
+            | (uint32_t)packet[offset + 7];
+        uint16_t data_length = (uint16_t)(((uint16_t)packet[offset + 8] << 8)
+                                          | packet[offset + 9]);
+        offset += 10;
+        if (offset + data_length > length) {
+            return -1;
+        }
+        if (type == 12 && class_value == 1) {
+            size_t name_offset = offset;
+            if (oct_dns_read_name(packet, length, &name_offset, name,
+                                  name_capacity) != 0) {
+                return -1;
+            }
+            *ttl = record_ttl;
+            return 0;
+        }
+        offset += data_length;
+    }
+    return -1;
+}
+
+typedef struct {
+    in_addr_t address;
+    char name[OCT_DNS_MAX_CANON_NAME];
+    uint64_t expires;
+    int used;
+} oct_dns_reverse_entry;
+
+static oct_dns_reverse_entry oct_dns_reverse_cache[OCT_DNS_CACHE_ENTRIES];
+static unsigned int oct_dns_reverse_cursor;
+
+static int oct_dns_reverse_cache_lookup(in_addr_t address, char *name,
+                                        size_t capacity)
+{
+    uint64_t now = (uint64_t)time(NULL);
+    for (int index = 0; index < OCT_DNS_CACHE_ENTRIES; ++index) {
+        oct_dns_reverse_entry *entry = &oct_dns_reverse_cache[index];
+        if (!entry->used) {
+            continue;
+        }
+        if (entry->expires <= now) {
+            entry->used = 0;
+            continue;
+        }
+        if (entry->address == address) {
+            size_t length = strlen(entry->name);
+            if (length >= capacity) {
+                return -1;
+            }
+            memcpy(name, entry->name, length + 1);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static void oct_dns_reverse_cache_store(in_addr_t address, const char *name,
+                                        uint32_t ttl)
+{
+    if (ttl < OCT_DNS_DEFAULT_TTL) {
+        ttl = OCT_DNS_DEFAULT_TTL;
+    }
+    if (ttl > OCT_DNS_MAX_TTL) {
+        ttl = OCT_DNS_MAX_TTL;
+    }
+    size_t name_length = strlen(name);
+    if (name_length >= sizeof(oct_dns_reverse_cache[0].name)) {
+        return;
+    }
+    uint64_t now = (uint64_t)time(NULL);
+    int slot = -1;
+    for (int index = 0; index < OCT_DNS_CACHE_ENTRIES; ++index) {
+        oct_dns_reverse_entry *entry = &oct_dns_reverse_cache[index];
+        if (entry->used && entry->expires > now && entry->address == address) {
+            slot = index;
+            break;
+        }
+        if (slot < 0 && (!entry->used || entry->expires <= now)) {
+            slot = index;
+        }
+    }
+    if (slot < 0) {
+        slot = (int)(oct_dns_reverse_cursor++ % OCT_DNS_CACHE_ENTRIES);
+    }
+    oct_dns_reverse_entry *entry = &oct_dns_reverse_cache[slot];
+    memcpy(entry->name, name, name_length + 1);
+    entry->address = address;
+    entry->expires = now + ttl;
+    entry->used = 1;
+}
+
+static int oct_dns_reverse_name(in_addr_t address, char *output,
+                                size_t capacity)
+{
+    const unsigned char *bytes = (const unsigned char *)&address;
+    int length = snprintf(output, capacity, "%u.%u.%u.%u.in-addr.arpa",
+                          (unsigned)bytes[3], (unsigned)bytes[2],
+                          (unsigned)bytes[1], (unsigned)bytes[0]);
+    return length < 0 || (size_t)length >= capacity ? -1 : 0;
+}
+
+/* Resolver PTR (reverse DNS) dengan cache TTL. */
+static int oct_dns_reverse(in_addr_t address, char *name, size_t capacity)
+{
+    if (capacity == 0) {
+        return -1;
+    }
+    if (oct_dns_reverse_cache_lookup(address, name, capacity) == 0) {
+        return 0;
+    }
+    char qname[64];
+    if (oct_dns_reverse_name(address, qname, sizeof(qname)) != 0) {
+        return -1;
+    }
+    uint8_t response[OCT_DNS_MAX_PACKET];
+    size_t response_length = 0;
+    uint16_t identifier = 0;
+    if (oct_dns_query(qname, 12, &identifier, response,
+                      &response_length) != 0) {
+        return -1;
+    }
+    char resolved[OCT_DNS_MAX_CANON_NAME];
+    uint32_t ttl = 0;
+    if (oct_dns_parse_ptr(response, response_length, identifier, resolved,
+                          sizeof(resolved), &ttl) != 0) {
+        return -1;
+    }
+    size_t resolved_length = strlen(resolved);
+    if (resolved_length == 0 || resolved_length >= capacity) {
+        return -1;
+    }
+    memcpy(name, resolved, resolved_length + 1);
+    oct_dns_reverse_cache_store(address, resolved, ttl);
+    return 0;
+}
+
+/* Resolver A-record IPv4 lewat UDP ke server DNS dari DHCP, dengan cache TTL. */
+static int oct_dns_lookup(const char *name, in_addr_t *address)
+{
+    if (name == NULL || name[0] == '\0'
+        || strlen(name) >= sizeof(oct_dns_cache[0].name)) {
+        return -1;
+    }
+    if (oct_dns_cache_lookup(name, address) == 0) {
+        return 0;
+    }
+
+    uint8_t response[OCT_DNS_MAX_PACKET];
+    size_t response_length = 0;
+    uint16_t identifier = 0;
+    if (oct_dns_query(name, 1, &identifier, response,
+                      &response_length) != 0) {
+        return -1;
+    }
+
+    uint32_t ttl = 0;
+    if (oct_dns_parse_address(response, response_length, identifier, 1,
+                              (uint8_t *)address, sizeof(*address), &ttl) != 0) {
+        return -1;
+    }
+    oct_dns_cache_store(name, *address, ttl);
+    return 0;
+}
+
+typedef struct {
+    char name[128];
+    uint8_t address[16];
+    uint64_t expires;
+    int used;
+} oct_dns_aaaa_cache_entry;
+
+static oct_dns_aaaa_cache_entry oct_dns_aaaa_cache[OCT_DNS_CACHE_ENTRIES];
+static unsigned int oct_dns_aaaa_cache_cursor;
+
+static int oct_dns_aaaa_cache_lookup(const char *name, uint8_t address[16])
+{
+    uint64_t now = (uint64_t)time(NULL);
+    for (int index = 0; index < OCT_DNS_CACHE_ENTRIES; ++index) {
+        oct_dns_aaaa_cache_entry *entry = &oct_dns_aaaa_cache[index];
+        if (!entry->used) {
+            continue;
+        }
+        if (entry->expires <= now) {
+            entry->used = 0;
+            continue;
+        }
+        if (oct_dns_name_equal(entry->name, name)) {
+            memcpy(address, entry->address, 16);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static void oct_dns_aaaa_cache_store(const char *name, const uint8_t address[16],
+                                     uint32_t ttl)
+{
+    if (ttl < OCT_DNS_DEFAULT_TTL) {
+        ttl = OCT_DNS_DEFAULT_TTL;
+    }
+    if (ttl > OCT_DNS_MAX_TTL) {
+        ttl = OCT_DNS_MAX_TTL;
+    }
+    uint64_t now = (uint64_t)time(NULL);
+    int slot = -1;
+    for (int index = 0; index < OCT_DNS_CACHE_ENTRIES; ++index) {
+        oct_dns_aaaa_cache_entry *entry = &oct_dns_aaaa_cache[index];
+        if (entry->used && entry->expires > now
+            && oct_dns_name_equal(entry->name, name)) {
+            slot = index;
+            break;
+        }
+        if (slot < 0 && (!entry->used || entry->expires <= now)) {
+            slot = index;
+        }
+    }
+    if (slot < 0) {
+        slot = (int)(oct_dns_aaaa_cache_cursor++ % OCT_DNS_CACHE_ENTRIES);
+    }
+    oct_dns_aaaa_cache_entry *entry = &oct_dns_aaaa_cache[slot];
+    size_t name_length = strlen(name);
+    memcpy(entry->name, name, name_length + 1);
+    memcpy(entry->address, address, 16);
+    entry->expires = now + ttl;
+    entry->used = 1;
+}
+
+/* Resolver AAAA (IPv6) dengan cache TTL terpisah dari cache A. */
+static int oct_dns_lookup_aaaa(const char *name, uint8_t address[16])
+{
+    if (name == NULL || name[0] == '\0'
+        || strlen(name) >= sizeof(oct_dns_aaaa_cache[0].name)) {
+        return -1;
+    }
+    if (oct_dns_aaaa_cache_lookup(name, address) == 0) {
+        return 0;
+    }
+    uint8_t response[OCT_DNS_MAX_PACKET];
+    size_t response_length = 0;
+    uint16_t identifier = 0;
+    if (oct_dns_query(name, 28, &identifier, response,
+                      &response_length) != 0) {
+        return -1;
+    }
+    uint32_t ttl = 0;
+    if (oct_dns_parse_address(response, response_length, identifier, 28,
+                              address, 16, &ttl) != 0) {
+        return -1;
+    }
+    oct_dns_aaaa_cache_store(name, address, ttl);
+    return 0;
+}
+
+/* Bangun satu entri addrinfo untuk keluarga tertentu. */
+static int oct_addrinfo_entry(int family, const char *node, unsigned short port,
+                              int flags, int socktype, int protocol,
+                              struct addrinfo **output)
+{
+    *output = NULL;
+    char canonical[OCT_DNS_MAX_CANON_NAME];
+    canonical[0] = '\0';
+    if (node != NULL && strlen(node) >= sizeof(canonical)) {
+        return EAI_NONAME;
+    }
+    struct addrinfo *info = calloc(1, sizeof(*info));
+    if (info == NULL) {
+        return EAI_MEMORY;
+    }
+    info->ai_flags = flags;
+    info->ai_family = family;
+    info->ai_socktype = socktype;
+    info->ai_protocol = protocol;
+
+    if (family == AF_INET) {
+        in_addr_t address;
+        if (node == NULL) {
+            /* Tanpa AI_PASSIVE hasilkan alamat loopback untuk klien. */
+            address = (flags & AI_PASSIVE) != 0 ? INADDR_ANY : INADDR_LOOPBACK;
+        } else {
+            if (strchr(node, ':') != NULL) {
+                free(info);
+                return EAI_NONAME;
+            }
+            address = inet_addr(node);
+            if (address == (in_addr_t)-1) {
+                if ((flags & AI_NUMERICHOST) != 0
+                    || oct_dns_lookup(node, &address) != 0) {
+                    free(info);
+                    return EAI_NONAME;
+                }
+            }
+        }
+        struct sockaddr_in *ipv4 = calloc(1, sizeof(*ipv4));
+        if (ipv4 == NULL) {
+            free(info);
+            return EAI_MEMORY;
+        }
+        ipv4->sin_family = AF_INET;
+        ipv4->sin_port = htons(port);
+        ipv4->sin_addr.s_addr = address;
+        info->ai_addrlen = sizeof(*ipv4);
+        info->ai_addr = (struct sockaddr *)ipv4;
+        if (node != NULL) {
+            memcpy(canonical, node, strlen(node) + 1);
+        } else if (oct_format_ipv4(address, canonical, sizeof(canonical)) != 0) {
+            free(ipv4);
+            free(info);
+            return EAI_FAIL;
+        }
+    } else if (family == AF_INET6) {
+        uint8_t address[16];
+        if (node == NULL) {
+            /* `::` untuk server dan `::1` untuk klien. */
+            memset(address, 0, sizeof(address));
+            if ((flags & AI_PASSIVE) == 0) {
+                address[15] = 1;
+            }
+        } else if (inet_pton(AF_INET6, node, address) != 1) {
+            /* Alamat IPv4 numerik bukan kandidat AAAA. */
+            if (inet_addr(node) != (in_addr_t)-1) {
+                free(info);
+                return EAI_NONAME;
+            }
+            if ((flags & AI_NUMERICHOST) != 0
+                || oct_dns_lookup_aaaa(node, address) != 0) {
+                free(info);
+                return EAI_NONAME;
+            }
+        }
+        struct sockaddr_in6 *ipv6 = calloc(1, sizeof(*ipv6));
+        if (ipv6 == NULL) {
+            free(info);
+            return EAI_MEMORY;
+        }
+        ipv6->sin6_family = AF_INET6;
+        ipv6->sin6_port = htons(port);
+        memcpy(ipv6->sin6_addr.s6_addr, address, sizeof(address));
+        info->ai_addrlen = sizeof(*ipv6);
+        info->ai_addr = (struct sockaddr *)ipv6;
+        if (node != NULL) {
+            memcpy(canonical, node, strlen(node) + 1);
+        } else if (oct_format_ipv6(address, canonical, sizeof(canonical)) != 0) {
+            free(ipv6);
+            free(info);
+            return EAI_FAIL;
+        }
+    } else {
+        free(info);
+        return EAI_FAMILY;
+    }
+    if ((flags & AI_CANONNAME) != 0) {
+        info->ai_canonname = strdup(canonical);
+        if (info->ai_canonname == NULL) {
+            free(info->ai_addr);
+            free(info);
+            return EAI_MEMORY;
+        }
+    }
+    *output = info;
+    return 0;
+}
+
 int getaddrinfo(const char *node, const char *service,
                 const struct addrinfo *hints, struct addrinfo **result)
 {
@@ -218,52 +1271,71 @@ int getaddrinfo(const char *node, const char *service,
         return EINVAL;
     }
     *result = NULL;
-    if (node == NULL) {
-        node = "0.0.0.0";
+
+    int flags = hints != NULL ? hints->ai_flags : 0;
+    if ((flags & ~(AI_PASSIVE | AI_CANONNAME | AI_NUMERICHOST
+                   | AI_NUMERICSERV)) != 0) {
+        return EAI_BADFLAGS;
     }
-    in_addr_t address = inet_addr(node);
-    if (address == (in_addr_t)-1) {
-        return EAI_NONAME;
+    /* ai_canonname pada hints adalah buffer keluaran milik pemanggil. */
+    if (hints != NULL && hints->ai_canonname != NULL) {
+        return EAI_BADFLAGS;
     }
-    unsigned short port = 0;
-    if (service != NULL && service[0] != '\0') {
-        unsigned int parsed = 0;
-        for (const char *cursor = service; *cursor != '\0'; ++cursor) {
-            if (*cursor < '0' || *cursor > '9') {
-                return EAI_NONAME;
-            }
-            parsed = parsed * 10u + (unsigned int)(*cursor - '0');
-            if (parsed > 65535u) {
-                return EAI_NONAME;
-            }
-        }
-        port = (unsigned short)parsed;
+
+    /* AF_UNSPEC mengembalikan entri IPv4 lalu IPv6 yang berhasil di-resolve. */
+    int requested = hints != NULL ? hints->ai_family : AF_UNSPEC;
+    if (requested != AF_UNSPEC && requested != AF_INET && requested != AF_INET6) {
+        return EAI_FAMILY;
     }
-    int family = hints != NULL && hints->ai_family != AF_UNSPEC
-        ? hints->ai_family
-        : AF_INET;
     int socktype = hints != NULL && hints->ai_socktype != 0
         ? hints->ai_socktype
         : SOCK_STREAM;
-    if (family != AF_INET) {
-        return EAI_FAMILY;
+    if (socktype != SOCK_STREAM && socktype != SOCK_DGRAM
+        && socktype != SOCK_RAW) {
+        return EAI_SOCKTYPE;
     }
-    struct addrinfo *info = calloc(1, sizeof(*info));
-    struct sockaddr_in *ipv4 = calloc(1, sizeof(*ipv4));
-    if (info == NULL || ipv4 == NULL) {
-        free(info);
-        free(ipv4);
-        return EAI_MEMORY;
+    int protocol = hints != NULL ? hints->ai_protocol : 0;
+    int default_protocol = socktype == SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP;
+    if (protocol != 0 && protocol != default_protocol) {
+        return EAI_SOCKTYPE;
     }
-    ipv4->sin_family = AF_INET;
-    ipv4->sin_port = htons(port);
-    ipv4->sin_addr.s_addr = address;
-    info->ai_family = AF_INET;
-    info->ai_socktype = socktype;
-    info->ai_protocol = socktype == SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP;
-    info->ai_addrlen = sizeof(*ipv4);
-    info->ai_addr = (struct sockaddr *)ipv4;
-    *result = info;
+
+    unsigned short port = 0;
+    if (oct_parse_numeric_service(service, &port) != 0) {
+        return (flags & AI_NUMERICSERV) != 0 ? EAI_NONAME : EAI_SERVICE;
+    }
+
+    int families[2] = {AF_INET, AF_INET6};
+    int family_count = requested == AF_UNSPEC ? 2 : 1;
+    struct addrinfo *head = NULL;
+    struct addrinfo *tail = NULL;
+    int last_error = EAI_NONAME;
+    for (int index = 0; index < family_count; ++index) {
+        int family = requested == AF_UNSPEC ? families[index] : requested;
+        struct addrinfo *entry = NULL;
+        int code = oct_addrinfo_entry(family, node, port, flags, socktype,
+                                      protocol != 0 ? protocol : default_protocol,
+                                      &entry);
+        if (code != 0) {
+            if (code == EAI_MEMORY) {
+                freeaddrinfo(head);
+                return EAI_MEMORY;
+            }
+            /* Keluarga yang tidak punya hasil dilewati; keluarga lain tetap. */
+            last_error = code;
+            continue;
+        }
+        if (tail == NULL) {
+            head = entry;
+        } else {
+            tail->ai_next = entry;
+        }
+        tail = entry;
+    }
+    if (head == NULL) {
+        return last_error;
+    }
+    *result = head;
     return 0;
 }
 
@@ -271,10 +1343,135 @@ void freeaddrinfo(struct addrinfo *result)
 {
     while (result != NULL) {
         struct addrinfo *next = result->ai_next;
+        free(result->ai_canonname);
         free(result->ai_addr);
         free(result);
         result = next;
     }
+}
+
+int getnameinfo(const struct sockaddr *address, socklen_t address_length,
+                char *host, socklen_t host_length,
+                char *service, socklen_t service_length, int flags)
+{
+    if ((flags & ~(NI_NUMERICHOST | NI_NUMERICSERV)) != 0) {
+        return EAI_BADFLAGS;
+    }
+    if (address == NULL || address_length < sizeof(sa_family_t)) {
+        return EAI_FAMILY;
+    }
+    const struct sockaddr_in *ipv4 = (const struct sockaddr_in *)address;
+    const struct sockaddr_in6 *ipv6 = (const struct sockaddr_in6 *)address;
+    char text[OCT_DNS_MAX_CANON_NAME];
+    unsigned short port_number;
+    if (ipv4->sin_family == AF_INET
+        && address_length >= sizeof(struct sockaddr_in)) {
+        port_number = ntohs(ipv4->sin_port);
+        int resolved = (flags & NI_NUMERICHOST) == 0
+            && oct_dns_reverse(ipv4->sin_addr.s_addr, text, sizeof(text)) == 0;
+        if (!resolved && oct_format_ipv4(ipv4->sin_addr.s_addr, text,
+                                         sizeof(text)) != 0) {
+            return EAI_FAIL;
+        }
+    } else if (ipv6->sin6_family == AF_INET6
+               && address_length >= sizeof(struct sockaddr_in6)) {
+        port_number = ntohs(ipv6->sin6_port);
+        if (oct_format_ipv6(ipv6->sin6_addr.s6_addr, text, sizeof(text)) != 0) {
+            return EAI_FAIL;
+        }
+    } else {
+        return EAI_FAMILY;
+    }
+
+    if (host != NULL && host_length != 0) {
+        size_t length = strlen(text);
+        if (length + 1 > (size_t)host_length) {
+            return EAI_OVERFLOW;
+        }
+        memcpy(host, text, length + 1);
+    }
+    if (service != NULL && service_length != 0) {
+        char number[8];
+        int length = snprintf(number, sizeof(number), "%u",
+                              (unsigned)port_number);
+        if (length < 0 || (size_t)length >= sizeof(number)) {
+            return EAI_FAIL;
+        }
+        if ((size_t)length + 1 > (size_t)service_length) {
+            return EAI_OVERFLOW;
+        }
+        memcpy(service, number, (size_t)length + 1);
+    }
+    return 0;
+}
+
+static struct hostent oct_numeric_host;
+static char oct_numeric_host_name[OCT_DNS_MAX_CANON_NAME];
+static char *oct_numeric_host_aliases[1];
+static char *oct_numeric_host_addresses[2];
+static struct in_addr oct_numeric_host_address;
+
+static struct hostent *oct_host_entry(const char *name, in_addr_t address)
+{
+    size_t name_length = strlen(name);
+    if (name_length >= sizeof(oct_numeric_host_name)) {
+        h_errno = NO_RECOVERY;
+        return NULL;
+    }
+    memcpy(oct_numeric_host_name, name, name_length + 1);
+    oct_numeric_host_address.s_addr = address;
+    oct_numeric_host_aliases[0] = NULL;
+    oct_numeric_host_addresses[0] = (char *)&oct_numeric_host_address;
+    oct_numeric_host_addresses[1] = NULL;
+    oct_numeric_host.h_name = oct_numeric_host_name;
+    oct_numeric_host.h_aliases = oct_numeric_host_aliases;
+    oct_numeric_host.h_addrtype = AF_INET;
+    oct_numeric_host.h_length = (int)sizeof(oct_numeric_host_address);
+    oct_numeric_host.h_addr_list = oct_numeric_host_addresses;
+    return &oct_numeric_host;
+}
+
+static struct hostent *oct_numeric_host_entry(in_addr_t address)
+{
+    char text[16];
+    if (oct_format_ipv4(address, text, sizeof(text)) != 0) {
+        h_errno = NO_RECOVERY;
+        return NULL;
+    }
+    return oct_host_entry(text, address);
+}
+
+struct hostent *gethostbyname(const char *name)
+{
+    if (name == NULL || name[0] == '\0') {
+        h_errno = HOST_NOT_FOUND;
+        return NULL;
+    }
+    in_addr_t address = inet_addr(name);
+    if (address == (in_addr_t)-1) {
+        if (oct_dns_lookup(name, &address) != 0) {
+            h_errno = HOST_NOT_FOUND;
+            return NULL;
+        }
+        return oct_host_entry(name, address);
+    }
+    return oct_numeric_host_entry(address);
+}
+
+struct hostent *gethostbyaddr(const void *address, socklen_t length, int family)
+{
+    if (address == NULL || family != AF_INET
+        || length < sizeof(struct in_addr)) {
+        h_errno = HOST_NOT_FOUND;
+        return NULL;
+    }
+    in_addr_t value;
+    memcpy(&value, address, sizeof(value));
+    char name[OCT_DNS_MAX_CANON_NAME];
+    if (oct_dns_reverse(value, name, sizeof(name)) == 0) {
+        return oct_host_entry(name, value);
+    }
+    return oct_numeric_host_entry(value);
 }
 
 const char *gai_strerror(int error)
@@ -283,6 +1480,11 @@ const char *gai_strerror(int error)
     case EAI_FAMILY: return "Address family not supported";
     case EAI_MEMORY: return "Out of memory";
     case EAI_NONAME: return "Host or service not found";
+    case EAI_BADFLAGS: return "Invalid flags";
+    case EAI_SERVICE: return "Service not supported";
+    case EAI_SOCKTYPE: return "Socket type not supported";
+    case EAI_OVERFLOW: return "Buffer too small";
+    case EAI_FAIL: return "Address resolution failed";
     default: return "Address resolution error";
     }
 }
@@ -1882,6 +3084,9 @@ ssize_t recvfrom(int socket_fd, void *buffer, size_t length, int flags,
             if (result < 0) {
                 return (ssize_t)posix_result(result);
             }
+            /* Kernel melaporkan panjang datagram asli; normalnya kembalikan
+               jumlah byte yang benar-benar disalin, kecuali MSG_TRUNC. */
+            size_t copied = (size_t)result > length ? length : (size_t)result;
             if (source != NULL) {
                 ipv4.sin_family = AF_INET;
                 ipv4.sin_port = htons(source_port);
@@ -1899,13 +3104,218 @@ ssize_t recvfrom(int socket_fd, void *buffer, size_t length, int flags,
                     *source_length = (socklen_t)copy_length;
                 }
             }
-            return (ssize_t)result;
+            if ((flags & MSG_TRUNC) != 0) {
+                return (ssize_t)result;
+            }
+            return (ssize_t)copied;
         }
         int64_t yield_result = oct_yield();
         if (yield_result < 0) {
             return (ssize_t)posix_result(yield_result);
         }
     }
+}
+
+#define OCT_MAX_MESSAGE_IOVECS 1024
+
+static int oct_validate_message(const struct msghdr *message)
+{
+    if (message == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (message->msg_iov == NULL && message->msg_iovlen != 0) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (message->msg_iovlen > OCT_MAX_MESSAGE_IOVECS) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    return 0;
+}
+
+static int oct_message_gather(const struct msghdr *message, size_t *length,
+                              char **buffer)
+{
+    *length = 0;
+    *buffer = NULL;
+    for (size_t index = 0; index < message->msg_iovlen; ++index) {
+        const struct iovec *vector = &message->msg_iov[index];
+        if (vector->iov_base == NULL && vector->iov_len != 0) {
+            errno = EFAULT;
+            return -1;
+        }
+        if (vector->iov_len > SIZE_MAX - *length) {
+            errno = EMSGSIZE;
+            return -1;
+        }
+        *length += vector->iov_len;
+    }
+    if (*length == 0) {
+        return 0;
+    }
+
+    char *gathered = malloc(*length);
+    if (gathered == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+    size_t offset = 0;
+    for (size_t index = 0; index < message->msg_iovlen; ++index) {
+        const struct iovec *vector = &message->msg_iov[index];
+        if (vector->iov_len != 0) {
+            memcpy(gathered + offset, vector->iov_base, vector->iov_len);
+            offset += vector->iov_len;
+        }
+    }
+    *buffer = gathered;
+    return 0;
+}
+
+static ssize_t oct_message_write(int socket_fd, const char *data,
+                                 size_t length, int flags, int use_send)
+{
+    size_t written = 0;
+    while (written < length) {
+        ssize_t result = use_send
+            ? send(socket_fd, data + written, length - written, flags)
+            : write(socket_fd, data + written, length - written);
+        if (result < 0) {
+            return written == 0 ? -1 : (ssize_t)written;
+        }
+        if (result == 0) {
+            break;
+        }
+        written += (size_t)result;
+    }
+    return (ssize_t)written;
+}
+
+ssize_t sendmsg(int socket_fd, const struct msghdr *message, int flags)
+{
+    if (oct_validate_message(message) != 0) {
+        return -1;
+    }
+    /* SCM_RIGHTS/SCM_CREDENTIALS belum didukung; pemanggil harus tahu. */
+    if (message->msg_control != NULL || message->msg_controllen != 0) {
+        errno = ENOTSUP;
+        return -1;
+    }
+
+    size_t length = 0;
+    char *gathered = NULL;
+    if (oct_message_gather(message, &length, &gathered) != 0) {
+        return -1;
+    }
+    const char *data = gathered != NULL ? gathered : "";
+
+    ssize_t result;
+    if (message->msg_name != NULL) {
+        if (length > OCT_MAX_SYSCALL_IO) {
+            free(gathered);
+            errno = EMSGSIZE;
+            return -1;
+        }
+        result = sendto(socket_fd, data, length, flags, message->msg_name,
+                        message->msg_namelen);
+    } else {
+        int use_send = 0;
+        int type = 0;
+        socklen_t length_size = sizeof(type);
+        if (getsockopt(socket_fd, SOL_SOCKET, SO_TYPE, &type,
+                       &length_size) == 0) {
+            /* Datagram tanpa msg_name dikirim ke peer hasil connect(). */
+            use_send = 1;
+        } else if (errno != ENOTSOCK) {
+            free(gathered);
+            return -1;
+        }
+        result = oct_message_write(socket_fd, data, length, flags, use_send);
+    }
+    free(gathered);
+    return result;
+}
+
+static int oct_message_capacity(const struct msghdr *message, size_t *capacity)
+{
+    size_t total = 0;
+    for (size_t index = 0; index < message->msg_iovlen; ++index) {
+        const struct iovec *vector = &message->msg_iov[index];
+        if (vector->iov_base == NULL && vector->iov_len != 0) {
+            errno = EFAULT;
+            return -1;
+        }
+        if (vector->iov_len > SIZE_MAX - total) {
+            errno = EMSGSIZE;
+            return -1;
+        }
+        total += vector->iov_len;
+    }
+    *capacity = total > OCT_MAX_SYSCALL_IO ? OCT_MAX_SYSCALL_IO : total;
+    return 0;
+}
+
+ssize_t recvmsg(int socket_fd, struct msghdr *message, int flags)
+{
+    if (oct_validate_message(message) != 0) {
+        return -1;
+    }
+    size_t capacity = 0;
+    if (oct_message_capacity(message, &capacity) != 0) {
+        return -1;
+    }
+
+    char scratch[OCT_MAX_SYSCALL_IO];
+    ssize_t result;
+    if (message->msg_name != NULL) {
+        socklen_t address_length = message->msg_namelen;
+        result = recvfrom(socket_fd, scratch, capacity, flags | MSG_TRUNC,
+                          message->msg_name, &address_length);
+        if (result >= 0) {
+            message->msg_namelen = address_length;
+        }
+    } else {
+        int type = 0;
+        socklen_t length_size = sizeof(type);
+        if (getsockopt(socket_fd, SOL_SOCKET, SO_TYPE, &type,
+                       &length_size) == 0) {
+            result = type == SOCK_DGRAM
+                ? recvfrom(socket_fd, scratch, capacity, flags | MSG_TRUNC, NULL, NULL)
+                : recv(socket_fd, scratch, capacity, flags);
+        } else if (errno == ENOTSOCK) {
+            result = read(socket_fd, scratch, capacity);
+        } else {
+            return -1;
+        }
+    }
+    if (result < 0) {
+        return -1;
+    }
+
+    /* Ancillary data belum didukung, jadi buffer kontrol tidak pernah diisi
+       dan MSG_CTRUNC tidak pernah dilaporkan. */
+    size_t full_length = (size_t)result;
+    int truncated = full_length > capacity;
+    message->msg_controllen = 0;
+    message->msg_flags = truncated ? MSG_TRUNC : 0;
+
+    size_t remaining = truncated ? capacity : full_length;
+    size_t offset = 0;
+    for (size_t index = 0; index < message->msg_iovlen && remaining != 0;
+         ++index) {
+        struct iovec *vector = &message->msg_iov[index];
+        size_t chunk = vector->iov_len < remaining ? vector->iov_len : remaining;
+        if (chunk != 0) {
+            memcpy(vector->iov_base, scratch + offset, chunk);
+            offset += chunk;
+            remaining -= chunk;
+        }
+    }
+    if ((flags & MSG_TRUNC) != 0) {
+        return (ssize_t)full_length;
+    }
+    return (ssize_t)(truncated ? capacity : full_length);
 }
 
 DIR *opendir(const char *path)
@@ -2278,6 +3688,103 @@ static int count_spawn_arguments(char *const arguments[], size_t *count)
     return 0;
 }
 
+#define OCTAGRAM_SPAWN_SUPPORTED_FLAGS                                          \
+    (POSIX_SPAWN_RESETIDS | POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF       \
+     | POSIX_SPAWN_SETSIGMASK)
+
+/* Runs in the forked child before execve; failures are reported to the parent. */
+static int apply_spawn_file_actions(
+    const posix_spawn_file_actions_t *file_actions)
+{
+    if (file_actions == NULL) {
+        return 0;
+    }
+    if (file_actions->count < 0 ||
+        file_actions->count > OCTAGRAM_SPAWN_MAX_FILE_ACTIONS) {
+        return EINVAL;
+    }
+    for (int index = 0; index < file_actions->count; ++index) {
+        const struct octagram_spawn_file_action *action =
+            &file_actions->actions[index];
+        switch (action->kind) {
+        case OCTAGRAM_SPAWN_ACTION_CLOSE:
+            if (close(action->fd) != 0) {
+                return errno;
+            }
+            break;
+        case OCTAGRAM_SPAWN_ACTION_DUP2:
+            if (dup2(action->fd, action->target_fd) < 0) {
+                return errno;
+            }
+            break;
+        case OCTAGRAM_SPAWN_ACTION_OPEN: {
+            int opened = open(action->path, action->flags, action->mode);
+            if (opened < 0) {
+                return errno;
+            }
+            if (opened != action->target_fd) {
+                if (dup2(opened, action->target_fd) < 0) {
+                    int error = errno;
+                    close(opened);
+                    return error;
+                }
+                close(opened);
+            }
+            break;
+        }
+        default:
+            return EINVAL;
+        }
+    }
+    return 0;
+}
+
+/* Runs in the forked child before execve; failures are reported to the parent. */
+static int apply_spawn_attributes(const posix_spawnattr_t *attributes)
+{
+    if (attributes == NULL) {
+        return 0;
+    }
+    if ((attributes->flags & (unsigned short)~OCTAGRAM_SPAWN_SUPPORTED_FLAGS) !=
+        0) {
+        return ENOTSUP;
+    }
+    if ((attributes->flags & POSIX_SPAWN_RESETIDS) != 0) {
+        /* Turunkan group lebih dulu, lalu uid efektif ke id nyata. */
+        if (setgid(getgid()) != 0) {
+            return errno;
+        }
+        if (setuid(getuid()) != 0) {
+            return errno;
+        }
+    }
+    if ((attributes->flags & POSIX_SPAWN_SETPGROUP) != 0) {
+        if (setpgid(0, attributes->pgroup) != 0) {
+            return errno;
+        }
+    }
+    if ((attributes->flags & POSIX_SPAWN_SETSIGMASK) != 0) {
+        if (sigprocmask(SIG_SETMASK, &attributes->sigmask, NULL) != 0) {
+            return errno;
+        }
+    }
+    if ((attributes->flags & POSIX_SPAWN_SETSIGDEF) != 0) {
+        struct sigaction default_action;
+        memset(&default_action, 0, sizeof(default_action));
+        default_action.sa_handler = SIG_DFL;
+        for (int signal_number = 1; signal_number < NSIG; ++signal_number) {
+            if (signal_number == SIGKILL || signal_number == SIGSTOP) {
+                continue;
+            }
+            if (sigismember(&attributes->sigdefault, signal_number) == 1 &&
+                sigaction(signal_number, &default_action, NULL) != 0) {
+                return errno;
+            }
+        }
+    }
+    return 0;
+}
+
 static int posix_spawn_impl(pid_t *pid, const char *path,
                             const posix_spawn_file_actions_t *file_actions,
                             const posix_spawnattr_t *attributes,
@@ -2286,7 +3793,14 @@ static int posix_spawn_impl(pid_t *pid, const char *path,
     if (pid == NULL || path == NULL || path[0] == '\0') {
         return EINVAL;
     }
-    if (file_actions != NULL || attributes != NULL) {
+    if (file_actions != NULL &&
+        (file_actions->count < 0 ||
+         file_actions->count > OCTAGRAM_SPAWN_MAX_FILE_ACTIONS)) {
+        return EINVAL;
+    }
+    if (attributes != NULL &&
+        (attributes->flags & (unsigned short)~OCTAGRAM_SPAWN_SUPPORTED_FLAGS) !=
+            0) {
         return ENOTSUP;
     }
     size_t argument_count;
@@ -2320,8 +3834,14 @@ static int posix_spawn_impl(pid_t *pid, const char *path,
     }
     if (child == 0) {
         close(descriptors[0]);
-        execve(path, arguments, environment);
-        int error = errno;
+        int error = apply_spawn_file_actions(file_actions);
+        if (error == 0) {
+            error = apply_spawn_attributes(attributes);
+        }
+        if (error == 0) {
+            execve(path, arguments, environment);
+            error = errno;
+        }
         (void)write(descriptors[1], &error, sizeof(error));
         close(descriptors[1]);
         exit(127);
@@ -2434,12 +3954,25 @@ int posix_spawnp(pid_t *restrict pid, const char *restrict file,
     return access_error != 0 ? access_error : last_error;
 }
 
+static struct octagram_spawn_file_action *spawn_file_action_append(
+    posix_spawn_file_actions_t *actions)
+{
+    if (actions->count >= OCTAGRAM_SPAWN_MAX_FILE_ACTIONS) {
+        return NULL;
+    }
+    struct octagram_spawn_file_action *action =
+        &actions->actions[actions->count];
+    memset(action, 0, sizeof(*action));
+    ++actions->count;
+    return action;
+}
+
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t *actions)
 {
     if (actions == NULL) {
         return EINVAL;
     }
-    actions->reserved = 0;
+    actions->count = 0;
     return 0;
 }
 
@@ -2448,34 +3981,66 @@ int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *actions)
     if (actions == NULL) {
         return EINVAL;
     }
-    actions->reserved = 0;
+    actions->count = 0;
     return 0;
 }
 
 int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t *actions,
                                       int fd)
 {
-    (void)fd;
-    return actions == NULL ? EINVAL : ENOTSUP;
+    if (actions == NULL || fd < 0) {
+        return EINVAL;
+    }
+    struct octagram_spawn_file_action *action =
+        spawn_file_action_append(actions);
+    if (action == NULL) {
+        return ENOMEM;
+    }
+    action->kind = OCTAGRAM_SPAWN_ACTION_CLOSE;
+    action->fd = fd;
+    return 0;
 }
 
 int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t *actions,
                                      int source_fd, int target_fd)
 {
-    (void)source_fd;
-    (void)target_fd;
-    return actions == NULL ? EINVAL : ENOTSUP;
+    if (actions == NULL || source_fd < 0 || target_fd < 0) {
+        return EINVAL;
+    }
+    struct octagram_spawn_file_action *action =
+        spawn_file_action_append(actions);
+    if (action == NULL) {
+        return ENOMEM;
+    }
+    action->kind = OCTAGRAM_SPAWN_ACTION_DUP2;
+    action->fd = source_fd;
+    action->target_fd = target_fd;
+    return 0;
 }
 
 int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *actions,
                                      int fd, const char *path, int flags,
                                      mode_t mode)
 {
-    (void)fd;
-    (void)path;
-    (void)flags;
-    (void)mode;
-    return actions == NULL ? EINVAL : ENOTSUP;
+    if (actions == NULL || path == NULL || path[0] == '\0' || fd < 0) {
+        return EINVAL;
+    }
+    size_t length = strlen(path);
+    if (length >= OCTAGRAM_SPAWN_MAX_PATH) {
+        return ENAMETOOLONG;
+    }
+    struct octagram_spawn_file_action *action =
+        spawn_file_action_append(actions);
+    if (action == NULL) {
+        return ENOMEM;
+    }
+    action->kind = OCTAGRAM_SPAWN_ACTION_OPEN;
+    action->fd = fd;
+    action->target_fd = fd;
+    action->flags = flags;
+    action->mode = mode;
+    memcpy(action->path, path, length + 1);
+    return 0;
 }
 
 int posix_spawnattr_init(posix_spawnattr_t *attributes)
@@ -2483,13 +4048,17 @@ int posix_spawnattr_init(posix_spawnattr_t *attributes)
     if (attributes == NULL) {
         return EINVAL;
     }
-    attributes->flags = 0;
+    memset(attributes, 0, sizeof(*attributes));
     return 0;
 }
 
 int posix_spawnattr_destroy(posix_spawnattr_t *attributes)
 {
-    return attributes == NULL ? EINVAL : 0;
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    memset(attributes, 0, sizeof(*attributes));
+    return 0;
 }
 
 int posix_spawnattr_setflags(posix_spawnattr_t *attributes, short flags)
@@ -2513,8 +4082,11 @@ int posix_spawnattr_getflags(const posix_spawnattr_t *attributes,
 
 int posix_spawnattr_setpgroup(posix_spawnattr_t *attributes, pid_t group)
 {
-    (void)group;
-    return attributes == NULL ? EINVAL : ENOTSUP;
+    if (attributes == NULL || group < 0) {
+        return EINVAL;
+    }
+    attributes->pgroup = group;
+    return 0;
 }
 
 int posix_spawnattr_getpgroup(const posix_spawnattr_t *attributes,
@@ -2523,22 +4095,48 @@ int posix_spawnattr_getpgroup(const posix_spawnattr_t *attributes,
     if (attributes == NULL || group == NULL) {
         return EINVAL;
     }
-    *group = 0;
+    *group = attributes->pgroup;
     return 0;
 }
 
 int posix_spawnattr_setsigdefault(posix_spawnattr_t *attributes,
                                   const sigset_t *mask)
 {
-    (void)mask;
-    return attributes == NULL ? EINVAL : ENOTSUP;
+    if (attributes == NULL || mask == NULL) {
+        return EINVAL;
+    }
+    attributes->sigdefault = *mask;
+    return 0;
+}
+
+int posix_spawnattr_getsigdefault(const posix_spawnattr_t *attributes,
+                                  sigset_t *mask)
+{
+    if (attributes == NULL || mask == NULL) {
+        return EINVAL;
+    }
+    *mask = attributes->sigdefault;
+    return 0;
 }
 
 int posix_spawnattr_setsigmask(posix_spawnattr_t *attributes,
                                const sigset_t *mask)
 {
-    (void)mask;
-    return attributes == NULL ? EINVAL : ENOTSUP;
+    if (attributes == NULL || mask == NULL) {
+        return EINVAL;
+    }
+    attributes->sigmask = *mask;
+    return 0;
+}
+
+int posix_spawnattr_getsigmask(const posix_spawnattr_t *attributes,
+                               sigset_t *mask)
+{
+    if (attributes == NULL || mask == NULL) {
+        return EINVAL;
+    }
+    *mask = attributes->sigmask;
+    return 0;
 }
 
 pid_t wait3(int *status, int options, struct rusage *usage)
@@ -4631,8 +6229,79 @@ FILE *freopen(const char *path, const char *mode, FILE *stream)
     return NULL;
 }
 
+#define OCT_MAX_ATEXIT_HANDLERS 64
+
+/* Satu daftar untuk atexit dan ABI C++ (__cxa_atexit) agar urutannya tetap
+ * terbalik sesuai urutan registrasi. */
+typedef struct {
+    void (*function)(void *);
+    void *argument;
+    void *dso;
+    void (*plain)(void);
+} OctExitHandler;
+
+static OctExitHandler oct_atexit_handlers[OCT_MAX_ATEXIT_HANDLERS];
+static unsigned int oct_atexit_count;
+static int oct_atexit_running;
+
+int __cxa_atexit(void (*function)(void *), void *argument, void *dso)
+{
+    if (function == NULL || oct_atexit_count >= OCT_MAX_ATEXIT_HANDLERS) {
+        return -1;
+    }
+    OctExitHandler *handler = &oct_atexit_handlers[oct_atexit_count++];
+    handler->function = function;
+    handler->argument = argument;
+    handler->dso = dso;
+    handler->plain = NULL;
+    return 0;
+}
+
+void __cxa_finalize(void *dso)
+{
+    /* Jalankan terbalik; entri yang cocok dikosongkan agar tidak berjalan dua
+     * kali saat exit() atau dlclose() berikutnya. */
+    for (unsigned int index = oct_atexit_count; index != 0; --index) {
+        OctExitHandler *handler = &oct_atexit_handlers[index - 1];
+        if (handler->plain == NULL && handler->function == NULL) {
+            continue;
+        }
+        if (dso != NULL && handler->dso != dso) {
+            continue;
+        }
+        void (*plain)(void) = handler->plain;
+        void (*function)(void *) = handler->function;
+        void *argument = handler->argument;
+        handler->plain = NULL;
+        handler->function = NULL;
+        if (plain != NULL) {
+            plain();
+        } else {
+            function(argument);
+        }
+    }
+}
+
+int atexit(void (*function)(void))
+{
+    if (function == NULL || oct_atexit_count >= OCT_MAX_ATEXIT_HANDLERS) {
+        return -1;
+    }
+    OctExitHandler *handler = &oct_atexit_handlers[oct_atexit_count++];
+    handler->plain = function;
+    handler->function = NULL;
+    handler->argument = NULL;
+    handler->dso = NULL;
+    return 0;
+}
+
 __attribute__((noreturn)) void exit(int status)
 {
+    /* Handler dijalankan terbalik; exit() dari dalam handler tidak mengulang. */
+    if (!oct_atexit_running) {
+        oct_atexit_running = 1;
+        __cxa_finalize(NULL);
+    }
     oct_exit(status);
     for (;;) {
         __asm__ volatile ("pause");
@@ -4839,10 +6508,7 @@ int pthread_sigmask(int how, const sigset_t *set, sigset_t *old_set)
 
 int sigaltstack(const stack_t *new_stack, stack_t *old_stack)
 {
-    (void)new_stack;
-    (void)old_stack;
-    errno = ENOSYS;
-    return -1;
+    return (int)posix_result(oct_sigaltstack(new_stack, old_stack));
 }
 
 int sigwait(const sigset_t *set, int *signal_number)
@@ -5147,6 +6813,100 @@ clock_t times(struct tms *process_times)
     memset(process_times, 0, sizeof(*process_times));
     int64_t result = oct_times(process_times);
     return (clock_t)posix_result(result);
+}
+
+/* ---------- dynamic loading (dlopen/dlsym/dlclose) ---------- */
+
+/* Diisi oleh loader dinamis saat startup; NULL pada program statis. */
+void *(*__oct_dlopen_hook)(const char *path);
+void *(*__oct_dlsym_hook)(void *handle, const char *symbol);
+void *(*__oct_dlsym_next_hook)(const char *symbol, uintptr_t caller);
+int (*__oct_dlclose_hook)(void *handle);
+
+static char oct_dl_error_buffer[160];
+static int oct_dl_error_pending;
+
+static void *oct_dl_error(const char *message)
+{
+    size_t length = strlen(message);
+    if (length >= sizeof(oct_dl_error_buffer)) {
+        length = sizeof(oct_dl_error_buffer) - 1;
+    }
+    memcpy(oct_dl_error_buffer, message, length);
+    oct_dl_error_buffer[length] = '\0';
+    oct_dl_error_pending = 1;
+    return NULL;
+}
+
+/* Weak: TinyCC menyediakan stub dlopen sendiri saat CONFIG_TCC_STATIC. */
+__attribute__((weak)) char *dlerror(void)
+{
+    if (!oct_dl_error_pending) {
+        return NULL;
+    }
+    oct_dl_error_pending = 0;
+    return oct_dl_error_buffer;
+}
+
+__attribute__((weak)) void *dlopen(const char *path, int flags)
+{
+    if (path == NULL || path[0] == '\0') {
+        return oct_dl_error("invalid library path");
+    }
+    if ((flags & ~(RTLD_LAZY | RTLD_NOW | RTLD_LOCAL | RTLD_GLOBAL)) != 0) {
+        return oct_dl_error("invalid dlopen flags");
+    }
+    if (__oct_dlopen_hook == NULL) {
+        return oct_dl_error("dynamic loading is unavailable");
+    }
+    void *handle = __oct_dlopen_hook(path);
+    if (handle == NULL) {
+        return oct_dl_error("cannot load shared library");
+    }
+    return handle;
+}
+
+__attribute__((weak)) void *dlsym(void *handle, const char *symbol)
+{
+    if (symbol == NULL || symbol[0] == '\0') {
+        return oct_dl_error("invalid dlsym arguments");
+    }
+    if (handle == RTLD_NEXT) {
+        if (__oct_dlsym_next_hook == NULL) {
+            return oct_dl_error("dynamic loading is unavailable");
+        }
+        void *next = __oct_dlsym_next_hook(
+            symbol, (uintptr_t)__builtin_return_address(0));
+        if (next == NULL) {
+            return oct_dl_error("symbol not found");
+        }
+        return next;
+    }
+    if (__oct_dlsym_hook == NULL) {
+        return oct_dl_error("dynamic loading is unavailable");
+    }
+    void *address = __oct_dlsym_hook(handle, symbol);
+    if (address == NULL) {
+        return oct_dl_error("symbol not found");
+    }
+    return address;
+}
+
+__attribute__((weak)) int dlclose(void *handle)
+{
+    if (handle == NULL) {
+        oct_dl_error("invalid handle");
+        return -1;
+    }
+    if (__oct_dlclose_hook == NULL) {
+        oct_dl_error("dynamic loading is unavailable");
+        return -1;
+    }
+    if (__oct_dlclose_hook(handle) != 0) {
+        oct_dl_error("cannot unload shared library");
+        return -1;
+    }
+    return 0;
 }
 
 int setuid(uid_t uid)
@@ -6105,4 +7865,474 @@ int cfsetospeed(struct termios *termios_state, speed_t speed)
     }
     termios_state->c_ospeed = speed;
     return 0;
+}
+
+
+/* Database akun: /etc/passwd dan /etc/group. Getter non-reentrant memakai
+   penyimpanan statis seperti POSIX; varian _r memakai buffer pemanggil. */
+
+#define OCTAGRAM_PASSWD_PATH "/etc/passwd"
+#define OCTAGRAM_GROUP_PATH "/etc/group"
+#define OCTAGRAM_ACCOUNT_LINE_LENGTH 256
+
+static struct passwd octagram_passwd_entry;
+static char octagram_passwd_buffer[OCTAGRAM_ACCOUNT_LINE_LENGTH];
+static FILE *octagram_passwd_stream;
+
+static struct group octagram_group_entry;
+static char octagram_group_buffer[OCTAGRAM_ACCOUNT_LINE_LENGTH];
+static FILE *octagram_group_stream;
+
+static char octagram_group_placeholder_password[] = "x";
+
+/* Pilih offset tabel pointer di akhir buffer agar tetap sejajar pointer. */
+static size_t octagram_group_table_offset(const char *buffer, size_t size,
+                                          size_t table_bytes)
+{
+    const size_t alignment = sizeof(char *);
+    size_t offset = (size - table_bytes) & ~(alignment - 1);
+    size_t misalignment =
+        (size_t)(((uintptr_t)buffer + offset) & (alignment - 1));
+    if (misalignment != 0) {
+        offset -= alignment - misalignment;
+    }
+    return offset;
+}
+
+static int octagram_split_colon_fields(char *line, char **fields, int maximum)
+{
+    int count = 0;
+    char *cursor = line;
+    while (count < maximum) {
+        char *separator = strchr(cursor, ':');
+        fields[count++] = cursor;
+        if (separator == NULL) {
+            break;
+        }
+        *separator = '\0';
+        cursor = separator + 1;
+    }
+    if (count > 0) {
+        char *newline = strchr(fields[count - 1], '\n');
+        if (newline != NULL) {
+            *newline = '\0';
+        }
+    }
+    return count;
+}
+
+static int octagram_parse_account_id(const char *text, unsigned long *value)
+{
+    char *end = NULL;
+    if (text == NULL || text[0] == '\0') {
+        return -1;
+    }
+    unsigned long parsed = strtoul(text, &end, 10);
+    if (end == text || end == NULL || *end != '\0') {
+        return -1;
+    }
+    *value = parsed;
+    return 0;
+}
+
+/* Mengurai satu baris /etc/passwd yang sudah disalin ke buffer. */
+static int octagram_read_passwd_line(char *buffer, struct passwd *entry)
+{
+    char *fields[7];
+    if (octagram_split_colon_fields(buffer, fields, 7) != 7) {
+        return -1;
+    }
+    unsigned long uid;
+    unsigned long gid;
+    if (octagram_parse_account_id(fields[2], &uid) != 0 ||
+        octagram_parse_account_id(fields[3], &gid) != 0) {
+        return -1;
+    }
+    entry->pw_name = fields[0];
+    entry->pw_passwd = fields[1];
+    entry->pw_uid = (uid_t)uid;
+    entry->pw_gid = (gid_t)gid;
+    entry->pw_gecos = fields[4];
+    entry->pw_dir = fields[5];
+    entry->pw_shell = fields[6];
+    return 0;
+}
+
+static int octagram_lookup_passwd(const char *name, int by_uid, uid_t uid,
+                                  struct passwd *entry, char *buffer,
+                                  size_t size, struct passwd **result)
+{
+    *result = NULL;
+    FILE *stream = fopen(OCTAGRAM_PASSWD_PATH, "r");
+    if (stream == NULL) {
+        int error = errno;
+        return error != 0 ? error : ENOENT;
+    }
+    int status = 0;
+    char line[OCTAGRAM_ACCOUNT_LINE_LENGTH];
+    while (fgets(line, sizeof(line), stream) != NULL) {
+        size_t length = strlen(line);
+        if (length == 0 || line[0] == '#') {
+            continue;
+        }
+        if (length + 1 > size) {
+            status = ERANGE;
+            break;
+        }
+        memcpy(buffer, line, length + 1);
+        struct passwd candidate;
+        if (octagram_read_passwd_line(buffer, &candidate) != 0) {
+            continue;
+        }
+        int matches = by_uid
+                          ? candidate.pw_uid == uid
+                          : (name != NULL &&
+                             strcmp(candidate.pw_name, name) == 0);
+        if (!matches) {
+            continue;
+        }
+        *entry = candidate;
+        *result = entry;
+        break;
+    }
+    fclose(stream);
+    return status;
+}
+
+int getpwnam_r(const char *name, struct passwd *entry, char *buffer,
+               size_t size, struct passwd **result)
+{
+    if (name == NULL || entry == NULL || buffer == NULL || result == NULL) {
+        return EINVAL;
+    }
+    return octagram_lookup_passwd(name, 0, 0, entry, buffer, size, result);
+}
+
+int getpwuid_r(uid_t uid, struct passwd *entry, char *buffer, size_t size,
+               struct passwd **result)
+{
+    if (entry == NULL || buffer == NULL || result == NULL) {
+        return EINVAL;
+    }
+    return octagram_lookup_passwd(NULL, 1, uid, entry, buffer, size, result);
+}
+
+struct passwd *getpwnam(const char *name)
+{
+    if (name == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    struct passwd *result = NULL;
+    int status = octagram_lookup_passwd(
+        name, 0, 0, &octagram_passwd_entry, octagram_passwd_buffer,
+        sizeof(octagram_passwd_buffer), &result);
+    if (status != 0) {
+        errno = status;
+        return NULL;
+    }
+    errno = 0;
+    return result;
+}
+
+struct passwd *getpwuid(uid_t uid)
+{
+    struct passwd *result = NULL;
+    int status = octagram_lookup_passwd(
+        NULL, 1, uid, &octagram_passwd_entry, octagram_passwd_buffer,
+        sizeof(octagram_passwd_buffer), &result);
+    if (status != 0) {
+        errno = status;
+        return NULL;
+    }
+    errno = 0;
+    return result;
+}
+
+struct passwd *getpwent(void)
+{
+    if (octagram_passwd_stream == NULL) {
+        octagram_passwd_stream = fopen(OCTAGRAM_PASSWD_PATH, "r");
+        if (octagram_passwd_stream == NULL) {
+            return NULL;
+        }
+    }
+    char line[OCTAGRAM_ACCOUNT_LINE_LENGTH];
+    while (fgets(line, sizeof(line), octagram_passwd_stream) != NULL) {
+        size_t length = strlen(line);
+        if (length == 0 || line[0] == '#' ||
+            length + 1 > sizeof(octagram_passwd_buffer)) {
+            continue;
+        }
+        memcpy(octagram_passwd_buffer, line, length + 1);
+        if (octagram_read_passwd_line(octagram_passwd_buffer,
+                                      &octagram_passwd_entry) == 0) {
+            return &octagram_passwd_entry;
+        }
+    }
+    return NULL;
+}
+
+void setpwent(void)
+{
+    if (octagram_passwd_stream != NULL) {
+        rewind(octagram_passwd_stream);
+    }
+}
+
+void endpwent(void)
+{
+    if (octagram_passwd_stream != NULL) {
+        fclose(octagram_passwd_stream);
+        octagram_passwd_stream = NULL;
+    }
+}
+
+/* Mengurai satu baris /etc/group. Daftar anggota disimpan di akhir buffer
+   agar tetap berada dalam penyimpanan pemanggil. 0 = berhasil, -1 = baris
+   tidak valid, -2 = buffer tidak cukup. */
+static int octagram_read_group_line(char *buffer, size_t size,
+                                    struct group *entry)
+{
+    size_t text_length = strlen(buffer) + 1;
+    char *fields[4];
+    if (octagram_split_colon_fields(buffer, fields, 4) != 4) {
+        return -1;
+    }
+    unsigned long gid;
+    if (octagram_parse_account_id(fields[2], &gid) != 0) {
+        return -1;
+    }
+    size_t member_count = 0;
+    if (fields[3][0] != '\0') {
+        member_count = 1;
+        for (char *cursor = fields[3]; *cursor != '\0'; ++cursor) {
+            if (*cursor == ',') {
+                ++member_count;
+            }
+        }
+    }
+    size_t table_bytes = (member_count + 1) * sizeof(char *);
+    if (size < table_bytes) {
+        return -2;
+    }
+    size_t table_offset = octagram_group_table_offset(buffer, size, table_bytes);
+    if (table_offset < text_length) {
+        return -2;
+    }
+    char **members = (char **)(void *)(buffer + table_offset);
+    size_t index = 0;
+    char *cursor = fields[3];
+    while (*cursor != '\0' && index < member_count) {
+        members[index++] = cursor;
+        char *separator = strchr(cursor, ',');
+        if (separator == NULL) {
+            break;
+        }
+        *separator = '\0';
+        cursor = separator + 1;
+    }
+    while (index <= member_count) {
+        members[index++] = NULL;
+    }
+    entry->gr_name = fields[0];
+    entry->gr_passwd = fields[1];
+    entry->gr_gid = (gid_t)gid;
+    entry->gr_mem = members;
+    return 0;
+}
+
+/* Cadangan ketika /etc/group belum ada: pakai grup utama dari /etc/passwd. */
+static int octagram_lookup_primary_group(const char *name, int by_gid,
+                                         gid_t gid, struct group *entry,
+                                         char *buffer, size_t size,
+                                         struct group **result)
+{
+    FILE *stream = fopen(OCTAGRAM_PASSWD_PATH, "r");
+    if (stream == NULL) {
+        int error = errno;
+        return error != 0 ? error : ENOENT;
+    }
+    int status = 0;
+    char line[OCTAGRAM_ACCOUNT_LINE_LENGTH];
+    while (fgets(line, sizeof(line), stream) != NULL) {
+        size_t length = strlen(line);
+        if (length == 0 || line[0] == '#') {
+            continue;
+        }
+        if (length + 1 > size) {
+            status = ERANGE;
+            break;
+        }
+        memcpy(buffer, line, length + 1);
+        struct passwd candidate;
+        if (octagram_read_passwd_line(buffer, &candidate) != 0) {
+            continue;
+        }
+        int matches = by_gid
+                          ? candidate.pw_gid == gid
+                          : (name != NULL &&
+                             strcmp(candidate.pw_name, name) == 0);
+        if (!matches) {
+            continue;
+        }
+        size_t name_length = strlen(candidate.pw_name) + 1;
+        size_t table_bytes = sizeof(char *);
+        if (size < table_bytes) {
+            status = ERANGE;
+            break;
+        }
+        size_t table_offset =
+            octagram_group_table_offset(buffer, size, table_bytes);
+        if (table_offset < name_length) {
+            status = ERANGE;
+            break;
+        }
+        char **members = (char **)(void *)(buffer + table_offset);
+        members[0] = NULL;
+        entry->gr_name = candidate.pw_name;
+        entry->gr_passwd = octagram_group_placeholder_password;
+        entry->gr_gid = candidate.pw_gid;
+        entry->gr_mem = members;
+        *result = entry;
+        break;
+    }
+    fclose(stream);
+    return status;
+}
+
+static int octagram_lookup_group(const char *name, int by_gid, gid_t gid,
+                                 struct group *entry, char *buffer,
+                                 size_t size, struct group **result)
+{
+    *result = NULL;
+    FILE *stream = fopen(OCTAGRAM_GROUP_PATH, "r");
+    if (stream == NULL) {
+        return octagram_lookup_primary_group(name, by_gid, gid, entry, buffer,
+                                             size, result);
+    }
+    int status = 0;
+    char line[OCTAGRAM_ACCOUNT_LINE_LENGTH];
+    while (fgets(line, sizeof(line), stream) != NULL) {
+        size_t length = strlen(line);
+        if (length == 0 || line[0] == '#') {
+            continue;
+        }
+        if (length + 1 > size) {
+            status = ERANGE;
+            break;
+        }
+        memcpy(buffer, line, length + 1);
+        struct group candidate;
+        int parsed = octagram_read_group_line(buffer, size, &candidate);
+        if (parsed == -2) {
+            status = ERANGE;
+            break;
+        }
+        if (parsed != 0) {
+            continue;
+        }
+        int matches = by_gid
+                          ? candidate.gr_gid == gid
+                          : (name != NULL &&
+                             strcmp(candidate.gr_name, name) == 0);
+        if (!matches) {
+            continue;
+        }
+        *entry = candidate;
+        *result = entry;
+        break;
+    }
+    fclose(stream);
+    return status;
+}
+
+int getgrnam_r(const char *name, struct group *entry, char *buffer,
+               size_t size, struct group **result)
+{
+    if (name == NULL || entry == NULL || buffer == NULL || result == NULL) {
+        return EINVAL;
+    }
+    return octagram_lookup_group(name, 0, 0, entry, buffer, size, result);
+}
+
+int getgrgid_r(gid_t gid, struct group *entry, char *buffer, size_t size,
+               struct group **result)
+{
+    if (entry == NULL || buffer == NULL || result == NULL) {
+        return EINVAL;
+    }
+    return octagram_lookup_group(NULL, 1, gid, entry, buffer, size, result);
+}
+
+struct group *getgrnam(const char *name)
+{
+    if (name == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    struct group *result = NULL;
+    int status = octagram_lookup_group(
+        name, 0, 0, &octagram_group_entry, octagram_group_buffer,
+        sizeof(octagram_group_buffer), &result);
+    if (status != 0) {
+        errno = status;
+        return NULL;
+    }
+    errno = 0;
+    return result;
+}
+
+struct group *getgrgid(gid_t gid)
+{
+    struct group *result = NULL;
+    int status = octagram_lookup_group(
+        NULL, 1, gid, &octagram_group_entry, octagram_group_buffer,
+        sizeof(octagram_group_buffer), &result);
+    if (status != 0) {
+        errno = status;
+        return NULL;
+    }
+    errno = 0;
+    return result;
+}
+
+struct group *getgrent(void)
+{
+    if (octagram_group_stream == NULL) {
+        octagram_group_stream = fopen(OCTAGRAM_GROUP_PATH, "r");
+        if (octagram_group_stream == NULL) {
+            return NULL;
+        }
+    }
+    char line[OCTAGRAM_ACCOUNT_LINE_LENGTH];
+    while (fgets(line, sizeof(line), octagram_group_stream) != NULL) {
+        size_t length = strlen(line);
+        if (length == 0 || line[0] == '#' ||
+            length + 1 > sizeof(octagram_group_buffer)) {
+            continue;
+        }
+        memcpy(octagram_group_buffer, line, length + 1);
+        if (octagram_read_group_line(octagram_group_buffer,
+                                     sizeof(octagram_group_buffer),
+                                     &octagram_group_entry) == 0) {
+            return &octagram_group_entry;
+        }
+    }
+    return NULL;
+}
+
+void setgrent(void)
+{
+    if (octagram_group_stream != NULL) {
+        rewind(octagram_group_stream);
+    }
+}
+
+void endgrent(void)
+{
+    if (octagram_group_stream != NULL) {
+        fclose(octagram_group_stream);
+        octagram_group_stream = NULL;
+    }
 }

@@ -71,15 +71,15 @@ menyediakan inline wrappers.
 | 66 | `udp_socket` | — | Descriptor socket UDP |
 | 67 | `udp_bind` | `RDI=fd`, `RSI=port` (0 untuk ephemeral) | Port lokal yang terikat |
 | 68 | `udp_sendto` | `RDI=fd`, `RSI=IPv4`, `RDX=port`, `R10=buffer`, `R8=count` | Byte terkirim |
-| 69 | `udp_recvfrom` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=source_ip[4]` (0 untuk abaikan), `R8=source_port*` (0 untuk abaikan) | Byte diterima |
+| 69 | `udp_recvfrom` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=source_ip[4]` (0 untuk abaikan), `R8=source_port*` (0 untuk abaikan) | Panjang datagram asli (bisa lebih besar dari `count`; libc memotong dan melaporkan `MSG_TRUNC`) |
 | 70 | `network_dns` | `RDI=IPv4[4]` | 0; `-ENETDOWN` jika DNS belum dikonfigurasi |
 | 71 | `socket` | `RDI=domain`, `RSI=type`, `RDX=protocol` | Descriptor socket |
 | 72 | `bind` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=length` | 0 |
 | 73 | `listen` | `RDI=fd`, `RSI=backlog` | 0 |
 | 74 | `accept` | `RDI=fd`, `RSI=sockaddr_in*` (0 untuk abaikan), `RDX=socklen_t*` | Descriptor koneksi baru |
-| 75 | `connect` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=length` | 0 |
-| 76 | `send` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=flags` | Byte diterima untuk dikirim |
-| 77 | `recv` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=flags` | Byte yang dibaca |
+| 75 | `connect` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=length` | 0; pada socket UDP menyimpan peer sehingga `send`/`recv` tidak perlu alamat |
+| 76 | `send` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=flags` | Byte terkirim; memakai peer `connect` untuk socket UDP |
+| 77 | `recv` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=flags` | Byte yang dibaca; socket UDP terhubung hanya menerima datagram dari peer |
 | 78 | `shutdown` | `RDI=fd`, `RSI=how` (`SHUT_RD/WR/RDWR`) | 0 |
 | 79 | `getsockname` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=socklen_t*` | 0 |
 | 80 | `getpeername` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=socklen_t*` | 0 |
@@ -108,8 +108,8 @@ menyediakan inline wrappers.
 | 103 | `pwrite` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=offset` | Byte ditulis |
 | 104 | `writev` | `RDI=fd`, `RSI=iov*`, `RDX=iovcnt` | Byte ditulis |
 | 105 | `readv` | `RDI=fd`, `RSI=iov*`, `RDX=iovcnt` | Byte dibaca |
-| 106 | `sendmsg` | — | `-ENOSYS` |
-| 107 | `recvmsg` | — | `-ENOSYS` |
+| 106 | `sendmsg` | — | `-ENOSYS`; libc menyusunnya dari `send`/`sendto`/`write` |
+| 107 | `recvmsg` | — | `-ENOSYS`; libc menyusunnya dari `recv`/`recvfrom`/`read` |
 | 108 | `sysconf` | `RDI=nama _SC_*` | Nilai atau -1 |
 | 109 | `getrlimit` | `RDI=resource`, `RSI=struct rlimit*` | 0; selalu tak terbatas |
 | 110 | `setrlimit` | `RDI=resource`, `RSI=struct rlimit*` | 0; diabaikan |
@@ -135,6 +135,7 @@ menyediakan inline wrappers.
 | 130 | `setpgid` | `RDI=pid`, `RSI=process_group` | 0 |
 | 131 | `getsid` | `RDI=pid` atau 0 | Session ID |
 | 132 | `setsid` | — | Session/process group ID baru |
+| 133 | `sigaltstack` | `RDI=stack_t* baru` (0 untuk baca), `RSI=stack_t* lama` | 0, `-EINVAL`, `-EPERM` bila stack alternatif sedang dipakai |
 
 Nomor 10, 15, 18, 19, 23, 24, 26, dan 49 sudah dicabut dan tetap
 dicadangkan agar nomor syscall berikutnya tidak bergeser; pemanggilannya
@@ -171,7 +172,11 @@ menghentikan proses dengan status `128 + nomor`. `SA_RESETHAND` mengembalikan
 handler ke default setelah sekali jalan, dan `SA_RESTART` membuat syscall yang
 terinterupsi diulang otomatis setelah handler selesai (restorer menulis ulang
 `rip` ke instruksi `int 0x80` dengan nomor syscall asli). `SA_SIGINFO` dan
-`SA_NOCLDSTOP` diterima tetapi belum mengubah perilaku.
+`SA_NOCLDSTOP` diterima tetapi belum mengubah perilaku. `sigaltstack` (133)
+menyimpan stack alternatif; handler ber-`SA_ONSTACK` menulis frame dan berjalan
+di puncak stack itu selama stack alternatif belum aktif, lalu `sigreturn`
+melepasnya kembali. Pembacaan melaporkan `SS_ONSTACK` bila handler sedang
+memakainya dan `SS_DISABLE` bila tidak ada stack alternatif.
 
 Sinyal membangunkan proses yang sedang menunggu di `read`/`write` pada pipe,
 `poll`, `select`, dan `futex`; syscall tersebut kembali dengan `-EINTR` kecuali

@@ -78,6 +78,11 @@ typedef struct {
 #define SA_RESTART 0x10000000
 #define SA_RESETHAND 0x80000000
 #define SA_ONSTACK 0x08000000
+
+#define SS_ONSTACK 1
+#define SS_DISABLE 2
+#define MINSIGSTKSZ 2048
+#define SIGSTKSZ 8192
 #define SA_NODEFER 0x40000000
 #define SIGSTKSZ 8192
 

@@ -30,6 +30,7 @@ extern int errno;
 #define ENETDOWN 100
 #define ENOTCONN 107
 #define ENOTSOCK 88
+#define EDESTADDRREQ 89
 #define ETIMEDOUT 110
 #define EDEADLK 35
 #define EEXIST 17

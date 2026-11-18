@@ -54,8 +54,20 @@ const USER_HEADERS: &[(&str, &[u8])] = &[
         include_bytes!("../../../user/include/dirent.h"),
     ),
     (
+        "/include/dlfcn.h",
+        include_bytes!("../../../user/include/dlfcn.h"),
+    ),
+    (
         "/include/errno.h",
         include_bytes!("../../../user/include/errno.h"),
+    ),
+    (
+        "/include/grp.h",
+        include_bytes!("../../../user/include/grp.h"),
+    ),
+    (
+        "/include/pwd.h",
+        include_bytes!("../../../user/include/pwd.h"),
     ),
     (
         "/include/float.h",

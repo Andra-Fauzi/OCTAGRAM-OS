@@ -83,6 +83,8 @@ struct NetworkState {
 
 pub struct UdpSocket {
     local_port: u16,
+    /// Peer hasil `connect()`; bila ada, `send`/`recv` hanya untuk peer itu.
+    peer: Option<([u8; 4], u16)>,
     received: VecDeque<ReceivedDatagram>,
 }
 
@@ -155,6 +157,7 @@ pub fn udp_socket_readable(socket: &Arc<Mutex<UdpSocket>>) -> bool {
 pub fn create_udp_socket() -> Arc<Mutex<UdpSocket>> {
     Arc::new(Mutex::new(UdpSocket {
         local_port: 0,
+        peer: None,
         received: VecDeque::new(),
     }))
 }
@@ -233,17 +236,61 @@ pub fn send_udp_socket(
     send_udp_ipv4(destination, source_port, destination_port, payload)
 }
 
+/// Hubungkan socket UDP ke satu peer, sehingga `send`/`recv` tidak butuh alamat.
+pub fn connect_udp_socket(
+    socket: &Arc<Mutex<UdpSocket>>,
+    address: [u8; 4],
+    port: u16,
+) -> Result<(), &'static str> {
+    if port == 0 || address == [0; 4] {
+        return Err("invalid UDP peer address");
+    }
+    socket.lock().peer = Some((address, port));
+    Ok(())
+}
+
+/// Kirim datagram ke peer hasil `connect_udp_socket`.
+pub fn send_udp_socket_connected(
+    socket: &Arc<Mutex<UdpSocket>>,
+    payload: &[u8],
+) -> Result<(), &'static str> {
+    let peer = socket.lock().peer.ok_or("UDP socket is not connected")?;
+    send_udp_socket(socket, peer.0, peer.1, payload)
+}
+
 pub fn receive_udp_socket(
     socket: &Arc<Mutex<UdpSocket>>,
     output: &mut [u8],
 ) -> Result<(usize, [u8; 4], u16), &'static str> {
+    let (copied, _total, source_ip, source_port) = receive_udp_socket_length(socket, output)?;
+    Ok((copied, source_ip, source_port))
+}
+
+/// Seperti `receive_udp_socket`, tetapi juga mengembalikan panjang datagram asli
+/// sebelum dipotong ke ukuran buffer, sehingga pemanggil bisa melaporkan
+/// pemotongan (MSG_TRUNC).
+pub fn receive_udp_socket_length(
+    socket: &Arc<Mutex<UdpSocket>>,
+    output: &mut [u8],
+) -> Result<(usize, usize, [u8; 4], u16), &'static str> {
     let mut socket = socket.lock();
-    let Some(datagram) = socket.received.pop_front() else {
-        return Err("UDP socket would block");
+    let peer = socket.peer;
+    let datagram = loop {
+        let Some(datagram) = socket.received.pop_front() else {
+            return Err("UDP socket would block");
+        };
+        /* Socket terhubung hanya menerima datagram dari peer-nya. */
+        if let Some((address, port)) = peer {
+            if datagram.source_ip != address || datagram.source_port != port {
+                continue;
+            }
+        }
+        break datagram;
     };
-    let length = output.len().min(datagram.payload.len());
+    let total = datagram.payload.len();
+    let length = output.len().min(total);
     output[..length].copy_from_slice(&datagram.payload[..length]);
-    Ok((length, datagram.source_ip, datagram.source_port))
+    Ok((length, total, datagram.source_ip, datagram.source_port))
 }
 
 pub fn print_status() {
@@ -953,8 +1000,10 @@ fn checksum(bytes: &[u8]) -> u16 {
 mod tests {
     use super::{
         LinkDevice, MAX_UDP_QUEUE, NetworkConfig, UdpSocket, bind_udp_socket,
-        build_arp_request, build_dhcp_packet, build_udp_frame, checksum, create_udp_socket,
-        parse_dhcp, queue_udp_datagram, receive_ethernet, receive_udp_socket, register_link,
+        build_arp_request, build_dhcp_packet, build_udp_frame, checksum, connect_udp_socket,
+        create_udp_socket, parse_dhcp, queue_udp_datagram,
+        receive_ethernet, receive_udp_socket, receive_udp_socket_length, register_link,
+        send_udp_socket_connected,
         send_udp_socket, unregister_link,
     };
     use alloc::collections::VecDeque;
@@ -1082,6 +1131,7 @@ mod tests {
     fn udp_socket_receives_source_and_payload_and_bounds_its_queue() {
         let socket = Arc::new(Mutex::new(UdpSocket {
             local_port: 53000,
+            peer: None,
             received: VecDeque::new(),
         }));
         {
@@ -1102,6 +1152,22 @@ mod tests {
         assert_eq!(source_port, 53);
         assert_eq!(&output, b"resp");
 
+        {
+            let mut socket_state = socket.lock();
+            assert!(queue_udp_datagram(
+                &mut socket_state,
+                [192, 168, 42, 1],
+                53,
+                b"truncated",
+            ));
+        }
+        let mut small = [0; 4];
+        let (copied, total, _, _) =
+            receive_udp_socket_length(&socket, &mut small).unwrap();
+        assert_eq!(copied, 4);
+        assert_eq!(total, 9);
+        assert_eq!(&small, b"trun");
+
         let mut socket_state = socket.lock();
         for _ in 0..MAX_UDP_QUEUE {
             assert!(queue_udp_datagram(
@@ -1117,6 +1183,69 @@ mod tests {
             53,
             b"overflow",
         ));
+    }
+
+    #[test]
+    fn udp_connected_socket_uses_peer_for_send_and_receive() {
+        let local_mac = [2, 0, 0, 0, 0, 3];
+        let peer_mac = [2, 0, 0, 0, 0, 4];
+        let local_ip = [192, 168, 42, 3];
+        let peer_ip = [192, 168, 42, 4];
+        let link = Arc::new(TestLink {
+            slot_id: 0x5545,
+            mac: local_mac,
+            frames: Mutex::new(Vec::new()),
+        });
+        register_link(link.clone()).unwrap();
+        let _registered_link = RegisteredLink(link.slot_id);
+        {
+            let mut state = super::STATE.lock();
+            state.config = NetworkConfig {
+                mac: local_mac,
+                address: local_ip,
+                netmask: [255, 255, 255, 0],
+                gateway: peer_ip,
+                dns: peer_ip,
+                configured: true,
+            };
+            state.neighbor_ip = peer_ip;
+            state.neighbor_mac = peer_mac;
+        }
+
+        let socket = create_udp_socket();
+        assert_eq!(
+            send_udp_socket_connected(&socket, b"x"),
+            Err("UDP socket is not connected")
+        );
+        assert_eq!(
+            connect_udp_socket(&socket, [0, 0, 0, 0], 53),
+            Err("invalid UDP peer address")
+        );
+        assert_eq!(connect_udp_socket(&socket, peer_ip, 53), Ok(()));
+        let local_port = bind_udp_socket(&socket, 53002).unwrap();
+        send_udp_socket_connected(&socket, b"ping").unwrap();
+        {
+            let frames = link.frames.lock();
+            let frame = frames.last().unwrap();
+            assert_eq!(&frame[30..34], &peer_ip);
+            assert_eq!(&frame[34..36], &local_port.to_be_bytes());
+            assert_eq!(&frame[36..38], &53u16.to_be_bytes());
+            assert_eq!(&frame[42..], b"ping");
+        }
+
+        {
+            let mut state = socket.lock();
+            assert!(queue_udp_datagram(&mut state, [10, 0, 0, 1], 53, b"other"));
+            assert!(queue_udp_datagram(&mut state, peer_ip, 53, b"wanted"));
+        }
+        let mut output = [0; 16];
+        let (copied, total, source_ip, source_port) =
+            receive_udp_socket_length(&socket, &mut output).unwrap();
+        assert_eq!(copied, 6);
+        assert_eq!(total, 6);
+        assert_eq!(&output[..6], b"wanted");
+        assert_eq!(source_ip, peer_ip);
+        assert_eq!(source_port, 53);
     }
 
     #[test]

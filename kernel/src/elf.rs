@@ -23,16 +23,15 @@ const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const MAX_PROGRAM_HEADERS: usize = 128;
 const STACK_PAGES: u64 = 8;
+/// Jumlah halaman entropi untuk menggeser puncak stack user per eksekusi.
+const STACK_RANDOM_PAGES: u64 = 64;
 const MAX_ARGUMENTS: usize = 64;
 const MAX_ARGUMENT_BYTES: usize = 4096;
 const MAX_ENVIRONMENT_VARIABLES: usize = 64;
 const MAX_ENVIRONMENT_BYTES: usize = 4096;
 const STACK_TOP: u64 = paging::USER_ADDRESS_MAX;
-const HEAP_START: u64 = 0x1000_0000;
-const HEAP_PAGES: u64 = 256;
-const HEAP_INITIAL_END: u64 = HEAP_START + HEAP_PAGES * PAGE_SIZE;
 const MMAP_START: u64 = 0x1_0000_0000;
-const MMAP_END: u64 = STACK_TOP - (STACK_PAGES + 1) * PAGE_SIZE;
+const MMAP_END: u64 = STACK_TOP - (STACK_PAGES + STACK_RANDOM_PAGES + 1) * PAGE_SIZE;
 const MAX_USER_PATH: usize = 256;
 const MAX_SYSCALL_IO: usize = 4096;
 const MAX_OPEN_FILES: usize = 16;
@@ -136,6 +135,7 @@ const SYSCALL_GETTIMEOFDAY: u64 = 89;
 const SYSCALL_NANOSLEEP: u64 = 90;
 const SYSCALL_KILL: u64 = 91;
 const SYSCALL_SIGACTION: u64 = 92;
+const SYSCALL_SIGALTSTACK: u64 = 133;
 const SYSCALL_SIGPROCMASK: u64 = 93;
 const SYSCALL_FUTEX: u64 = 94;
 const SYSCALL_SETSOCKOPT: u64 = 95;
@@ -903,6 +903,10 @@ struct UserProcess {
     interrupt_signal: u64,
     restart_number: Option<u64>,
     poll_deadline: Option<u64>,
+    /// Stack alternatif untuk handler ber-`SA_ONSTACK` (0 = tidak ada).
+    alternate_stack: u64,
+    alternate_stack_size: u64,
+    alternate_stack_active: bool,
 }
 
 impl UserProcess {
@@ -928,6 +932,9 @@ impl UserProcess {
             interrupt_signal: 0,
             restart_number: None,
             poll_deadline: None,
+            alternate_stack: 0,
+            alternate_stack_size: 0,
+            alternate_stack_active: false,
         }
     }
 }
@@ -1152,16 +1159,9 @@ pub fn load_with_args_and_environment(
         return Err(ElfError::InvalidHeader);
     }
 
-    let heap_end = HEAP_INITIAL_END;
-    let stack_start = STACK_TOP
-        .checked_sub(STACK_PAGES * PAGE_SIZE)
-        .ok_or(ElfError::AddressRange)?;
-    let guard_start = stack_start
-        .checked_sub(PAGE_SIZE)
-        .ok_or(ElfError::AddressRange)?;
+    let (stack_top, stack_start, guard_start) = stack_layout(next_random_u64())?;
 
-    let mut total_pages = STACK_PAGES + HEAP_PAGES;
-    let mut heap_limit = MMAP_START;
+    let mut total_pages = STACK_PAGES;
     let mmap_entropy = (next_random_u64() % 128) * PAGE_SIZE;
     let mut mmap_cursor = MMAP_START
         .checked_add(mmap_entropy)
@@ -1189,11 +1189,8 @@ pub fn load_with_args_and_environment(
         let start = page_start(segment.virtual_address);
         let end = page_end(segment.virtual_address, segment.memory_size)?;
         mmap_cursor = mmap_cursor.max(end);
-        if (start < STACK_TOP && guard_start < end) || (start < heap_end && HEAP_START < end) {
+        if start < stack_top && guard_start < end {
             return Err(ElfError::AddressRange);
-        }
-        if start >= heap_end && start < heap_limit {
-            heap_limit = start;
         }
         total_pages = total_pages
             .checked_add((end - start) / PAGE_SIZE)
@@ -1249,13 +1246,6 @@ pub fn load_with_args_and_environment(
         for page_index in 0..STACK_PAGES {
             map_zeroed_page(
                 stack_start + page_index * PAGE_SIZE,
-                paging::flags::USER | paging::flags::WRITABLE | paging::flags::NO_EXECUTE,
-                &mut mapped_pages,
-            )?;
-        }
-        for page_index in 0..HEAP_PAGES {
-            map_zeroed_page(
-                HEAP_START + page_index * PAGE_SIZE,
                 paging::flags::USER | paging::flags::WRITABLE | paging::flags::NO_EXECUTE,
                 &mut mapped_pages,
             )?;
@@ -1765,6 +1755,19 @@ fn initialize_fork_frame(frame: &InterruptFrame, stack_top: u64) -> usize {
         (*(frame_pointer as *mut InterruptFrame)).rax = 0;
     }
     frame_pointer
+}
+
+/// Menghitung tata letak stack user: puncak stack digeser 0..STACK_RANDOM_PAGES
+/// halaman ke bawah, diikuti halaman guard tepat di bawah stack.
+fn stack_layout(random: u64) -> Result<(u64, u64, u64), ElfError> {
+    let stack_top = STACK_TOP.saturating_sub((random % STACK_RANDOM_PAGES) * PAGE_SIZE);
+    let stack_start = stack_top
+        .checked_sub(STACK_PAGES * PAGE_SIZE)
+        .ok_or(ElfError::AddressRange)?;
+    let guard_start = stack_start
+        .checked_sub(PAGE_SIZE)
+        .ok_or(ElfError::AddressRange)?;
+    Ok((stack_top, stack_start, guard_start))
 }
 
 fn build_initial_stack(
@@ -2361,6 +2364,7 @@ fn dispatch_syscall(
         SYSCALL_NANOSLEEP => syscall_nanosleep(arg1),
         SYSCALL_KILL => syscall_kill(arg1, arg2),
         SYSCALL_SIGACTION => syscall_sigaction(arg1, arg2, arg3),
+        SYSCALL_SIGALTSTACK => syscall_sigaltstack(arg1, arg2),
         SYSCALL_SIGPROCMASK => syscall_sigprocmask(arg1, arg2, arg3),
         SYSCALL_SIGPENDING => syscall_sigpending(arg1),
         SYSCALL_SIGSUSPEND => syscall_sigsuspend(arg1),
@@ -3575,6 +3579,9 @@ fn new_user_process(
         interrupt_signal: 0,
         restart_number: None,
         poll_deadline: None,
+        alternate_stack: 0,
+        alternate_stack_size: 0,
+        alternate_stack_active: false,
     })
 }
 
@@ -3619,6 +3626,9 @@ fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProces
         interrupt_signal: 0,
         restart_number: None,
         poll_deadline: None,
+        alternate_stack: parent.alternate_stack,
+        alternate_stack_size: parent.alternate_stack_size,
+        alternate_stack_active: false,
     })
 }
 
@@ -4421,8 +4431,8 @@ fn syscall_udp_recvfrom(
     } else {
         unsafe { core::slice::from_raw_parts_mut(address as *mut u8, length) }
     };
-    let (received, source_ip, source_port) =
-        crate::network::receive_udp_socket(&socket, output).map_err(errno_from_network)?;
+    let (_copied, received, source_ip, source_port) =
+        crate::network::receive_udp_socket_length(&socket, output).map_err(errno_from_network)?;
     if source_ip_address != 0 {
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -4594,6 +4604,15 @@ fn syscall_accept(fd: u64, address: u64, length_address: u64) -> Result<u64, i32
 
 fn syscall_connect(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
     let (remote_address, remote_port) = copy_user_sockaddr(address, length)?;
+    match udp_socket_for_fd(fd) {
+        Ok(socket) => {
+            return crate::network::connect_udp_socket(&socket, remote_address, remote_port)
+                .map(|()| 0)
+                .map_err(errno_from_network);
+        }
+        Err(errno) if errno == EINTR => return Err(EINTR),
+        Err(_) => {}
+    }
     crate::network::connect_tcp_socket(&tcp_socket_for_fd(fd)?, remote_address, remote_port)
         .map(|()| 0)
         .map_err(errno_from_network)
@@ -4613,6 +4632,11 @@ fn syscall_send(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i
         paging::validate_user_range(address, length, false).map_err(|_| EFAULT)?;
         unsafe { core::slice::from_raw_parts(address as *const u8, length) }
     };
+    if let Ok(socket) = udp_socket_for_fd(fd) {
+        return crate::network::send_udp_socket_connected(&socket, payload)
+            .map(|()| length as u64)
+            .map_err(errno_from_network);
+    }
     crate::network::send_tcp_socket(&tcp_socket_for_fd(fd)?, payload)
         .map(|length| length as u64)
         .map_err(errno_from_network)
@@ -4635,6 +4659,12 @@ fn syscall_recv(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i
     } else {
         unsafe { core::slice::from_raw_parts_mut(address as *mut u8, length) }
     };
+    if let Ok(socket) = udp_socket_for_fd(fd) {
+        let (copied, _total, _source_ip, _source_port) =
+            crate::network::receive_udp_socket_length(&socket, output)
+                .map_err(errno_from_network)?;
+        return Ok(copied as u64);
+    }
     crate::network::receive_tcp_socket(&tcp_socket_for_fd(fd)?, output, flags & 0x02 != 0)
         .map(|length| length as u64)
         .map_err(errno_from_network)
@@ -4661,6 +4691,8 @@ fn errno_from_network(error: &'static str) -> i32 {
         "UDP socket would block" => EAGAIN,
         "UDP port is already in use" => EADDRINUSE,
         "UDP socket is already bound" => EINVAL,
+        "UDP socket is not connected" => ENOTCONN,
+        "invalid UDP peer address" => EADDRNOTAVAIL,
         "UDP payload exceeds the IPv4 MTU" | "IPv4 payload exceeds the MTU" => EMSGSIZE,
         "no route to destination" => EHOSTUNREACH,
         "TCP accept would block"
@@ -7636,7 +7668,8 @@ mod tests {
     use super::{
         EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPIPE, ElfError,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
-        PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, SYSCALL_MMAP, SYSCALL_MUNMAP, UserDescriptor,
+        PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_PAGES, STACK_RANDOM_PAGES,
+        STACK_TOP, SYSCALL_MMAP, SYSCALL_MUNMAP, UserDescriptor, signal_stack_top, stack_layout,
         UserDirent, WAIT_ANY_PID, apply_creation_mode, apply_load_bias, build_initial_stack,
         create_pipe, dispatch_syscall, errno_from_fs, install_pipe_descriptors, mapping_flags,
         mapping_size, next_runnable, paging, parse, resolve_user_path, stat_mode, user_dirent,
@@ -7652,6 +7685,29 @@ mod tests {
             apply_creation_mode(|| Err(FsError::IoError)),
             Err(FsError::IoError)
         );
+    }
+
+    #[test]
+    fn signal_frames_prefer_the_alternate_stack() {
+        assert_eq!(signal_stack_top(0x7000, None), 0x7000);
+        assert_eq!(signal_stack_top(0x7000, Some((0x1000, 0x2000))), 0x3000);
+        assert_eq!(signal_stack_top(0, Some((0x1000, 0))), 0x1000);
+    }
+
+    #[test]
+    fn stack_layout_is_randomized_and_clear_of_the_mmap_region() {
+        let mut tops = Vec::new();
+        for pages in 0..STACK_RANDOM_PAGES {
+            let (top, start, guard) = stack_layout(pages).expect("stack layout");
+            assert_eq!(top, STACK_TOP - pages * PAGE_SIZE);
+            assert_eq!(top - start, STACK_PAGES * PAGE_SIZE);
+            assert_eq!(start - guard, PAGE_SIZE);
+            assert!(guard > MMAP_END, "stack guard {guard:#x} menimpa mmap");
+            tops.push(top);
+        }
+        tops.sort_unstable();
+        tops.dedup();
+        assert_eq!(tops.len() as u64, STACK_RANDOM_PAGES);
     }
 
     #[test]
@@ -8563,7 +8619,21 @@ const SIGKILL_NUMBER: u64 = 9;
 const SIGSTOP_NUMBER: u64 = 19;
 const SIGNAL_TABLE_LENGTH: usize = 32;
 const SA_RESETHAND_FLAG: u64 = 0x8000_0000;
+const SA_ONSTACK_FLAG: u64 = 0x0800_0000;
 const SA_RESTART_FLAG: u64 = 0x1000_0000;
+const SS_ONSTACK_FLAG: i32 = 1;
+const SS_DISABLE_FLAG: i32 = 2;
+const MINSIGSTKSZ: u64 = 2048;
+
+/// `stack_t` versi OCTAGRAM: sp, flags, padding, size (24 byte).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct UserStack {
+    sp: u64,
+    flags: i32,
+    padding: i32,
+    size: u64,
+}
 
 /// Memeriksa sinyal yang siap dikirim sebelum syscall memblokir. Bila ada,
 /// syscall harus gagal dengan `EINTR`; untuk handler ber-`SA_RESTART` syscall
@@ -8752,6 +8822,56 @@ fn syscall_sigaction(number: u64, action: u64, old_action: u64) -> Result<u64, i
     Ok(0)
 }
 
+fn syscall_sigaltstack(new_stack: u64, old_stack: u64) -> Result<u64, i32> {
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    if old_stack != 0 {
+        paging::validate_user_range(old_stack, core::mem::size_of::<UserStack>(), true)
+            .map_err(|_| EFAULT)?;
+        let mut flags = 0;
+        if process.alternate_stack_active {
+            flags |= SS_ONSTACK_FLAG;
+        }
+        if process.alternate_stack_size == 0 {
+            flags |= SS_DISABLE_FLAG;
+        }
+        let current = UserStack {
+            sp: process.alternate_stack,
+            flags,
+            padding: 0,
+            size: process.alternate_stack_size,
+        };
+        unsafe { (old_stack as *mut UserStack).write_unaligned(current) };
+    }
+    if new_stack != 0 {
+        paging::validate_user_range(new_stack, core::mem::size_of::<UserStack>(), false)
+            .map_err(|_| EFAULT)?;
+        let request = unsafe { (new_stack as *const UserStack).read_unaligned() };
+        if process.alternate_stack_active {
+            return Err(EPERM);
+        }
+        let flags = request.flags as u64;
+        if flags & !((SS_ONSTACK_FLAG | SS_DISABLE_FLAG) as u64) != 0 || request.padding != 0 {
+            return Err(EINVAL);
+        }
+        if request.flags & SS_DISABLE_FLAG != 0 {
+            process.alternate_stack = 0;
+            process.alternate_stack_size = 0;
+        } else {
+            let size = usize::try_from(request.size).map_err(|_| EINVAL)?;
+            if request.sp == 0 || request.size < MINSIGSTKSZ {
+                return Err(EINVAL);
+            }
+            paging::validate_user_range(request.sp, size, true).map_err(|_| EFAULT)?;
+            process.alternate_stack = request.sp;
+            process.alternate_stack_size = request.size;
+        }
+    }
+    Ok(0)
+}
+
 fn syscall_signal(number: u64, handler: u64) -> Result<u64, i32> {
     let mut process = USER_PROCESS.lock();
     if !process.active {
@@ -8877,6 +8997,7 @@ fn syscall_sigreturn(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let restart = {
         let mut process = USER_PROCESS.lock();
         process.blocked_signals = saved.mask;
+        process.alternate_stack_active = false;
         process.restart_number.take()
     };
     if let Some(number) = restart {
@@ -8886,6 +9007,14 @@ fn syscall_sigreturn(frame: &mut InterruptFrame) -> *mut InterruptFrame {
             frame.stack_frame.instruction_pointer.saturating_sub(2);
     }
     frame_pointer
+}
+
+/// Puncak stack untuk frame sinyal: stack alternatif bila tersedia, jika tidak
+/// stack yang sedang dipakai.
+fn signal_stack_top(normal_stack_pointer: u64, alternate: Option<(u64, u64)>) -> u64 {
+    alternate
+        .map(|(base, size)| base.saturating_add(size))
+        .unwrap_or(normal_stack_pointer)
 }
 
 /// Memilih sinyal pending yang bisa dikirim, lalu menyiapkan handler di stack
@@ -8928,8 +9057,20 @@ fn deliver_pending_signal(frame: &mut InterruptFrame) -> Option<*mut InterruptFr
             return Some(terminate_user_inner(frame, 128 + number));
         }
 
-        let stack_pointer = frame.stack_frame.stack_pointer;
+        let original_stack_pointer = frame.stack_frame.stack_pointer;
         let frame_size = core::mem::size_of::<UserSignalFrame>();
+        let alternate = {
+            let process = USER_PROCESS.lock();
+            if action.flags & SA_ONSTACK_FLAG != 0
+                && process.alternate_stack_size != 0
+                && !process.alternate_stack_active
+            {
+                Some((process.alternate_stack, process.alternate_stack_size))
+            } else {
+                None
+            }
+        };
+        let stack_pointer = signal_stack_top(original_stack_pointer, alternate);
         let frame_address = stack_pointer.saturating_sub(frame_size as u64) & !0xF;
         let restorer_address = frame_address.saturating_sub(8);
         if paging::validate_user_range(restorer_address, frame_size + 8, true).is_err() {
@@ -8954,7 +9095,7 @@ fn deliver_pending_signal(frame: &mut InterruptFrame) -> Option<*mut InterruptFr
             r15: frame.r15,
             rip: frame.stack_frame.instruction_pointer,
             rflags: frame.stack_frame.cpu_flags,
-            rsp: stack_pointer,
+            rsp: original_stack_pointer,
             mask: blocked,
             signum: number,
         };
@@ -8972,6 +9113,9 @@ fn deliver_pending_signal(frame: &mut InterruptFrame) -> Option<*mut InterruptFr
         let mut process = USER_PROCESS.lock();
         process.pending_signals &= !(1u64 << (number - 1));
         process.blocked_signals |= (1u64 << (number - 1)) | action.mask;
+        if alternate.is_some() {
+            process.alternate_stack_active = true;
+        }
         if action.flags & SA_RESETHAND_FLAG != 0 {
             process.signal_handlers[number as usize].handler = 0;
         }

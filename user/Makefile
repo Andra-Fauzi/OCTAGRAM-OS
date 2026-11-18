@@ -12,7 +12,7 @@ CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
 	-mno-mmx -msse2 -mfpmath=387 -DOCTAGRAM_TLS_ERRNO \
 	-Iinclude
 LDFLAGS := -m elf_x86_64 -static -nostdlib -T linker.ld
-PROGRAMS := hello file_demo runtime_demo tty_demo argv_demo spawn_demo pipe_demo env_demo posix_demo stdio_demo posix_spawn_demo file_api_demo path_api_demo at_api_demo execve_demo fork_demo time_demo mmap_demo scanf_demo tls_demo thread_demo fb_demo syscall_compat_demo
+PROGRAMS := hello file_demo runtime_demo tty_demo argv_demo spawn_demo pipe_demo env_demo posix_demo stdio_demo posix_spawn_demo file_api_demo path_api_demo at_api_demo execve_demo fork_demo time_demo mmap_demo scanf_demo tls_demo thread_demo fb_demo syscall_compat_demo account_demo socket_msg_demo netdb_demo dns_demo cxa_atexit_demo
 BINARIES := $(addprefix build/,$(addsuffix .elf,$(PROGRAMS)))
 HEADERS := $(wildcard include/*.h include/sys/*.h include/netinet/*.h)
 TCC_SOURCES := tcc libtcc tccpp tccgen tccdbg tccelf tccasm tccrun \
@@ -45,19 +45,33 @@ TCC_LIBTCC1 := build/libtcc1.a
 TCC_LIBC := build/libc.a
 LDSO_ELF := build/ld-octagram.elf
 DYNAMIC_DEMO := build/dynamic_demo.elf
+COPY_DEMO := build/copy_reloc_demo.elf
+VERSIONED_DEMO := build/versioned_demo.elf
+DLOPEN_DEMO := build/dlopen_demo.elf
+ASLR_DEMO := build/aslr_demo.elf
+DYNLIB_VERSIONS := ldso/dynlib.versions
 DYNAMIC_LIBRARY := build/libdyn_demo.so
 SHARED_LIBC := build/liboctagram.so
 LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 
-.PHONY: all clean rust scanf-test dynamic
-all: $(BINARIES) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO)
+.PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test dynamic
+all: $(BINARIES) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
 
-dynamic: $(LDSO_ELF) $(SHARED_LIBC) $(DYNAMIC_LIBRARY) $(DYNAMIC_DEMO)
+dynamic: $(LDSO_ELF) $(SHARED_LIBC) $(DYNAMIC_LIBRARY) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 scanf-test: build/scanf_runtime_test
 	./build/scanf_runtime_test
+
+cxa-test: build/cxa_atexit_test
+	./build/cxa_atexit_test
+
+resolv-test: build/resolv_conf_test
+	./build/resolv_conf_test
+
+ipv6-test: build/ipv6_test
+	./build/ipv6_test
 
 rust:
 	$(MAKE) -C rust
@@ -123,10 +137,27 @@ $(SHARED_LIBC): build/runtime.pic.o
 build/dynlib.o: examples/dynlib.c $(HEADERS) | build
 	$(CC) $(PIC_CFLAGS) -c -o $@ $<
 
-$(DYNAMIC_LIBRARY): build/dynlib.o
-	$(LD) -m elf_x86_64 -shared --hash-style=gnu -soname libdyn_demo.so -o $@ $<
+$(DYNAMIC_LIBRARY): build/dynlib.o $(DYNLIB_VERSIONS)
+	$(LD) -m elf_x86_64 -shared --hash-style=gnu -soname libdyn_demo.so \
+		--version-script=$(DYNLIB_VERSIONS) -o $@ $<
 
 build/dynamic_demo.o: examples/dynamic_demo.c $(HEADERS) | build
+	$(CC) $(PIC_CFLAGS) -c -o $@ $<
+
+# Executable non-PIC (ET_EXEC) agar ld menghasilkan relokasi R_X86_64_COPY
+# untuk data yang berasal dari shared library.
+build/copy_reloc_demo.o: examples/copy_reloc_demo.c $(HEADERS) | build
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Simbol berversi diperiksa pada executable non-PIC yang sama-sama ET_EXEC.
+build/versioned_demo.o: examples/versioned_demo.c $(HEADERS) | build
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Demo dlopen tidak menautkan libdyn_demo; library dimuat saat runtime.
+build/dlopen_demo.o: examples/dlopen_demo.c $(HEADERS) | build
+	$(CC) $(PIC_CFLAGS) -c -o $@ $<
+
+build/aslr_demo.o: examples/aslr_demo.c $(HEADERS) | build
 	$(CC) $(PIC_CFLAGS) -c -o $@ $<
 
 build/tls_demo.o: examples/tls_demo.c $(HEADERS) | build
@@ -136,6 +167,30 @@ $(DYNAMIC_DEMO): build/dynamic_demo.o build/crt0.pic.o $(SHARED_LIBC) $(DYNAMIC_
 	$(LD) -m elf_x86_64 -pie --hash-style=gnu -z now \
 		-dynamic-linker /lib/ld-octagram.so -e _start \
 		-o $@ build/crt0.pic.o build/dynamic_demo.o \
+		-Lbuild -loctagram -ldyn_demo
+
+$(COPY_DEMO): build/copy_reloc_demo.o build/crt0.o $(SHARED_LIBC) $(DYNAMIC_LIBRARY)
+	$(LD) -m elf_x86_64 --hash-style=gnu -z now \
+		-dynamic-linker /lib/ld-octagram.so -e _start \
+		-o $@ build/crt0.o build/copy_reloc_demo.o \
+		-Lbuild -loctagram -ldyn_demo
+
+$(VERSIONED_DEMO): build/versioned_demo.o build/crt0.o $(SHARED_LIBC) $(DYNAMIC_LIBRARY)
+	$(LD) -m elf_x86_64 --hash-style=gnu -z now \
+		-dynamic-linker /lib/ld-octagram.so -e _start \
+		-o $@ build/crt0.o build/versioned_demo.o \
+		-Lbuild -loctagram -ldyn_demo
+
+$(DLOPEN_DEMO): build/dlopen_demo.o build/crt0.pic.o $(SHARED_LIBC) $(DYNAMIC_LIBRARY)
+	$(LD) -m elf_x86_64 -pie --hash-style=gnu -z now \
+		-dynamic-linker /lib/ld-octagram.so -e _start \
+		-o $@ build/crt0.pic.o build/dlopen_demo.o \
+		-Lbuild -loctagram
+
+$(ASLR_DEMO): build/aslr_demo.o build/crt0.pic.o $(SHARED_LIBC) $(DYNAMIC_LIBRARY)
+	$(LD) -m elf_x86_64 -pie --hash-style=gnu -z now \
+		-dynamic-linker /lib/ld-octagram.so -e _start \
+		-o $@ build/crt0.pic.o build/aslr_demo.o \
 		-Lbuild -loctagram -ldyn_demo
 
 build/%.elf: build/%.o build/crt0.o build/runtime.o linker.ld
@@ -155,6 +210,30 @@ build/scanf_runtime_start.o: tests/scanf_runtime_start.S | build
 	$(HOSTAS) --64 -o $@ $<
 
 build/scanf_runtime_test: build/scanf_runtime_start.o build/scanf_runtime_test.o build/scanf_runtime.o
+	$(HOSTLD) -m elf_x86_64 -static --gc-sections -e _start -o $@ $^
+
+build/cxa_atexit_test.o: tests/cxa_atexit_test.c $(HEADERS) | build
+	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -ffunction-sections -fdata-sections \
+		-Iinclude -c -o $@ $<
+
+build/cxa_atexit_test: build/scanf_runtime_start.o build/cxa_atexit_test.o build/scanf_runtime.o
+	$(HOSTLD) -m elf_x86_64 -static --gc-sections -e _start -o $@ $^
+
+build/resolv_conf_test.o: tests/resolv_conf_test.c $(HEADERS) | build
+	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -ffunction-sections -fdata-sections \
+		-Iinclude -c -o $@ $<
+
+build/resolv_conf_test: build/scanf_runtime_start.o build/resolv_conf_test.o build/scanf_runtime.o
+	$(HOSTLD) -m elf_x86_64 -static --gc-sections -e _start -o $@ $^
+
+build/ipv6_test.o: tests/ipv6_test.c $(HEADERS) | build
+	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
+		-fno-stack-protector -fno-pie -ffunction-sections -fdata-sections \
+		-Iinclude -c -o $@ $<
+
+build/ipv6_test: build/scanf_runtime_start.o build/ipv6_test.o build/scanf_runtime.o
 	$(HOSTLD) -m elf_x86_64 -static --gc-sections -e _start -o $@ $^
 
 build/tcc_signals.o: tcc_signals.c | build

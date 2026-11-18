@@ -49,10 +49,16 @@
 #define DT_PLTRELSZ 2
 #define DT_PLTREL 20
 #define DT_RELACOUNT 0x6ffffff9
+#define DT_VERSYM 0x6ffffff0
+#define DT_VERDEF 0x6ffffffc
+#define DT_VERDEFNUM 0x6ffffffd
+#define DT_VERNEED 0x6ffffffe
+#define DT_VERNEEDNUM 0x6fffffff
 #define R_X86_64_64 1
 #define R_X86_64_PC32 2
 #define R_X86_64_GLOB_DAT 6
 #define R_X86_64_JUMP_SLOT 7
+#define R_X86_64_COPY 5
 #define R_X86_64_RELATIVE 8
 #define R_X86_64_32 10
 #define R_X86_64_32S 11
@@ -114,6 +120,42 @@ typedef struct {
 } Rela;
 
 typedef struct {
+    uint16_t version;
+    uint16_t flags;
+    uint16_t index;
+    uint16_t count;
+    uint32_t hash;
+    uint32_t aux;
+    uint32_t next;
+} Verdef;
+
+typedef struct {
+    uint32_t name;
+    uint32_t next;
+} Verdaux;
+
+typedef struct {
+    uint16_t version;
+    uint16_t count;
+    uint32_t file;
+    uint32_t aux;
+    uint32_t next;
+} Verneed;
+
+typedef struct {
+    uint32_t hash;
+    uint16_t flags;
+    uint16_t other;
+    uint32_t name;
+    uint32_t next;
+} Vernaux;
+
+_Static_assert(sizeof(Verdef) == 20, "Elf64_Verdef must be 20 bytes");
+_Static_assert(sizeof(Verdaux) == 8, "Elf64_Verdaux must be 8 bytes");
+_Static_assert(sizeof(Verneed) == 16, "Elf64_Verneed must be 16 bytes");
+_Static_assert(sizeof(Vernaux) == 16, "Elf64_Vernaux must be 16 bytes");
+
+typedef struct {
     uint64_t tag;
     uint64_t value;
 } Auxiliary;
@@ -144,6 +186,16 @@ typedef struct {
     uint64_t fini_address;
     uint64_t *fini_array;
     uint64_t fini_array_size;
+    uint16_t *version_table;
+    Verdef *verdef;
+    uint32_t verdef_count;
+    Verneed *verneed;
+    uint32_t verneed_count;
+    int relocated;
+    int loaded;
+    unsigned references;
+    uint64_t reservation;
+    uint64_t reservation_size;
 } Object;
 
 static Object objects[MAX_OBJECTS];
@@ -405,6 +457,24 @@ static int read_dynamic(Object *object, uint64_t address)
             }
             object->fini_array_size = entry->value / sizeof(uint64_t);
             break;
+        case DT_VERSYM:
+            object->version_table =
+                (uint16_t *)(uintptr_t)dynamic_pointer(object, entry->value);
+            break;
+        case DT_VERDEF:
+            object->verdef =
+                (Verdef *)(uintptr_t)dynamic_pointer(object, entry->value);
+            break;
+        case DT_VERDEFNUM:
+            object->verdef_count = (uint32_t)entry->value;
+            break;
+        case DT_VERNEED:
+            object->verneed =
+                (Verneed *)(uintptr_t)dynamic_pointer(object, entry->value);
+            break;
+        case DT_VERNEEDNUM:
+            object->verneed_count = (uint32_t)entry->value;
+            break;
         case DT_HASH:
             object->hash = (uint32_t *)(uintptr_t)dynamic_pointer(object, entry->value);
             break;
@@ -566,6 +636,10 @@ static int map_shared_object(const char *name, Object *object)
                (size_t)header->phnum * sizeof(ProgramHeader));
     object->headers = object->header_table;
     object->header_count = header->phnum;
+    object->loaded = 1;
+    object->references = 1;
+    object->reservation = (uint64_t)(uintptr_t)reservation;
+    object->reservation_size = span;
     if (string_copy(object->name, name, sizeof(object->name)) != 0) {
         oct_close(fd);
         return -1;
@@ -620,11 +694,108 @@ static uint64_t object_symbol_count(const Object *object)
     return object->symbol_count;
 }
 
-static uint64_t find_symbol(const char *name, Object **definition)
+static const char *version_need_name(const Object *object, uint32_t index)
+{
+    if (object->verneed == 0 || object->strings == 0 || index < 2) {
+        return 0;
+    }
+    uint32_t offset = 0;
+    for (uint32_t entry = 0; entry < object->verneed_count && entry < 64; ++entry) {
+        Verneed *need = (Verneed *)((unsigned char *)object->verneed + offset);
+        uint32_t aux_offset = 0;
+        for (uint16_t aux_index = 0; aux_index < need->count && aux_index < 64;
+             ++aux_index) {
+            Vernaux *aux = (Vernaux *)((unsigned char *)need + need->aux
+                                      + aux_offset);
+            if (aux->other == index) {
+                return object->strings + aux->name;
+            }
+            if (aux->next == 0) {
+                break;
+            }
+            aux_offset += aux->next;
+        }
+        if (need->next == 0) {
+            break;
+        }
+        offset += need->next;
+    }
+    return 0;
+}
+
+static int version_definition(const Object *object, uint32_t symbol_index,
+                              uint32_t *index_out, const char **name_out)
+{
+    *index_out = 0;
+    if (name_out != 0) {
+        *name_out = 0;
+    }
+    if (object->version_table == 0 || symbol_index >= object->symbol_count) {
+        return 1;
+    }
+    uint32_t index = object->version_table[symbol_index] & 0x7fffu;
+    *index_out = index;
+    if (index < 2) {
+        return 1;
+    }
+    if (object->verdef == 0 || object->strings == 0) {
+        return 0;
+    }
+    uint32_t offset = 0;
+    for (uint32_t entry = 0; entry < object->verdef_count && entry < 64; ++entry) {
+        Verdef *definition = (Verdef *)((unsigned char *)object->verdef + offset);
+        if (definition->index == index) {
+            Verdaux *aux = (Verdaux *)((unsigned char *)definition
+                                       + definition->aux);
+            if (name_out != 0) {
+                *name_out = object->strings + aux->name;
+            }
+            return 0;
+        }
+        if (definition->next == 0) {
+            break;
+        }
+        offset += definition->next;
+    }
+    return 0;
+}
+
+/* Nama versi yang diminta referensi simbol, atau NULL untuk referensi tanpa versi. */
+static const char *symbol_version_requirement(const Object *object,
+                                             uint32_t symbol_index)
+{
+    if (object->version_table == 0 || symbol_index >= object->symbol_count) {
+        return 0;
+    }
+    return version_need_name(object, object->version_table[symbol_index] & 0x7fffu);
+}
+
+static int symbol_version_matches(const char *required, const Object *object,
+                                  uint32_t symbol_index)
+{
+    uint32_t index = 0;
+    const char *name = 0;
+    int unversioned = version_definition(object, symbol_index, &index, &name);
+    if (required == 0) {
+        /* Referensi tanpa versi memakai definisi tanpa versi atau versi default (2). */
+        return unversioned != 0 || index == 2;
+    }
+    return unversioned == 0 && name != 0 && string_equal(name, required);
+}
+
+static uint64_t find_symbol_outside(const char *name, const char *required_version,
+                                    const Object *excluded,
+                                    Object **definition, uint64_t *size)
 {
     *definition = 0;
+    if (size != 0) {
+        *size = 0;
+    }
     for (unsigned object_index = 0; object_index < object_count; ++object_index) {
         Object *object = &objects[object_index];
+        if (object == excluded) {
+            continue;
+        }
         uint64_t count = object_symbol_count(object);
         if (count > 65536) {
             return UINT64_MAX;
@@ -639,7 +810,13 @@ static uint64_t find_symbol(const char *name, Object **definition)
                 || !string_equal(object->strings + symbol->name, name)) {
                 continue;
             }
+            if (!symbol_version_matches(required_version, object, (uint32_t)index)) {
+                continue;
+            }
             *definition = object;
+            if (size != 0) {
+                *size = symbol->size;
+            }
             return object->base + symbol->value;
         }
     }
@@ -669,7 +846,8 @@ static int resolve_rela(Object *object, Rela *relocations, uint64_t size)
         }
         if (type != R_X86_64_64 && type != R_X86_64_GLOB_DAT
             && type != R_X86_64_JUMP_SLOT && type != R_X86_64_PC32
-            && type != R_X86_64_32 && type != R_X86_64_32S) {
+            && type != R_X86_64_32 && type != R_X86_64_32S
+            && type != R_X86_64_COPY) {
             return -12;
         }
         uint64_t symbol_count = object_symbol_count(object);
@@ -681,8 +859,36 @@ static int resolve_rela(Object *object, Rela *relocations, uint64_t size)
         if (dynamic_string_length(object, symbol->name, &name_length) != 0) {
             return -14;
         }
+        const char *required_version = symbol_version_requirement(object,
+                                                                  symbol_index);
+        if (type == R_X86_64_COPY) {
+            /* Salinan data dari library; target adalah definisi milik executable. */
+            Object *definition = 0;
+            uint64_t copy_size = 0;
+            uint64_t source = find_symbol_outside(object->strings + symbol->name,
+                                                  required_version, object,
+                                                  &definition, &copy_size);
+            (void)definition;
+            if (source == UINT64_MAX) {
+                if ((symbol->info >> 4) == STB_WEAK) {
+                    continue;
+                }
+                return -15;
+            }
+            if (copy_size > 65536) {
+                return -17;
+            }
+            if (copy_size != 0) {
+                copy_bytes((void *)(uintptr_t)target,
+                           (const void *)(uintptr_t)source,
+                           (size_t)copy_size);
+            }
+            continue;
+        }
         Object *definition;
-        uint64_t resolved = find_symbol(object->strings + symbol->name, &definition);
+        uint64_t resolved = find_symbol_outside(object->strings + symbol->name,
+                                                required_version, 0,
+                                                &definition, 0);
         if (resolved == UINT64_MAX) {
             if (symbol->section == SHN_UNDEF && (symbol->info >> 4) == STB_WEAK) {
                 resolved = 0;
@@ -705,28 +911,28 @@ static int resolve_rela(Object *object, Rela *relocations, uint64_t size)
     return 0;
 }
 
-static int apply_relocations(void)
+static int relocate_object(Object *object)
 {
-    for (unsigned i = 0; i < object_count; ++i) {
-        Object *object = &objects[i];
-        if (object->rela_size != 0) {
-            int result = resolve_rela(object, object->rela, object->rela_size);
-            if (result != 0) {
-                return result;
-            }
-        }
-        if (object->plt_rela_size != 0) {
-            if (object->plt_rela_type != DT_RELA) {
-                return -16;
-            }
-            int result = resolve_rela(object, object->plt_rela, object->plt_rela_size);
-            if (result != 0) {
-                return result;
-            }
+    if (object->relocated) {
+        return 0;
+    }
+    if (object->rela_size != 0) {
+        int result = resolve_rela(object, object->rela, object->rela_size);
+        if (result != 0) {
+            return result;
         }
     }
-    for (unsigned i = 1; i < object_count; ++i) {
-        Object *object = &objects[i];
+    if (object->plt_rela_size != 0) {
+        if (object->plt_rela_type != DT_RELA) {
+            return -16;
+        }
+        int result = resolve_rela(object, object->plt_rela, object->plt_rela_size);
+        if (result != 0) {
+            return result;
+        }
+    }
+    if (object != &objects[0]) {
+        /* Executable sudah dipetakan kernel dengan permission yang benar. */
         for (uint16_t j = 0; j < object->header_count; ++j) {
             ProgramHeader *header = &object->headers[j];
             if (header->type != PT_LOAD || header->memsz == 0) {
@@ -744,40 +950,278 @@ static int apply_relocations(void)
             }
         }
     }
+    object->relocated = 1;
+    return 0;
+}
+
+static int apply_relocations(void)
+{
+    for (unsigned i = 0; i < object_count; ++i) {
+        int result = relocate_object(&objects[i]);
+        if (result != 0) {
+            return result;
+        }
+    }
     return 0;
 }
 
 static void start_application(uint64_t entry, uint64_t stack_pointer)
     __attribute__((noreturn));
 
-static void run_initializers(void)
+static void run_object_initializers(Object *object)
 {
-    for (unsigned i = 1; i < object_count; ++i) {
-        Object *object = &objects[i];
-        if (object->init_address != 0) {
-            ((void (*)(void))(uintptr_t)object->init_address)();
-        }
-        if (object->init_array != 0) {
-            for (uint64_t index = 0; index < object->init_array_size; ++index) {
-                uint64_t address = object->init_array[index];
-                if (address != 0) {
-                    ((void (*)(void))(uintptr_t)address)();
-                }
-            }
-        }
+    if (object->init_address != 0) {
+        ((void (*)(void))(uintptr_t)object->init_address)();
     }
-    Object *main_object = &objects[0];
-    if (main_object->init_address != 0) {
-        ((void (*)(void))(uintptr_t)main_object->init_address)();
-    }
-    if (main_object->init_array != 0) {
-        for (uint64_t index = 0; index < main_object->init_array_size; ++index) {
-            uint64_t address = main_object->init_array[index];
+    if (object->init_array != 0) {
+        for (uint64_t index = 0; index < object->init_array_size; ++index) {
+            uint64_t address = object->init_array[index];
             if (address != 0) {
                 ((void (*)(void))(uintptr_t)address)();
             }
         }
     }
+}
+
+static void run_initializers(void)
+{
+    for (unsigned i = 1; i < object_count; ++i) {
+        run_object_initializers(&objects[i]);
+    }
+    run_object_initializers(&objects[0]);
+}
+
+static void run_object_finalizers(Object *object)
+{
+    if (object->fini_array != 0) {
+        for (uint64_t index = object->fini_array_size; index > 0; --index) {
+            uint64_t address = object->fini_array[index - 1];
+            if (address != 0) {
+                ((void (*)(void))(uintptr_t)address)();
+            }
+        }
+    }
+    if (object->fini_address != 0) {
+        ((void (*)(void))(uintptr_t)object->fini_address)();
+    }
+}
+
+static uint64_t find_symbol_in_object(const Object *object, const char *name);
+
+/* Jalankan handler __cxa_atexit milik satu library (destructor C++) sebelum
+ * petanya dilepas. DSO dikenali dari simbol __dso_handle library tersebut. */
+static void run_cxa_finalizers(Object *object)
+{
+    Object *definition = 0;
+    uint64_t finalize = find_symbol_outside("__cxa_finalize", 0, 0, &definition, 0);
+    (void)definition;
+    if (finalize == UINT64_MAX) {
+        return;
+    }
+    uint64_t dso = find_symbol_in_object(object, "__dso_handle");
+    if (dso == UINT64_MAX) {
+        return;
+    }
+    ((void (*)(void *))(uintptr_t)finalize)((void *)(uintptr_t)dso);
+}
+
+static void run_finalizers(void)
+{
+    /* Executable lebih dulu, lalu library dalam urutan muat terbalik. */
+    for (unsigned step = 0; step < object_count; ++step) {
+        Object *object = step == 0 ? &objects[0] : &objects[object_count - step];
+        if (object->loaded) {
+            run_object_finalizers(object);
+        }
+    }
+}
+
+static void register_finalizer(void)
+{
+    Object *definition = 0;
+    uint64_t address = find_symbol_outside("atexit", 0, 0, &definition, 0);
+    (void)definition;
+    if (address != UINT64_MAX) {
+        ((int (*)(void (*)(void)))(uintptr_t)address)(run_finalizers);
+    }
+}
+
+static uint64_t find_symbol_in_object(const Object *object, const char *name)
+{
+    uint64_t count = object_symbol_count(object);
+    if (count > 65536) {
+        return UINT64_MAX;
+    }
+    for (uint64_t index = 0; index < count; ++index) {
+        Symbol *symbol = &object->symbols[index];
+        unsigned binding = symbol->info >> 4;
+        size_t name_length;
+        if (symbol->section == SHN_UNDEF
+            || dynamic_string_length(object, symbol->name, &name_length) != 0
+            || (binding != STB_GLOBAL && binding != STB_WEAK)
+            || !string_equal(object->strings + symbol->name, name)) {
+            continue;
+        }
+        if (!symbol_version_matches(0, object, (uint32_t)index)) {
+            continue;
+        }
+        return object->base + symbol->value;
+    }
+    return UINT64_MAX;
+}
+
+static uint64_t find_symbol_from(unsigned first, const char *name)
+{
+    for (unsigned index = first; index < object_count; ++index) {
+        uint64_t address = find_symbol_in_object(&objects[index], name);
+        if (address != UINT64_MAX) {
+            return address;
+        }
+    }
+    return UINT64_MAX;
+}
+
+/* Cari objek yang memuat alamat tertentu, dipakai oleh RTLD_NEXT. */
+static int object_containing(uint64_t address)
+{
+    for (unsigned index = 0; index < object_count; ++index) {
+        const Object *object = &objects[index];
+        for (uint16_t header_index = 0; header_index < object->header_count;
+             ++header_index) {
+            const ProgramHeader *program = &object->headers[header_index];
+            if (program->type != PT_LOAD || program->memsz == 0) {
+                continue;
+            }
+            uint64_t start = object->base + program->vaddr;
+            uint64_t end = start + program->memsz;
+            if (end > start && address >= start && address < end) {
+                return (int)index;
+            }
+        }
+    }
+    return -1;
+}
+
+static void *ldso_dlsym_next(const char *name, uint64_t caller)
+{
+    if (name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    int owner = object_containing(caller);
+    unsigned first = owner < 0 ? 0u : (unsigned)owner + 1u;
+    uint64_t address = find_symbol_from(first, name);
+    return address == UINT64_MAX ? 0 : (void *)(uintptr_t)address;
+}
+
+static void *ldso_dlopen(const char *name)
+{
+    if (name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    /* Library yang sudah dimuat tidak dipetakan ulang; tambah referensi. */
+    for (unsigned index = 1; index < object_count; ++index) {
+        Object *existing = &objects[index];
+        if (existing->loaded && string_equal(existing->name, name)) {
+            ++existing->references;
+            return (void *)(uintptr_t)(index + 1);
+        }
+    }
+    Object *object = 0;
+    for (unsigned index = 1; index < object_count; ++index) {
+        if (!objects[index].loaded) {
+            object = &objects[index];
+            break;
+        }
+    }
+    if (object == 0) {
+        if (object_count >= MAX_OBJECTS) {
+            return 0;
+        }
+        object = &objects[object_count];
+        ++object_count;
+    }
+    if (map_shared_object(name, object) != 0) {
+        if (object->reservation != 0 && object->reservation_size != 0) {
+            oct_syscall2(17, object->reservation, object->reservation_size);
+        }
+        clear_bytes(object, sizeof(*object));
+        return 0;
+    }
+    if (relocate_object(object) != 0) {
+        if (object->reservation != 0 && object->reservation_size != 0) {
+            oct_syscall2(17, object->reservation, object->reservation_size);
+        }
+        clear_bytes(object, sizeof(*object));
+        return 0;
+    }
+    run_object_initializers(object);
+    return (void *)(uintptr_t)((uintptr_t)(object - objects) + 1);
+}
+
+static void *ldso_dlsym(void *handle, const char *name)
+{
+    if (name == 0 || name[0] == '\0') {
+        return 0;
+    }
+    if (handle == 0) {
+        /* RTLD_DEFAULT: seluruh objek yang dimuat, executable lebih dulu. */
+        uint64_t address = find_symbol_from(0, name);
+        return address == UINT64_MAX ? 0 : (void *)(uintptr_t)address;
+    }
+    uintptr_t index = (uintptr_t)handle;
+    if (index == 0 || index > object_count) {
+        return 0;
+    }
+    uint64_t address = find_symbol_in_object(&objects[index - 1], name);
+    return address == UINT64_MAX ? 0 : (void *)(uintptr_t)address;
+}
+
+static int ldso_dlclose(void *handle)
+{
+    uintptr_t index = (uintptr_t)handle;
+    if (index < 2 || index > object_count) {
+        return -1;
+    }
+    Object *object = &objects[index - 1];
+    if (!object->loaded) {
+        return -1;
+    }
+    if (object->references > 1) {
+        --object->references;
+        return 0;
+    }
+    /* Destructor harus berjalan selama kode library masih terpetakan. */
+    run_object_finalizers(object);
+    run_cxa_finalizers(object);
+    if (object->reservation != 0 && object->reservation_size != 0) {
+        if (oct_syscall2(17, object->reservation, object->reservation_size) < 0) {
+            return -1;
+        }
+    }
+    clear_bytes(object, sizeof(*object));
+    return 0;
+}
+
+static void register_pointer_symbol(const char *name, void *value)
+{
+    Object *definition = 0;
+    uint64_t address = find_symbol_outside(name, 0, 0, &definition, 0);
+    (void)definition;
+    if (address != UINT64_MAX) {
+        *(void **)(uintptr_t)address = value;
+    }
+}
+
+static void register_dynamic_loading(void)
+{
+    register_pointer_symbol("__oct_dlopen_hook",
+                            (void *)(uintptr_t)ldso_dlopen);
+    register_pointer_symbol("__oct_dlsym_hook",
+                            (void *)(uintptr_t)ldso_dlsym);
+    register_pointer_symbol("__oct_dlsym_next_hook",
+                            (void *)(uintptr_t)ldso_dlsym_next);
+    register_pointer_symbol("__oct_dlclose_hook",
+                            (void *)(uintptr_t)ldso_dlclose);
 }
 
 void oct_ldso_main(uint64_t *initial_stack)
@@ -891,6 +1335,8 @@ void oct_ldso_main(uint64_t *initial_stack)
         fail("ld-octagram: relocation processing failed");
     }
     run_initializers();
+    register_finalizer();
+    register_dynamic_loading();
     start_application(program_entry, (uint64_t)(uintptr_t)initial_stack);
 }
 

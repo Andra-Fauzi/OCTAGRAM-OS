@@ -608,6 +608,12 @@ static inline int64_t oct_sigprocmask(int64_t how, const void *set,
                         (uint64_t)(uintptr_t)old_set);
 }
 
+static inline int64_t oct_sigaltstack(const void *new_stack, void *old_stack)
+{
+    return oct_syscall2(133, (uint64_t)(uintptr_t)new_stack,
+                        (uint64_t)(uintptr_t)old_stack);
+}
+
 static inline int64_t oct_futex(uint32_t *address, int64_t operation,
                                 uint32_t value)
 {

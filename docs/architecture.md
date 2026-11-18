@@ -41,10 +41,12 @@ menyalin halaman user secara eager; copy-on-write dan SMP belum tersedia.
 
 Loader menerima little-endian ELF64 `ET_EXEC`, memeriksa program headers,
 menolak dynamic/interpreter dan segmen writable+executable, lalu menyalin
-segmen ke alamat virtual yang diminta. Program mendapat stack 8 halaman dan
-heap image awal 1 MiB pada alamat `0x10000000`. Runtime memakai pemetaan
-anonim tambahan melalui `mmap`/`munmap`, dibatasi oleh alamat
-virtual dan frame fisik yang tersedia, bukan kuota halaman tetap. Pemetaan user
+segmen ke alamat virtual yang diminta. Program mendapat stack 8 halaman
+yang puncaknya digeser acak 0–63 halaman tiap `execve`. Tidak ada heap image
+beralamat tetap: `brk`/`sbrk` dan `malloc` tumbuh dari cursor `mmap` yang sudah
+diberi entropi 0–127 halaman, memakai pemetaan anonim melalui `mmap`/`munmap`,
+dibatasi oleh alamat virtual dan frame fisik yang tersedia, bukan kuota halaman
+tetap. Pemetaan user
 berada di page table privat tiap image, sedangkan pemetaan kernel dibagikan.
 
 ## Filesystem dan terminal

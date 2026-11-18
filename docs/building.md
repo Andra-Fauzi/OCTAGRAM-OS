@@ -11,7 +11,8 @@ cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-li
 make -C kernel KARCH=x86_64
 ```
 
-`make -C kernel` membuat binary kernel; target root repository membuat ISO
+Program Rust user (`user/rust`) ditautkan dengan `ld.lld`; sediakan lewat paket
+`lld` atau symlink ke `ld.lld` bawaan toolchain Rust. `make -C kernel` membuat binary kernel; target root repository membuat ISO
 Limine dengan `make all` dan menjalankannya melalui QEMU dengan `make run`.
 Image memerlukan dependency yang dicantumkan di README utama, termasuk
 `xorriso` untuk ISO dan `qemu-system-x86_64` untuk menjalankan QEMU.
@@ -49,10 +50,26 @@ misalnya `make -C user CROSS_COMPILE=x86_64-elf-`. Bisa juga override `CC`,
 `AS`, atau `LD` dari command line.
 
 Target `dynamic` membangun `/lib/ld-octagram.so`, shared libc OCTAGRAM,
-shared library contoh, dan executable dinamis. Jalankan `/bin/dynamic-demo`
-setelah boot untuk menguji loader dan pemanggilan libc bersama. Batas format
-ELF dan relocation yang tersedia dicatat di
-[`docs/porting-apps.md`](porting-apps.md).
+shared library contoh (dengan version script), executable dinamis PIE,
+executable non-PIC `copy_reloc_demo.elf` yang menguji relokasi `R_X86_64_COPY`,
+serta `versioned_demo.elf` yang menguji dua versi satu nama simbol. Jalankan
+`/bin/dynamic-demo`, `/bin/copy-reloc-demo`, dan `/bin/versioned-demo` setelah
+boot untuk menguji loader dan pemanggilan libc bersama. `aslr_demo.elf`
+mencetak alamat `main`, fungsi shared library, hasil `mmap`, dan variabel
+stack; jalankan dua kali untuk melihat load bias PIE, penempatan library, dan
+puncak stack user yang berbeda. `dynamic_demo` juga
+memverifikasi bahwa handler `atexit`/`__cxa_atexit` berjalan sebelum destructor
+`DT_FINI_ARRAY` milik shared library.
+
+`dlopen_demo.elf` menautkan libc dinamis saja, lalu memuat `libdyn_demo.so`
+saat runtime dengan `dlopen`, mencari `shared_library_message` lewat `dlsym`,
+dan memastikan simbol yang tidak ada mengisi `dlerror`. Demo juga mencari
+simbol yang sama lewat `RTLD_DEFAULT` dan `RTLD_NEXT`. Jalankan
+`/bin/dlopen-demo`; `dlclose` menurunkan hitungan referensi, menjalankan
+destructor library, lalu melepas seluruh pemetaannya ketika referensi habis.
+Dependency `DT_NEEDED` dari library yang di-dlopen tidak dimuat otomatis, dan
+library tetap dicari di `LD_LIBRARY_PATH` lalu `/lib`. Batas format ELF dan relocation yang tersedia
+dicatat di [`docs/porting-apps.md`](porting-apps.md).
 
 Program statis `tls-demo` menunjukkan TLS model local-exec dan dapat dijalankan
 dengan `run /bin/tls-demo`. `thread-demo` menguji `pthread_create`, join, mutex,
@@ -131,14 +148,57 @@ filesystem; FAT32 belum menyediakan `chmod`. `posix_spawn`/`posix_spawnp`
 serta `waitpid` tersedia untuk menjalankan dan menunggu ELF anak. Pada build statis,
 kesalahan wrapper syscall dikembalikan sebagai `-1` dan mengisi `errno` TLS
 per-thread; shared libc masih memakai `errno` global. Fungsi
-`posix_spawn` mengembalikan nomor error langsung. File actions dan attributes
-`posix_spawn` harus `NULL`; `waitpid` mendukung `WNOHANG`, sedangkan opsi lain
-belum didukung. `unlink` menghapus file/symlink, sedangkan `rmdir` menghapus
+`posix_spawn` mengembalikan nomor error langsung. File actions `posix_spawn`
+mendukung `addclose`, `adddup2`, dan `addopen` (maksimal 8 aksi dengan path
+127 byte); attributes mendukung `POSIX_SPAWN_SETPGROUP`,
+`POSIX_SPAWN_SETSIGDEF`, `POSIX_SPAWN_SETSIGMASK`, dan `POSIX_SPAWN_RESETIDS`
+(`setgid` lalu `setuid` ke id nyata di anak; kernel selalu uid 0 sehingga belum
+berdampak), sementara atribut scheduling (`POSIX_SPAWN_SETSCHEDPARAM`/
+`SETSCHEDULER`) mengembalikan `ENOTSUP` dan aksi diterapkan di anak setelah
+`fork` sebelum `execve`. Contoh `posix_spawn_demo` menguji
+redirection file/pipe, process group, dan kasus gagal tersebut. `waitpid`
+mendukung `WNOHANG`, sedangkan opsi lain belum didukung. `unlink` menghapus
+file/symlink, sedangkan `rmdir` menghapus
 direktori kosong. `readlink` tidak menambahkan NUL ke buffer. Flag open dan
 batas syscall mengikuti ABI OCTAGRAM. `fork` menyalin memori user dengan eager
 copy dan `execve` mengganti image proses saat ini; heap belum dikembalikan ke OS.
 Waktu dasar tersedia melalui `clock_gettime`, `time`, `gmtime`, dan `localtime`.
 RTC memiliki resolusi satu detik dan dianggap UTC; zona waktu belum didukung.
+Database akun tersedia melalui `<pwd.h>` dan `<grp.h>`: `getpwnam`/`getpwuid`/
+`getpwent` membaca `/etc/passwd`, sedangkan `getgrnam`/`getgrgid`/`getgrent`
+membaca `/etc/group` dan memakai grup utama dari `/etc/passwd` bila file itu
+belum ada. Varian `_r` memakai buffer pemanggil dan mengembalikan `ERANGE` bila
+buffer terlalu kecil; database shadow belum tersedia. `sendmsg`/`recvmsg`
+disusun di libc dari `send`/`sendto`/`write` dan `recv`/`recvfrom`/`read`:
+iovec digabung atau disebar dengan batas `OCT_MAX_SYSCALL_IO` per panggilan dan
+maksimal 1024 iovec. Data kontrol (`SCM_RIGHTS`/`SCM_CREDENTIALS`) belum
+didukung, sehingga `sendmsg` mengembalikan `ENOTSUP` bila `msg_control` diisi
+dan `recvmsg` selalu mengosongkan `msg_controllen`. Kernel melaporkan panjang
+datagram UDP asli, sehingga `recvmsg` mengisi `msg_flags` dengan `MSG_TRUNC`
+bila data dipotong; `MSG_CTRUNC` tidak pernah diisi karena tidak ada data
+kontrol. Socket UDP mendukung `connect`, sehingga `sendmsg` tanpa `msg_name`,
+`send`, dan `recv` memakai peer hasil `connect`; datagram dari sumber lain
+diabaikan saat menerima. `<netdb.h>` menyediakan
+`getaddrinfo` numerik IPv4 dan IPv6 dengan flag `AI_PASSIVE`, `AI_CANONNAME`,
+`AI_NUMERICHOST`, dan `AI_NUMERICSERV`, serta `getnameinfo`, `gethostbyname`,
+`gethostbyaddr`, dan `gai_strerror`; tanpa `AI_PASSIVE` node NULL menghasilkan
+loopback (`::1` untuk IPv6). `inet_pton`/`inet_ntop` menerima `AF_INET6`, dan
+`getnameinfo` memformat alamat IPv6 secara numerik. `ai_family` `AF_UNSPEC`
+mengembalikan entri IPv4 lebih dulu lalu IPv6 (bila resolve berhasil) yang
+dirantai lewat `ai_next`; alamat numerik hanya menghasilkan keluarga yang
+cocok tanpa query DNS tambahan. Nama non-numerik di-resolve oleh
+resolver A-record IPv4 di libc: query UDP ke server DNS dari DHCP
+(`oct_dns_server`), timeout 2 detik lewat `poll`, lalu hasilnya di-cache
+(maksimal 8 entri, TTL dari record dengan batas 60–86400 detik). Record AAAA
+di-resolve dengan query tipe 28 dan cache terpisah, lalu dipakai
+`getaddrinfo` dengan `AF_INET6`. `getaddrinfo` dan `gethostbyname` memakai
+cache A itu. Reverse DNS (PTR) tersedia
+dengan cache terpisah: `gethostbyaddr` dan `getnameinfo` tanpa `NI_NUMERICHOST`
+memakai nama hasil PTR bila berhasil, lalu jatuh ke bentuk numerik. AAAA dan
+Server DNS dibaca dari baris `nameserver <IPv4>` pertama di
+`/etc/resolv.conf` bila file itu ada; jika tidak, dipakai DNS dari DHCP kernel.
+Stack IPv6 di kernel belum ada, jadi hasil AAAA baru bisa dipakai untuk
+kebutuhan alamat/nama.
 
 Header `<stdio.h>` menyediakan operasi stream dasar (`fopen`, `fdopen`,
 `fclose`, `fread`, `fwrite`, `fgets`, `fputs`, `fseek`, dan standard streams),
@@ -153,6 +213,14 @@ tersedia.
 
 Jalankan `make -C user scanf-test` untuk menguji parser input string runtime
 tanpa boot OS. Contoh `scanf_demo` membaca token dan angka dari stdin.
+
+`make -C user cxa-test` menjalankan runtime asli di host untuk memeriksa urutan
+handler `atexit`/`__cxa_atexit`, filter DSO pada `__cxa_finalize`, dan jaminan
+bahwa handler tidak berjalan dua kali. `make -C user resolv-test` menguji parser
+`/etc/resolv.conf` (spasi, komentar, CRLF, oktet tidak valid, dan beberapa baris
+`nameserver`). `make -C user ipv6-test` menguji `inet_pton`/`inet_ntop` IPv6,
+termasuk kompresi `::`, input tidak valid, serta parser record A dan AAAA dari
+paket DNS sintetis.
 
 ## Toolchain native di dalam OCTAGRAM
 
@@ -296,6 +364,39 @@ error ke `errno`:
 run /mnt/posix_demo.elf
 ```
 
+`account_demo` menguji database `pwd`/`grp`: lookup uid/nama, iterasi, varian
+`_r`, entri yang tidak ada, dan `ERANGE` untuk buffer kecil:
+
+```text
+run /mnt/account_demo.elf
+```
+
+`socket_msg_demo` menguji `sendmsg`/`recvmsg` melalui pasangan socket stream:
+penggabungan beberapa iovec saat mengirim, penyebaran hasil terima ke beberapa
+iovec, batas makro `CMSG_*`, penolakan data kontrol `ENOTSUP`, serta kesalahan
+`EFAULT`/`EMSGSIZE` untuk argumen yang tidak valid:
+
+```text
+run /mnt/socket_msg_demo.elf
+```
+
+`netdb_demo` menguji `getaddrinfo` (flag `AI_PASSIVE`/`AI_CANONNAME`/numerik),
+`getnameinfo` termasuk `EAI_OVERFLOW`, `gethostbyname`/`gethostbyaddr` numerik,
+serta kode kesalahan `EAI_FAMILY`/`EAI_BADFLAGS`/`EAI_SOCKTYPE`/`EAI_SERVICE`
+dan `h_errno`:
+
+```text
+run /mnt/netdb_demo.elf
+```
+
+`dns_demo` menguji resolver jaringan: `gethostbyname("example.com")`, panggilan
+kedua yang dilayani cache, penolakan `AI_NUMERICHOST` untuk nama, dan
+`getaddrinfo` dengan `AI_CANONNAME`. Program ini membutuhkan DHCP/DNS aktif:
+
+```text
+run /mnt/dns_demo.elf
+```
+
 `stdio_demo` menguji formatting ke buffer, operasi file melalui `FILE`, dan
 output formatted ke stdout:
 
@@ -303,8 +404,11 @@ output formatted ke stdout:
 run /mnt/stdio_demo.elf
 ```
 
-`posix_spawn_demo` menguji environment khusus child serta encoding status
-`waitpid`:
+`posix_spawn_demo` menguji environment khusus child, encoding status
+`waitpid`, file actions `addopen`/`adddup2`/`addclose`, attribute
+`POSIX_SPAWN_SETPGROUP`, `POSIX_SPAWN_SETSIGMASK`, `POSIX_SPAWN_SETSIGDEF`, dan
+`POSIX_SPAWN_RESETIDS` beserta getter-nya, serta penolakan path terlalu panjang
+dan atribut scheduling yang belum didukung:
 
 ```text
 run /mnt/posix_spawn_demo.elf
@@ -376,15 +480,18 @@ menjadi `/mnt/hello.txt` lalu build ulang.
 
 - x86_64, ELF64 little-endian: static `ET_EXEC` dan PIE `ET_DYN` dengan
   interpreter `/lib/ld-octagram.so`.
-- Dynamic loader mendukung subset relocation x86_64 dan pencarian shared
-  library di `/lib`; shared libc OCTAGRAM bukan libc POSIX penuh. TLS untuk
-  executable statis menggunakan model local-exec; TLS pada shared object belum
-  didukung.
+- Dynamic loader mendukung subset relocation x86_64 (termasuk `COPY` untuk
+data shared library pada executable non-PIC) dan pencarian shared library di
+  `/lib`; simbol weak tak terdefinisi menjadi 0 dan symbol versioning
+  (`DT_VERSYM`/`DT_VERDEF`/`DT_VERNEED`) dihormati. Shared libc OCTAGRAM bukan
+  libc POSIX penuh. TLS untuk executable statis menggunakan model local-exec;
+  TLS pada shared object belum didukung.
 - Segmen tidak boleh writable sekaligus executable.
 - Entry point harus berada di segmen executable.
-- Stack 8 halaman dan heap image awal 1 MiB. Runtime mengalokasikan tambahan
-  melalui pemetaan anonim internal yang dibatasi alamat virtual dan memori
-  fisik yang tersedia.
+- Stack 8 halaman dengan puncak yang digeser acak tiap `execve`, tanpa heap
+  image beralamat tetap. `brk`/`sbrk` dan `malloc` tumbuh dari cursor `mmap`
+  ber-entropi melalui pemetaan anonim internal yang dibatasi alamat virtual dan
+  memori fisik yang tersedia.
 - Startup meneruskan `argc`, `argv`, dan `envp` ke `main`; environment tersedia
   melalui argumen ketiga atau global `environ`.
 

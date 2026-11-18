@@ -34,11 +34,32 @@ struct addrinfo {
 #define EAI_FAMILY -1
 #define EAI_MEMORY -2
 #define EAI_NONAME -3
+#define EAI_BADFLAGS -4
+#define EAI_SERVICE -5
+#define EAI_SOCKTYPE -6
+#define EAI_OVERFLOW -7
+#define EAI_FAIL -8
+
+#define HOST_NOT_FOUND 1
+#define TRY_AGAIN 2
+#define NO_RECOVERY 3
+#define NO_DATA 4
+#define NO_ADDRESS NO_DATA
+
+#ifdef OCTAGRAM_TLS_ERRNO
+extern __thread int h_errno;
+#else
+extern int h_errno;
+#endif
 
 int getaddrinfo(const char *node, const char *service,
                 const struct addrinfo *hints, struct addrinfo **result);
 void freeaddrinfo(struct addrinfo *result);
 const char *gai_strerror(int error);
+int getnameinfo(const struct sockaddr *address, socklen_t address_length,
+                char *host, socklen_t host_length,
+                char *service, socklen_t service_length, int flags);
 struct hostent *gethostbyname(const char *name);
+struct hostent *gethostbyaddr(const void *address, socklen_t length, int family);
 
 #endif

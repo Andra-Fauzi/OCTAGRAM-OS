@@ -182,7 +182,30 @@ const SYSCALL_SCHED_SETSCHEDULER: u64 = 136;
 const SYSCALL_SCHED_GETSCHEDULER: u64 = 137;
 const SYSCALL_SCHED_GETPARAM: u64 = 138;
 const SYSCALL_SCHED_SETPARAM: u64 = 139;
+const SYSCALL_SETUID: u64 = 140;
+const SYSCALL_SETEUID: u64 = 141;
+const SYSCALL_SETGID: u64 = 142;
+const SYSCALL_SETEGID: u64 = 143;
+const SYSCALL_CAPGET: u64 = 144;
+const SYSCALL_CAPSET: u64 = 145;
 const PRIO_PROCESS: u64 = 0;
+
+/// Bit kemampuan proses. Saat ini hanya metadata: belum diperiksa di jalur akses.
+pub(crate) const CAP_VFS_WRITE: u64 = 1 << 0;
+pub(crate) const CAP_NETWORK: u64 = 1 << 1;
+pub(crate) const CAP_SYS_ADMIN: u64 = 1 << 2;
+pub(crate) const CAP_SCHED_NICE: u64 = 1 << 3;
+pub(crate) const CAP_ALL: u64 = CAP_VFS_WRITE | CAP_NETWORK | CAP_SYS_ADMIN | CAP_SCHED_NICE;
+
+/// Proses uid 0 mendapat seluruh kemampuan; selain itu tidak ada.
+fn capabilities_for_uid(uid: u32) -> u64 {
+    if uid == 0 { CAP_ALL } else { 0 }
+}
+
+/// Perubahan kredensial: root bebas, non-root hanya ke id nyata/efektifnya.
+fn credential_change_allowed(caller_euid: u32, current: [u32; 2], target: u32) -> bool {
+    caller_euid == 0 || target == current[0] || target == current[1]
+}
 /// Satu-satunya kebijakan penjadwalan yang didukung; SCHED_FIFO/RR ditolak.
 const SCHED_OTHER: u64 = 0;
 const AT_FDCWD: i64 = -100;
@@ -686,6 +709,114 @@ fn syscall_getpriority(which: u64, who: u64) -> Result<u64, i32> {
         .ok_or(ESRCH)
 }
 
+fn read_user_u64(address: u64) -> Result<u64, i32> {
+    paging::validate_user_range(address, core::mem::size_of::<u64>(), false)
+        .map_err(|_| EFAULT)?;
+    Ok(unsafe { (address as *const u64).read_unaligned() })
+}
+
+fn current_credential(select: impl Fn(&ScheduledProcess) -> u32) -> Result<u64, i32> {
+    let scheduler = USER_SCHEDULER.lock();
+    let process = scheduler.processes.get(scheduler.current).ok_or(EINTR)?;
+    Ok(select(process) as u64)
+}
+
+#[derive(Clone, Copy)]
+enum CredentialField {
+    Uid,
+    Euid,
+    Gid,
+    Egid,
+}
+
+/// Ubah kredensial seluruh thread dengan pid yang sama.
+fn set_credential(field: CredentialField, value: u64) -> Result<u64, i32> {
+    let value = u32::try_from(value).map_err(|_| EINVAL)?;
+    let mut scheduler = USER_SCHEDULER.lock();
+    if !scheduler.active {
+        return Err(EINTR);
+    }
+    let current = scheduler.current;
+    let (pid, caller_euid, current_ids) = {
+        let process = scheduler.processes.get(current).ok_or(EINTR)?;
+        let ids = match field {
+            CredentialField::Uid | CredentialField::Euid => [process.uid, process.euid],
+            CredentialField::Gid | CredentialField::Egid => [process.gid, process.egid],
+        };
+        (process.pid, process.euid, ids)
+    };
+    if !credential_change_allowed(caller_euid, current_ids, value) {
+        return Err(EPERM);
+    }
+    for process in &mut scheduler.processes {
+        if process.pid != pid {
+            continue;
+        }
+        match field {
+            CredentialField::Uid => {
+                process.uid = value;
+                process.euid = value;
+                process.capabilities = capabilities_for_uid(value);
+            }
+            CredentialField::Euid => {
+                process.euid = value;
+                process.capabilities = capabilities_for_uid(value);
+            }
+            CredentialField::Gid => {
+                process.gid = value;
+                process.egid = value;
+            }
+            CredentialField::Egid => process.egid = value,
+        }
+    }
+    Ok(0)
+}
+
+fn syscall_capget(pid: u64, mask_address: u64) -> Result<u64, i32> {
+    let scheduler = USER_SCHEDULER.lock();
+    if !scheduler.active {
+        return Err(EINTR);
+    }
+    let target = sched_target_pid(pid, &scheduler)?;
+    let capabilities = scheduler
+        .processes
+        .iter()
+        .find(|process| process.pid == target && process.exit_status.is_none())
+        .map(|process| process.capabilities)
+        .ok_or(ESRCH)?;
+    drop(scheduler);
+    write_user_u64(mask_address, capabilities)?;
+    Ok(0)
+}
+
+fn syscall_capset(pid: u64, mask_address: u64) -> Result<u64, i32> {
+    let mask = read_user_u64(mask_address)?;
+    if mask & !CAP_ALL != 0 {
+        return Err(EINVAL);
+    }
+    let mut scheduler = USER_SCHEDULER.lock();
+    if !scheduler.active {
+        return Err(EINTR);
+    }
+    let caller_capabilities = scheduler
+        .processes
+        .get(scheduler.current)
+        .map(|process| process.capabilities)
+        .ok_or(EINTR)?;
+    if caller_capabilities & CAP_SYS_ADMIN == 0 {
+        return Err(EPERM);
+    }
+    let target = sched_target_pid(pid, &scheduler)?;
+    let mut found = false;
+    for process in &mut scheduler.processes {
+        if process.pid == target && process.exit_status.is_none() {
+            process.capabilities = mask;
+            found = true;
+        }
+    }
+    if found { Ok(0) } else { Err(ESRCH) }
+}
+
 fn read_user_i32(address: u64) -> Result<i32, i32> {
     paging::validate_user_range(address, core::mem::size_of::<i32>(), false)
         .map_err(|_| EFAULT)?;
@@ -1143,6 +1274,12 @@ struct ScheduledProcess {
     priority: i32,
     /// Kebijakan penjadwalan; saat ini selalu `SCHED_OTHER`.
     policy: u32,
+    /// Kredensial proses (diwarisi anak/thread, dibagi semua thread satu pid).
+    uid: u32,
+    euid: u32,
+    gid: u32,
+    egid: u32,
+    capabilities: u64,
     /// Berapa kali proses runnable ini dilewati scheduler (aging anti-starvasi).
     age: u32,
     reaped: bool,
@@ -1269,7 +1406,7 @@ impl LoadedElf {
         let mapped_pages = try_clone_pages(&self.memory.mapped_pages.lock())?;
         let mmap_pages = try_clone_mapping_pages(&self.memory.mmap_pages.lock())?;
         let mmap_cursor = *self.memory.mmap_cursor.lock();
-        let lock_future_mappings = self.memory.lock_future_mappings.load(Ordering::Acquire);
+        // `mlockall` tidak diwariskan ke anak `fork`.
         Ok(Self {
             entry: self.entry,
             user_stack: self.user_stack,
@@ -1278,7 +1415,7 @@ impl LoadedElf {
                 mmap_cursor: Mutex::new(mmap_cursor),
                 mapped_pages: Mutex::new(mapped_pages),
                 mmap_pages: Mutex::new(mmap_pages),
-                lock_future_mappings: AtomicBool::new(lock_future_mappings),
+                lock_future_mappings: AtomicBool::new(false),
                 address_space: self
                     .memory
                     .address_space
@@ -1723,6 +1860,11 @@ fn run_loaded_processes(
             wait_status_pointer: 0,
             priority: 0,
             policy: SCHED_OTHER as u32,
+            uid: 0,
+            euid: 0,
+            gid: 0,
+            egid: 0,
+            capabilities: capabilities_for_uid(0),
             age: 0,
             reaped: false,
         });
@@ -1773,8 +1915,16 @@ fn run_loaded_processes(
                         == 1
             };
             if only_current_process_runnable {
+                let before_idle = crate::arch::x86_64::monotonic_milliseconds();
                 unsafe {
                     core::arch::asm!("sti; hlt; cli");
+                }
+                let idle_gap = crate::arch::x86_64::monotonic_milliseconds()
+                    .saturating_sub(before_idle);
+                if idle_gap > IDLE_STALL_WATCHDOG_MS {
+                    crate::println!(
+                        "[sched] watchdog: idle wakeup delayed {idle_gap} ms (interrupt macet?)"
+                    );
                 }
                 unsafe { crate::drivers::poll_deferred() };
                 crate::network::poll_tcp();
@@ -2536,8 +2686,10 @@ fn dispatch_syscall(
             }
         }
         // --- syscall untuk kompatibilitas runtime (Python, Java, dsb) ---
-        SYSCALL_GETUID | SYSCALL_GETEUID => Ok(0),
-        SYSCALL_GETGID | SYSCALL_GETEGID => Ok(0),
+        SYSCALL_GETUID => current_credential(|process| process.uid),
+        SYSCALL_GETEUID => current_credential(|process| process.euid),
+        SYSCALL_GETGID => current_credential(|process| process.gid),
+        SYSCALL_GETEGID => current_credential(|process| process.egid),
         SYSCALL_GETPPID => Ok(1),
         SYSCALL_UNAME => syscall_uname(arg1),
         SYSCALL_BRK => syscall_brk(arg1),
@@ -2578,6 +2730,12 @@ fn dispatch_syscall(
         SYSCALL_SCHED_GETSCHEDULER => syscall_sched_getscheduler(arg1),
         SYSCALL_SCHED_SETPARAM => syscall_sched_setparam(arg1, arg2),
         SYSCALL_SCHED_GETPARAM => syscall_sched_getparam(arg1, arg2),
+        SYSCALL_SETUID => set_credential(CredentialField::Uid, arg1),
+        SYSCALL_SETEUID => set_credential(CredentialField::Euid, arg1),
+        SYSCALL_SETGID => set_credential(CredentialField::Gid, arg1),
+        SYSCALL_SETEGID => set_credential(CredentialField::Egid, arg1),
+        SYSCALL_CAPGET => syscall_capget(arg1, arg2),
+        SYSCALL_CAPSET => syscall_capset(arg1, arg2),
         SYSCALL_PREAD => syscall_pread(arg1, arg2, arg3, arg4),
         SYSCALL_PWRITE => syscall_pwrite(arg1, arg2, arg3, arg4),
         SYSCALL_WRITEV => syscall_writev(arg1, arg2, arg3),
@@ -2733,6 +2891,16 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
 
     let inherited_priority = scheduler.processes[current].priority;
     let inherited_policy = scheduler.processes[current].policy;
+    let inherited_credentials = {
+        let process = &scheduler.processes[current];
+        (
+            process.uid,
+            process.euid,
+            process.gid,
+            process.egid,
+            process.capabilities,
+        )
+    };
     scheduler.next_tid = next_tid;
     scheduler.processes.push(ScheduledProcess {
         image,
@@ -2752,6 +2920,11 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         wait_status_pointer: 0,
         priority: inherited_priority,
         policy: inherited_policy,
+        uid: inherited_credentials.0,
+        euid: inherited_credentials.1,
+        gid: inherited_credentials.2,
+        egid: inherited_credentials.3,
+        capabilities: inherited_credentials.4,
         age: 0,
         reaped: false,
     });
@@ -3045,6 +3218,16 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
     }
     let inherited_priority = scheduler.processes[current].priority;
     let inherited_policy = scheduler.processes[current].policy;
+    let inherited_credentials = {
+        let process = &scheduler.processes[current];
+        (
+            process.uid,
+            process.euid,
+            process.gid,
+            process.egid,
+            process.capabilities,
+        )
+    };
     scheduler.next_pid = next_pid;
     scheduler.processes.push(ScheduledProcess {
         image: child_image,
@@ -3064,6 +3247,11 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
         wait_status_pointer: 0,
         priority: inherited_priority,
         policy: inherited_policy,
+        uid: inherited_credentials.0,
+        euid: inherited_credentials.1,
+        gid: inherited_credentials.2,
+        egid: inherited_credentials.3,
+        capabilities: inherited_credentials.4,
         age: 0,
         reaped: false,
     });
@@ -4051,12 +4239,19 @@ fn try_clone_pages(pages: &[u64]) -> Result<Vec<u64>, ElfError> {
     Ok(cloned)
 }
 
+/// Salin metadata mmap untuk anak `fork`. Kunci memori tidak diwariskan (POSIX:
+/// `mlock`/`mlockall` hanya berlaku pada proses yang memintanya), jadi setiap
+/// salinan `locked` dimatikan.
 fn try_clone_mapping_pages(pages: &[MappingPage]) -> Result<Vec<MappingPage>, ElfError> {
     let mut cloned = Vec::new();
     cloned
         .try_reserve_exact(pages.len())
         .map_err(|_| ElfError::OutOfMemory)?;
-    cloned.extend(pages.iter().cloned());
+    for page in pages {
+        let mut page = page.clone();
+        page.locked = false;
+        cloned.push(page);
+    }
     Ok(cloned)
 }
 
@@ -7642,6 +7837,15 @@ const PRIORITY_MIN: i32 = -20;
 const PRIORITY_MAX: i32 = 19;
 /// Boost aging maksimum; cukup untuk mengalahkan seluruh rentang nice.
 const MAX_AGING_BOOST: u32 = (PRIORITY_MAX - PRIORITY_MIN) as u32;
+/// Umur tunggu yang dianggap berpotensi kelaparan (dua kali boost aging).
+const STARVATION_WATCHDOG_AGE: u32 = MAX_AGING_BOOST * 2;
+/// Keterlambatan bangun dari `hlt` (ms) sebelum watchdog idle melapor.
+pub(crate) const IDLE_STALL_WATCHDOG_MS: u64 = 250;
+
+/// True bila proses runnable sudah terlalu lama tidak dijadwalkan.
+fn starvation_watchdog_trips(age: u32) -> bool {
+    age >= STARVATION_WATCHDOG_AGE
+}
 
 fn clamp_priority(priority: i32) -> i32 {
     priority.clamp(PRIORITY_MIN, PRIORITY_MAX)
@@ -7712,6 +7916,44 @@ fn schedule_next(scheduler: &mut UserScheduler) -> Option<usize> {
 
 fn is_process_runnable(process: &ScheduledProcess) -> bool {
     process.exit_status.is_none() && process.waiting_for.is_none()
+}
+
+/// Snapshot scheduler untuk shell `sched` dan pengawasan watchdog.
+pub(crate) struct SchedulerStatus {
+    pub pid: u64,
+    pub tid: u64,
+    pub priority: i32,
+    pub policy: u32,
+    pub age: u32,
+    pub waiting: bool,
+    pub exited: bool,
+    pub is_thread: bool,
+}
+
+/// Salin status setiap task terjadwal tanpa memblokir scheduler lama.
+pub(crate) fn scheduler_status() -> Vec<SchedulerStatus> {
+    let scheduler = USER_SCHEDULER.lock();
+    let mut entries = Vec::new();
+    if entries.try_reserve(scheduler.processes.len()).is_err() {
+        return entries;
+    }
+    for process in &scheduler.processes {
+        entries.push(SchedulerStatus {
+            pid: process.pid,
+            tid: process.tid,
+            priority: process.priority,
+            policy: process.policy,
+            age: process.age,
+            waiting: process.waiting_for.is_some(),
+            exited: process.exit_status.is_some(),
+            is_thread: process.is_thread,
+        });
+    }
+    entries
+}
+
+pub(crate) fn scheduler_watchdog_tripped(age: u32) -> bool {
+    starvation_watchdog_trips(age)
 }
 
 pub fn terminate_user(frame: &mut InterruptFrame, status: u64) -> *mut InterruptFrame {
@@ -8108,10 +8350,13 @@ mod tests {
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
         PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_PAGES, STACK_RANDOM_PAGES,
         STACK_TOP, SYSCALL_MMAP, SYSCALL_MUNMAP, UserDescriptor, signal_stack_top, stack_layout,
-        UserDirent, WAIT_ANY_PID, apply_creation_mode, apply_load_bias, build_initial_stack,
+        MappingPage, UserDirent, WAIT_ANY_PID, apply_creation_mode, apply_load_bias,
+        build_initial_stack, try_clone_mapping_pages,
         create_pipe, dispatch_syscall, errno_from_fs, install_pipe_descriptors, mapping_flags,
         mapping_size, next_runnable, paging, parse, resolve_user_path, stat_mode, user_dirent,
-        effective_priority, MAX_AGING_BOOST, sched_priority_for, scheduler_policy_supported,
+        CAP_ALL, capabilities_for_uid, credential_change_allowed, effective_priority,
+        MAX_AGING_BOOST, STARVATION_WATCHDOG_AGE, sched_priority_for,
+        scheduler_policy_supported, starvation_watchdog_trips,
         validate_mapping_range, wait_target_matches, futex_bitset_matches,
         FBIOGET_VSCREENINFO, FbFixScreeninfo, FbVarScreeninfo, SYSCALL_IOCTL, Winsize,
     };
@@ -8602,6 +8847,45 @@ mod tests {
             Some(1)
         );
         assert_eq!(effective_priority(19, u32::MAX), -20);
+    }
+
+    #[test]
+    fn fork_does_not_inherit_memory_locks() {
+        let mut pages = Vec::new();
+        pages.push(MappingPage {
+            address: 0x40_0000,
+            shared_backing: None,
+            locked: true,
+            can_write: true,
+            anonymous: true,
+            is_device: false,
+        });
+        let cloned = try_clone_mapping_pages(&pages).expect("clone mapping pages");
+        assert_eq!(cloned.len(), 1);
+        assert!(!cloned[0].locked, "kunci memori tidak boleh diwariskan");
+        assert_eq!(cloned[0].address, 0x40_0000);
+        assert!(cloned[0].can_write);
+        assert!(cloned[0].anonymous);
+    }
+
+    #[test]
+    fn credentials_and_capabilities_follow_uid_rules() {
+        assert_eq!(capabilities_for_uid(0), CAP_ALL);
+        assert_eq!(capabilities_for_uid(1000), 0);
+        // Root boleh mengubah ke id apa pun.
+        assert!(credential_change_allowed(0, [0, 0], 1000));
+        // Non-root hanya boleh kembali ke id nyata/efektifnya.
+        assert!(credential_change_allowed(1000, [1000, 1001], 1000));
+        assert!(credential_change_allowed(1000, [1000, 1001], 1001));
+        assert!(!credential_change_allowed(1000, [1000, 1001], 0));
+    }
+
+    #[test]
+    fn starvation_watchdog_trips_after_the_aging_budget() {
+        assert!(!starvation_watchdog_trips(0));
+        assert!(!starvation_watchdog_trips(STARVATION_WATCHDOG_AGE - 1));
+        assert!(starvation_watchdog_trips(STARVATION_WATCHDOG_AGE));
+        assert!(starvation_watchdog_trips(u32::MAX));
     }
 
     #[test]

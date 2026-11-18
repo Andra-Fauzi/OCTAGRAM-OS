@@ -66,7 +66,9 @@ dimuat di alamat tetap. Ini tercatat sebagai item roadmap yang belum selesai.
 - Tanpa copy-on-write: `fork` menyalin halaman user secara eager.
 - Tanpa swap atau anonymous memory backed disk.
 - Tanpa SMP: hanya satu CPU yang menjalankan kernel dan user.
-- Tidak ada `madvise`, huge page, atau `mlock`.
+- `mlock`/`mlockall` hanya menandai halaman (tidak ada swap untuk dikunci) dan
+  kuncinya tidak diwarisi `fork`; tidak ada huge page atau `madvise`
+  (tersedia hanya `posix_madvise` untuk validasi).
 - `mmap` hanya file anonymous/`MAP_PRIVATE`/`MAP_SHARED` sesuai dukungan
   descriptor; pemetaan file dieksekusi lewat loader ELF, bukan `mmap` umum.
 

@@ -34,6 +34,7 @@
 #include <sys/eventfd.h>
 #include <sys/random.h>
 #include <sys/resource.h>
+#include <sys/capability.h>
 #include <sys/semaphore.h>
 #include <locale.h>
 #include <wchar.h>
@@ -42,7 +43,6 @@
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <sys/uio.h>
-#include <sys/resource.h>
 #include <sys/times.h>
 
 struct octagram_FILE {
@@ -6967,22 +6967,42 @@ __attribute__((weak)) int dlclose(void *handle)
 
 int setuid(uid_t uid)
 {
-    return uid == 0 ? 0 : (errno = EPERM, -1);
+    int64_t result = oct_setuid((uint64_t)uid);
+    return result < 0 ? (int)posix_result(result) : 0;
 }
 
 int seteuid(uid_t uid)
 {
-    return uid == 0 ? 0 : (errno = EPERM, -1);
+    int64_t result = oct_seteuid((uint64_t)uid);
+    return result < 0 ? (int)posix_result(result) : 0;
 }
 
 int setgid(gid_t gid)
 {
-    return gid == 0 ? 0 : (errno = EPERM, -1);
+    int64_t result = oct_setgid((uint64_t)gid);
+    return result < 0 ? (int)posix_result(result) : 0;
 }
 
 int setegid(gid_t gid)
 {
-    return gid == 0 ? 0 : (errno = EPERM, -1);
+    int64_t result = oct_setegid((uint64_t)gid);
+    return result < 0 ? (int)posix_result(result) : 0;
+}
+
+int capget(pid_t pid, uint64_t *mask)
+{
+    if (mask == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    int64_t result = oct_capget(pid < 0 ? 0 : (uint64_t)pid, mask);
+    return result < 0 ? (int)posix_result(result) : 0;
+}
+
+int capset(pid_t pid, uint64_t mask)
+{
+    int64_t result = oct_capset(pid < 0 ? 0 : (uint64_t)pid, mask);
+    return result < 0 ? (int)posix_result(result) : 0;
 }
 
 int setreuid(uid_t real, uid_t effective)

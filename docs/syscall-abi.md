@@ -142,6 +142,12 @@ menyediakan inline wrappers.
 | 137 | `sched_getscheduler` | `RDI=pid` | Policy (selalu 0 = `SCHED_OTHER`), `-ESRCH` |
 | 138 | `sched_getparam` | `RDI=pid`, `RSI=sched_param*` | 0 setelah menulis prioritas 0, `-EFAULT`, `-ESRCH` |
 | 139 | `sched_setparam` | `RDI=pid`, `RSI=sched_param*` | 0 bila prioritas 0, `-EINVAL`, `-ESRCH` |
+| 140 | `setuid` | `RDI=uid` | 0, `-EPERM` bila non-root menaikkan id |
+| 141 | `seteuid` | `RDI=uid` | 0, `-EPERM` |
+| 142 | `setgid` | `RDI=gid` | 0, `-EPERM` |
+| 143 | `setegid` | `RDI=gid` | 0, `-EPERM` |
+| 144 | `capget` | `RDI=pid` (0 = pemanggil), `RSI=uint64_t*` | 0 setelah menulis bitmask, `-EFAULT`, `-ESRCH` |
+| 145 | `capset` | `RDI=pid`, `RSI=mask` | 0, `-EPERM` tanpa `CAP_SYS_ADMIN`, `-EINVAL`, `-ESRCH` |
 
 Nomor 10, 15, 18, 19, 23, 24, 26, dan 49 sudah dicabut dan tetap
 dicadangkan agar nomor syscall berikutnya tidak bergeser; pemanggilannya
@@ -149,8 +155,11 @@ mengembalikan `-ENOSYS`. API POSIX `posix_spawn` disediakan runtime melalui
 `fork` dan `execve`, bukan syscall khusus.
 
 Syscall 82-117 melayani runtime bahasa tingkat tinggi seperti Python dan
-Java. `getuid`, `getgid`, `geteuid`, dan `getegid` selalu mengembalikan 0 karena
-OS belum punya konsep user; `getppid` mengembalikan 1. `uname` mengisi struct
+Java. `getuid`, `getgid`, `geteuid`, dan `getegid` membaca kredensial proses
+(awalnya 0); `getppid` mengembalikan 1. `setuid`/`seteuid`/`setgid`/`setegid`
+(140–143) mengubahnya untuk seluruh thread satu pid: root bebas, non-root hanya
+boleh kembali ke id nyata/efektifnya. `capget`/`capset` (144/145) mengelola bit
+kemampuan (`CAP_VFS_WRITE`, `CAP_NETWORK`, `CAP_SYS_ADMIN`, `CAP_SCHED_NICE`). `uname` mengisi struct
 `utsname` berisi enam field 65 byte dengan identitas OCTAGRAM.
 
 `brk` mengelola program break: alamat 0 membaca nilai saat ini, alamat yang lebih

@@ -7,8 +7,9 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
 ## Isolasi dan keamanan
 
 - Tanpa copy-on-write; `fork` menyalin seluruh halaman user.
-- Tanpa capability/policy metadata per proses; semua proses berbagi VFS, mount,
-  dan konfigurasi jaringan.
+- Kredensial (uid/euid/gid/egid) dan metadata kemampuan per pid sudah ada
+  (`setuid`, `capget`/`capset`), tetapi bit kemampuan belum ditegakkan di jalur
+  akses; semua proses masih berbagi VFS, mount, dan konfigurasi jaringan.
 - Tanpa permission enforcement penuh; mode berkas disimpan tetapi tidak selalu
   diperiksa.
 - Tanpa autentikasi password (`passwd` belum diimplementasikan); `login` hanya
@@ -28,7 +29,8 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
 
 ## Memori
 
-- Tanpa swap, tanpa huge page, tanpa `madvise`/`mlock`.
+- Tanpa swap dan huge page. `mlock`/`mlockall` hanya menandai halaman dan
+  kuncinya tidak diwarisi `fork`; `madvise` hanya `posix_madvise` validasi.
 - Tanpa `mprotect` granular atau `mremap`.
 - Interpreter dynamic linker masih `ET_EXEC`, jadi alamatnya tidak diacak.
 - Heap kernel memakai allocator sederhana tanpa defragmentasi.

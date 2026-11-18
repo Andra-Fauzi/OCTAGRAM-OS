@@ -568,6 +568,36 @@ static inline int64_t oct_getegid(void)
     return oct_syscall0(85);
 }
 
+static inline int64_t oct_setuid(uint64_t uid)
+{
+    return oct_syscall1(140, uid);
+}
+
+static inline int64_t oct_seteuid(uint64_t uid)
+{
+    return oct_syscall1(141, uid);
+}
+
+static inline int64_t oct_setgid(uint64_t gid)
+{
+    return oct_syscall1(142, gid);
+}
+
+static inline int64_t oct_setegid(uint64_t gid)
+{
+    return oct_syscall1(143, gid);
+}
+
+static inline int64_t oct_capget(uint64_t pid, uint64_t *mask)
+{
+    return oct_syscall2(144, pid, (uint64_t)(uintptr_t)mask);
+}
+
+static inline int64_t oct_capset(uint64_t pid, uint64_t mask)
+{
+    return oct_syscall2(145, pid, mask);
+}
+
 static inline int64_t oct_uname(struct oct_utsname *name)
 {
     return oct_syscall1(86, (uint64_t)(uintptr_t)name);

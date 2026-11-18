@@ -52,6 +52,14 @@ Syscall `setpriority`/`getpriority` (134/135) hanya mendukung `PRIO_PROCESS`
 dan PID yang tidak ada mengembalikan `ESRCH`. `nice()` di libc memakai kedua
 syscall tersebut dan menjepit hasilnya ke rentang -20..19.
 
+Pengawasan scheduler: shell `sched` mencetak PID/TID, nice, policy, `AGE`, dan
+status setiap task (`scheduler_status()` menyalin snapshot dengan
+`try_reserve`). Umur tunggu runnable ≥ 78 (dua kali boost aging) ditandai
+`WATCHDOG` lewat `starvation_watchdog_trips()`. Selain itu watchdog idle di loop
+scheduler mencetak `[sched] watchdog: idle wakeup delayed ...` bila `hlt` baru
+bangun lebih dari 250 ms (indikasi interrupt macet) saat hanya satu proses
+runnable. Belum ada akuntansi waktu CPU per task.
+
 Kebijakan penjadwalan tersedia lewat `sched_setscheduler`/`sched_getscheduler`
 (136/137) dan `sched_setparam`/`sched_getparam` (138/139), ditambah `sched.h`
 (`sched_yield` memakai syscall 65). Hanya `SCHED_OTHER` dengan `sched_priority` 0
@@ -78,8 +86,11 @@ melaporkan siap.
 
 ### Membuat dan mengakhiri proses
 
-- `fork` menyalin halaman user secara eager (tanpa copy-on-write).
-- `execve`/`execvp` memuat image ELF baru ke page table proses yang sama;
+- `fork` menyalin halaman user secara eager (tanpa copy-on-write). Kunci memori
+  tidak diwarisi: `mlockall` (`lock_future_mappings`) dimatikan dan setiap
+  `MappingPage.locked` hasil klon di-reset sesuai POSIX.
+- `execve`/`execvp` memakai address space yang benar-benar baru (hanya cwd,
+  terminal, pid, umask, grup/sesi, dan descriptor non-`CLOEXEC` yang diwarisi);
   stack baru diberi entropi, signal handler di-reset sesuai aturan `exec`.
 - `waitpid` menerima PID tertentu atau `WAIT_ANY_PID`; status keluar dan sinyal
   pelapor disimpan sampai diambil induk.
@@ -101,6 +112,21 @@ disampaikan saat proses kembali ke ring 3. Yang tersedia:
 
 `setpgid`/`getpgrp` (130/129) dan `setsid`/`getsid` (132/131) tersedia. Grup
 proses dipakai untuk pengiriman sinyal (`kill(-pgid, ...)`).
+
+### Kredensial dan kemampuan
+
+Setiap task menyimpan `uid`, `euid`, `gid`, `egid`, dan bitmask kemampuan;
+semua thread dengan pid sama berbagi nilai ini dan anak `fork` mewarisinya.
+Awalnya uid/gid 0 dengan `CAP_ALL`. `setuid`/`seteuid`/`setgid`/`setegid`
+(140–143) mengubahnya: root bebas, non-root hanya boleh kembali ke id
+nyata/efektifnya (`credential_change_allowed`); menurunkan uid ke selain 0
+mencabut semua kemampuan (`capabilities_for_uid`).
+
+Kemampuan yang didefinisikan: `CAP_VFS_WRITE`, `CAP_NETWORK`, `CAP_SYS_ADMIN`,
+`CAP_SCHED_NICE`. `capget` (144) membaca bitmask, `capset` (145) menulisnya dan
+membutuhkan `CAP_SYS_ADMIN`; bit di luar `CAP_ALL` ditolak `EINVAL`. **Semua ini
+baru metadata**: jalur VFS, jaringan, dan prioritas belum memeriksa bitmask.
+Header userspace-nya `sys/capability.h`, contoh `credential_demo`.
 
 ## Sinkronisasi dan futex
 

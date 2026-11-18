@@ -32,8 +32,9 @@ syscall `int $0x80` langsung.
 - string/memori (`memcpy`, `strlen`, `strtol`, ...);
 - stdio (`printf`, `scanf`, stream `FILE`, buffering);
 - berkas dan direktori (`open`, `read`, `write`, `stat`, `opendir`, `realpath`);
-- proses (`fork`, `execve`, `waitpid`, `posix_spawn`), pipe, thread, dan
-  penjadwalan (`sched_*`, `setpriority`/`getpriority`);
+- proses (`fork`, `execve`, `waitpid`, `posix_spawn`), pipe, thread,
+  penjadwalan (`sched_*`, `setpriority`/`getpriority`), serta kredensial dan
+  kemampuan (`setuid` family, `capget`/`capset`);
 - sinyal (`sigaction`, `sigprocmask`, `sigaltstack`, `sigreturn`);
 - socket (`socket`, `bind`, `connect`, `sendmsg`/`recvmsg`, `poll`, `select`,
   `epoll`), resolver (`getaddrinfo`, `gethostbyname`, A/AAAA/PTR);
@@ -42,7 +43,8 @@ syscall `int $0x80` langsung.
 - locale/multibyte UTF-8, termios, `time`, `setjmp`, `stdatomic`.
 
 Header publik ada di `user/include/` (`stdio.h`, `stdlib.h`, `sys/*.h`,
-`netinet/*.h`, `pthread.h`, `dlfcn.h`, `spawn.h`, `sched.h`, ...). Header ini adalah
+`netinet/*.h`, `pthread.h`, `dlfcn.h`, `spawn.h`, `sched.h`, `sys/capability.h`,
+...). Header ini adalah
 kontrak yang dipakai program dan TinyCC, jadi perubahan tanda tangan harus
 disertai penyesuaian runtime dan uji.
 

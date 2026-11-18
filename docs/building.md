@@ -152,8 +152,8 @@ per-thread; shared libc masih memakai `errno` global. Fungsi
 mendukung `addclose`, `adddup2`, dan `addopen` (maksimal 8 aksi dengan path
 127 byte); attributes mendukung `POSIX_SPAWN_SETPGROUP`,
 `POSIX_SPAWN_SETSIGDEF`, `POSIX_SPAWN_SETSIGMASK`, dan `POSIX_SPAWN_RESETIDS`
-(`setgid` lalu `setuid` ke id nyata di anak; kernel selalu uid 0 sehingga belum
-berdampak), dan atribut scheduling (`POSIX_SPAWN_SETSCHEDPARAM`/
+(`setgid` lalu `setuid` ke id nyata di anak; id awal proses adalah 0), dan
+atribut scheduling (`POSIX_SPAWN_SETSCHEDPARAM`/
 `SETSCHEDULER`) yang hanya menerima `SCHED_OTHER` dengan prioritas 0 (nice
 mengatur bobot); `SCHED_FIFO`/`SCHED_RR` menggagalkan spawn dengan `EPERM`. Aksi
 diterapkan di anak setelah `fork` sebelum `execve`. Contoh `posix_spawn_demo`

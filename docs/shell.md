@@ -23,7 +23,11 @@ aktif dan dapat dipindah dengan Ctrl+Alt+F1..F4.
 `edit`.
 
 **Sistem**
-`date`, `shutdown`, `devices`, `lsdev`, `drivers`, `savelog`.
+`date`, `shutdown`, `sched`, `devices`, `lsdev`, `drivers`, `savelog`.
+
+`sched` menampilkan PID/TID, nice, policy, umur tunggu (`AGE`), dan status tiap
+task terjadwal. Penanda `WATCHDOG` muncul bila umur tunggu proses runnable
+melewati ambang anti-starvasi (78 putaran aging).
 
 **Jaringan**
 `net` (`net status`, `net dhcp`, `net wifi ...`), `ping`, `dns`, `http`/`curl`.

@@ -129,6 +129,7 @@ async fn execute(
         "login" => login_user(arguments, current_user),
         "whoami" => crate::println!("{current_user}"),
         "session" => crate::println!("session user={current_user} tty=tty{terminal}"),
+        "sched" => show_scheduler_status(),
         "passwd" => crate::println!("passwd: password authentication is not implemented"),
         "mkfs.fat" => format_fat32_device(arguments),
         "as" => run_toolchain_command("as", current_dir, arguments),
@@ -144,6 +145,43 @@ async fn execute(
             environment,
             terminal,
         ),
+    }
+}
+
+/// Tampilkan status semua task terjadwal; baris `WATCHDOG` berarti umur tunggu
+/// proses runnable melewati ambang anti-starvasi.
+fn show_scheduler_status() {
+    let entries = crate::elf::scheduler_status();
+    if entries.is_empty() {
+        crate::println!("sched: no user processes");
+        return;
+    }
+    crate::println!("  PID  TID   NICE POLICY   AGE  STATE");
+    for entry in entries {
+        let state = if entry.exited {
+            "exited"
+        } else if entry.waiting {
+            "waiting"
+        } else {
+            "runnable"
+        };
+        let watchdog = if crate::elf::scheduler_watchdog_tripped(entry.age) {
+            " WATCHDOG"
+        } else {
+            ""
+        };
+        let kind = if entry.is_thread { " t" } else { "" };
+        crate::println!(
+            "{:>5} {:>4} {:>6} {:>6} {:>5}  {}{}{}",
+            entry.pid,
+            entry.tid,
+            entry.priority,
+            entry.policy,
+            entry.age,
+            state,
+            kind,
+            watchdog
+        );
     }
 }
 
@@ -172,6 +210,7 @@ fn print_help() {
     crate::println!("  edit <path>            edit a UTF-8 file");
     crate::println!("  date                   show date and time from the RTC");
     crate::println!("  shutdown               power off using ACPI");
+    crate::println!("  sched                  show scheduler priorities, aging, and watchdog flags");
     crate::println!("  devices                list detected storage devices");
     crate::println!("  lsdev                  list bus devices and bound drivers");
     crate::println!("  drivers                list registered kernel drivers");

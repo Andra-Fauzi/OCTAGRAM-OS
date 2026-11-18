@@ -17,8 +17,16 @@ services, and a package/application ecosystem.
   - [x] Randomized user stack placement (entropi 0–63 halaman per eksekusi)
   - [x] Randomized heap placement (`brk` tumbuh dari cursor `mmap` ber-entropi; heap image beralamat tetap dihapus)
   - [ ] Randomized interpreter placement (`ld-octagram.so` masih ET_EXEC)
-- [ ] Restrict fork/exec address-space inheritance
-- [ ] Add process capability and policy metadata
+- [x] Restrict fork/exec address-space inheritance
+  - [x] `execve` membangun address space baru; hanya cwd, terminal, pid, umask, grup/sesi, dan descriptor non-`CLOEXEC` yang diwarisi
+  - [x] `fork` tidak mewarisi kunci memori: `mlockall` dimatikan dan `MappingPage.locked` hasil klon di-reset (uji host `fork_does_not_inherit_memory_locks`)
+  - [ ] Pembatasan terpisah untuk pewarisan `MAP_SHARED` dan mapping device lintas `fork` (masih disalin/dibagi seperti biasa)
+- [x] Add process capability and policy metadata
+  - [x] Kredensial `uid`/`euid`/`gid`/`egid` per pid, diwarisi `fork`/thread, dibagi semua thread satu pid
+  - [x] `getuid` family membaca kredensial nyata; syscall `setuid`/`seteuid`/`setgid`/`setegid` (140–143) dengan aturan root vs non-root (`credential_change_allowed`)
+  - [x] Bitmask kemampuan `CAP_VFS_WRITE`/`CAP_NETWORK`/`CAP_SYS_ADMIN`/`CAP_SCHED_NICE`, diturunkan dari uid, `capget`/`capset` (144/145) dengan `CAP_SYS_ADMIN` untuk menulis
+  - [x] Header `sys/capability.h`, contoh `credential_demo`, uji host `credentials_and_capabilities_follow_uid_rules`
+  - [ ] Penegakan kemampuan di jalur akses VFS, jaringan, dan prioritas
 - [ ] Test kernel faults, invalid mappings, and cross-process memory access
 
 ## Priority 2: POSIX runtime
@@ -109,7 +117,12 @@ services, and a package/application ecosystem.
   - [x] `pthread_mutex`, condition variables, and semaphores built on futex
   - [x] `FUTEX_REQUEUE`, `FUTEX_WAIT_BITSET`, dan `FUTEX_WAKE_BITSET` (timeout absolut, `FUTEX_CLOCK_REALTIME`, uji host pencocokan bitset)
   - [ ] Robust futex (daftar `FUTEX_OWNER_DIED` milik userspace)
-- [ ] Add kernel task fairness and watchdog monitoring
+- [x] Add kernel task fairness and watchdog monitoring
+  - [x] Fairness lewat aging: setiap proses runnable yang dilewati mendapat `age` +1 dan prioritas efektif naik sampai 39 level
+  - [x] Snapshot `scheduler_status()` dan shell `sched` menampilkan PID/TID, nice, policy, `AGE`, serta status runnable/waiting/exited
+  - [x] Penanda starvasi `WATCHDOG` bila `age` ≥ 78 (`starvation_watchdog_trips`, uji host `starvation_watchdog_trips_after_the_aging_budget`)
+  - [x] Watchdog idle: peringatan `[sched] watchdog: idle wakeup delayed ...` bila `hlt` terlambat > 250 ms
+  - [ ] Akuntansi waktu CPU per task dan watchdog berbasis runtime nyata
 
 ## Priority 5: Networking
 

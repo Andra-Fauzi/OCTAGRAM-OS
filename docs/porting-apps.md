@@ -91,7 +91,9 @@ Pada build statis, `errno` dan allocator free-list memakai TLS per thread;
    berikutnya. Gunakan untuk menunggu I/O yang belum memiliki syscall blocking.
 7. API proses POSIX `fork`, `execve`, `waitpid`, dan subset `posix_spawn`
    tersedia. `fork` memakai eager copy; subset thread tersedia melalui
-   `<pthread.h>`. Signals belum tersedia. Socket IPv4 TCP `SOCK_STREAM` tersedia
+   `<pthread.h>`. Signal dasar tersedia melalui `kill`, `sigaction`,
+   `sigprocmask`, `sigpending`, `sigsuspend`, dan `sigreturn`, tetapi belum
+   seluruh semantik POSIX didukung. Socket IPv4 TCP `SOCK_STREAM` tersedia
    melalui `<sys/socket.h>` dan `<netinet/in.h>`; UDP datagram tersedia melalui
    API OCTAGRAM (`oct_udp_socket`, `oct_udp_bind`, `oct_udp_sendto`, dan
    `oct_udp_recvfrom`) di `octagram.h`. API socket masih terbatas: tidak ada
@@ -100,8 +102,9 @@ Pada build statis, `errno` dan allocator free-list memakai TLS per thread;
    DHCP; runtime Rust menyediakan `dns_lookup()` untuk hostname dengan hasil
    IPv4 A-record. Dynamic executable dengan `PT_INTERP` dapat memakai loader
    terbatas yang dijelaskan di atas.
-8. `clock_gettime(CLOCK_REALTIME)` dan `time()` membaca RTC dengan resolusi
-   satu detik. Zona waktu dan `CLOCK_MONOTONIC` belum tersedia.
+8. `clock_gettime(CLOCK_REALTIME)` membaca RTC dengan resolusi satu detik.
+   `CLOCK_MONOTONIC` memakai uptime berbasis TSC dengan resolusi sekitar
+   milidetik. Zona waktu dan beberapa clock POSIX lain belum tersedia.
 9. `<sys/mman.h>` menyediakan pemetaan anonim/file-backed, `MAP_SHARED`/
    `MAP_PRIVATE`, dan API pengelolaan pemetaan POSIX. Batas ruang alamat dan
    operasi yang tidak didukung dijelaskan di

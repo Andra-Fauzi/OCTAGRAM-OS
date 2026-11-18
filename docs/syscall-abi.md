@@ -138,10 +138,10 @@ menyediakan inline wrappers.
 | 133 | `sigaltstack` | `RDI=stack_t* baru` (0 untuk baca), `RSI=stack_t* lama` | 0, `-EINVAL`, `-EPERM` bila stack alternatif sedang dipakai |
 | 134 | `setpriority` | `RDI=which` (0 `PRIO_PROCESS`, 1 `PRIO_PGRP`, 2 `PRIO_USER`), `RSI=who` (0 = pemanggil/grup/euid pemanggil), `RDX=priority` (-20..19, dijepit) | 0, `-EINVAL`, `-EPERM` (butuh `CAP_SCHED_NICE` untuk task lain), `-ESRCH` |
 | 135 | `getpriority` | `RDI=which`, `RSI=who` | Prioritas nice yang dibias +20 (0..39) dari task dengan prioritas tertinggi yang cocok, `-EINVAL`, `-ESRCH` |
-| 136 | `sched_setscheduler` | `RDI=pid` (0 = pemanggil), `RSI=policy`, `RDX=sched_param*` | 0, `-EPERM` (hanya `SCHED_OTHER`), `-EINVAL`, `-ESRCH` |
-| 137 | `sched_getscheduler` | `RDI=pid` | Policy (selalu 0 = `SCHED_OTHER`), `-ESRCH` |
-| 138 | `sched_getparam` | `RDI=pid`, `RSI=sched_param*` | 0 setelah menulis prioritas 0, `-EFAULT`, `-ESRCH` |
-| 139 | `sched_setparam` | `RDI=pid`, `RSI=sched_param*` | 0 bila prioritas 0, `-EINVAL`, `-ESRCH` |
+| 136 | `sched_setscheduler` | `RDI=pid` (0 = pemanggil), `RSI=policy` (0 `SCHED_OTHER`, 1 `SCHED_FIFO`, 2 `SCHED_RR`), `RDX=sched_param*` | 0, `-EPERM` (kebijakan RT/task lain butuh `CAP_SCHED_NICE`), `-EINVAL` (policy/prioritas di luar rentang), `-ESRCH` |
+| 137 | `sched_getscheduler` | `RDI=pid` | Policy (0/1/2), `-ESRCH` |
+| 138 | `sched_getparam` | `RDI=pid`, `RSI=sched_param*` | 0 setelah menulis `rt_priority` (0 untuk `SCHED_OTHER`), `-EFAULT`, `-ESRCH` |
+| 139 | `sched_setparam` | `RDI=pid`, `RSI=sched_param*` | 0, `-EINVAL` (prioritas RT 1..99, atau 0 untuk `SCHED_OTHER`), `-EPERM`, `-ESRCH` |
 | 140 | `setuid` | `RDI=uid` | 0, `-EPERM` bila non-root menaikkan id |
 | 141 | `seteuid` | `RDI=uid` | 0, `-EPERM` |
 | 142 | `setgid` | `RDI=gid` | 0, `-EPERM` |

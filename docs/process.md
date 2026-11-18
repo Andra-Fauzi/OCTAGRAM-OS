@@ -66,10 +66,23 @@ runnable. Belum ada akuntansi waktu CPU per task.
 
 Kebijakan penjadwalan tersedia lewat `sched_setscheduler`/`sched_getscheduler`
 (136/137) dan `sched_setparam`/`sched_getparam` (138/139), ditambah `sched.h`
-(`sched_yield` memakai syscall 65). Hanya `SCHED_OTHER` dengan `sched_priority` 0
-yang diterima; `SCHED_FIFO`/`SCHED_RR` ditolak `EPERM`. `posix_spawn` menerapkan
-`POSIX_SPAWN_SETSCHEDULER`/`SETSCHEDPARAM` di anak sebelum `execve`, dan
-prioritas bobot tetap diatur nice.
+(`sched_yield` memakai syscall 65). `posix_spawn` menerapkan
+`POSIX_SPAWN_SETSCHEDULER`/`SETSCHEDPARAM` di anak sebelum `execve`.
+
+Tiga kebijakan didukung. `SCHED_OTHER` memakai `sched_priority` 0 dan bobot
+nice; `SCHED_FIFO`/`SCHED_RR` memakai `sched_priority` 1..99 (`rt_priority`,
+tersimpan terpisah dari nice). Kunci pemilihan `scheduling_key()` menaruh task
+RT selalu di atas `SCHED_OTHER`, dan di antara RT `rt_priority` terbesar menang
+tanpa boost aging. `SCHED_FIFO` mempertahankan pemilik CPU selama tidak ada task
+RT berprioritas lebih tinggi, sedangkan `SCHED_RR` memakai kuota
+`RT_RR_QUANTUM_TICKS` (4 tick timer) lalu dirotasi ke task RR lain dengan
+prioritas sama (seri diputus umur tunggu terlama). Rotasi dijalankan dari
+`handle_timer`, yang juga menjadi titik preemption periodik; `schedule_next()`
+tetap merupakan varian tanpa rotasi paksa. Kebijakan dan `rt_priority` diwarisi
+anak `fork` dan thread baru. Memakai kebijakan RT atau mengubah task lain butuh
+`CAP_SCHED_NICE`; non-root hanya boleh menurunkan dirinya sendiri ke
+`SCHED_OTHER` (selain itu `EPERM`). `sched_get_priority_max/min` di libc
+mengembalikan 99/1 untuk FIFO/RR dan 0/0 untuk OTHER.
 
 Syscall yang menunggu (pipe, `poll`, futex, `waitpid`, tidur, input console)
 memakai `ProcessWait` sehingga proses tidur sampai event atau deadline, bukan
@@ -185,9 +198,10 @@ terkunci (perilaku `PTHREAD_MUTEX_STALLED`).
 
 ## Batasan
 
-- Prioritas hanya `SCHED_OTHER`; tanpa real-time scheduling.
-- `sched_*` hanya menerima `SCHED_OTHER`/prioritas 0; tidak ada penjadwalan
-  real-time.
+- Kebijakan RT hanya memberi prioritas pada titik penjadwalan (timer tick,
+  syscall yang memblokir, `sched_yield`, dan keluar); belum ada
+  deadline/period scheduling, `sched_rr_get_interval`, atau pengukuran runtime
+  RT sesungguhnya.
 - Tanpa SMP dan tanpa migrasi thread antar CPU.
 - Thread user berbagi address space tetapi belum punya TLS dinamis penuh untuk
   shared object (lihat [dynamic-linker.md](dynamic-linker.md)).

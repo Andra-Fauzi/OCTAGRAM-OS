@@ -56,6 +56,14 @@ int main(int argc, char **argv)
                    ? 0
                    : 1;
     }
+    if (argc == 2 && strcmp(argv[1], "rt-child") == 0) {
+        struct sched_param param = {-1};
+        return sched_getscheduler(0) == SCHED_FIFO &&
+                       sched_getparam(0, &param) == 0 &&
+                       param.sched_priority == 10
+                   ? 0
+                   : 1;
+    }
     if (argc == 2 && strcmp(argv[1], "attribute-child") == 0) {
         sigset_t current;
         if (sigprocmask(SIG_SETMASK, NULL, &current) != 0) {
@@ -219,14 +227,28 @@ int main(int argc, char **argv)
     if (error != 0 || wait_for_child(child_pid) != 0) {
         return 34;
     }
-    /* SCHED_FIFO belum didukung kernel (EPERM) dan harus menggagalkan spawn. */
-    if (posix_spawnattr_setscheduler(&attributes, SCHED_FIFO) != 0) {
+    /* Kebijakan RT: root punya CAP_SCHED_NICE sehingga SCHED_FIFO prioritas 10
+     * benar-benar diterapkan di anak, sedangkan prioritas 0 untuk FIFO ditolak
+     * kernel dengan EINVAL. */
+    struct sched_param rt_param = {10};
+    if (posix_spawnattr_setscheduler(&attributes, SCHED_FIFO) != 0 ||
+        posix_spawnattr_setschedparam(&attributes, &rt_param) != 0) {
         return 35;
     }
-    error = posix_spawn(&child_pid, argv[0], NULL, &attributes, sched_arguments,
+    char *rt_arguments[] = {argv[0], "rt-child", NULL};
+    error = posix_spawn(&child_pid, argv[0], NULL, &attributes, rt_arguments,
                         environment);
-    if (error != EPERM) {
+    if (error != 0 || wait_for_child(child_pid) != 0) {
         return 36;
+    }
+    rt_param.sched_priority = 0;
+    if (posix_spawnattr_setschedparam(&attributes, &rt_param) != 0) {
+        return 37;
+    }
+    error = posix_spawn(&child_pid, argv[0], NULL, &attributes, rt_arguments,
+                        environment);
+    if (error != EINVAL) {
+        return 38;
     }
     if (posix_spawn_file_actions_destroy(&actions) != 0 ||
         posix_spawnattr_destroy(&attributes) != 0) {

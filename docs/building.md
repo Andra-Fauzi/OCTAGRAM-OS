@@ -154,8 +154,10 @@ mendukung `addclose`, `adddup2`, dan `addopen` (maksimal 8 aksi dengan path
 `POSIX_SPAWN_SETSIGDEF`, `POSIX_SPAWN_SETSIGMASK`, dan `POSIX_SPAWN_RESETIDS`
 (`setgid` lalu `setuid` ke id nyata di anak; id awal proses adalah 0), dan
 atribut scheduling (`POSIX_SPAWN_SETSCHEDPARAM`/
-`SETSCHEDULER`) yang hanya menerima `SCHED_OTHER` dengan prioritas 0 (nice
-mengatur bobot); `SCHED_FIFO`/`SCHED_RR` menggagalkan spawn dengan `EPERM`. Aksi
+`SETSCHEDULER`) yang menerima `SCHED_OTHER` dengan prioritas 0 (nice mengatur
+bobot) maupun `SCHED_FIFO`/`SCHED_RR` dengan prioritas 1..99; kebijakan RT butuh
+`CAP_SCHED_NICE` sehingga non-root mendapat `EPERM` dan prioritas di luar
+rentang `EINVAL`. Aksi
 diterapkan di anak setelah `fork` sebelum `execve`. Contoh `posix_spawn_demo`
 menguji redirection file/pipe, process group, atribut scheduling, dan kasus
 gagal tersebut. `waitpid`
@@ -420,7 +422,8 @@ run /mnt/stdio_demo.elf
 `waitpid`, file actions `addopen`/`adddup2`/`addclose`, attribute
 `POSIX_SPAWN_SETPGROUP`, `POSIX_SPAWN_SETSIGMASK`, `POSIX_SPAWN_SETSIGDEF`,
 `POSIX_SPAWN_RESETIDS`, dan `POSIX_SPAWN_SETSCHEDULER`/`SETSCHEDPARAM` beserta
-getter-nya, serta penolakan path terlalu panjang dan policy `SCHED_FIFO`:
+getter-nya, kebijakan `SCHED_FIFO` prioritas 10 pada anak, serta penolakan path
+terlalu panjang dan prioritas RT di luar rentang:
 
 ```text
 run /mnt/posix_spawn_demo.elf

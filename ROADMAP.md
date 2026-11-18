@@ -51,9 +51,13 @@ services, and a package/application ecosystem.
   - [x] Atribut scheduling (`POSIX_SPAWN_SETSCHEDPARAM`/`SETSCHEDULER`)
     - [x] Syscall `sched_setscheduler`/`sched_getscheduler`/`sched_setparam`/`sched_getparam` (136–139) dan header `sched.h` + `sched_yield`
     - [x] `posix_spawnattr_setscheduler`/`setschedparam` beserta getter; diterapkan di anak sebelum `execve`
-    - [x] `SCHED_OTHER` prioritas 0 diterima, `SCHED_FIFO`/`SCHED_RR` ditolak `EPERM`; uji host `scheduler_policy_limits_to_sched_other`
-    - [x] `posix_spawn_demo` memeriksa policy/param di anak dan menolak `SCHED_FIFO`
-    - [ ] Penjadwalan real-time (`SCHED_FIFO`/`SCHED_RR`) dengan prioritas RT sesungguhnya
+    - [x] `SCHED_OTHER` prioritas 0 diterima; `SCHED_FIFO`/`SCHED_RR` kini menerima `sched_priority` 1..99 (`rt_priority` terpisah dari nice); uji host `scheduler_policies_accept_rt_priorities`
+    - [x] `posix_spawn_demo` memeriksa policy/param di anak
+    - [x] Penjadwalan real-time (`SCHED_FIFO`/`SCHED_RR`) dengan prioritas RT sesungguhnya
+      - [x] `scheduling_key()` menaruh task RT di atas `SCHED_OTHER` dan memilih `rt_priority` terbesar; `SCHED_FIFO` mempertahankan pemilik CPU pada seri; uji host `rt_tasks_outrank_sched_other_and_higher_rt_priority_wins` dan `fifo_holds_ties_while_rr_rotates`
+      - [x] `SCHED_RR` memakai kuota `RT_RR_QUANTUM_TICKS` (4 tick) dan dirotasi dari `handle_timer` lewat `schedule_next_rotating()`
+      - [x] Izin `CAP_SCHED_NICE` untuk kebijakan RT/task lain (non-root hanya boleh turun ke `SCHED_OTHER`); uji host `sched_policy_changes_need_capability_or_self_demotion`
+      - [x] `sched_get_priority_max/min` libc (99/1 untuk FIFO/RR) dan shell `sched` menampilkan policy serta `RTPRI`
 - [x] Implement basic process groups and `setsid`
 - [x] Implement alternate signal stacks (`sigaltstack` 133, `SA_ONSTACK`, `SS_ONSTACK`/`SS_DISABLE`, diwarisi tanpa status aktif saat `fork`)
 - [x] Implement dynamic shared module loading

@@ -7436,14 +7436,26 @@ int sched_getparam(pid_t pid, struct sched_param *param)
 
 int sched_get_priority_max(int policy)
 {
-    (void)policy;
-    return 0;
+    if (policy == SCHED_FIFO || policy == SCHED_RR) {
+        return 99;
+    }
+    if (policy == SCHED_OTHER) {
+        return 0;
+    }
+    errno = EINVAL;
+    return -1;
 }
 
 int sched_get_priority_min(int policy)
 {
-    (void)policy;
-    return 0;
+    if (policy == SCHED_FIFO || policy == SCHED_RR) {
+        return 1;
+    }
+    if (policy == SCHED_OTHER) {
+        return 0;
+    }
+    errno = EINVAL;
+    return -1;
 }
 
 int sched_yield(void)

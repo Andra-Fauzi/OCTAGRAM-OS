@@ -158,8 +158,13 @@ fn show_scheduler_status() {
         crate::println!("sched: no user processes");
         return;
     }
-    crate::println!("  PID  TID   NICE POLICY   AGE  STATE");
+    crate::println!("  PID  TID   NICE POLICY  RTPRI  AGE  STATE");
     for entry in entries {
+        let policy = match entry.policy {
+            1 => "fifo",
+            2 => "rr",
+            _ => "other",
+        };
         let state = if entry.exited {
             "exited"
         } else if entry.waiting {
@@ -174,11 +179,12 @@ fn show_scheduler_status() {
         };
         let kind = if entry.is_thread { " t" } else { "" };
         crate::println!(
-            "{:>5} {:>4} {:>6} {:>6} {:>5}  {}{}{}",
+            "{:>5} {:>4} {:>6} {:>6} {:>5} {:>5}  {}{}{}",
             entry.pid,
             entry.tid,
             entry.priority,
-            entry.policy,
+            policy,
+            entry.rt_priority,
             entry.age,
             state,
             kind,

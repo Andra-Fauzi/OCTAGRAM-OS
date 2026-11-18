@@ -20,16 +20,16 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
 
 ## Proses dan scheduler
 
-- Prioritas nice, aging, dan watchdog starvasi/idle tersedia, tetapi tanpa
-  real-time scheduling (`SCHED_FIFO`/`SCHED_RR`) dan tanpa
-  `PRIO_PGRP`/`PRIO_USER`.
+- Prioritas nice, aging, watchdog starvasi/idle, `PRIO_PGRP`/`PRIO_USER`, dan
+  `SCHED_FIFO`/`SCHED_RR` (prioritas RT 1..99) tersedia. Belum ada deadline atau
+  period scheduling, `sched_rr_get_interval`, dan akuntansi waktu CPU per task.
 - Tanpa SMP; hanya satu CPU.
 - `read()` console dan `read()` dari tty yang dibuka lewat path
   (`/dev/stdin`, `/dev/tty*`, `/dev/console`) sama-sama scheduler-aware; tidak
   ada jalur tty yang menahan CPU di kernel saat masih ada proses lain.
-- Robust futex hanya tersedia lewat syscall `set_robust_list`/`get_robust_list`;
-  belum ada API `pthread_mutexattr_setrobust`/`EOWNERDEAD` di libc. Tanpa
-  `clone3` dan tanpa `vfork`.
+- Robust futex tersedia lewat syscall `set_robust_list`/`get_robust_list` dan
+  API libc `pthread_mutexattr_setrobust`/`pthread_mutex_consistent`
+  (`EOWNERDEAD`/`ENOTRECOVERABLE`). Tanpa `clone3` dan tanpa `vfork`.
 - Kata sandi disimpan sebagai SHA-256 bergaram sekali jalan (`/etc/shadow`),
   bukan KDF berulang; belum ada kebijakan kedaluwarsa, `su`, atau sesi terpisah
   per terminal.

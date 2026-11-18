@@ -11,9 +11,9 @@ struct sched_param {
     int sched_priority;
 };
 
-/* Kernel OCTAGRAM hanya mendukung SCHED_OTHER dengan prioritas 0; prioritas
- * sebenarnya diatur lewat nice (setpriority). SCHED_FIFO/SCHED_RR ditolak
- * dengan EPERM. */
+/* Kernel OCTAGRAM mendukung SCHED_OTHER (sched_priority 0, prioritas diatur
+ * lewat nice/setpriority) serta SCHED_FIFO/SCHED_RR dengan sched_priority 1..99.
+ * Memakai kebijakan RT atau mengubah task lain butuh CAP_SCHED_NICE. */
 int sched_setscheduler(pid_t pid, int policy,
                        const struct sched_param *param);
 int sched_getscheduler(pid_t pid);

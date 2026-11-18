@@ -29,6 +29,8 @@
 #define EM_X86_64 62
 #define DT_NULL 0
 #define DT_NEEDED 1
+#define DT_INIT 12
+#define DT_FINI 13
 #define DT_HASH 4
 #define DT_GNU_HASH 0x6ffffef5
 #define DT_STRTAB 5
@@ -37,6 +39,10 @@
 #define DT_RELASZ 8
 #define DT_RELAENT 9
 #define DT_STRSZ 10
+#define DT_INIT_ARRAY 25
+#define DT_FINI_ARRAY 26
+#define DT_INIT_ARRAYSZ 27
+#define DT_FINI_ARRAYSZ 28
 #define DT_SYMENT 11
 #define DT_SONAME 14
 #define DT_JMPREL 23
@@ -132,10 +138,17 @@ typedef struct {
     uint64_t string_size;
     uint64_t symbol_size;
     char name[MAX_NAME];
+    uint64_t init_address;
+    uint64_t *init_array;
+    uint64_t init_array_size;
+    uint64_t fini_address;
+    uint64_t *fini_array;
+    uint64_t fini_array_size;
 } Object;
 
 static Object objects[MAX_OBJECTS];
 static unsigned object_count;
+static char library_search_path[MAX_NAME];
 
 static void *copy_bytes(void *destination, const void *source, size_t count)
 {
@@ -368,6 +381,30 @@ static int read_dynamic(Object *object, uint64_t address)
             return object->strings != 0 && object->symbols != 0
                 && object->symbol_count != 0
                 && object->symbol_size == sizeof(Symbol) ? 0 : -1;
+        case DT_INIT:
+            object->init_address = dynamic_pointer(object, entry->value);
+            break;
+        case DT_FINI:
+            object->fini_address = dynamic_pointer(object, entry->value);
+            break;
+        case DT_INIT_ARRAY:
+            object->init_array = (uint64_t *)(uintptr_t)dynamic_pointer(object, entry->value);
+            break;
+        case DT_INIT_ARRAYSZ:
+            if (entry->value % sizeof(uint64_t) != 0) {
+                return -1;
+            }
+            object->init_array_size = entry->value / sizeof(uint64_t);
+            break;
+        case DT_FINI_ARRAY:
+            object->fini_array = (uint64_t *)(uintptr_t)dynamic_pointer(object, entry->value);
+            break;
+        case DT_FINI_ARRAYSZ:
+            if (entry->value % sizeof(uint64_t) != 0) {
+                return -1;
+            }
+            object->fini_array_size = entry->value / sizeof(uint64_t);
+            break;
         case DT_HASH:
             object->hash = (uint32_t *)(uintptr_t)dynamic_pointer(object, entry->value);
             break;
@@ -421,14 +458,49 @@ static int map_shared_object(const char *name, Object *object)
             return -1;
         }
     } else {
-        const char prefix[] = "/lib/";
-        size_t prefix_length = sizeof(prefix) - 1;
         size_t name_length = string_length(name);
-        if (prefix_length + name_length + 1 > sizeof(path)) {
-            return -1;
+        const char *cursor = library_search_path;
+        if (cursor[0] == '\0') {
+            cursor = "/lib";
         }
-        copy_bytes(path, prefix, prefix_length);
-        copy_bytes(path + prefix_length, name, name_length + 1);
+        int found = 0;
+        for (;;) {
+            const char *separator = cursor;
+            while (*separator != '\0' && *separator != ':') {
+                ++separator;
+            }
+            size_t directory_length = (size_t)(separator - cursor);
+            if (directory_length == 0) {
+                cursor = separator;
+            } else {
+                int slash = directory_length != 0
+                    && cursor[directory_length - 1] != '/';
+                if (1u + directory_length + (size_t)slash + name_length + 1 <= sizeof(path)) {
+                    size_t written = 0;
+                    copy_bytes(path + written, cursor, directory_length);
+                    written += directory_length;
+                    if (slash) {
+                        path[written++] = '/';
+                    }
+                    copy_bytes(path + written, name, name_length + 1);
+                    found = 1;
+                    break;
+                }
+            }
+            if (*separator == '\0') {
+                break;
+            }
+            cursor = separator + 1;
+        }
+        if (!found) {
+            const char prefix[] = "/lib/";
+            size_t prefix_length = sizeof(prefix) - 1;
+            if (prefix_length + name_length + 1 > sizeof(path)) {
+                return -1;
+            }
+            copy_bytes(path, prefix, prefix_length);
+            copy_bytes(path + prefix_length, name, name_length + 1);
+        }
     }
 
     int fd;
@@ -678,9 +750,57 @@ static int apply_relocations(void)
 static void start_application(uint64_t entry, uint64_t stack_pointer)
     __attribute__((noreturn));
 
+static void run_initializers(void)
+{
+    for (unsigned i = 1; i < object_count; ++i) {
+        Object *object = &objects[i];
+        if (object->init_address != 0) {
+            ((void (*)(void))(uintptr_t)object->init_address)();
+        }
+        if (object->init_array != 0) {
+            for (uint64_t index = 0; index < object->init_array_size; ++index) {
+                uint64_t address = object->init_array[index];
+                if (address != 0) {
+                    ((void (*)(void))(uintptr_t)address)();
+                }
+            }
+        }
+    }
+    Object *main_object = &objects[0];
+    if (main_object->init_address != 0) {
+        ((void (*)(void))(uintptr_t)main_object->init_address)();
+    }
+    if (main_object->init_array != 0) {
+        for (uint64_t index = 0; index < main_object->init_array_size; ++index) {
+            uint64_t address = main_object->init_array[index];
+            if (address != 0) {
+                ((void (*)(void))(uintptr_t)address)();
+            }
+        }
+    }
+}
+
 void oct_ldso_main(uint64_t *initial_stack)
 {
     uint64_t argc = initial_stack[0];
+    uint64_t *environment = initial_stack + argc + 1;
+    for (uint64_t index = 0; index < 64 && environment[index] != 0; ++index) {
+        const char *entry = (const char *)(uintptr_t)environment[index];
+        const char prefix[] = "LD_LIBRARY_PATH=";
+        size_t prefix_length = sizeof(prefix) - 1;
+        int matches = 1;
+        for (size_t character = 0; character < prefix_length; ++character) {
+            if (entry[character] != prefix[character]) {
+                matches = 0;
+                break;
+            }
+        }
+        if (matches) {
+            string_copy(library_search_path, entry + prefix_length,
+                        sizeof(library_search_path));
+            break;
+        }
+    }
     uint64_t *cursor = initial_stack + argc + 2;
     while (*cursor++ != 0) {
     }
@@ -770,6 +890,7 @@ void oct_ldso_main(uint64_t *initial_stack)
     if (relocation_result != 0) {
         fail("ld-octagram: relocation processing failed");
     }
+    run_initializers();
     start_application(program_entry, (uint64_t)(uintptr_t)initial_stack);
 }
 

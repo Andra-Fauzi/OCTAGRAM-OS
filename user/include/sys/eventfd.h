@@ -6,5 +6,7 @@
 #define EFD_NONBLOCK 00004000
 
 int eventfd(unsigned int initial_value, int flags);
+int eventfd_read(int fd, uint64_t *value);
+int eventfd_write(int fd, uint64_t value);
 
 #endif

@@ -8,7 +8,13 @@ extern int errno;
 #endif
 
 #define EACCES 13
+#define EPERM 1
 #define EAGAIN 11
+#define EWOULDBLOCK EAGAIN
+#define EALREADY 114
+#define EINPROGRESS 115
+#define ECONNABORTED 103
+#define ENXIO 6
 #define EAFNOSUPPORT 97
 #define EADDRINUSE 98
 #define EADDRNOTAVAIL 99
@@ -50,6 +56,9 @@ extern int errno;
 #define EOVERFLOW 75
 #define EPIPE 32
 #define ERANGE 34
+#define EDOM 33
+#define ENFILE 23
+#define ENOLCK 37
 #define EROFS 30
 #define ESPIPE 29
 

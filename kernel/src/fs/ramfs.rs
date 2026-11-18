@@ -83,6 +83,9 @@ impl Default for RamFs {
 }
 
 impl FileSystem for RamFs {
+    fn name(&self) -> &'static str {
+        "ramfs"
+    }
     fn metadata(&self, path: &str) -> Result<Metadata, FsError> {
         let path = normalize_path(path)?;
         self.nodes

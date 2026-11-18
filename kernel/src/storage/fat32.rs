@@ -805,6 +805,9 @@ impl Fat32 {
 }
 
 impl FileSystem for Fat32 {
+    fn name(&self) -> &'static str {
+        "fat32"
+    }
     fn metadata(&self, path: &str) -> Result<Metadata, FsError> {
         match self.find_record(path)? {
             None => Ok(Metadata {

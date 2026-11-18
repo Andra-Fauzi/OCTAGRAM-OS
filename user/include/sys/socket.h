@@ -21,6 +21,8 @@ struct sockaddr {
 #define SOCK_STREAM 1
 #define SOCK_DGRAM 2
 #define SOCK_RAW 3
+#define SOCK_CLOEXEC 02000000
+#define SOCK_NONBLOCK 00004000
 
 #define MSG_PEEK 0x02
 #define MSG_DONTWAIT 0x40
@@ -50,6 +52,10 @@ int setsockopt(int socket_fd, int level, int option_name,
                const void *option_value, socklen_t option_length);
 int getsockopt(int socket_fd, int level, int option_name,
                void *option_value, socklen_t *option_length);
+ssize_t sendto(int socket_fd, const void *buffer, size_t length, int flags,
+               const struct sockaddr *destination, socklen_t destination_length);
+ssize_t recvfrom(int socket_fd, void *buffer, size_t length, int flags,
+                 struct sockaddr *source, socklen_t *source_length);
 
 int socketpair(int domain, int socket_type, int protocol, int sv[2]);
 

@@ -34,5 +34,7 @@ char *realpath(const char *path, char *resolved_path);
 int remove(const char *path);
 void qsort(void *base, size_t count, size_t size,
            int (*compare)(const void *, const void *));
+int abs(int value);
+int system(const char *command);
 
 #endif

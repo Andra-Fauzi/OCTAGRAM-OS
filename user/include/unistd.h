@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <time.h>
 
 extern char **environ;
 
@@ -64,5 +65,58 @@ long sysconf(int name);
 pid_t getppid(void);
 int fsync(int fd);
 int fdatasync(int fd);
+long syscall(long number, ...);
+ssize_t pread(int fd, void *buffer, size_t count, off_t offset);
+ssize_t pwrite(int fd, const void *buffer, size_t count, off_t offset);
+int truncate(const char *path, off_t length);
+int dup3(int source_fd, int target_fd, int flags);
+int close_range(unsigned int first, unsigned int last, int flags);
+int chown(const char *path, uid_t owner, gid_t group);
+int lchown(const char *path, uid_t owner, gid_t group);
+int fchown(int fd, uid_t owner, gid_t group);
+int setuid(uid_t uid);
+int seteuid(uid_t uid);
+int setgid(gid_t gid);
+int setegid(gid_t gid);
+int getgroups(int size, gid_t *groups);
+pid_t getpgid(pid_t pid);
+pid_t getpgrp(void);
+int setpgid(pid_t pid, pid_t pgid);
+pid_t setsid(void);
+pid_t getsid(pid_t pid);
+int setreuid(uid_t real, uid_t effective);
+int setregid(gid_t real, gid_t effective);
+int setresuid(uid_t real, uid_t effective, uid_t saved);
+int setresgid(gid_t real, gid_t effective, gid_t saved);
+int getresuid(uid_t *real, uid_t *effective, uid_t *saved);
+int getresgid(gid_t *real, gid_t *effective, gid_t *saved);
+int setgroups(size_t size, const gid_t *groups);
+int nice(int increment);
+int pause(void);
+unsigned int alarm(unsigned int seconds);
+char *ctermid(char *name);
+char *ttyname(int fd);
+int ttyname_r(int fd, char *buffer, size_t size);
+long fpathconf(int fd, int name);
+long pathconf(const char *path, int name);
+int faccessat(int dirfd, const char *path, int mode, int flags);
+int fchmodat(int dirfd, const char *path, mode_t mode, int flags);
+int fchownat(int dirfd, const char *path, uid_t owner, gid_t group, int flags);
+int utimensat(int dirfd, const char *path, const struct timespec *times, int flags);
+int futimens(int fd, const struct timespec times[2]);
+__attribute__((noreturn)) int _exit(int status);
+void sync(void);
+int gethostname(char *name, size_t size);
+size_t confstr(int name, char *buffer, size_t size);
+char *getlogin(void);
+int getloadavg(double load[3], int count);
+int lockf(int fd, int operation, off_t length);
+int mkfifo(const char *path, mode_t mode);
+int mkfifoat(int dirfd, const char *path, mode_t mode);
+int mknod(const char *path, mode_t mode, dev_t device);
+int mknodat(int dirfd, const char *path, mode_t mode, dev_t device);
+int lchmod(const char *path, mode_t mode);
+int execv(const char *path, char *const argv[]);
+int sethostname(const char *name, size_t size);
 
 #endif

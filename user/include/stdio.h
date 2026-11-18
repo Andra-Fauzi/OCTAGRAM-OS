@@ -8,6 +8,9 @@ typedef struct octagram_FILE FILE;
 
 #define EOF (-1)
 #define BUFSIZ 4096
+#define _IONBF 0
+#define _IOLBF 1
+#define _IOFBF 2
 #ifndef SEEK_SET
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -20,6 +23,8 @@ extern FILE *stderr;
 
 int fclose(FILE *stream);
 int fflush(FILE *stream);
+int setvbuf(FILE *stream, char *buffer, int mode, size_t size);
+void perror(const char *message);
 FILE *fdopen(int fd, const char *mode);
 FILE *fopen(const char *path, const char *mode);
 FILE *freopen(const char *path, const char *mode, FILE *stream);

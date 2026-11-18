@@ -23,6 +23,7 @@ struct sockaddr_in {
 #define IPPROTO_IP 0
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
+typedef uint32_t in_addr_t;
 
 static inline uint16_t htons(uint16_t value)
 {
@@ -51,5 +52,11 @@ static inline uint32_t ntohl(uint32_t value)
 {
     return htonl(value);
 }
+
+in_addr_t inet_addr(const char *text);
+char *inet_ntoa(struct in_addr address);
+int inet_pton(int family, const char *text, void *address);
+const char *inet_ntop(int family, const void *address,
+                      char *buffer, unsigned int length);
 
 #endif

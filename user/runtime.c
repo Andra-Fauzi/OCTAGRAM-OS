@@ -20,6 +20,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <netdb.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/select.h>
@@ -35,6 +36,9 @@
 #include <termios.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
+#include <sys/uio.h>
+#include <sys/resource.h>
+#include <sys/times.h>
 
 struct octagram_FILE {
     int fd;
@@ -130,6 +134,156 @@ static void oct_tls_copy(void *destination, uintptr_t filesz, uintptr_t size)
     }
     if (size > filesz) {
         memset((unsigned char *)destination + filesz, 0, size - filesz);
+    }
+}
+
+in_addr_t inet_addr(const char *text)
+{
+    uint32_t result = 0;
+    if (text == NULL) {
+        return (in_addr_t)-1;
+    }
+    for (int component = 0; component < 4; ++component) {
+        unsigned int value = 0;
+        int digits = 0;
+        while (*text >= '0' && *text <= '9') {
+            value = value * 10u + (unsigned int)(*text - '0');
+            ++text;
+            ++digits;
+            if (value > 255u) {
+                return (in_addr_t)-1;
+            }
+        }
+        if (digits == 0 || (component < 3 && *text != '.') ||
+            (component == 3 && *text != '\0')) {
+            return (in_addr_t)-1;
+        }
+        result = (result << 8) | value;
+        if (component < 3) {
+            ++text;
+        }
+    }
+    return htonl(result);
+}
+
+int inet_pton(int family, const char *text, void *address)
+{
+    if (family != AF_INET || text == NULL || address == NULL) {
+        return -1;
+    }
+    in_addr_t value = inet_addr(text);
+    if (value == (in_addr_t)-1) {
+        return 0;
+    }
+    memcpy(address, &value, sizeof(value));
+    return 1;
+}
+
+static char *inet_format_address(in_addr_t address)
+{
+    static char text[16];
+    uint32_t host = ntohl(address);
+    snprintf(text, sizeof(text), "%u.%u.%u.%u",
+             (unsigned)((host >> 24) & 0xff),
+             (unsigned)((host >> 16) & 0xff),
+             (unsigned)((host >> 8) & 0xff),
+             (unsigned)(host & 0xff));
+    return text;
+}
+
+char *inet_ntoa(struct in_addr address)
+{
+    return inet_format_address(address.s_addr);
+}
+
+const char *inet_ntop(int family, const void *address,
+                      char *buffer, unsigned int length)
+{
+    if (family != AF_INET || address == NULL || buffer == NULL ||
+        length < 16) {
+        errno = EINVAL;
+        return NULL;
+    }
+    in_addr_t value;
+    memcpy(&value, address, sizeof(value));
+    char *text = inet_format_address(value);
+    memcpy(buffer, text, strlen(text) + 1);
+    return buffer;
+}
+
+int getaddrinfo(const char *node, const char *service,
+                const struct addrinfo *hints, struct addrinfo **result)
+{
+    if (result == NULL) {
+        return EINVAL;
+    }
+    *result = NULL;
+    if (node == NULL) {
+        node = "0.0.0.0";
+    }
+    in_addr_t address = inet_addr(node);
+    if (address == (in_addr_t)-1) {
+        return EAI_NONAME;
+    }
+    unsigned short port = 0;
+    if (service != NULL && service[0] != '\0') {
+        unsigned int parsed = 0;
+        for (const char *cursor = service; *cursor != '\0'; ++cursor) {
+            if (*cursor < '0' || *cursor > '9') {
+                return EAI_NONAME;
+            }
+            parsed = parsed * 10u + (unsigned int)(*cursor - '0');
+            if (parsed > 65535u) {
+                return EAI_NONAME;
+            }
+        }
+        port = (unsigned short)parsed;
+    }
+    int family = hints != NULL && hints->ai_family != AF_UNSPEC
+        ? hints->ai_family
+        : AF_INET;
+    int socktype = hints != NULL && hints->ai_socktype != 0
+        ? hints->ai_socktype
+        : SOCK_STREAM;
+    if (family != AF_INET) {
+        return EAI_FAMILY;
+    }
+    struct addrinfo *info = calloc(1, sizeof(*info));
+    struct sockaddr_in *ipv4 = calloc(1, sizeof(*ipv4));
+    if (info == NULL || ipv4 == NULL) {
+        free(info);
+        free(ipv4);
+        return EAI_MEMORY;
+    }
+    ipv4->sin_family = AF_INET;
+    ipv4->sin_port = htons(port);
+    ipv4->sin_addr.s_addr = address;
+    info->ai_family = AF_INET;
+    info->ai_socktype = socktype;
+    info->ai_protocol = socktype == SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP;
+    info->ai_addrlen = sizeof(*ipv4);
+    info->ai_addr = (struct sockaddr *)ipv4;
+    *result = info;
+    return 0;
+}
+
+void freeaddrinfo(struct addrinfo *result)
+{
+    while (result != NULL) {
+        struct addrinfo *next = result->ai_next;
+        free(result->ai_addr);
+        free(result);
+        result = next;
+    }
+}
+
+const char *gai_strerror(int error)
+{
+    switch (error) {
+    case EAI_FAMILY: return "Address family not supported";
+    case EAI_MEMORY: return "Out of memory";
+    case EAI_NONAME: return "Host or service not found";
+    default: return "Address resolution error";
     }
 }
 
@@ -484,6 +638,110 @@ int pthread_cond_broadcast(pthread_cond_t *cond)
     return 0;
 }
 
+int pthread_condattr_init(pthread_condattr_t *attributes)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    attributes->opaque = 0;
+    return 0;
+}
+
+int pthread_condattr_destroy(pthread_condattr_t *attributes)
+{
+    return attributes == NULL ? EINVAL : 0;
+}
+
+int pthread_condattr_setclock(pthread_condattr_t *attributes, clockid_t clock)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    attributes->opaque = (int)clock;
+    return 0;
+}
+
+int pthread_detach(pthread_t thread)
+{
+    (void)thread;
+    return 0;
+}
+
+int pthread_attr_init(pthread_attr_t *attributes)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    attributes->opaque = PTHREAD_CREATE_JOINABLE;
+    return 0;
+}
+
+int pthread_attr_destroy(pthread_attr_t *attributes)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    attributes->opaque = 0;
+    return 0;
+}
+
+int pthread_attr_setdetachstate(pthread_attr_t *attributes, int state)
+{
+    if (attributes == NULL ||
+        (state != PTHREAD_CREATE_JOINABLE && state != PTHREAD_CREATE_DETACHED)) {
+        return EINVAL;
+    }
+    attributes->opaque = (uintptr_t)state;
+    return 0;
+}
+
+int pthread_attr_getdetachstate(const pthread_attr_t *attributes, int *state)
+{
+    if (attributes == NULL || state == NULL) {
+        return EINVAL;
+    }
+    *state = attributes->opaque == PTHREAD_CREATE_DETACHED
+        ? PTHREAD_CREATE_DETACHED
+        : PTHREAD_CREATE_JOINABLE;
+    return 0;
+}
+
+static unsigned int oct_next_pthread_key;
+static void *oct_pthread_key_values[64];
+
+int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
+{
+    (void)destructor;
+    if (key == NULL || oct_next_pthread_key >= 64) {
+        return EAGAIN;
+    }
+    *key = oct_next_pthread_key++;
+    return 0;
+}
+
+int pthread_key_delete(pthread_key_t key)
+{
+    if (key >= 64) {
+        return EINVAL;
+    }
+    oct_pthread_key_values[key] = NULL;
+    return 0;
+}
+
+void *pthread_getspecific(pthread_key_t key)
+{
+    return key < 64 ? oct_pthread_key_values[key] : NULL;
+}
+
+int pthread_setspecific(pthread_key_t key, const void *value)
+{
+    if (key >= 64) {
+        return EINVAL;
+    }
+    oct_pthread_key_values[key] = (void *)value;
+    return 0;
+}
+
 int sem_init(sem_t *semaphore, int shared, unsigned int value)
 {
     if (semaphore == NULL) {
@@ -727,6 +985,21 @@ void *memchr(const void *memory, int character, size_t count)
     return NULL;
 }
 
+void *memrchr(const void *memory, int character, size_t count)
+{
+    const unsigned char *bytes = memory;
+    unsigned char target = (unsigned char)character;
+    if (count == 0) {
+        return NULL;
+    }
+    for (size_t index = count; index > 0; --index) {
+        if (bytes[index - 1] == target) {
+            return (void *)(bytes + index - 1);
+        }
+    }
+    return NULL;
+}
+
 char *strcpy(char *destination, const char *source)
 {
     char *result = destination;
@@ -843,6 +1116,11 @@ int strncasecmp(const char *left, const char *right, size_t count)
 int atoi(const char *text)
 {
     return (int)strtol(text, NULL, 10);
+}
+
+int abs(int value)
+{
+    return value < 0 ? -value : value;
 }
 
 char *strchr(const char *text, int character)
@@ -975,6 +1253,20 @@ char *strerror(int error)
     case ESPIPE: return "invalid seek";
     case ENOTSUP: return "operation not supported";
     default: return "unknown error";
+    }
+}
+
+char *strsignal(int signal_number)
+{
+    switch (signal_number) {
+    case SIGINT: return "Interrupt";
+    case SIGABRT: return "Aborted";
+    case SIGFPE: return "Floating point exception";
+    case SIGILL: return "Illegal instruction";
+    case SIGSEGV: return "Segmentation fault";
+    case SIGTERM: return "Terminated";
+    case SIGKILL: return "Killed";
+    default: return "Unknown signal";
     }
 }
 
@@ -1397,11 +1689,35 @@ int close(int fd)
 
 int socket(int domain, int type, int protocol)
 {
-    return (int)posix_result(oct_socket(domain, type, protocol));
+    int flags = type & (SOCK_CLOEXEC | SOCK_NONBLOCK);
+    type &= ~(SOCK_CLOEXEC | SOCK_NONBLOCK);
+    int fd;
+    if (domain == AF_INET && type == SOCK_DGRAM) {
+        fd = (int)posix_result(oct_udp_socket());
+    } else {
+        fd = (int)posix_result(oct_socket(domain, type, protocol));
+    }
+    if (fd < 0) {
+        return fd;
+    }
+    if ((flags & SOCK_CLOEXEC) != 0) {
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+    }
+    if ((flags & SOCK_NONBLOCK) != 0) {
+        fcntl(fd, F_SETFL, O_NONBLOCK);
+    }
+    return fd;
 }
 
 int bind(int socket_fd, const struct sockaddr *address, socklen_t address_length)
 {
+    if (address != NULL && address_length >= sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *ipv4 = (const struct sockaddr_in *)address;
+        if (ipv4->sin_family == AF_INET) {
+            return (int)posix_result(oct_udp_bind(socket_fd,
+                                                  ntohs(ipv4->sin_port)));
+        }
+    }
     return (int)posix_result(oct_bind(socket_fd, address, address_length));
 }
 
@@ -1510,6 +1826,86 @@ int getpeername(int socket_fd, struct sockaddr *address,
                 socklen_t *address_length)
 {
     return (int)posix_result(oct_getpeername(socket_fd, address, address_length));
+}
+
+ssize_t sendto(int socket_fd, const void *buffer, size_t length, int flags,
+               const struct sockaddr *destination, socklen_t destination_length)
+{
+    if (length > OCT_MAX_SYSCALL_IO) {
+        length = OCT_MAX_SYSCALL_IO;
+    }
+    if (destination == NULL ||
+        destination_length < sizeof(struct sockaddr_in)) {
+        errno = EINVAL;
+        return -1;
+    }
+    const struct sockaddr_in *ipv4 = (const struct sockaddr_in *)destination;
+    if (ipv4->sin_family != AF_INET) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    for (;;) {
+        int64_t result = oct_udp_sendto(
+            socket_fd,
+            ntohl(ipv4->sin_addr.s_addr),
+            ntohs(ipv4->sin_port),
+            buffer,
+            length);
+        if (result != -EAGAIN || (flags & MSG_DONTWAIT) != 0) {
+            return (ssize_t)posix_result(result);
+        }
+        int64_t yield_result = oct_yield();
+        if (yield_result < 0) {
+            return (ssize_t)posix_result(yield_result);
+        }
+    }
+}
+
+ssize_t recvfrom(int socket_fd, void *buffer, size_t length, int flags,
+                 struct sockaddr *source, socklen_t *source_length)
+{
+    if (length > OCT_MAX_SYSCALL_IO) {
+        length = OCT_MAX_SYSCALL_IO;
+    }
+    struct sockaddr_in ipv4;
+    uint8_t source_ip[4] = {0};
+    uint16_t source_port = 0;
+    memset(&ipv4, 0, sizeof(ipv4));
+    for (;;) {
+        int64_t result = oct_udp_recvfrom(
+            socket_fd,
+            buffer,
+            length,
+            source != NULL ? source_ip : 0,
+            source != NULL ? &source_port : 0);
+        if (result != -EAGAIN || (flags & MSG_DONTWAIT) != 0) {
+            if (result < 0) {
+                return (ssize_t)posix_result(result);
+            }
+            if (source != NULL) {
+                ipv4.sin_family = AF_INET;
+                ipv4.sin_port = htons(source_port);
+                ipv4.sin_addr.s_addr =
+                    htonl(((uint32_t)source_ip[0] << 24) |
+                          ((uint32_t)source_ip[1] << 16) |
+                          ((uint32_t)source_ip[2] << 8) |
+                          (uint32_t)source_ip[3]);
+                size_t copy_length = sizeof(ipv4);
+                if (source_length != NULL && *source_length < copy_length) {
+                    copy_length = *source_length;
+                }
+                memcpy(source, &ipv4, copy_length);
+                if (source_length != NULL) {
+                    *source_length = (socklen_t)copy_length;
+                }
+            }
+            return (ssize_t)result;
+        }
+        int64_t yield_result = oct_yield();
+        if (yield_result < 0) {
+            return (ssize_t)posix_result(yield_result);
+        }
+    }
 }
 
 DIR *opendir(const char *path)
@@ -1785,6 +2181,23 @@ pid_t getpid(void)
     return (pid_t)posix_result(oct_getpid());
 }
 
+long syscall(long number, ...)
+{
+    if (number == 186) {
+        return (long)getpid();
+    }
+    if (number == 218) {
+        va_list arguments;
+        va_start(arguments, number);
+        (void)va_arg(arguments, void *);
+        va_end(arguments);
+        return (long)getpid();
+    }
+    (void)number;
+    errno = ENOSYS;
+    return -1;
+}
+
 int isatty(int fd)
 {
     struct termios termios_state;
@@ -2021,6 +2434,129 @@ int posix_spawnp(pid_t *restrict pid, const char *restrict file,
     return access_error != 0 ? access_error : last_error;
 }
 
+int posix_spawn_file_actions_init(posix_spawn_file_actions_t *actions)
+{
+    if (actions == NULL) {
+        return EINVAL;
+    }
+    actions->reserved = 0;
+    return 0;
+}
+
+int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *actions)
+{
+    if (actions == NULL) {
+        return EINVAL;
+    }
+    actions->reserved = 0;
+    return 0;
+}
+
+int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t *actions,
+                                      int fd)
+{
+    (void)fd;
+    return actions == NULL ? EINVAL : ENOTSUP;
+}
+
+int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t *actions,
+                                     int source_fd, int target_fd)
+{
+    (void)source_fd;
+    (void)target_fd;
+    return actions == NULL ? EINVAL : ENOTSUP;
+}
+
+int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *actions,
+                                     int fd, const char *path, int flags,
+                                     mode_t mode)
+{
+    (void)fd;
+    (void)path;
+    (void)flags;
+    (void)mode;
+    return actions == NULL ? EINVAL : ENOTSUP;
+}
+
+int posix_spawnattr_init(posix_spawnattr_t *attributes)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    attributes->flags = 0;
+    return 0;
+}
+
+int posix_spawnattr_destroy(posix_spawnattr_t *attributes)
+{
+    return attributes == NULL ? EINVAL : 0;
+}
+
+int posix_spawnattr_setflags(posix_spawnattr_t *attributes, short flags)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    attributes->flags = (unsigned short)flags;
+    return 0;
+}
+
+int posix_spawnattr_getflags(const posix_spawnattr_t *attributes,
+                             short *flags)
+{
+    if (attributes == NULL || flags == NULL) {
+        return EINVAL;
+    }
+    *flags = (short)attributes->flags;
+    return 0;
+}
+
+int posix_spawnattr_setpgroup(posix_spawnattr_t *attributes, pid_t group)
+{
+    (void)group;
+    return attributes == NULL ? EINVAL : ENOTSUP;
+}
+
+int posix_spawnattr_getpgroup(const posix_spawnattr_t *attributes,
+                              pid_t *group)
+{
+    if (attributes == NULL || group == NULL) {
+        return EINVAL;
+    }
+    *group = 0;
+    return 0;
+}
+
+int posix_spawnattr_setsigdefault(posix_spawnattr_t *attributes,
+                                  const sigset_t *mask)
+{
+    (void)mask;
+    return attributes == NULL ? EINVAL : ENOTSUP;
+}
+
+int posix_spawnattr_setsigmask(posix_spawnattr_t *attributes,
+                               const sigset_t *mask)
+{
+    (void)mask;
+    return attributes == NULL ? EINVAL : ENOTSUP;
+}
+
+pid_t wait3(int *status, int options, struct rusage *usage)
+{
+    if (usage != NULL) {
+        memset(usage, 0, sizeof(*usage));
+    }
+    return waitpid(-1, status, options);
+}
+
+pid_t wait4(pid_t pid, int *status, int options, struct rusage *usage)
+{
+    if (usage != NULL) {
+        memset(usage, 0, sizeof(*usage));
+    }
+    return waitpid(pid, status, options);
+}
+
 pid_t waitpid(pid_t pid, int *status, int options)
 {
     if (options < 0 || (options & ~WNOHANG) != 0 ||
@@ -2046,6 +2582,102 @@ pid_t waitpid(pid_t pid, int *status, int options)
 pid_t wait(int *status)
 {
     return waitpid(-1, status, 0);
+}
+
+size_t confstr(int name, char *buffer, size_t size)
+{
+    static const char posix_version[] = "202405L";
+    (void)name;
+    if (buffer == NULL) {
+        return sizeof(posix_version);
+    }
+    if (size == 0) {
+        return 0;
+    }
+    size_t length = sizeof(posix_version) - 1;
+    size_t copied = length < size ? length : size;
+    memcpy(buffer, posix_version, copied);
+    if (copied < size) {
+        buffer[copied] = '\0';
+    }
+    return length + 1;
+}
+
+char *getlogin(void)
+{
+    static char login[] = "octagram";
+    return login;
+}
+
+int getloadavg(double load[3], int count)
+{
+    if (load == NULL || count < 0 || count > 3) {
+        errno = count < 0 ? EINVAL : EFAULT;
+        return -1;
+    }
+    for (int index = 0; index < count; ++index) {
+        load[index] = 0.0;
+    }
+    return count;
+}
+
+int lockf(int fd, int operation, off_t length)
+{
+    (void)fd;
+    (void)operation;
+    (void)length;
+    errno = ENOSYS;
+    return -1;
+}
+
+int mkfifo(const char *path, mode_t mode)
+{
+    (void)mode;
+    errno = path == NULL ? EFAULT : ENOSYS;
+    return -1;
+}
+
+int mkfifoat(int dirfd, const char *path, mode_t mode)
+{
+    (void)dirfd;
+    (void)mode;
+    errno = path == NULL ? EFAULT : ENOSYS;
+    return -1;
+}
+
+int mknod(const char *path, mode_t mode, dev_t device)
+{
+    (void)mode;
+    (void)device;
+    errno = path == NULL ? EFAULT : ENOSYS;
+    return -1;
+}
+
+int mknodat(int dirfd, const char *path, mode_t mode, dev_t device)
+{
+    (void)dirfd;
+    (void)mode;
+    (void)device;
+    errno = path == NULL ? EFAULT : ENOSYS;
+    return -1;
+}
+
+int lchmod(const char *path, mode_t mode)
+{
+    return chmod(path, mode);
+}
+
+int execv(const char *path, char *const argv[])
+{
+    return execve(path, argv, environ);
+}
+
+int sethostname(const char *name, size_t size)
+{
+    (void)name;
+    (void)size;
+    errno = EPERM;
+    return -1;
 }
 
 static int stream_is_open(FILE *stream)
@@ -2172,6 +2804,23 @@ int fflush(FILE *stream)
         return 0;
     }
     return stream_is_open(stream) ? 0 : stream_failure(stream, EBADF);
+}
+
+int setvbuf(FILE *stream, char *buffer, int mode, size_t size)
+{
+    (void)stream;
+    (void)buffer;
+    (void)mode;
+    (void)size;
+    return 0;
+}
+
+void perror(const char *message)
+{
+    if (message != NULL && message[0] != 0) {
+        fprintf(stderr, "%s: ", message);
+    }
+    fprintf(stderr, "%s\n", strerror(errno));
 }
 
 size_t fread(void *buffer, size_t size, size_t count, FILE *stream)
@@ -3643,10 +4292,106 @@ void __assert_fail(const char *expression, const char *file, unsigned int line,
 
 char *realpath(const char *path, char *resolved_path)
 {
-    (void)path;
-    (void)resolved_path;
-    errno = ENOSYS;
-    return NULL;
+    if (path == NULL) {
+        errno = EFAULT;
+        return NULL;
+    }
+
+    char absolute[4096];
+    if (path[0] == '/') {
+        if (strlen(path) >= sizeof(absolute)) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        memcpy(absolute, path, strlen(path) + 1);
+    } else {
+        char *cwd = getcwd(absolute, sizeof(absolute));
+        if (cwd == NULL) {
+            return NULL;
+        }
+        size_t cwd_length = strlen(absolute);
+        size_t path_length = strlen(path);
+        if (cwd_length + 1 + path_length >= sizeof(absolute)) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        if (cwd_length > 1) {
+            absolute[cwd_length++] = '/';
+        }
+        memcpy(absolute + cwd_length, path, path_length + 1);
+    }
+
+    char output[4096];
+    output[0] = '/';
+    output[1] = '\0';
+    const char *cursor = absolute;
+    while (*cursor == '/') {
+        ++cursor;
+    }
+    for (;;) {
+        const char *end = cursor;
+        while (*end != '\0' && *end != '/') {
+            ++end;
+        }
+        size_t component_length = (size_t)(end - cursor);
+        if (component_length == 0) {
+            if (*end == '\0') {
+                break;
+            }
+            cursor = end + 1;
+            continue;
+        }
+        char component[256];
+        if (component_length >= sizeof(component)) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        memcpy(component, cursor, component_length);
+        component[component_length] = '\0';
+        if (strcmp(component, ".") == 0) {
+        } else if (strcmp(component, "..") == 0) {
+            char *last = strrchr(output, '/');
+            if (last != NULL && last != output) {
+                *last = '\0';
+            } else if (last == output) {
+                output[1] = '\0';
+            }
+        } else {
+            size_t output_length = strlen(output);
+            if (output_length != 1) {
+                if (output_length + 1 + component_length >= sizeof(output)) {
+                    errno = ENAMETOOLONG;
+                    return NULL;
+                }
+                output[output_length++] = '/';
+            } else if (component_length + 1 >= sizeof(output)) {
+                errno = ENAMETOOLONG;
+                return NULL;
+            }
+            memcpy(output + output_length, component, component_length + 1);
+        }
+        if (*end == '\0') {
+            break;
+        }
+        cursor = end + 1;
+    }
+
+    struct stat metadata;
+    if (stat(output, &metadata) != 0) {
+        return NULL;
+    }
+    if (resolved_path == NULL) {
+        resolved_path = malloc(strlen(output) + 1);
+        if (resolved_path == NULL) {
+            errno = ENOMEM;
+            return NULL;
+        }
+    }
+    size_t output_length = strlen(output);
+    if (resolved_path != NULL) {
+        memcpy(resolved_path, output, output_length + 1);
+    }
+    return resolved_path;
 }
 
 int remove(const char *path)
@@ -3748,6 +4493,26 @@ struct tm *localtime(const time_t *time_value)
     return gmtime(time_value);
 }
 
+struct tm *gmtime_r(const time_t *time_value, struct tm *result)
+{
+    struct tm *converted = gmtime(time_value);
+    if (converted == NULL || result == NULL) {
+        return NULL;
+    }
+    *result = *converted;
+    return result;
+}
+
+struct tm *localtime_r(const time_t *time_value, struct tm *result)
+{
+    struct tm *converted = localtime(time_value);
+    if (converted == NULL || result == NULL) {
+        return NULL;
+    }
+    *result = *converted;
+    return result;
+}
+
 long double ldexpl(long double value, int exponent)
 {
     if (exponent > 16384) {
@@ -3775,9 +4540,75 @@ long sysconf(int name)
 
 int execvp(const char *file, char *const arguments[])
 {
-    (void)file;
-    (void)arguments;
-    errno = ENOSYS;
+    if (file == NULL || file[0] == '\0') {
+        errno = ENOENT;
+        return -1;
+    }
+    for (const char *cursor = file; *cursor != '\0'; ++cursor) {
+        if (*cursor == '/') {
+            return execve(file, arguments, environ);
+        }
+    }
+
+    const char *path = getenv("PATH");
+    if (path == NULL || path[0] == '\0') {
+        path = "/bin:/usr/bin:/usr/local/bin";
+    }
+    int last_error = ENOENT;
+    int access_error = 0;
+    const char *component = path;
+    size_t file_length = strlen(file);
+    for (;;) {
+        const char *separator = component;
+        while (*separator != '\0' && *separator != ':') {
+            ++separator;
+        }
+        size_t directory_length = (size_t)(separator - component);
+        int add_separator = directory_length != 0 &&
+                            component[directory_length - 1] != '/';
+        size_t candidate_length = directory_length +
+                                  (size_t)add_separator + file_length;
+        if (candidate_length >= 4096) {
+            last_error = ENAMETOOLONG;
+        } else {
+            char candidate[4096];
+            size_t cursor = 0;
+            if (directory_length != 0) {
+                memcpy(candidate, component, directory_length);
+                cursor = directory_length;
+                if (add_separator) {
+                    candidate[cursor++] = '/';
+                }
+            }
+            memcpy(candidate + cursor, file, file_length);
+            candidate[cursor + file_length] = '\0';
+
+            struct stat metadata;
+            if (stat(candidate, &metadata) == 0) {
+                if (!S_ISREG(metadata.st_mode)) {
+                    last_error = EACCES;
+                    continue;
+                }
+                if (access(candidate, X_OK) != 0) {
+                    access_error = errno;
+                    if (*separator == '\0') {
+                        break;
+                    }
+                } else {
+                    return execve(candidate, arguments, environ);
+                }
+            } else if (errno == EACCES) {
+                access_error = errno;
+            } else {
+                last_error = errno;
+            }
+        }
+        if (*separator == '\0') {
+            break;
+        }
+        component = separator + 1;
+    }
+    errno = access_error != 0 ? access_error : last_error;
     return -1;
 }
 
@@ -4001,6 +4832,60 @@ int sigsuspend(const sigset_t *mask)
     return (int)posix_result(oct_sigsuspend(mask));
 }
 
+int pthread_sigmask(int how, const sigset_t *set, sigset_t *old_set)
+{
+    return sigprocmask(how, set, old_set);
+}
+
+int sigaltstack(const stack_t *new_stack, stack_t *old_stack)
+{
+    (void)new_stack;
+    (void)old_stack;
+    errno = ENOSYS;
+    return -1;
+}
+
+int sigwait(const sigset_t *set, int *signal_number)
+{
+    if (set == NULL || signal_number == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    sigset_t pending = 0;
+    if (sigpending(&pending) != 0) {
+        return -1;
+    }
+    sigset_t ready = pending & *set;
+    for (int number = 1; number < NSIG; ++number) {
+        if ((ready & ((sigset_t)1 << (number - 1))) != 0) {
+            *signal_number = number;
+            return 0;
+        }
+    }
+    errno = EAGAIN;
+    return -1;
+}
+
+int sigwaitinfo(const sigset_t *set, siginfo_t *info)
+{
+    int signal_number = 0;
+    if (sigwait(set, &signal_number) != 0) {
+        return -1;
+    }
+    if (info != NULL) {
+        memset(info, 0, sizeof(*info));
+        info->si_signo = signal_number;
+    }
+    return signal_number;
+}
+
+int sigtimedwait(const sigset_t *set, siginfo_t *info,
+                 const struct timespec *timeout)
+{
+    (void)timeout;
+    return sigwaitinfo(set, info);
+}
+
 int raise(int signal_number)
 {
     return kill(getpid(), signal_number);
@@ -4074,6 +4959,492 @@ int fdatasync(int fd)
     return (int)posix_result(oct_fdatasync(fd));
 }
 
+ssize_t pread(int fd, void *buffer, size_t count, off_t offset)
+{
+    if (buffer == NULL && count != 0) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (count > OCT_MAX_SYSCALL_IO) {
+        count = OCT_MAX_SYSCALL_IO;
+    }
+    return (ssize_t)posix_result(oct_pread(fd, buffer, count, (uint64_t)offset));
+}
+
+ssize_t pwrite(int fd, const void *buffer, size_t count, off_t offset)
+{
+    if (buffer == NULL && count != 0) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (count > OCT_MAX_SYSCALL_IO) {
+        count = OCT_MAX_SYSCALL_IO;
+    }
+    return (ssize_t)posix_result(oct_pwrite(fd, buffer, count, (uint64_t)offset));
+}
+
+ssize_t readv(int fd, const struct iovec *vectors, int vector_count)
+{
+    if (vectors == NULL || vector_count < 0) {
+        errno = vectors == NULL && vector_count != 0 ? EFAULT : EINVAL;
+        return -1;
+    }
+    return (ssize_t)posix_result(oct_readv(fd, vectors, (uint64_t)vector_count));
+}
+
+ssize_t writev(int fd, const struct iovec *vectors, int vector_count)
+{
+    if (vectors == NULL || vector_count < 0) {
+        errno = vectors == NULL && vector_count != 0 ? EFAULT : EINVAL;
+        return -1;
+    }
+    return (ssize_t)posix_result(oct_writev(fd, vectors, (uint64_t)vector_count));
+}
+
+int dup3(int source_fd, int target_fd, int flags)
+{
+    return (int)posix_result(oct_dup3(source_fd, target_fd, flags));
+}
+
+int truncate(const char *path, off_t length)
+{
+    if (path == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        return -1;
+    }
+    int result = ftruncate(fd, length);
+    int close_result = close(fd);
+    if (result != 0) {
+        return result;
+    }
+    return close_result;
+}
+
+int close_range(unsigned int first, unsigned int last, int flags)
+{
+    (void)flags;
+    if (last < first) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (unsigned int fd = first; fd <= last; ++fd) {
+        int result = close((int)fd);
+        if (result != 0 && errno != EBADF) {
+            return -1;
+        }
+        if (fd == last) {
+            break;
+        }
+    }
+    return 0;
+}
+
+ssize_t preadv(int fd, const struct iovec *vectors, int vector_count,
+               off_t offset)
+{
+    if (vectors == NULL || vector_count < 0) {
+        errno = vectors == NULL && vector_count != 0 ? EFAULT : EINVAL;
+        return -1;
+    }
+    ssize_t total = 0;
+    for (int index = 0; index < vector_count; ++index) {
+        if (vectors[index].iov_len == 0) {
+            continue;
+        }
+        ssize_t result = pread(fd, vectors[index].iov_base,
+                               vectors[index].iov_len, offset + total);
+        if (result < 0) {
+            return result;
+        }
+        total += result;
+        if ((size_t)result != vectors[index].iov_len) {
+            break;
+        }
+    }
+    return total;
+}
+
+ssize_t pwritev(int fd, const struct iovec *vectors, int vector_count,
+                off_t offset)
+{
+    if (vectors == NULL || vector_count < 0) {
+        errno = vectors == NULL && vector_count != 0 ? EFAULT : EINVAL;
+        return -1;
+    }
+    ssize_t total = 0;
+    for (int index = 0; index < vector_count; ++index) {
+        if (vectors[index].iov_len == 0) {
+            continue;
+        }
+        ssize_t result = pwrite(fd, vectors[index].iov_base,
+                                vectors[index].iov_len, offset + total);
+        if (result < 0) {
+            return result;
+        }
+        total += result;
+        if ((size_t)result != vectors[index].iov_len) {
+            break;
+        }
+    }
+    return total;
+}
+
+ssize_t preadv2(int fd, const struct iovec *vectors, int vector_count,
+                off_t offset, int flags)
+{
+    (void)flags;
+    return preadv(fd, vectors, vector_count, offset);
+}
+
+ssize_t pwritev2(int fd, const struct iovec *vectors, int vector_count,
+                 off_t offset, int flags)
+{
+    (void)flags;
+    return pwritev(fd, vectors, vector_count, offset);
+}
+
+int getrlimit(int resource, struct rlimit *limit)
+{
+    if (limit == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    (void)resource;
+    limit->rlim_cur = RLIM_INFINITY;
+    limit->rlim_max = RLIM_INFINITY;
+    int64_t result = oct_getrlimit(resource, limit);
+    return (int)posix_result(result);
+}
+
+int setrlimit(int resource, const struct rlimit *limit)
+{
+    if (limit == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    return (int)posix_result(oct_setrlimit(resource, limit));
+}
+
+int getrusage(int who, struct rusage *usage)
+{
+    if (usage == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    memset(usage, 0, sizeof(*usage));
+    return (int)posix_result(oct_getrusage(who, usage));
+}
+
+clock_t times(struct tms *process_times)
+{
+    if (process_times == NULL) {
+        return (clock_t)posix_result(oct_times(NULL));
+    }
+    memset(process_times, 0, sizeof(*process_times));
+    int64_t result = oct_times(process_times);
+    return (clock_t)posix_result(result);
+}
+
+int setuid(uid_t uid)
+{
+    return uid == 0 ? 0 : (errno = EPERM, -1);
+}
+
+int seteuid(uid_t uid)
+{
+    return uid == 0 ? 0 : (errno = EPERM, -1);
+}
+
+int setgid(gid_t gid)
+{
+    return gid == 0 ? 0 : (errno = EPERM, -1);
+}
+
+int setegid(gid_t gid)
+{
+    return gid == 0 ? 0 : (errno = EPERM, -1);
+}
+
+int setreuid(uid_t real, uid_t effective)
+{
+    return real == 0 && effective == 0 ? 0 : (errno = EPERM, -1);
+}
+
+int setregid(gid_t real, gid_t effective)
+{
+    return real == 0 && effective == 0 ? 0 : (errno = EPERM, -1);
+}
+
+int setresuid(uid_t real, uid_t effective, uid_t saved)
+{
+    return real == 0 && effective == 0 && saved == 0
+               ? 0
+               : (errno = EPERM, -1);
+}
+
+int setresgid(gid_t real, gid_t effective, gid_t saved)
+{
+    return real == 0 && effective == 0 && saved == 0
+               ? 0
+               : (errno = EPERM, -1);
+}
+
+int getresuid(uid_t *real, uid_t *effective, uid_t *saved)
+{
+    if (real == NULL || effective == NULL || saved == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    *real = 0;
+    *effective = 0;
+    *saved = 0;
+    return 0;
+}
+
+int getresgid(gid_t *real, gid_t *effective, gid_t *saved)
+{
+    if (real == NULL || effective == NULL || saved == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    *real = 0;
+    *effective = 0;
+    *saved = 0;
+    return 0;
+}
+
+int getgroups(int size, gid_t *groups)
+{
+    if (size == 0) {
+        return 1;
+    }
+    if (size < 0 || groups == NULL) {
+        errno = size < 0 ? EINVAL : EFAULT;
+        return -1;
+    }
+    if (size < 1) {
+        errno = EINVAL;
+        return -1;
+    }
+    groups[0] = 0;
+    return 1;
+}
+
+int setgroups(size_t size, const gid_t *groups)
+{
+    if (size == 0) {
+        return 0;
+    }
+    if (groups == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    for (size_t index = 0; index < size; ++index) {
+        if (groups[index] != 0) {
+            errno = EPERM;
+            return -1;
+        }
+    }
+    return 0;
+}
+
+pid_t getpgid(pid_t pid)
+{
+    (void)pid;
+    int64_t result = oct_getpgrp();
+    return result < 0 ? (pid_t)posix_result(result) : (pid_t)result;
+}
+
+pid_t getpgrp(void)
+{
+    return getpid();
+}
+
+int setpgid(pid_t pid, pid_t pgid)
+{
+    return (int)posix_result(oct_setpgid((uint64_t)(pid < 0 ? 0 : pid),
+                                         (uint64_t)(pgid < 0 ? 0 : pgid)));
+}
+
+pid_t getsid(pid_t pid)
+{
+    int64_t result = oct_getsid(pid < 0 ? 0 : (uint64_t)pid);
+    return result < 0 ? (pid_t)posix_result(result) : (pid_t)result;
+}
+
+pid_t setsid(void)
+{
+    int64_t result = oct_setsid();
+    return result < 0 ? (pid_t)posix_result(result) : (pid_t)result;
+}
+
+int nice(int increment)
+{
+    (void)increment;
+    return 0;
+}
+
+int chown(const char *path, uid_t owner, gid_t group)
+{
+    (void)path;
+    if (owner != 0 || group != 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+int lchown(const char *path, uid_t owner, gid_t group)
+{
+    return chown(path, owner, group);
+}
+
+int fchown(int fd, uid_t owner, gid_t group)
+{
+    (void)fd;
+    if (owner != 0 || group != 0) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+unsigned int alarm(unsigned int seconds)
+{
+    (void)seconds;
+    return 0;
+}
+
+int pause(void)
+{
+    sigset_t set = 0;
+    errno = 0;
+    sigsuspend(&set);
+    return -1;
+}
+
+char *ctermid(char *name)
+{
+    static char cterm_name[] = "/dev/tty";
+    if (name != NULL) {
+        memcpy(name, cterm_name, sizeof(cterm_name));
+        return name;
+    }
+    return cterm_name;
+}
+
+char *ttyname(int fd)
+{
+    static char name[] = "/dev/tty";
+    return isatty(fd) ? name : NULL;
+}
+
+int ttyname_r(int fd, char *buffer, size_t size)
+{
+    if (buffer == NULL) {
+        return EFAULT;
+    }
+    if (!isatty(fd)) {
+        return ENOTTY;
+    }
+    static const char name[] = "/dev/tty";
+    if (size < sizeof(name)) {
+        return ERANGE;
+    }
+    memcpy(buffer, name, sizeof(name));
+    return 0;
+}
+
+long fpathconf(int fd, int name)
+{
+    (void)fd;
+    (void)name;
+    errno = 0;
+    return -1;
+}
+
+long pathconf(const char *path, int name)
+{
+    (void)path;
+    (void)name;
+    errno = 0;
+    return -1;
+}
+
+int faccessat(int dirfd, const char *path, int mode, int flags)
+{
+    (void)dirfd;
+    (void)flags;
+    return access(path, mode);
+}
+
+int fchmodat(int dirfd, const char *path, mode_t mode, int flags)
+{
+    (void)dirfd;
+    (void)flags;
+    return chmod(path, mode);
+}
+
+int fchownat(int dirfd, const char *path, uid_t owner, gid_t group, int flags)
+{
+    (void)dirfd;
+    (void)flags;
+    return chown(path, owner, group);
+}
+
+int utimensat(int dirfd, const char *path, const struct timespec *times, int flags)
+{
+    (void)dirfd;
+    (void)path;
+    (void)times;
+    (void)flags;
+    errno = ENOSYS;
+    return -1;
+}
+
+int futimens(int fd, const struct timespec times[2])
+{
+    (void)fd;
+    (void)times;
+    errno = ENOSYS;
+    return -1;
+}
+
+int _exit(int status)
+{
+    exit(status);
+}
+
+void sync(void)
+{
+}
+
+int gethostname(char *name, size_t size)
+{
+    if (name == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    static const char hostname[] = "octagram";
+    if (size < sizeof(hostname)) {
+        errno = ERANGE;
+        return -1;
+    }
+    memcpy(name, hostname, sizeof(hostname));
+    return 0;
+}
+
+int system(const char *command)
+{
+    (void)command;
+    errno = ENOSYS;
+    return -1;
+}
+
 int clock_getres(clockid_t clock_id, struct timespec *resolution)
 {
     if (resolution == NULL) {
@@ -4130,6 +5501,22 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
 int eventfd(unsigned int initial_value, int flags)
 {
     return (int)posix_result(oct_eventfd2(initial_value, flags));
+}
+
+int eventfd_read(int fd, uint64_t *value)
+{
+    if (value == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    ssize_t result = read(fd, value, sizeof(*value));
+    return result == (ssize_t)sizeof(*value) ? 0 : -1;
+}
+
+int eventfd_write(int fd, uint64_t value)
+{
+    ssize_t result = write(fd, &value, sizeof(value));
+    return result == (ssize_t)sizeof(value) ? 0 : -1;
 }
 
 int timerfd_create(clockid_t clock_id, int flags)
@@ -4370,6 +5757,231 @@ size_t wcrtomb(char *restrict output, wchar_t wide, mbstate_t *restrict state)
         return (size_t)-1;
     }
     return oct_utf8_encode(code_point, (unsigned char *)output);
+}
+
+size_t wcslen(const wchar_t *text)
+{
+    size_t length = 0;
+    while (text[length] != 0) {
+        ++length;
+    }
+    return length;
+}
+
+int wcscmp(const wchar_t *left, const wchar_t *right)
+{
+    while (*left != 0 && *left == *right) {
+        ++left;
+        ++right;
+    }
+    return (*left > *right) - (*left < *right);
+}
+
+int wcsncmp(const wchar_t *left, const wchar_t *right, size_t count)
+{
+    for (size_t index = 0; index < count; ++index) {
+        if (left[index] != right[index]) {
+            return (left[index] > right[index]) - (left[index] < right[index]);
+        }
+        if (left[index] == 0) {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+wchar_t *wcscpy(wchar_t *destination, const wchar_t *source)
+{
+    wchar_t *result = destination;
+    while ((*destination++ = *source++) != 0) {}
+    return result;
+}
+
+wchar_t *wcsncpy(wchar_t *destination, const wchar_t *source, size_t count)
+{
+    size_t index = 0;
+    for (; index < count && source[index] != 0; ++index) {
+        destination[index] = source[index];
+    }
+    for (; index < count; ++index) {
+        destination[index] = 0;
+    }
+    return destination;
+}
+
+wchar_t *wcschr(const wchar_t *text, wchar_t character)
+{
+    for (size_t index = 0;; ++index) {
+        if (text[index] == character) {
+            return (wchar_t *)(text + index);
+        }
+        if (text[index] == 0) {
+            return NULL;
+        }
+    }
+}
+
+wchar_t *wcsrchr(const wchar_t *text, wchar_t character)
+{
+    const wchar_t *match = NULL;
+    for (size_t index = 0;; ++index) {
+        if (text[index] == character) {
+            match = text + index;
+        }
+        if (text[index] == 0) {
+            return (wchar_t *)match;
+        }
+    }
+}
+
+int wcscoll(const wchar_t *left, const wchar_t *right)
+{
+    return wcscmp(left, right);
+}
+
+long wcstol(const wchar_t *text, wchar_t **end, int base)
+{
+    char narrow[256];
+    size_t index = 0;
+    while (text[index] != 0 && index + 1 < sizeof(narrow)) {
+        if (text[index] > 127) {
+            errno = EILSEQ;
+            if (end != NULL) {
+                *end = (wchar_t *)text;
+            }
+            return 0;
+        }
+        narrow[index] = (char)text[index];
+        ++index;
+    }
+    narrow[index] = 0;
+    char *narrow_end = NULL;
+    long value = strtol(narrow, &narrow_end, base);
+    if (end != NULL) {
+        *end = (wchar_t *)(text + (narrow_end - narrow));
+    }
+    return value;
+}
+
+wchar_t *wcstok(wchar_t *text, const wchar_t *delimiter, wchar_t **context)
+{
+    wchar_t *current = text != NULL ? text : (context != NULL ? *context : NULL);
+    if (current == NULL) {
+        return NULL;
+    }
+    while (*current != 0) {
+        if (wcschr(delimiter, *current) == NULL) {
+            break;
+        }
+        ++current;
+    }
+    if (*current == 0) {
+        if (context != NULL) {
+            *context = current;
+        }
+        return NULL;
+    }
+    wchar_t *result = current;
+    while (*current != 0) {
+        if (wcschr(delimiter, *current) != NULL) {
+            *current++ = 0;
+            if (context != NULL) {
+                *context = current;
+            }
+            return result;
+        }
+
+        __attribute__((used)) wchar_t *wmemcpy(wchar_t *destination, const wchar_t *source, size_t count)
+        {
+            for (size_t index = 0; index < count; ++index) {
+                destination[index] = source[index];
+            }
+            return destination;
+        }
+
+        __attribute__((used)) wchar_t *wmemmove(wchar_t *destination, const wchar_t *source, size_t count)
+        {
+            if (destination < source) {
+                for (size_t index = 0; index < count; ++index) {
+                    destination[index] = source[index];
+                }
+            } else {
+                for (size_t index = count; index > 0; --index) {
+                    destination[index - 1] = source[index - 1];
+                }
+            }
+            return destination;
+        }
+
+        __attribute__((used)) int wmemcmp(const wchar_t *left, const wchar_t *right, size_t count)
+        {
+            for (size_t index = 0; index < count; ++index) {
+                if (left[index] != right[index]) {
+                    return (left[index] > right[index]) - (left[index] < right[index]);
+                }
+            }
+            return 0;
+        }
+
+        __attribute__((used)) wchar_t *wmemchr(const wchar_t *memory, wchar_t character, size_t count)
+        {
+            for (size_t index = 0; index < count; ++index) {
+                if (memory[index] == character) {
+                    return (wchar_t *)(memory + index);
+                }
+            }
+            return NULL;
+        }
+        ++current;
+    }
+    if (context != NULL) {
+        *context = current;
+    }
+    return result;
+}
+
+size_t wcstombs(char *destination, const wchar_t *source, size_t count)
+{
+    mbstate_t state = {0};
+    size_t used = 0;
+    for (size_t index = 0; source[index] != 0; ++index) {
+        char encoded[4];
+        size_t length = wcrtomb(encoded, source[index], &state);
+        if (length == (size_t)-1 || used + length > count) {
+            return (size_t)-1;
+        }
+        if (destination != NULL) {
+            memcpy(destination + used, encoded, length);
+        }
+        used += length;
+    }
+    if (destination != NULL && used < count) {
+        destination[used] = 0;
+    }
+    return used;
+}
+
+size_t mbstowcs(wchar_t *destination, const char *source, size_t count)
+{
+    mbstate_t state = {0};
+    size_t used = 0;
+    size_t source_index = 0;
+    while (source[source_index] != 0 && used < count) {
+        wchar_t wide;
+        size_t length = mbrtowc(&wide, source + source_index, 4, &state);
+        if (length == (size_t)-1 || length == 0) {
+            return (size_t)-1;
+        }
+        if (destination != NULL) {
+            destination[used] = wide;
+        }
+        source_index += length;
+        ++used;
+    }
+    if (destination != NULL && used < count) {
+        destination[used] = 0;
+    }
+    return used;
 }
 
 size_t c32rtomb(char *restrict output, char32_t wide, mbstate_t *restrict state)

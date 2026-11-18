@@ -25,6 +25,16 @@
 struct stat {
     off_t st_size;
     mode_t st_mode;
+    dev_t st_dev;
+    ino_t st_ino;
+    nlink_t st_nlink;
+    uid_t st_uid;
+    gid_t st_gid;
+    time_t st_atime;
+    time_t st_mtime;
+    time_t st_ctime;
+    blksize_t st_blksize;
+    blkcnt_t st_blocks;
 };
 
 #define S_ISCHR(mode) (((mode) & S_IFMT) == S_IFCHR)

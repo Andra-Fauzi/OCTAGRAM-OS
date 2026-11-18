@@ -2,9 +2,40 @@
 #define OCTAGRAM_SPAWN_H
 
 #include <sys/types.h>
+#include <signal.h>
 
 typedef struct octagram_posix_spawn_file_actions posix_spawn_file_actions_t;
 typedef struct octagram_posix_spawn_attributes posix_spawnattr_t;
+
+struct octagram_posix_spawn_file_actions {
+    int reserved;
+};
+
+struct octagram_posix_spawn_attributes {
+    unsigned short flags;
+};
+
+int posix_spawn_file_actions_init(posix_spawn_file_actions_t *actions);
+int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *actions);
+int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t *actions,
+                                      int fd);
+int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t *actions,
+                                     int source_fd, int target_fd);
+int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *actions,
+                                     int fd, const char *path, int flags,
+                                     mode_t mode);
+int posix_spawnattr_init(posix_spawnattr_t *attributes);
+int posix_spawnattr_destroy(posix_spawnattr_t *attributes);
+int posix_spawnattr_setflags(posix_spawnattr_t *attributes, short flags);
+int posix_spawnattr_getflags(const posix_spawnattr_t *attributes,
+                             short *flags);
+int posix_spawnattr_setpgroup(posix_spawnattr_t *attributes, pid_t group);
+int posix_spawnattr_getpgroup(const posix_spawnattr_t *attributes,
+                              pid_t *group);
+int posix_spawnattr_setsigdefault(posix_spawnattr_t *attributes,
+                                  const sigset_t *mask);
+int posix_spawnattr_setsigmask(posix_spawnattr_t *attributes,
+                               const sigset_t *mask);
 
 int posix_spawn(pid_t *restrict pid, const char *restrict path,
                 const posix_spawn_file_actions_t *restrict file_actions,

@@ -131,6 +131,10 @@ menyediakan inline wrappers.
 | 126 | `timerfd_gettime` | `RDI=fd`, `RSI=current*` | 0 |
 | 127 | `socketpair` | `RDI=domain`, `RSI=type`, `RDX=protocol`, `R10=sv*` | 0 |
 | 128 | `clock_nanosleep` | `RDI=clock_id`, `RSI=flags`, `RDX=request*`, `R10=remain*` | 0 |
+| 129 | `getpgrp` | — | Process group ID |
+| 130 | `setpgid` | `RDI=pid`, `RSI=process_group` | 0 |
+| 131 | `getsid` | `RDI=pid` atau 0 | Session ID |
+| 132 | `setsid` | — | Session/process group ID baru |
 
 Nomor 10, 15, 18, 19, 23, 24, 26, dan 49 sudah dicabut dan tetap
 dicadangkan agar nomor syscall berikutnya tidak bergeser; pemanggilannya

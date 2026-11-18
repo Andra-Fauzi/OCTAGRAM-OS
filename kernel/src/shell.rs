@@ -1,5 +1,6 @@
 //! Small interactive shell for the framebuffer terminal and RAM VFS.
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -21,7 +22,8 @@ pub async fn run(terminal: usize) {
         .map(|path| String::from(*path))
         .collect::<Vec<_>>();
     let mut environment = alloc::vec![String::from("PATH=/bin:/usr/bin:/usr/local/bin")];
-    print_prompt(&current_dir);
+    let mut current_user = String::from("octagram");
+    print_prompt(&current_user, &current_dir);
     let mut line = String::new();
 
     loop {
@@ -38,12 +40,13 @@ pub async fn run(terminal: usize) {
                     &mut current_dir,
                     &mut program_path,
                     &mut environment,
+                    &mut current_user,
                     terminal,
                 )
                 .await;
                 crate::terminal::set_output_terminal(terminal);
                 line.clear();
-                print_prompt(&current_dir);
+                print_prompt(&current_user, &current_dir);
             }
             '\u{8}' | '\u{7f}' => {
                 if line.pop().is_some() {
@@ -65,8 +68,8 @@ pub async fn run(terminal: usize) {
     }
 }
 
-fn print_prompt(current_dir: &str) {
-    crate::print!("octagram:{current_dir} $ ");
+fn print_prompt(current_user: &str, current_dir: &str) {
+    crate::print!("{current_user}:{current_dir} $ ");
 }
 
 async fn execute(
@@ -74,6 +77,7 @@ async fn execute(
     current_dir: &mut String,
     program_path: &mut Vec<String>,
     environment: &mut Vec<String>,
+    current_user: &mut String,
     terminal: usize,
 ) {
     let line = line.trim_start();
@@ -118,6 +122,14 @@ async fn execute(
         "http" | "curl" => run_http_command(arguments),
         "mount" => mount_device(current_dir, arguments),
         "umount" => unmount_device(current_dir, arguments),
+        "df" => list_mounts(),
+        "persist" => configure_persistent_home(current_dir, arguments),
+        "apps" => list_apps(),
+        "pkg" => manage_package(current_dir, arguments),
+        "login" => login_user(arguments, current_user),
+        "whoami" => crate::println!("{current_user}"),
+        "session" => crate::println!("session user={current_user} tty=tty{terminal}"),
+        "passwd" => crate::println!("passwd: password authentication is not implemented"),
         "mkfs.fat" => format_fat32_device(arguments),
         "as" => run_toolchain_command("as", current_dir, arguments),
         "ld" => run_toolchain_command("ld", current_dir, arguments),
@@ -171,6 +183,13 @@ fn print_help() {
     crate::println!("  ping <IPv4 | host>     send an ICMP echo request");
     crate::println!("  mount <device> <path> [fat32|ext2]  mount a filesystem read-write");
     crate::println!("  umount <path>          unmount a filesystem");
+    crate::println!("  df                     list mounted filesystem roots");
+    crate::println!("  persist <mount>        prepare /home/octagram on a mounted filesystem");
+    crate::println!("  apps                   list native apps under /apps");
+    crate::println!("  pkg list|info|add|update|remove|verify  manage native packages");
+    crate::println!("  login [octagram|root]  start a local shell session");
+    crate::println!("  whoami                 show current session user");
+    crate::println!("  session                show current session");
     crate::println!("  mkfs.fat <device> --yes  format a FAT32 superfloppy (erases data)");
     crate::println!("  as <input.s> -o <out.o> assemble supported x86_64 source");
     crate::println!("  ld <input.o> -o <out.elf> link a native toolchain object");
@@ -1293,6 +1312,341 @@ fn unmount_device(current_dir: &str, arguments: &str) {
     match with_vfs(|vfs| vfs.unmount(&path)) {
         Ok(()) => crate::println!("unmounted {path}"),
         Err(error) => crate::println!("umount: {path}: {error:?}"),
+    }
+}
+
+fn list_mounts() {
+    match with_vfs(|vfs| Ok(vfs.mounts().to_vec())) {
+        Ok(mounts) => {
+            if mounts.is_empty() {
+                crate::println!("no mounted filesystems");
+                return;
+            }
+            crate::println!("Mount point       Filesystem");
+            for (mountpoint, filesystem) in mounts {
+                crate::println!("{:<18} {}", mountpoint, filesystem);
+            }
+        }
+        Err(error) => crate::println!("df: {error:?}"),
+    }
+}
+
+fn valid_package_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn package_registry_has(registry: &str, name: &str) -> bool {
+    registry.lines().any(|line| {
+        line.split('|')
+            .next()
+            .is_some_and(|registered| registered == name)
+    })
+}
+
+fn package_remove_registry(registry: &str, name: &str) -> String {
+    let mut output = String::new();
+    for line in registry.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        if line
+            .split('|')
+            .next()
+            .is_some_and(|registered| registered == name)
+        {
+            continue;
+        }
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(line);
+    }
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output
+}
+
+fn manage_package(current_dir: &str, arguments: &str) {
+    let mut parts = arguments.split_whitespace();
+    let Some(operation) = parts.next() else {
+        crate::println!("usage: pkg list|info|add|update|remove|verify");
+        return;
+    };
+    match operation {
+        "list" => {
+            match with_vfs(|vfs| {
+                let data = read_file_limited(
+                    vfs,
+                    "/var/lib/octagram/packages/registry.txt",
+                    MAX_FILE_OPERATION,
+                )?;
+                Ok(data)
+            }) {
+                Ok(bytes) => {
+                    let text = core::str::from_utf8(&bytes)
+                        .unwrap_or("# invalid package registry");
+                    if text.is_empty() {
+                        crate::println!("no packages installed");
+                    } else {
+                        for line in text.lines() {
+                            let mut fields = line.split('|');
+                            if let (Some(name), Some(version), Some(path), Some(size)) =
+                                (fields.next(), fields.next(), fields.next(), fields.next())
+                            {
+                                crate::println!("{name} {version} {path} size={size}");
+                            }
+                        }
+                    }
+                }
+                Err(error) => crate::println!("pkg: {error:?}"),
+            }
+        }
+        "info" => {
+            let Some(name) = parts.next() else {
+                crate::println!("usage: pkg info <name>");
+                return;
+            };
+            if !valid_package_name(name) {
+                crate::println!("pkg: invalid package name");
+                return;
+            }
+            match with_vfs(|vfs| {
+                read_file_limited(
+                    vfs,
+                    &format!("/var/lib/octagram/packages/{name}.pkg"),
+                    MAX_FILE_OPERATION,
+                )
+            }) {
+                Ok(data) => match core::str::from_utf8(&data) {
+                    Ok(text) => crate::print!("{text}"),
+                    Err(_) => crate::println!("pkg: invalid metadata"),
+                },
+                Err(error) => crate::println!("pkg info: {name}: {error:?}"),
+            }
+        }
+        "add" | "update" => {
+            let (Some(name), Some(source), version) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                crate::println!("usage: pkg {operation} <name> <source> [version]");
+                return;
+            };
+            if parts.next().is_some() {
+                crate::println!("usage: pkg {operation} <name> <source> [version]");
+                return;
+            }
+            if !valid_package_name(name) {
+                crate::println!("pkg: invalid package name");
+                return;
+            }
+            let Some(source) = resolve_path(current_dir, source) else {
+                crate::println!("pkg: invalid source path");
+                return;
+            };
+            let version = version.unwrap_or("0");
+            let app_path = format!("/apps/{name}");
+            let metadata_path = format!("/var/lib/octagram/packages/{name}.pkg");
+            match with_vfs(|vfs| {
+                let data = read_file_limited(vfs, &source, MAX_TOOLCHAIN_FILE)?;
+                if operation == "update" {
+                    if vfs.metadata(&app_path).is_ok() {
+                        vfs.remove(&app_path)?;
+                    }
+                    if vfs.metadata(&metadata_path).is_ok() {
+                        vfs.remove(&metadata_path)?;
+                    }
+                } else if vfs.metadata(&app_path).is_ok() {
+                    return Err(FsError::AlreadyExists);
+                }
+                vfs.create_file(&app_path)?;
+                let written = vfs.write(&app_path, 0, &data)?;
+                if written != data.len() {
+                    vfs.remove(&app_path)?;
+                    return Err(FsError::NoSpace);
+                }
+                vfs.set_permissions(&app_path, 0o755)?;
+                vfs.create_file(&metadata_path)?;
+                let metadata = format!(
+                    "name={name}\nversion={version}\npath={app_path}\nsize={}\n",
+                    data.len()
+                );
+                vfs.write(&metadata_path, 0, metadata.as_bytes())?;
+                let registry_bytes = read_file_limited(
+                    vfs,
+                    "/var/lib/octagram/packages/registry.txt",
+                    MAX_FILE_OPERATION,
+                )
+                .unwrap_or_default();
+                let registry = core::str::from_utf8(&registry_bytes).unwrap_or("");
+                let registry = package_remove_registry(registry, name);
+                let entry = format!("{name}|{version}|{app_path}|{}\n", data.len());
+                let mut updated = String::from(registry);
+                updated.push_str(&entry);
+                match vfs.metadata("/var/lib/octagram/packages/registry.txt") {
+                    Ok(_) => vfs.remove("/var/lib/octagram/packages/registry.txt")?,
+                    Err(FsError::NotFound) => {}
+                    Err(error) => return Err(error),
+                }
+                vfs.create_file("/var/lib/octagram/packages/registry.txt")?;
+                vfs.write(
+                    "/var/lib/octagram/packages/registry.txt",
+                    0,
+                    updated.as_bytes(),
+                )?;
+                Ok(data.len())
+            }) {
+                Ok(size) => crate::println!("pkg {operation}: {name} {version} size={size}"),
+                Err(error) => crate::println!("pkg {operation}: {name}: {error:?}"),
+            }
+        }
+        "remove" => {
+            let Some(name) = parts.next() else {
+                crate::println!("usage: pkg remove <name>");
+                return;
+            };
+            if !valid_package_name(name) {
+                crate::println!("pkg: invalid package name");
+                return;
+            }
+            match with_vfs(|vfs| {
+                let app_path = format!("/apps/{name}");
+                let metadata_path = format!("/var/lib/octagram/packages/{name}.pkg");
+                if vfs.metadata(&app_path).is_ok() {
+                    vfs.remove(&app_path)?;
+                }
+                if vfs.metadata(&metadata_path).is_ok() {
+                    vfs.remove(&metadata_path)?;
+                }
+                let registry_bytes = read_file_limited(
+                    vfs,
+                    "/var/lib/octagram/packages/registry.txt",
+                    MAX_FILE_OPERATION,
+                )?;
+                let registry = core::str::from_utf8(&registry_bytes).unwrap_or("");
+                let updated = package_remove_registry(registry, name);
+                vfs.remove("/var/lib/octagram/packages/registry.txt")?;
+                vfs.create_file("/var/lib/octagram/packages/registry.txt")?;
+                vfs.write(
+                    "/var/lib/octagram/packages/registry.txt",
+                    0,
+                    updated.as_bytes(),
+                )?;
+                Ok(())
+            }) {
+                Ok(()) => crate::println!("pkg remove: {name}"),
+                Err(error) => crate::println!("pkg remove: {name}: {error:?}"),
+            }
+        }
+        "verify" => {
+            let Some(name) = parts.next() else {
+                crate::println!("usage: pkg verify <name>");
+                return;
+            };
+            if !valid_package_name(name) {
+                crate::println!("pkg: invalid package name");
+                return;
+            }
+            match with_vfs(|vfs| {
+                let app_path = format!("/apps/{name}");
+                let metadata_path = format!("/var/lib/octagram/packages/{name}.pkg");
+                let app = read_file_limited(vfs, &app_path, MAX_TOOLCHAIN_FILE)?;
+                let metadata = read_file_limited(vfs, &metadata_path, MAX_FILE_OPERATION)?;
+                let metadata = core::str::from_utf8(&metadata)
+                    .map_err(|_| FsError::InvalidData)?;
+                let declared_size = metadata.lines()
+                    .find_map(|line| line.strip_prefix("size="))
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .ok_or(FsError::InvalidData)?;
+                if declared_size != app.len() {
+                    return Err(FsError::InvalidData);
+                }
+                let registry = read_file_limited(
+                    vfs,
+                    "/var/lib/octagram/packages/registry.txt",
+                    MAX_FILE_OPERATION,
+                )?;
+                let registry = core::str::from_utf8(&registry)
+                    .map_err(|_| FsError::InvalidData)?;
+                if !package_registry_has(registry, name) {
+                    return Err(FsError::NotFound);
+                }
+                Ok(app.len())
+            }) {
+                Ok(size) => crate::println!("pkg verify: {name} OK size={size}"),
+                Err(error) => crate::println!("pkg verify: {name}: {error:?}"),
+            }
+        }
+        _ => crate::println!("usage: pkg list|info|add|update|remove|verify"),
+    }
+}
+
+fn login_user(arguments: &str, current_user: &mut String) {
+    let mut parts = arguments.split_whitespace();
+    let name = parts.next().unwrap_or("octagram");
+    if parts.next().is_some() || (name != "octagram" && name != "root") {
+        crate::println!("login: unknown or unsupported user");
+        return;
+    }
+    current_user.clear();
+    current_user.push_str(name);
+    crate::println!("login: session started for {name}");
+}
+
+fn list_apps() {
+    match with_vfs(|vfs| vfs.read_dir("/apps")) {
+        Ok(entries) => {
+            if entries.is_empty() {
+                crate::println!("no apps installed");
+                return;
+            }
+            for entry in entries {
+                crate::println!("/apps/{}", entry.name);
+            }
+        }
+        Err(error) => crate::println!("apps: {error:?}"),
+    }
+}
+
+fn configure_persistent_home(current_dir: &str, arguments: &str) {
+    let mut parts = arguments.split_whitespace();
+    let (Some(mount), None) = (parts.next(), parts.next()) else {
+        crate::println!("usage: persist <mount>");
+        return;
+    };
+    let Some(mount) = resolve_path(current_dir, mount) else {
+        crate::println!("persist: invalid mount path");
+        return;
+    };
+    if mount == "/" {
+        crate::println!("persist: refuse RAM root; mount a storage filesystem first");
+        return;
+    }
+    let persistent_home = format!("{mount}/octagram");
+    match with_vfs(|vfs| {
+        if vfs.metadata(&mount).is_err() {
+            return Err(FsError::NotMounted);
+        }
+        if vfs.metadata(&persistent_home).is_err() {
+            vfs.create_dir(&persistent_home)?;
+        }
+        match vfs.symlink_metadata("/home/octagram") {
+            Ok(metadata) if metadata.node_type == NodeType::Symlink => {}
+            Ok(_) => {
+                vfs.remove("/home/octagram")?;
+            }
+            Err(FsError::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+        vfs.symlink(&persistent_home, "/home/octagram")?;
+        Ok(())
+    }) {
+        Ok(()) => crate::println!("persistent home configured at {persistent_home}"),
+        Err(error) => crate::println!("persist: {persistent_home}: {error:?}"),
     }
 }
 

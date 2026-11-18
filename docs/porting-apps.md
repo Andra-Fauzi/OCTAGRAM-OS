@@ -89,9 +89,10 @@ Pada build statis, `errno` dan allocator free-list memakai TLS per thread;
 6. `oct_yield()` mengembalikan eksekusi sementara ke loop kernel agar pekerjaan
    driver tertunda dapat diproses, lalu melanjutkan program pada instruksi
    berikutnya. Gunakan untuk menunggu I/O yang belum memiliki syscall blocking.
-7. API proses POSIX `fork`, `execve`, `waitpid`, dan subset `posix_spawn`
-   tersedia. `fork` memakai eager copy; subset thread tersedia melalui
-   `<pthread.h>`. Signals belum tersedia. Socket IPv4 TCP `SOCK_STREAM` tersedia
+7. API proses POSIX `fork`, `execve`, `execvp`, `waitpid`, process groups,
+   dan subset `posix_spawn` tersedia. `fork` memakai eager copy; subset thread
+   tersedia melalui `<pthread.h>`. Signal dan alternate stack terbatas
+   tersedia; `setsid`/`setpgid` punya model dasar kernel. Socket IPv4 TCP `SOCK_STREAM` tersedia
    melalui `<sys/socket.h>` dan `<netinet/in.h>`; UDP datagram tersedia melalui
    API OCTAGRAM (`oct_udp_socket`, `oct_udp_bind`, `oct_udp_sendto`, dan
    `oct_udp_recvfrom`) di `octagram.h`. API socket masih terbatas: tidak ada

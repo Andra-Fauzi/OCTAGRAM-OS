@@ -14,10 +14,23 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <time.h>
 
 typedef int sig_atomic_t;
 typedef uint64_t sigset_t;
 typedef void (*sighandler_t)(int);
+typedef struct {
+    void *ss_sp;
+    int ss_flags;
+    size_t ss_size;
+} stack_t;
+typedef struct {
+    int si_signo;
+    int si_errno;
+    int si_code;
+    pid_t si_pid;
+    uid_t si_uid;
+} siginfo_t;
 
 #define SIG_DFL ((sighandler_t)0)
 #define SIG_IGN ((sighandler_t)1)
@@ -64,6 +77,9 @@ typedef void (*sighandler_t)(int);
 #define SA_SIGINFO 0x00000004
 #define SA_RESTART 0x10000000
 #define SA_RESETHAND 0x80000000
+#define SA_ONSTACK 0x08000000
+#define SA_NODEFER 0x40000000
+#define SIGSTKSZ 8192
 
 struct sigaction {
     union {
@@ -83,6 +99,12 @@ int sigaction(int signal_number, const struct sigaction *action,
 int sigprocmask(int how, const sigset_t *set, sigset_t *old_set);
 int sigpending(sigset_t *set);
 int sigsuspend(const sigset_t *mask);
+int sigtimedwait(const sigset_t *set, siginfo_t *info,
+                 const struct timespec *timeout);
+int sigwait(const sigset_t *set, int *signal_number);
+int sigwaitinfo(const sigset_t *set, siginfo_t *info);
+int pthread_sigmask(int how, const sigset_t *set, sigset_t *old_set);
+int sigaltstack(const stack_t *new_stack, stack_t *old_stack);
 
 static inline int sigemptyset(sigset_t *set)
 {

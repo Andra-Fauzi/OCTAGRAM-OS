@@ -156,6 +156,15 @@ limine/limine:
 kernel:
 	$(MAKE) -C kernel
 
+.PHONY: python311 python312 python
+python311:
+	python3 tools/cpython_port.py 3.11 --build
+
+python312:
+	python3 tools/cpython_port.py 3.12 --build
+
+python: python311 python312
+
 $(IMAGE_NAME).iso: limine/limine kernel
 	rm -rf iso_root
 	mkdir -p iso_root/boot

@@ -772,4 +772,76 @@ static inline int64_t oct_clock_nanosleep(int64_t clock_id, int64_t flags,
                         (uint64_t)(uintptr_t)remaining);
 }
 
+static inline int64_t oct_pread(int fd, void *buffer, uint64_t count,
+                                uint64_t offset)
+{
+    return oct_syscall4(102, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)buffer, count, offset);
+}
+
+static inline int64_t oct_pwrite(int fd, const void *buffer, uint64_t count,
+                                 uint64_t offset)
+{
+    return oct_syscall4(103, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)buffer, count, offset);
+}
+
+static inline int64_t oct_readv(int fd, const void *iov, uint64_t iov_count)
+{
+    return oct_syscall3(105, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)iov, iov_count);
+}
+
+static inline int64_t oct_writev(int fd, const void *iov, uint64_t iov_count)
+{
+    return oct_syscall3(104, (uint64_t)(int64_t)fd,
+                        (uint64_t)(uintptr_t)iov, iov_count);
+}
+
+static inline int64_t oct_dup3(int source_fd, int target_fd, int64_t flags)
+{
+    return oct_syscall3(99, (uint64_t)(int64_t)source_fd,
+                        (uint64_t)(int64_t)target_fd, (uint64_t)flags);
+}
+
+static inline int64_t oct_getrlimit(int64_t resource, void *limit)
+{
+    return oct_syscall2(109, (uint64_t)resource, (uint64_t)(uintptr_t)limit);
+}
+
+static inline int64_t oct_setrlimit(int64_t resource, const void *limit)
+{
+    return oct_syscall2(110, (uint64_t)resource, (uint64_t)(uintptr_t)limit);
+}
+
+static inline int64_t oct_getrusage(int64_t who, void *usage)
+{
+    return oct_syscall2(111, (uint64_t)who, (uint64_t)(uintptr_t)usage);
+}
+
+static inline int64_t oct_times(void *process_times)
+{
+    return oct_syscall1(112, (uint64_t)(uintptr_t)process_times);
+}
+
+static inline int64_t oct_getpgrp(void)
+{
+    return oct_syscall0(129);
+}
+
+static inline int64_t oct_setpgid(uint64_t pid, uint64_t process_group)
+{
+    return oct_syscall2(130, pid, process_group);
+}
+
+static inline int64_t oct_getsid(uint64_t pid)
+{
+    return oct_syscall1(131, pid);
+}
+
+static inline int64_t oct_setsid(void)
+{
+    return oct_syscall0(132);
+}
+
 #endif

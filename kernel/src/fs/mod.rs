@@ -158,6 +158,38 @@ const USER_HEADERS: &[(&str, &[u8])] = &[
         include_bytes!("../../../user/include/sys/wait.h"),
     ),
     (
+        "/include/sys/uio.h",
+        include_bytes!("../../../user/include/sys/uio.h"),
+    ),
+    (
+        "/include/sys/resource.h",
+        include_bytes!("../../../user/include/sys/resource.h"),
+    ),
+    (
+        "/include/sys/times.h",
+        include_bytes!("../../../user/include/sys/times.h"),
+    ),
+    (
+        "/include/sys/sendfile.h",
+        include_bytes!("../../../user/include/sys/sendfile.h"),
+    ),
+    (
+        "/include/sys/syscall.h",
+        include_bytes!("../../../user/include/sys/syscall.h"),
+    ),
+    (
+        "/include/sys/file.h",
+        include_bytes!("../../../user/include/sys/file.h"),
+    ),
+    (
+        "/include/sys/param.h",
+        include_bytes!("../../../user/include/sys/param.h"),
+    ),
+    (
+        "/include/netdb.h",
+        include_bytes!("../../../user/include/netdb.h"),
+    ),
+    (
         "/include/time.h",
         include_bytes!("../../../user/include/time.h"),
     ),
@@ -214,6 +246,9 @@ pub struct DirectoryEntry {
 /// Paths passed to implementations are absolute paths within that mounted
 /// filesystem, normalized by the VFS (for example, `/etc/config`).
 pub trait FileSystem: Send {
+    fn name(&self) -> &'static str {
+        "unknown"
+    }
     fn metadata(&self, path: &str) -> Result<Metadata, FsError>;
     fn read_link(&self, _path: &str) -> Result<String, FsError> {
         Err(FsError::Unsupported)
@@ -249,6 +284,18 @@ pub struct Vfs {
 impl Vfs {
     pub const fn new() -> Self {
         Self { mounts: Vec::new() }
+    }
+
+    pub fn mounts(&self) -> alloc::vec::Vec<(String, &'static str)> {
+        let mut mounts = Vec::new();
+        if mounts.try_reserve(self.mounts.len()).is_err() {
+            return mounts;
+        }
+        for mount in &self.mounts {
+            let filesystem = mount.filesystem.name();
+            mounts.push((mount.mount_point.clone(), filesystem));
+        }
+        mounts
     }
 
     /// Mount `filesystem` at an existing directory.
@@ -582,6 +629,26 @@ pub fn init() {
             .expect("creating the initial /include/sys directory must succeed");
         root.create_dir("/tmp")
             .expect("creating the initial /tmp directory must succeed");
+        for directory in [
+            "/home",
+            "/home/octagram",
+            "/etc",
+            "/var",
+            "/var/log",
+            "/var/lib",
+            "/var/lib/octagram",
+            "/var/lib/octagram/packages",
+            "/opt",
+            "/apps",
+            "/usr",
+            "/usr/bin",
+            "/usr/local",
+            "/usr/local/bin",
+            "/mnt",
+        ] {
+            root.create_dir(directory)
+                .unwrap_or_else(|_| panic!("creating initial {} directory must succeed", directory));
+        }
         vfs.mount("/", root)
             .expect("mounting the initial root filesystem must succeed");
         vfs.mount("/dev", DevFs::new())
@@ -613,6 +680,36 @@ pub fn init() {
         seed_file(&mut vfs, "/lib/tcc/libc.a", TCC_LIBC, 0o644);
         seed_file(&mut vfs, "/lib/tcc/libtcc1.a", TCC_LIBTCC1, 0o644);
         seed_file(&mut vfs, "/tmp/tcc.c", TCC_SMOKE_SOURCE, 0o644);
+        seed_file(
+            &mut vfs,
+            "/etc/os-release",
+            b"OCTAGRAM_OS_NAME=\"OCTAGRAM-OS\"\nOCTAGRAM_OS_ID=octagram\nOCTAGRAM_OS_VERSION=1.0\n",
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
+            "/etc/passwd",
+            b"octagram:x:0:0:OCTAGRAM User:/home/octagram:/bin/sh\n",
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
+            "/home/octagram/.profile",
+            b"export PATH=/bin:/usr/bin:/usr/local/bin\n",
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
+            "/apps/apps.txt",
+            b"# OCTAGRAM native application registry\n",
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
+            "/var/lib/octagram/packages/registry.txt",
+            b"",
+            0o644,
+        );
         seed_file(
             &mut vfs,
             "/share/octagram/Makefile",

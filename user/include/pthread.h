@@ -18,6 +18,7 @@ typedef struct {
 typedef struct {
     int opaque;
 } pthread_condattr_t;
+typedef unsigned int pthread_key_t;
 
 #define PTHREAD_MUTEX_INITIALIZER {0}
 #define PTHREAD_COND_INITIALIZER {0}
@@ -41,5 +42,20 @@ int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
                            const struct timespec *absolute_time);
 int pthread_cond_signal(pthread_cond_t *cond);
 int pthread_cond_broadcast(pthread_cond_t *cond);
+
+int pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
+int pthread_key_delete(pthread_key_t key);
+void *pthread_getspecific(pthread_key_t key);
+int pthread_setspecific(pthread_key_t key, const void *value);
+int pthread_condattr_init(pthread_condattr_t *attributes);
+int pthread_condattr_destroy(pthread_condattr_t *attributes);
+int pthread_condattr_setclock(pthread_condattr_t *attributes, clockid_t clock);
+int pthread_detach(pthread_t thread);
+int pthread_attr_init(pthread_attr_t *attributes);
+int pthread_attr_destroy(pthread_attr_t *attributes);
+int pthread_attr_setdetachstate(pthread_attr_t *attributes, int state);
+int pthread_attr_getdetachstate(const pthread_attr_t *attributes, int *state);
+#define PTHREAD_CREATE_JOINABLE 0
+#define PTHREAD_CREATE_DETACHED 1
 
 #endif

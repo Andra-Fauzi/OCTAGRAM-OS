@@ -36,7 +36,7 @@ const MMAP_END: u64 = STACK_TOP - (STACK_PAGES + 1) * PAGE_SIZE;
 const MAX_USER_PATH: usize = 256;
 const MAX_SYSCALL_IO: usize = 4096;
 const MAX_OPEN_FILES: usize = 16;
-const MAX_SCHEDULED_PROCESSES: usize = 16;
+const MAX_SCHEDULED_PROCESSES: usize = 64;
 const PIPE_CAPACITY: usize = 4096;
 const WAIT_ANY_PID: u64 = u64::MAX;
 const WAIT_NOHANG: u64 = 1;
@@ -44,6 +44,8 @@ const PROCESS_KERNEL_STACK_SIZE: usize = 64 * 1024;
 const ELF_ET_EXEC: u16 = 2;
 const ELF_ET_DYN: u16 = 3;
 const PIE_LOAD_BIAS: u64 = 0x4000_0000;
+const PIE_LOAD_BIAS_MAX: u64 = 0x7000_0000;
+const PIE_LOAD_ALIGN: u64 = 2 * 1024 * 1024;
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
 const PT_INTERP: u32 = 3;
@@ -170,6 +172,10 @@ const SYSCALL_TIMERFD_SETTIME: u64 = 125;
 const SYSCALL_TIMERFD_GETTIME: u64 = 126;
 const SYSCALL_SOCKETPAIR: u64 = 127;
 const SYSCALL_CLOCK_NANOSLEEP: u64 = 128;
+const SYSCALL_GETPGRP: u64 = 129;
+const SYSCALL_SETPGRP: u64 = 130;
+const SYSCALL_GETSID: u64 = 131;
+const SYSCALL_SETSID: u64 = 132;
 const AT_FDCWD: i64 = -100;
 const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
 const AT_REMOVEDIR: u64 = 0x200;
@@ -356,6 +362,7 @@ const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
 
 const EINTR: i32 = 4;
+const EPERM: i32 = 1;
 const E2BIG: i32 = 7;
 const EIO: i32 = 5;
 const ENOEXEC: i32 = 8;
@@ -559,6 +566,65 @@ fn rewrite_descriptor_paths(
             _ => {}
         }
     }
+}
+
+fn syscall_getpgrp() -> Result<u64, i32> {
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    Ok(process.process_group)
+}
+
+fn syscall_setpgrp(pid: u64, process_group: u64) -> Result<u64, i32> {
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let target_pid = if pid == 0 { process.pid } else { pid };
+    let target_group = if process_group == 0 {
+        target_pid
+    } else {
+        process_group
+    };
+    if target_pid != process.pid {
+        return Err(EPERM);
+    }
+    if process.session != target_group && target_group != process.pid {
+        return Err(EPERM);
+    }
+    process.process_group = target_group;
+    Ok(0)
+}
+
+fn syscall_getsid(pid: u64) -> Result<u64, i32> {
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let target_pid = if pid == 0 { process.pid } else { pid };
+    let scheduler = USER_SCHEDULER.lock();
+    match scheduler
+        .processes
+        .iter()
+        .find(|process| process.pid == target_pid)
+    {
+        Some(process) => Ok(process.state.session),
+        None => Err(ESRCH),
+    }
+}
+
+fn syscall_setsid() -> Result<u64, i32> {
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    if process.process_group == process.pid {
+        return Err(EPERM);
+    }
+    process.process_group = process.pid;
+    process.session = process.pid;
+    Ok(process.pid)
 }
 
 fn syscall_umask(mask: u64) -> Result<u64, i32> {
@@ -812,11 +878,14 @@ enum ProcessWait {
     PipeWritable(u64),
     Futex(u64),
     PollWait,
+    Sleep,
 }
 
 struct UserProcess {
     active: bool,
     pid: u64,
+    process_group: u64,
+    session: u64,
     terminal: usize,
     descriptors: Vec<Option<UserDescriptor>>,
     descriptor_flags: Vec<u32>,
@@ -841,6 +910,8 @@ impl UserProcess {
         Self {
             active: false,
             pid: 0,
+            process_group: 0,
+            session: 0,
             terminal: 0,
             descriptors: Vec::new(),
             descriptor_flags: Vec::new(),
@@ -1065,7 +1136,7 @@ pub fn load_with_args_and_environment(
         if executable.interpreter.is_none() {
             return Err(ElfError::DynamicLinkingUnsupported);
         }
-        apply_load_bias(&mut executable, PIE_LOAD_BIAS)?;
+        apply_load_bias(&mut executable, randomized_pie_load_bias())?;
     }
     let interpreter = if let Some(path) = executable.interpreter.as_deref() {
         let interpreter_bytes = read_executable_file(path)?;
@@ -1091,7 +1162,11 @@ pub fn load_with_args_and_environment(
 
     let mut total_pages = STACK_PAGES + HEAP_PAGES;
     let mut heap_limit = MMAP_START;
-    let mut mmap_cursor = MMAP_START;
+    let mmap_entropy = (next_random_u64() % 128) * PAGE_SIZE;
+    let mut mmap_cursor = MMAP_START
+        .checked_add(mmap_entropy)
+        .filter(|address| *address < MMAP_END)
+        .unwrap_or(MMAP_START);
     let mut all_segments = Vec::new();
     all_segments
         .try_reserve_exact(
@@ -2308,6 +2383,10 @@ fn dispatch_syscall(
         SYSCALL_EPOLL_WAIT => syscall_epoll_wait(arg1, arg2, arg3, arg4),
         SYSCALL_SOCKETPAIR => syscall_socketpair(arg1, arg2, arg3, arg4),
         SYSCALL_CLOCK_NANOSLEEP => syscall_clock_nanosleep(arg1, arg2, arg3, arg4),
+        SYSCALL_GETPGRP => syscall_getpgrp(),
+        SYSCALL_SETPGRP => syscall_setpgrp(arg1, arg2),
+        SYSCALL_GETSID => syscall_getsid(arg1),
+        SYSCALL_SETSID => syscall_setsid(),
         SYSCALL_PREAD => syscall_pread(arg1, arg2, arg3, arg4),
         SYSCALL_PWRITE => syscall_pwrite(arg1, arg2, arg3, arg4),
         SYSCALL_WRITEV => syscall_writev(arg1, arg2, arg3),
@@ -2803,7 +2882,8 @@ fn execve_current(
     let arguments = copy_user_argument_vector(arguments_address)?;
     let environment = copy_user_environment(environment_address)
         .map_err(|error| if error == ENAMETOOLONG { E2BIG } else { error })?;
-    let (cwd, terminal, pid, creation_mask, descriptors, descriptor_flags) = {
+    let (cwd, terminal, pid, creation_mask, process_group, session,
+         descriptors, descriptor_flags) = {
         let process = USER_PROCESS.lock();
         if !process.active {
             return Err(EINTR);
@@ -2838,6 +2918,8 @@ fn execve_current(
             process.terminal,
             process.pid,
             process.file_creation_mask,
+            process.process_group,
+            process.session,
             descriptors,
             descriptor_flags,
         )
@@ -2879,6 +2961,8 @@ fn execve_current(
             return Err(cleanup_failed_exec(image, errno_from_elf(error)));
         }
     };
+    state.process_group = process_group;
+    state.session = session;
     state.descriptors = descriptors;
     state.descriptor_flags = descriptor_flags;
     state.file_creation_mask = creation_mask;
@@ -3157,6 +3241,7 @@ fn expire_futex_timeouts(scheduler: &mut UserScheduler) {
                 process.state.wait_result = Some(ETIMEDOUT);
             }
             Some(ProcessWait::PollWait) => process.waiting_for = None,
+            Some(ProcessWait::Sleep) => process.waiting_for = None,
             _ => {}
         }
         process.wait_deadline = None;
@@ -3472,6 +3557,8 @@ fn new_user_process(
     Ok(UserProcess {
         active: true,
         pid,
+        process_group: pid,
+        session: pid,
         terminal,
         descriptors,
         descriptor_flags,
@@ -3514,6 +3601,8 @@ fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProces
     Ok(UserProcess {
         active: true,
         pid,
+        process_group: parent.process_group,
+        session: parent.session,
         terminal: parent.terminal,
         descriptors,
         descriptor_flags,
@@ -6072,6 +6161,9 @@ fn syscall_getcwd(address: u64, size: u64) -> Result<u64, i32> {
 }
 
 fn syscall_clock_gettime(clock_id: u64, address: u64) -> Result<u64, i32> {
+    if !matches!(clock_id, 0 | 1 | 2 | 3 | 4 | 7) {
+        return Err(EINVAL);
+    }
     paging::validate_user_range(address, core::mem::size_of::<UserTimespec>(), true)
         .map_err(|_| EFAULT)?;
     let time = match clock_id {
@@ -6143,6 +6235,18 @@ fn next_random_u64() -> u64 {
             Ok(_) => return next,
             Err(actual) => state = actual,
         }
+    }
+}
+
+fn randomized_pie_load_bias() -> u64 {
+    let span = (PIE_LOAD_BIAS_MAX - PIE_LOAD_BIAS) / PIE_LOAD_ALIGN;
+    if span == 0 {
+        PIE_LOAD_BIAS
+    } else {
+        PIE_LOAD_BIAS
+            .checked_add((next_random_u64() % span) * PIE_LOAD_ALIGN)
+            .unwrap_or(PIE_LOAD_BIAS)
+            & !(PAGE_SIZE - 1)
     }
 }
 
@@ -7673,6 +7777,16 @@ mod tests {
     }
 
     #[test]
+    fn randomized_pie_bias_is_page_aligned_and_bounded() {
+        for _ in 0..16 {
+            let bias = super::randomized_pie_load_bias();
+            assert!(bias >= super::PIE_LOAD_BIAS);
+            assert!(bias < super::PIE_LOAD_BIAS_MAX);
+            assert_eq!(bias & (super::PAGE_SIZE - 1), 0);
+        }
+    }
+
+    #[test]
     fn rejects_writable_executable_segments() {
         let mut bytes = sample_elf();
         put_u32(&mut bytes, 68, 7);
@@ -7748,7 +7862,7 @@ mod tests {
 
     #[test]
     fn clock_gettime_accepts_realtime_and_rejects_unknown_clocks() {
-        assert_eq!(dispatch_syscall(50, 1, 1, 0, 0, 0, 0), Err(EINVAL));
+        assert_eq!(dispatch_syscall(50, u64::MAX, 1, 0, 0, 0, 0), Err(EINVAL));
         assert_eq!(dispatch_syscall(50, 0, 0, 0, 0, 0, 0), Err(super::EFAULT));
     }
 

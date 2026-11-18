@@ -18,6 +18,8 @@ kontrak syscall, dan pola kontribusi subsystem.
   aturan pelepasan perangkat.
 - [Panduan port aplikasi](porting-apps.md): cara menyesuaikan program C kecil
   dengan runtime dan ABI OCTAGRAM.
+- [Port CPython](porting-python.md): target port CPython 3.11/3.12,
+  workflow build, dan API libc yang masih perlu ditutup.
 
 Dokumentasi ini mencerminkan implementasi sekarang, bukan janji kompatibilitas
 Linux/POSIX. Periksa batasan di setiap halaman sebelum mengandalkan fitur untuk

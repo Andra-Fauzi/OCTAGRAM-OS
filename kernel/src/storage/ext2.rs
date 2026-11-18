@@ -1056,6 +1056,9 @@ impl Ext2 {
 }
 
 impl FileSystem for Ext2 {
+    fn name(&self) -> &'static str {
+        "ext2"
+    }
     fn metadata(&self, path: &str) -> Result<Metadata, FsError> {
         let (_, inode) = self.lookup_inode(path)?;
         Ok(Metadata {

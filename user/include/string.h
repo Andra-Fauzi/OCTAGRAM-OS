@@ -7,6 +7,7 @@ void *memcpy(void *destination, const void *source, size_t count);
 void *memmove(void *destination, const void *source, size_t count);
 void *memset(void *destination, int value, size_t count);
 void *memchr(const void *memory, int character, size_t count);
+void *memrchr(const void *memory, int character, size_t count);
 char *strcpy(char *destination, const char *source);
 char *strcat(char *destination, const char *source);
 char *strncat(char *destination, const char *source, size_t count);
@@ -27,5 +28,6 @@ char *strtok_r(char *text, const char *delimiters, char **save_pointer);
 char *strdup(const char *text);
 char *strndup(const char *text, size_t count);
 char *strerror(int error);
+char *strsignal(int signal_number);
 
 #endif

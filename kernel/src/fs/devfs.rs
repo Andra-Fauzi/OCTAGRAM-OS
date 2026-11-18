@@ -331,6 +331,9 @@ impl DevFs {
 }
 
 impl FileSystem for DevFs {
+    fn name(&self) -> &'static str {
+        "devfs"
+    }
     fn metadata(&self, path: &str) -> Result<Metadata, FsError> {
         let path = normalize_path(path)?;
         Self::metadata_for(&path)

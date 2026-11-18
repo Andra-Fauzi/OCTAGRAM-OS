@@ -3,7 +3,8 @@
 OCTAGRAM-OS adalah kernel x86_64 Rust yang boot melalui Limine. Kode platform
 berada di `kernel/src/arch/x86_64/`; driver perangkat berada di
 `kernel/src/drivers/`; layanan umum berada di `memory/`, `fs/`, `storage/`,
-`terminal/`, dan `task.rs`.
+`terminal/`, `task.rs`, serta `auth.rs` (basis data `/etc/shadow`) dengan
+`sha256.rs` sebagai primitif hash.
 
 ## Urutan boot
 

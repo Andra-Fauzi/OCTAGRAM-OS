@@ -200,7 +200,11 @@ services, and a package/application ecosystem.
 - [ ] Terminal emulator improvements
 - [ ] Session manager and login
   - [x] `login`, `whoami`, `session`, and prompt user
-  - [ ] Password/authentication database
+  - [x] Password/authentication database
+    - [x] SHA-256 kernel (`sha256.rs`) dengan vektor NIST (termasuk batas padding 55/56 byte)
+    - [x] `/etc/shadow` format `user:salt:hash`, parser melewati baris rusak, `upsert` untuk mengganti entri
+    - [x] `passwd [user]` menulis hash bergaram; `login` meminta kata sandi bila entri ada
+    - [ ] KDF berulang (Argon2/PBKDF2), kebijakan kedaluwarsa, dan `su`/sesi per terminal
 - [x] Package metadata and repository format
   - [x] `/var/lib/octagram/packages/*.pkg`
   - [x] `registry.txt` package registry

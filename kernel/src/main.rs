@@ -27,6 +27,7 @@ static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
 mod arch;
+mod auth;
 mod drivers;
 pub mod elf;
 pub mod fs;
@@ -35,6 +36,7 @@ mod klog;
 mod memory;
 pub mod network;
 mod rsdp;
+mod sha256;
 mod shell;
 pub mod storage;
 pub mod task;

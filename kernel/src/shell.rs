@@ -127,7 +127,8 @@ async fn execute(
         "persist" => configure_persistent_home(current_dir, arguments),
         "apps" => list_apps(),
         "pkg" => manage_package(current_dir, arguments),
-        "login" => login_user(arguments, current_user),
+        "login" => login_user(arguments, current_user, terminal).await,
+        "passwd" => change_password(arguments, current_user, terminal).await,
         "whoami" => crate::println!("{current_user}"),
         "session" => crate::println!("session user={current_user} tty=tty{terminal}"),
         "sched" => show_scheduler_status(),
@@ -229,6 +230,7 @@ fn print_help() {
     crate::println!("  apps                   list native apps under /apps");
     crate::println!("  pkg list|info|add|update|remove|verify  manage native packages");
     crate::println!("  login [octagram|root]  start a local shell session");
+    crate::println!("  passwd [user]          set a password in /etc/shadow");
     crate::println!("  whoami                 show current session user");
     crate::println!("  session                show current session");
     crate::println!("  mkfs.fat <device> --yes  format a FAT32 superfloppy (erases data)");
@@ -1633,16 +1635,86 @@ fn manage_package(current_dir: &str, arguments: &str) {
     }
 }
 
-fn login_user(arguments: &str, current_user: &mut String) {
+/// Baca satu baris tanpa menampilkan karakter (untuk kata sandi).
+async fn read_secret_line(terminal: usize) -> String {
+    let mut value = String::new();
+    loop {
+        let event = keyboard::next_event_for(terminal).await;
+        crate::terminal::set_output_terminal(terminal);
+        match event {
+            keyboard::KeyEvent::Character('\n' | '\r') => {
+                crate::println!("");
+                return value;
+            }
+            keyboard::KeyEvent::Character('\x08' | '\x7f') => {
+                value.pop();
+            }
+            keyboard::KeyEvent::Character(character) if !character.is_control() => {
+                value.push(character);
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn login_user(arguments: &str, current_user: &mut String, terminal: usize) {
     let mut parts = arguments.split_whitespace();
     let name = parts.next().unwrap_or("octagram");
     if parts.next().is_some() || (name != "octagram" && name != "root") {
         crate::println!("login: unknown or unsupported user");
         return;
     }
+    if let Some(entry) = crate::auth::load()
+        .into_iter()
+        .find(|entry| entry.user == name)
+    {
+        crate::println!("Password for {name}:");
+        let password = read_secret_line(terminal).await;
+        if !crate::auth::verify(&entry, &password) {
+            crate::println!("login: incorrect password");
+            return;
+        }
+    }
     current_user.clear();
     current_user.push_str(name);
     crate::println!("login: session started for {name}");
+}
+
+async fn change_password(arguments: &str, current_user: &str, terminal: usize) {
+    let mut parts = arguments.split_whitespace();
+    let user = parts.next().unwrap_or(current_user);
+    if parts.next().is_some() || (user != "octagram" && user != "root") {
+        crate::println!("usage: passwd [octagram|root]");
+        return;
+    }
+    if current_user != "root" && current_user != user {
+        crate::println!("passwd: only root can change another user's password");
+        return;
+    }
+    crate::println!("New password for {user}:");
+    let first = read_secret_line(terminal).await;
+    if first.is_empty() {
+        crate::println!("passwd: empty password refused");
+        return;
+    }
+    crate::println!("Retype new password:");
+    let second = read_secret_line(terminal).await;
+    if first != second {
+        crate::println!("passwd: passwords do not match");
+        return;
+    }
+    let mut entries = crate::auth::load();
+    crate::auth::upsert(
+        &mut entries,
+        crate::auth::new_entry(user, &first, crate::elf::next_random_u64()),
+    );
+    match crate::auth::save(&entries) {
+        Ok(()) => crate::println!("passwd: password updated for {user}"),
+        Err(error) => crate::println!(
+            "passwd: cannot write {}: {error:?}",
+            crate::auth::SHADOW_PATH
+        ),
+    }
 }
 
 fn list_apps() {

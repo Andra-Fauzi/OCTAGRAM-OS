@@ -39,8 +39,15 @@ melewati ambang anti-starvasi (78 putaran aging).
 
 **Paket dan sesi**
 `apps`, `pkg add|update|remove|list|info|verify`, `login`, `whoami`, `session`,
-`passwd` (belum diimplementasikan, mencetak pesan bahwa autentikasi password
-tidak tersedia).
+`passwd [user]`.
+
+`passwd` meminta kata sandi baru dua kali tanpa menampilkan karakter, lalu
+menulis `/etc/shadow` dalam bentuk `user:salt:sha256(salt+password)` (SHA-256 di
+`kernel/src/sha256.rs`, salt 16 heksadesimal dari RNG kernel). Hanya root yang
+boleh mengganti kata sandi pengguna lain. Setelah entri ada, `login <user>`
+meminta kata sandi dan menolak sesi baru bila salah; bila `/etc/shadow` belum
+ada atau tidak memuat entri untuk user tersebut, `login` berjalan tanpa
+verifikasi seperti sebelumnya.
 
 **Toolchain dan eksekusi**
 `as`, `ld`, `cc`, `tcc`, `run`, `runp`.

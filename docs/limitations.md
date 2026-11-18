@@ -28,6 +28,9 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
   (`/dev/stdin`, `/dev/tty*`, `/dev/console`) sama-sama scheduler-aware; tidak
   ada jalur tty yang menahan CPU di kernel saat masih ada proses lain.
 - Tanpa robust futex, tanpa `clone3`, tanpa `vfork`.
+- Kata sandi disimpan sebagai SHA-256 bergaram sekali jalan (`/etc/shadow`),
+  bukan KDF berulang; belum ada kebijakan kedaluwarsa, `su`, atau sesi terpisah
+  per terminal.
 - Batas 64 proses terjadwal dan 64 KiB kernel stack per proses.
 
 ## Memori

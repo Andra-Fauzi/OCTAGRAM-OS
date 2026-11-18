@@ -6980,7 +6980,7 @@ fn syscall_clock_getres(clock_id: u64, address: u64) -> Result<u64, i32> {
 const GETRANDOM_MAX: usize = 256;
 static RANDOM_STATE: AtomicU64 = AtomicU64::new(0);
 
-fn next_random_u64() -> u64 {
+pub(crate) fn next_random_u64() -> u64 {
     let mut state = RANDOM_STATE.load(Ordering::Relaxed);
     loop {
         let current = state;

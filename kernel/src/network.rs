@@ -11,6 +11,7 @@ pub use tcp::{
     is_established as tcp_is_established, is_closed as tcp_is_closed,
     socket_error as tcp_socket_error, is_receive_eof as tcp_is_receive_eof,
     is_readable as tcp_socket_readable, is_writable as tcp_socket_writable,
+    set_keepalive as set_tcp_keepalive, keepalive_enabled as tcp_keepalive_enabled,
 };
 
 pub mod dns;
@@ -1031,6 +1032,9 @@ mod tests {
         }
     }
 
+    /// Uji yang memasang link palsu harus berurutan: hanya ada satu link aktif.
+    static LINK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     struct RegisteredLink(u32);
 
     impl Drop for RegisteredLink {
@@ -1187,6 +1191,7 @@ mod tests {
 
     #[test]
     fn udp_connected_socket_uses_peer_for_send_and_receive() {
+        let _link_guard = LINK_TEST_LOCK.lock();
         let local_mac = [2, 0, 0, 0, 0, 3];
         let peer_mac = [2, 0, 0, 0, 0, 4];
         let local_ip = [192, 168, 42, 3];
@@ -1262,6 +1267,7 @@ mod tests {
 
     #[test]
     fn udp_socket_transmits_and_receives_ipv4_datagrams() {
+        let _link_guard = LINK_TEST_LOCK.lock();
         let local_mac = [2, 0, 0, 0, 0, 1];
         let peer_mac = [2, 0, 0, 0, 0, 2];
         let local_ip = [192, 168, 42, 2];

@@ -93,12 +93,18 @@ services, and a package/application ecosystem.
 - [ ] Improve mutex/condvar/futex implementation
   - [x] Real `FUTEX_WAIT`/`FUTEX_WAKE` with LAPIC timeout handling
   - [x] `pthread_mutex`, condition variables, and semaphores built on futex
-  - [ ] `FUTEX_REQUEUE`, `FUTEX_WAIT_BITSET`, and robust futex
+  - [x] `FUTEX_REQUEUE`, `FUTEX_WAIT_BITSET`, dan `FUTEX_WAKE_BITSET` (timeout absolut, `FUTEX_CLOCK_REALTIME`, uji host pencocokan bitset)
+  - [ ] Robust futex (daftar `FUTEX_OWNER_DIED` milik userspace)
 - [ ] Add kernel task fairness and watchdog monitoring
 
 ## Priority 5: Networking
 
 - [ ] TCP IPv4 reliability and socket lifecycle hardening
+  - [x] Retransmisi satu segmen dengan RTO eksponensial (30→60→120→240→480 tick, maks 5 percobaan; uji host `retransmit_backoff`)
+  - [x] `send` menghormati `peer_mss` dan `peer_window`, serta mengembalikan `EAGAIN` saat jendela penuh
+  - [x] Zero-window probing tiap 60 tick saat `peer_window` nol (probe 1 byte di bawah `send_next`; uji host `zero_window_probe_due`)
+  - [x] Keepalive opt-in lewat `SO_KEEPALIVE` (probe ACK tiap 60.000 tick idle, maksimal 9 probe lalu RST; uji host `keepalive_due`)
+  - [ ] Antrean lebih dari satu segmen terkirim (pipeline/congestion window)
 - [x] UDP POSIX API for socket/bind/sendto/recvfrom
 - [ ] IPv6
 - [x] Nonblocking socket support via SOCK_NONBLOCK and MSG_DONTWAIT

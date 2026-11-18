@@ -9,7 +9,11 @@ const TCP_MSS: u16 = 1460;
 const TCP_RECEIVE_CAPACITY: usize = 8192;
 const MAX_LISTEN_BACKLOG: usize = 8;
 const RETRANSMIT_TICKS: u32 = 30;
+const MAX_RETRANSMIT_TIMEOUT: u32 = 480;
 const MAX_RETRANSMITS: u8 = 5;
+const ZERO_WINDOW_PROBE_TICKS: u32 = 60;
+const DEFAULT_KEEPALIVE_IDLE: u32 = 60_000;
+const DEFAULT_KEEPALIVE_COUNT: u8 = 9;
 
 const FIN: u8 = 0x01;
 const SYN: u8 = 0x02;
@@ -49,6 +53,8 @@ struct PendingSegment {
     payload: Vec<u8>,
     include_mss: bool,
     last_sent: u32,
+    /// Batas waktu kirim ulang saat ini (RTO), dinaikkan dua kali lipat tiap kirim ulang.
+    timeout: u32,
     retransmits: u8,
 }
 
@@ -69,6 +75,14 @@ pub struct TcpSocket {
     write_shutdown: bool,
     error: Option<&'static str>,
     pending: Option<PendingSegment>,
+    /// Tick berikutnya untuk mengirim probe jendela nol.
+    next_probe_tick: u32,
+    /// Keepalive opt-in lewat `SO_KEEPALIVE`.
+    keepalive: bool,
+    keepalive_idle: u32,
+    keepalive_count: u8,
+    keepalive_probes: u8,
+    last_activity: u32,
     close_after_pending: bool,
     backlog: usize,
     half_open: Vec<Weak<Mutex<TcpSocket>>>,
@@ -95,6 +109,12 @@ impl TcpSocket {
             write_shutdown: false,
             error: None,
             pending: None,
+            next_probe_tick: 0,
+            keepalive: false,
+            keepalive_idle: DEFAULT_KEEPALIVE_IDLE,
+            keepalive_count: DEFAULT_KEEPALIVE_COUNT,
+            keepalive_probes: 0,
+            last_activity: 0,
             close_after_pending: false,
             backlog: 0,
             half_open: Vec::new(),
@@ -294,6 +314,7 @@ pub fn connect_socket(
             payload: Vec::new(),
             include_mss: true,
             last_sent: TICK.load(Ordering::Relaxed),
+            timeout: RETRANSMIT_TICKS,
             retransmits: 0,
         });
         socket.pending.clone().unwrap()
@@ -309,6 +330,18 @@ pub fn connect_socket(
 
 fn next_initial_sequence() -> u32 {
     NEXT_SEQUENCE.fetch_add(64_001, Ordering::Relaxed)
+}
+
+/// Aktifkan/nonaktifkan keepalive; berlaku saat socket mencapai `Established`.
+pub fn set_keepalive(socket: &Arc<Mutex<TcpSocket>>, enabled: bool) {
+    let mut socket_state = socket.lock();
+    socket_state.keepalive = enabled;
+    socket_state.keepalive_probes = 0;
+    socket_state.last_activity = TICK.load(Ordering::Relaxed);
+}
+
+pub fn keepalive_enabled(socket: &Arc<Mutex<TcpSocket>>) -> bool {
+    socket.lock().keepalive
 }
 
 pub fn send_socket(socket: &Arc<Mutex<TcpSocket>>, payload: &[u8]) -> Result<usize, &'static str> {
@@ -339,6 +372,8 @@ pub fn send_socket(socket: &Arc<Mutex<TcpSocket>>, payload: &[u8]) -> Result<usi
         let sequence = socket.send_next;
         let payload = payload[..length].to_vec();
         socket.send_next = socket.send_next.wrapping_add(length as u32);
+        socket.last_activity = TICK.load(Ordering::Relaxed);
+        socket.keepalive_probes = 0;
         socket.pending = Some(PendingSegment {
             sequence,
             acknowledgement: socket.receive_next,
@@ -346,6 +381,7 @@ pub fn send_socket(socket: &Arc<Mutex<TcpSocket>>, payload: &[u8]) -> Result<usi
             payload,
             include_mss: false,
             last_sent: TICK.load(Ordering::Relaxed),
+            timeout: RETRANSMIT_TICKS,
             retransmits: 0,
         });
         socket.pending.clone().unwrap()
@@ -483,6 +519,7 @@ fn queue_fin_locked(socket: &mut TcpSocket) -> PendingSegment {
         payload: Vec::new(),
         include_mss: false,
         last_sent: TICK.load(Ordering::Relaxed),
+        timeout: RETRANSMIT_TICKS,
         retransmits: 0,
     };
     socket.pending = Some(pending.clone());
@@ -544,7 +581,7 @@ pub fn poll() {
                 socket_state.close_after_pending = false;
                 Some(queue_fin_locked(&mut socket_state))
             } else if let Some(pending) = socket_state.pending.as_ref() {
-                if tick.wrapping_sub(pending.last_sent) < RETRANSMIT_TICKS {
+                if tick.wrapping_sub(pending.last_sent) < pending.timeout {
                     None
                 } else if pending.retransmits >= MAX_RETRANSMITS {
                     socket_state.pending = None;
@@ -554,9 +591,54 @@ pub fn poll() {
                 } else {
                     let pending = socket_state.pending.as_mut().unwrap();
                     pending.retransmits += 1;
+                    /* RTO mundur eksponensial agar jaringan lambat tidak dibanjiri. */
+                    pending.timeout = retransmit_backoff(pending.timeout);
                     pending.last_sent = tick;
                     Some(pending.clone())
                 }
+            } else if zero_window_probe_due(
+                socket_state.state,
+                socket_state.peer_window,
+                tick,
+                socket_state.next_probe_tick,
+            ) {
+                socket_state.next_probe_tick = tick.wrapping_add(ZERO_WINDOW_PROBE_TICKS);
+                /* Probe 1 byte di bawah `send_next` memancing ACK berisi jendela baru. */
+                Some(PendingSegment {
+                    sequence: socket_state.send_next.wrapping_sub(1),
+                    acknowledgement: socket_state.receive_next,
+                    flags: ACK,
+                    payload: Vec::new(),
+                    include_mss: false,
+                    last_sent: tick,
+                    timeout: RETRANSMIT_TICKS,
+                    retransmits: 0,
+                })
+            } else if keepalive_due(
+                socket_state.state,
+                socket_state.keepalive,
+                tick,
+                socket_state.last_activity,
+                socket_state.keepalive_idle,
+            ) {
+                if socket_state.keepalive_probes >= socket_state.keepalive_count {
+                    socket_state.state = TcpState::Reset;
+                    socket_state.error = Some("TCP keepalive timed out");
+                    continue;
+                }
+                socket_state.keepalive_probes += 1;
+                socket_state.last_activity = tick;
+                /* Probe keepalive: ACK kosong dengan sequence di bawah `send_next`. */
+                Some(PendingSegment {
+                    sequence: socket_state.send_next.wrapping_sub(1),
+                    acknowledgement: socket_state.receive_next,
+                    flags: ACK,
+                    payload: Vec::new(),
+                    include_mss: false,
+                    last_sent: tick,
+                    timeout: RETRANSMIT_TICKS,
+                    retransmits: 0,
+                })
             } else {
                 None
             }
@@ -572,6 +654,28 @@ pub fn poll() {
         }
     }
     SOCKETS.lock().retain(|socket| !is_terminal(socket));
+}
+
+/// Keepalive hanya untuk socket established yang diam lebih lama dari `idle` tick.
+fn keepalive_due(
+    state: TcpState,
+    enabled: bool,
+    tick: u32,
+    last_activity: u32,
+    idle: u32,
+) -> bool {
+    enabled && state == TcpState::Established && tick.wrapping_sub(last_activity) >= idle
+}
+
+/// Socket established dengan jendela peer nol perlu probe berkala agar
+/// pembukaan jendela tidak hilang bersama ACK yang dibuang.
+fn zero_window_probe_due(state: TcpState, peer_window: u16, tick: u32, next_probe_tick: u32) -> bool {
+    state == TcpState::Established && peer_window == 0 && tick >= next_probe_tick
+}
+
+/// Dua kali lipat RTO per kirim ulang, dibatasi `MAX_RETRANSMIT_TIMEOUT` tick.
+fn retransmit_backoff(timeout: u32) -> u32 {
+    timeout.saturating_mul(2).min(MAX_RETRANSMIT_TIMEOUT)
 }
 
 fn transmit_pending(
@@ -848,6 +952,7 @@ fn handle_incoming_syn(
             payload: Vec::new(),
             include_mss: true,
             last_sent: TICK.load(Ordering::Relaxed),
+            timeout: RETRANSMIT_TICKS,
             retransmits: 0,
         });
         child_state.pending.clone().unwrap()
@@ -890,6 +995,12 @@ fn process_connected_segment(
             return;
         }
         socket.peer_window = window;
+        socket.last_activity = TICK.load(Ordering::Relaxed);
+        socket.keepalive_probes = 0;
+        if window != 0 {
+            /* Jendela terbuka lagi; probe berikutnya dimulai dari awal. */
+            socket.next_probe_tick = 0;
+        }
         if let Some(mss) = peer_mss {
             socket.peer_mss = mss.min(TCP_MSS).max(536);
         }
@@ -1072,8 +1183,10 @@ fn send_reset(
 #[cfg(test)]
 mod tests {
     use super::{
-        ACK, PendingSegment, SOCKETS, SYN, TCP_MSS, TcpSocket, TcpState, build_tcp_segment,
-        close_socket, is_last_descriptor, parse_mss, register_socket_locked, tcp_checksum,
+        ACK, MAX_RETRANSMIT_TIMEOUT, PendingSegment, RETRANSMIT_TICKS, SOCKETS, SYN, TCP_MSS,
+        TcpSocket, TcpState, build_tcp_segment, close_socket, is_last_descriptor, parse_mss,
+        keepalive_due, register_socket_locked, retransmit_backoff, tcp_checksum,
+        zero_window_probe_due,
     };
     use alloc::sync::{Arc, Weak};
     use alloc::vec::Vec;
@@ -1103,6 +1216,36 @@ mod tests {
     }
 
     #[test]
+    fn tcp_keepalive_needs_enabled_established_and_idle_socket() {
+        assert!(keepalive_due(TcpState::Established, true, 10_000, 0, 10_000));
+        assert!(keepalive_due(TcpState::Established, true, 20_000, 0, 10_000));
+        assert!(!keepalive_due(TcpState::Established, true, 9_999, 0, 10_000));
+        assert!(!keepalive_due(TcpState::Established, false, 20_000, 0, 10_000));
+        assert!(!keepalive_due(TcpState::CloseWait, true, 20_000, 0, 10_000));
+        assert!(!keepalive_due(TcpState::SynSent, true, 20_000, 0, 10_000));
+    }
+
+    #[test]
+    fn tcp_zero_window_probe_only_fires_for_established_closed_windows() {
+        assert!(zero_window_probe_due(TcpState::Established, 0, 10, 10));
+        assert!(zero_window_probe_due(TcpState::Established, 0, 11, 10));
+        assert!(!zero_window_probe_due(TcpState::Established, 0, 9, 10));
+        assert!(!zero_window_probe_due(TcpState::Established, 1024, 100, 0));
+        assert!(!zero_window_probe_due(TcpState::CloseWait, 0, 100, 0));
+        assert!(!zero_window_probe_due(TcpState::FinWait1, 0, 100, 0));
+    }
+
+    #[test]
+    fn tcp_retransmit_backoff_doubles_and_caps() {
+        assert_eq!(retransmit_backoff(RETRANSMIT_TICKS), 60);
+        assert_eq!(retransmit_backoff(60), 120);
+        assert_eq!(retransmit_backoff(120), 240);
+        assert_eq!(retransmit_backoff(240), MAX_RETRANSMIT_TIMEOUT);
+        assert_eq!(retransmit_backoff(MAX_RETRANSMIT_TIMEOUT), MAX_RETRANSMIT_TIMEOUT);
+        assert_eq!(retransmit_backoff(u32::MAX), MAX_RETRANSMIT_TIMEOUT);
+    }
+
+    #[test]
     fn tcp_ack_flag_is_distinct_from_syn() {
         let segment = build_tcp_segment(1, 2, ACK, 1024, false, b"payload").unwrap();
         assert_eq!(segment[13], ACK);
@@ -1122,6 +1265,7 @@ mod tests {
                 payload: Vec::from(&b"data"[..]),
                 include_mss: false,
                 last_sent: 0,
+                timeout: RETRANSMIT_TICKS,
                 retransmits: 0,
             });
         }

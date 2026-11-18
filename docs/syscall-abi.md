@@ -96,7 +96,7 @@ menyediakan inline wrappers.
 | 91 | `kill` | `RDI=pid`, `RSI=signal` | 0, `-ESRCH` bila pid tidak ada |
 | 92 | `sigaction` | `RDI=signal`, `RSI=action*`, `RDX=old*` | 0, `-EINVAL` untuk `SIGKILL`/`SIGSTOP` |
 | 93 | `sigprocmask` | `RDI=how`, `RSI=set*`, `RDX=old*` | 0 |
-| 94 | `futex` | `RDI=address`, `RSI=operation`, `RDX=value`, `R10=timeout*` | 0 untuk `WAIT` bangun normal, jumlah waiter untuk `WAKE`, `-ETIMEDOUT` saat timeout |
+| 94 | `futex` | `RDI=address`, `RSI=operation`, `RDX=value`, `R10=timeout* `/`nr_requeue`, `R8=address2`, `R9=bitset` | 0 untuk `WAIT`/`WAIT_BITSET` bangun normal, jumlah waiter untuk `WAKE`/`WAKE_BITSET`/`REQUEUE`, `-ETIMEDOUT` saat timeout |
 | 95 | `setsockopt` | `RDI=fd`, `RSI=level`, `RDX=option`, `R10=value*`, `R8=length` | 0 |
 | 96 | `getsockopt` | `RDI=fd`, `RSI=level`, `RDX=option`, `R10=value*`, `R8=length*` | 0 |
 | 97 | `poll` | `RDI=struct pollfd*`, `RSI=nfds`, `RDX=timeout_ms` | Jumlah fd siap |

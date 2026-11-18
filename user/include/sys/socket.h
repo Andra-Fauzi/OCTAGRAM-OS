@@ -37,6 +37,7 @@ struct sockaddr {
 #define SO_REUSEADDR 2
 #define SO_TYPE 3
 #define SO_ERROR 4
+#define SO_KEEPALIVE 9
 
 #define SHUT_RD 0
 #define SHUT_WR 1

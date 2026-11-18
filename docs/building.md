@@ -176,7 +176,16 @@ didukung, sehingga `sendmsg` mengembalikan `ENOTSUP` bila `msg_control` diisi
 dan `recvmsg` selalu mengosongkan `msg_controllen`. Kernel melaporkan panjang
 datagram UDP asli, sehingga `recvmsg` mengisi `msg_flags` dengan `MSG_TRUNC`
 bila data dipotong; `MSG_CTRUNC` tidak pernah diisi karena tidak ada data
-kontrol. Socket UDP mendukung `connect`, sehingga `sendmsg` tanpa `msg_name`,
+kontrol. Socket TCP mengirim satu segmen terkirim pada satu waktu, dibatasi
+`peer_mss` dan `peer_window`; segmen yang belum di-ACK dikirim ulang dengan RTO
+eksponensial 30→60→120→240→480 tick, maksimal 5 percobaan sebelum socket
+di-RST dengan error `TCP connection timed out`. Saat jendela peer nol, kernel
+mengirim probe 1 byte setiap 60 tick agar pembukaan jendela tidak hilang.
+Keepalive bersifat opt-in lewat `setsockopt(SO_KEEPALIVE)`: socket established
+mengirim probe ACK setelah 60.000 tick tanpa aktivitas, dan menutup koneksi
+dengan `TCP keepalive timed out` setelah 9 probe tanpa jawaban.
+Socket UDP mendukung `connect`,
+sehingga `sendmsg` tanpa `msg_name`,
 `send`, dan `recv` memakai peer hasil `connect`; datagram dari sumber lain
 diabaikan saat menerima. `<netdb.h>` menyediakan
 `getaddrinfo` numerik IPv4 dan IPv6 dengan flag `AI_PASSIVE`, `AI_CANONNAME`,

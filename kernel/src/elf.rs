@@ -876,7 +876,7 @@ enum ProcessWait {
     Thread(u64),
     PipeReadable(u64),
     PipeWritable(u64),
-    Futex(u64),
+    Futex { address: u64, bitset: u32 },
     PollWait,
     Sleep,
 }
@@ -3240,7 +3240,7 @@ fn expire_futex_timeouts(scheduler: &mut UserScheduler) {
             continue;
         }
         match process.waiting_for {
-            Some(ProcessWait::Futex(_)) => {
+            Some(ProcessWait::Futex { .. }) => {
                 process.waiting_for = None;
                 process.state.wait_result = Some(ETIMEDOUT);
             }
@@ -3254,6 +3254,10 @@ fn expire_futex_timeouts(scheduler: &mut UserScheduler) {
 
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
+const FUTEX_REQUEUE: u64 = 3;
+const FUTEX_WAIT_BITSET: u64 = 9;
+const FUTEX_WAKE_BITSET: u64 = 10;
+const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
 const FUTEX_PRIVATE_FLAG: u64 = 128;
 const FUTEX_CLOCK_REALTIME: u64 = 256;
 const FUTEX_OPERATION_MASK: u64 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
@@ -3279,9 +3283,43 @@ fn futex_deadline(timeout: u64) -> Result<Option<u64>, i32> {
     ))
 }
 
+/// Deadline absolut (WAIT_BITSET): `timeout` berisi `struct timespec` absolut.
+fn futex_absolute_deadline(timeout: u64, realtime: bool) -> Result<Option<u64>, i32> {
+    if timeout == 0 {
+        return Ok(None);
+    }
+    paging::validate_user_range(timeout, core::mem::size_of::<UserTimespec>(), false)
+        .map_err(|_| EFAULT)?;
+    let ts = unsafe { (timeout as *const UserTimespec).read_unaligned() };
+    if ts.seconds < 0 || ts.nanoseconds < 0 || ts.nanoseconds >= 1_000_000_000 {
+        return Err(EINVAL);
+    }
+    let target = (ts.seconds as u64)
+        .saturating_mul(1000)
+        .saturating_add((ts.nanoseconds / 1_000_000) as u64);
+    let now = if realtime {
+        (crate::drivers::rtc::unix_seconds().map_err(|_| EIO)? as u64).saturating_mul(1000)
+    } else {
+        crate::arch::x86_64::monotonic_milliseconds()
+    };
+    if target <= now {
+        return Ok(Some(0));
+    }
+    Ok(Some(
+        crate::arch::x86_64::monotonic_milliseconds()
+            .saturating_add(target.saturating_sub(now)),
+    ))
+}
+
+/// Bit yang diminta pembangunkan harus beririsan dengan bit tunggu.
+fn futex_bitset_matches(waiting: u32, wake: u32) -> bool {
+    waiting & wake != 0
+}
+
 fn block_current_on_futex(
     frame: &mut InterruptFrame,
     address: u64,
+    bitset: u32,
     deadline: Option<u64>,
 ) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
@@ -3299,7 +3337,7 @@ fn block_current_on_futex(
         }
     }
     scheduler.processes[current].frame_pointer = frame_pointer as usize;
-    scheduler.processes[current].waiting_for = Some(ProcessWait::Futex(address));
+    scheduler.processes[current].waiting_for = Some(ProcessWait::Futex { address, bitset });
     scheduler.processes[current].wait_deadline = deadline;
     frame.stack_frame.instruction_pointer = retry_address;
     let mut active_process = USER_PROCESS.lock();
@@ -3423,6 +3461,68 @@ fn block_current_on_poll(frame: &mut InterruptFrame, deadline: u64) -> *mut Inte
     next_frame
 }
 
+/// Bangunkan waiter futex pada `address` yang bit tunggunya beririsan.
+fn wake_futex_waiters(pid: u64, address: u64, wake_bits: u32, limit: u64) -> u64 {
+    let mut scheduler = USER_SCHEDULER.lock();
+    let mut woken = 0u64;
+    for waiting in &mut scheduler.processes {
+        if woken >= limit {
+            break;
+        }
+        if waiting.pid != pid {
+            continue;
+        }
+        let Some(ProcessWait::Futex { address: waiting_address, bitset }) = waiting.waiting_for
+        else {
+            continue;
+        };
+        if waiting_address == address && futex_bitset_matches(bitset, wake_bits) {
+            waiting.waiting_for = None;
+            waiting.wait_deadline = None;
+            waiting.state.wait_result = Some(0);
+            woken += 1;
+        }
+    }
+    woken
+}
+
+/// Bangunkan `wake_limit` waiter lalu pindahkan sisanya ke `target`.
+fn requeue_futex_waiters(
+    pid: u64,
+    address: u64,
+    target: u64,
+    wake_limit: u64,
+    requeue_limit: u64,
+) -> u64 {
+    let mut scheduler = USER_SCHEDULER.lock();
+    let mut woken = 0u64;
+    let mut requeued = 0u64;
+    for waiting in &mut scheduler.processes {
+        if waiting.pid != pid {
+            continue;
+        }
+        let Some(ProcessWait::Futex { address: waiting_address, bitset }) = waiting.waiting_for
+        else {
+            continue;
+        };
+        if waiting_address != address {
+            continue;
+        }
+        if woken < wake_limit {
+            waiting.waiting_for = None;
+            waiting.wait_deadline = None;
+            waiting.state.wait_result = Some(0);
+            woken += 1;
+        } else if requeued < requeue_limit {
+            waiting.waiting_for = Some(ProcessWait::Futex { address: target, bitset });
+            requeued += 1;
+        } else {
+            break;
+        }
+    }
+    woken
+}
+
 fn syscall_futex(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
     if take_interrupted_syscall(SYSCALL_FUTEX) {
@@ -3460,31 +3560,59 @@ fn syscall_futex(frame: &mut InterruptFrame) -> *mut InterruptFrame {
 
     match operation {
         FUTEX_WAKE => {
-            let mut scheduler = USER_SCHEDULER.lock();
-            let mut woken = 0u64;
-            for waiting in &mut scheduler.processes {
-                if woken >= value as u64 {
-                    break;
-                }
-                if waiting.pid == pid
-                    && waiting.waiting_for == Some(ProcessWait::Futex(address))
-                {
-                    waiting.waiting_for = None;
-                    waiting.wait_deadline = None;
-                    waiting.state.wait_result = Some(0);
-                    woken += 1;
-                }
-            }
-            frame.rax = woken;
+            frame.rax = wake_futex_waiters(pid, address, FUTEX_BITSET_MATCH_ANY, value as u64);
             frame_pointer
         }
-        FUTEX_WAIT => {
+        FUTEX_WAKE_BITSET => {
+            let wake_bits = frame.r9 as u32;
+            if wake_bits == 0 {
+                frame.rax = (-(EINVAL as i64)) as u64;
+                return frame_pointer;
+            }
+            frame.rax = wake_futex_waiters(pid, address, wake_bits, value as u64);
+            frame_pointer
+        }
+        FUTEX_REQUEUE => {
+            let target = frame.r8;
+            if target == 0 || target % 4 != 0 {
+                frame.rax = (-(EINVAL as i64)) as u64;
+                return frame_pointer;
+            }
+            if paging::validate_user_range(target, core::mem::size_of::<u32>(), true).is_err() {
+                frame.rax = (-(EFAULT as i64)) as u64;
+                return frame_pointer;
+            }
+            let requeue_limit = frame.r10 as u32 as u64;
+            frame.rax = requeue_futex_waiters(
+                pid,
+                address,
+                target,
+                value as u64,
+                requeue_limit,
+            );
+            frame_pointer
+        }
+        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
             let current = unsafe { (address as *const u32).read_unaligned() };
             if current != value {
                 frame.rax = (-(EAGAIN as i64)) as u64;
                 return frame_pointer;
             }
-            let deadline = match futex_deadline(frame.r10) {
+            let bitset = if operation == FUTEX_WAIT_BITSET {
+                frame.r9 as u32
+            } else {
+                FUTEX_BITSET_MATCH_ANY
+            };
+            if bitset == 0 {
+                frame.rax = (-(EINVAL as i64)) as u64;
+                return frame_pointer;
+            }
+            let deadline = if operation == FUTEX_WAIT_BITSET {
+                futex_absolute_deadline(frame.r10, frame.rsi & FUTEX_CLOCK_REALTIME != 0)
+            } else {
+                futex_deadline(frame.r10)
+            };
+            let deadline = match deadline {
                 Ok(deadline) => deadline,
                 Err(errno) => {
                     frame.rax = (-(errno as i64)) as u64;
@@ -3495,7 +3623,7 @@ fn syscall_futex(frame: &mut InterruptFrame) -> *mut InterruptFrame {
                 frame.rax = (-(ETIMEDOUT as i64)) as u64;
                 return frame_pointer;
             }
-            block_current_on_futex(frame, address, deadline)
+            block_current_on_futex(frame, address, bitset, deadline)
         }
         _ => {
             frame.rax = (-(ENOSYS as i64)) as u64;
@@ -6426,6 +6554,7 @@ const SELECT_FD_SET_WORDS: usize = (SELECT_MAX_FDS as usize) / 64;
 const SOL_SOCKET: u64 = 1;
 const SO_TYPE: u64 = 3;
 const SO_ERROR: u64 = 4;
+const SO_KEEPALIVE: u64 = 9;
 const SOCK_STREAM_TYPE: i32 = 1;
 const SOCK_DGRAM_TYPE: i32 = 2;
 
@@ -6874,13 +7003,28 @@ fn socket_descriptor_type(fd: u64) -> Result<i32, i32> {
 fn syscall_setsockopt(
     fd: u64,
     level: u64,
-    _option_name: u64,
+    option_name: u64,
     option_value: u64,
     option_length: u64,
 ) -> Result<u64, i32> {
     socket_descriptor_type(fd)?;
     if level != SOL_SOCKET {
         return Err(ENOPROTOOPT);
+    }
+    if option_name == SO_KEEPALIVE {
+        let size = core::mem::size_of::<i32>();
+        if option_length < size as u64 {
+            return Err(EINVAL);
+        }
+        paging::validate_user_range(option_value, size, false).map_err(|_| EFAULT)?;
+        let value = unsafe { (option_value as *const i32).read_unaligned() };
+        let socket = match tcp_socket_for_fd(fd) {
+            Ok(socket) => socket,
+            Err(errno) if errno == ENOTSOCK => return Err(ENOPROTOOPT),
+            Err(errno) => return Err(errno),
+        };
+        crate::network::set_tcp_keepalive(&socket, value != 0);
+        return Ok(0);
     }
     if option_length > 0 {
         if option_value == 0 {
@@ -6913,6 +7057,10 @@ fn syscall_getsockopt(
     let value = match option_name {
         SO_TYPE => socket_type,
         SO_ERROR => 0,
+        SO_KEEPALIVE => match tcp_socket_for_fd(fd) {
+            Ok(socket) => crate::network::tcp_keepalive_enabled(&socket) as i32,
+            Err(_) => return Err(ENOPROTOOPT),
+        },
         _ => return Err(ENOPROTOOPT),
     };
     let needed = core::mem::size_of::<i32>();
@@ -7673,10 +7821,18 @@ mod tests {
         UserDirent, WAIT_ANY_PID, apply_creation_mode, apply_load_bias, build_initial_stack,
         create_pipe, dispatch_syscall, errno_from_fs, install_pipe_descriptors, mapping_flags,
         mapping_size, next_runnable, paging, parse, resolve_user_path, stat_mode, user_dirent,
-        validate_mapping_range, wait_target_matches,
+        validate_mapping_range, wait_target_matches, futex_bitset_matches,
         FBIOGET_VSCREENINFO, FbFixScreeninfo, FbVarScreeninfo, SYSCALL_IOCTL, Winsize,
     };
     use crate::fs::{self, DirectoryEntry, FsError, Metadata};
+
+    #[test]
+    fn futex_wake_matches_only_intersecting_bitsets() {
+        assert!(futex_bitset_matches(u32::MAX, 0x1));
+        assert!(futex_bitset_matches(0x4, 0x6));
+        assert!(!futex_bitset_matches(0x1, 0x2));
+        assert!(!futex_bitset_matches(0, u32::MAX));
+    }
 
     #[test]
     fn creation_mode_is_advisory_when_filesystem_lacks_permissions() {

@@ -45,8 +45,7 @@ sendiri, sedangkan daftar mount bersifat global.
 /tmp         berkas sementara
 ```
 
-Karena root adalah RAMFS, semua isi hilang saat reboot kecuali volume persisten
-dipasang dan diisi ulang. Pengaturan identitas dan kata sandi di `/etc/shadow`
+Saat tidak ada instalasi disk, root fallback adalah RAMFS dan isinya hilang saat reboot. Pada instalasi hard disk, kernel memilih EXT2 sebagai `/` jika partisi memiliki marker `/etc/octagram-root`; file dan direktori sistem kemudian persisten. Lihat [panduan instalasi hard disk](install-to-disk.md). Pengaturan identitas dan kata sandi di `/etc/shadow`
 dijelaskan di [auth.md](auth.md); pengelolaan direktori `/apps` dijelaskan di
 [packages.md](packages.md).
 

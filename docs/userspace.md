@@ -10,7 +10,10 @@ libc OCTAGRAM (`user/runtime.c`) — bukan glibc.
   `RDI, RSI, RDX, R10, R8, R9` (stub di `user/include/octagram.h`).
 - Nilai balik negatif adalah `-errno`; libc mengubahnya menjadi `-1` + `errno`.
 - Nomor syscall, nilai balik, dan batas buffer: [syscall-abi.md](syscall-abi.md).
-- `errno` disimpan per thread lewat TLS statis (`-DOCTAGRAM_TLS_ERRNO`).
+- Pada executable statis, `errno` dan `h_errno` memakai TLS statis
+  (`-DOCTAGRAM_TLS_ERRNO`). Shared libc memakai accessor
+  `__errno_location()`/`__h_errno_location()` dengan slot per-TID; allocator
+  shared libc melindungi free-list dari akses bersamaan.
 
 ## Entry point dan exit
 

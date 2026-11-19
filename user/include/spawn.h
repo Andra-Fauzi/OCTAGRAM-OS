@@ -14,6 +14,8 @@
 #define POSIX_SPAWN_SETSCHEDULER 0x0080
 
 /* File actions are applied in the child after fork and before execve. */
+#include <stddef.h>
+
 #define OCTAGRAM_SPAWN_INITIAL_FILE_ACTION_CAPACITY 4
 #define OCTAGRAM_SPAWN_MAX_PATH 4096
 

@@ -1607,11 +1607,15 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
         stack_size = attributes->stack_size;
     }
 
-    uintptr_t tls_aligned_size = oct_tls_aligned_size();
-    if (tls_aligned_size > SIZE_MAX - stack_size - 4095) {
+    if (stack_size > SIZE_MAX - 4095) {
         return EINVAL;
     }
-    size_t mapping_size = stack_size + (size_t)tls_aligned_size;
+    size_t stack_mapping_size = (stack_size + 4095) & ~(size_t)4095;
+    uintptr_t tls_aligned_size = oct_tls_aligned_size();
+    if (tls_aligned_size > SIZE_MAX - stack_mapping_size - 4095) {
+        return EINVAL;
+    }
+    size_t mapping_size = stack_mapping_size + (size_t)tls_aligned_size;
     mapping_size = (mapping_size + 4095) & ~(size_t)4095;
     void *mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -1630,7 +1634,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
             munmap(mapping, mapping_size);
             return EINVAL;
         }
-        void *tls_base = (unsigned char *)mapping + OCT_PTHREAD_STACK_SIZE;
+        void *tls_base = (unsigned char *)mapping + stack_mapping_size;
         oct_tls_copy(tls_base, filesz, tls_size);
         thread_pointer = (unsigned char *)tls_base + tls_aligned_size;
         oct_tls_initialize_tcb(thread_pointer);
@@ -1645,7 +1649,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
     start->argument = argument;
     int64_t result = oct_thread_create(
         oct_pthread_start, start,
-        (unsigned char *)mapping + stack_size,
+        (unsigned char *)mapping + stack_mapping_size,
         thread_pointer, mapping, mapping_size);
     if (result < 0) {
         free(start);

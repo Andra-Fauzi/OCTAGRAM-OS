@@ -91,6 +91,31 @@ pub fn terminal_print(text: &str) {
     terminal_print_to(OUTPUT_TERMINAL.load(Ordering::Acquire), text);
 }
 
+/// Show formatter progress on one terminal row without flooding the log.
+pub fn terminal_show_progress(label: &str, written_bytes: u64, total_bytes: u64) {
+    let percent = if total_bytes == 0 {
+        100
+    } else {
+        written_bytes
+            .saturating_mul(100)
+            .checked_div(total_bytes)
+            .unwrap_or(100)
+            .min(100)
+    };
+    let bar_width = 20usize;
+    let filled = (percent as usize * bar_width) / 100;
+    let bar = alloc::format!(
+        "{}{}",
+        "#".repeat(filled),
+        ".".repeat(bar_width - filled)
+    );
+    let written_mib = written_bytes / (1024 * 1024);
+    let total_mib = total_bytes.div_ceil(1024 * 1024);
+    terminal_replace_current_line(&alloc::format!(
+        "{label} [{bar}] {written_mib}/{total_mib} MiB ({percent}%)"
+    ));
+}
+
 /// Replace the current output row in-place using ASCII text.
 /// The terminal cursor remains at column zero so a following newline advances
 /// to the row below the progress display.

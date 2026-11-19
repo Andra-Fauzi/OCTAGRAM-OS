@@ -189,10 +189,19 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     }
 
     crate::println!("Formatting EFI partition as FAT32...");
-    crate::terminal::terminal_show_task_progress("Format EFI FAT32", 0, 1);
-    Fat32::format(efi_device.as_ref())
-        .map_err(|error| format!("EFI FAT32 format failed: {error:?}"))?;
-    crate::terminal::terminal_show_task_progress("Format EFI FAT32", 1, 1);
+    let mut last_fat_report = None;
+    let fat_format_result = Fat32::format_with_progress(efi_device.as_ref(), |written, total| {
+        let interval = (total / 100).max(64 * 1024);
+        if last_fat_report.is_some_and(|last: u64| {
+            written.saturating_sub(last) < interval && written < total
+        }) {
+            return;
+        }
+        last_fat_report = Some(written);
+        crate::terminal::terminal_show_progress("Format EFI FAT32", written, total);
+    });
+    crate::println!("");
+    fat_format_result.map_err(|error| format!("EFI FAT32 format failed: {error:?}"))?;
     crate::println!("");
     crate::println!("Formatting root partition as EXT2...");
     let mut last_reported_bytes = None;

@@ -1436,23 +1436,7 @@ fn format_ext2_device(arguments: &str) {
         }
         last_reported_bytes = Some(written);
 
-        let percent = if total == 0 {
-            100
-        } else {
-            written.saturating_mul(100).checked_div(total).unwrap_or(100).min(100)
-        };
-        let bar_width = 20usize;
-        let filled = (percent as usize * bar_width) / 100;
-        let bar = alloc::format!(
-            "{}{}",
-            "#".repeat(filled),
-            ".".repeat(bar_width - filled)
-        );
-        let written_mib = written / (1024 * 1024);
-        let total_mib = total.div_ceil(1024 * 1024);
-        crate::terminal::terminal_replace_current_line(&alloc::format!(
-            "EXT2 [{bar}] {written_mib}/{total_mib} MiB ({percent}%)"
-        ));
+        crate::terminal::terminal_show_progress("EXT2", written, total);
     });
 
     // Move below the progress row before printing the result or any error.

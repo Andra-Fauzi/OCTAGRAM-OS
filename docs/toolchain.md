@@ -83,3 +83,26 @@ ter-link.
 - TinyCC di OS belum punya debugger, profiler, atau `make`.
 - Tidak ada package manager compiler; pembaruan TinyCC dilakukan dengan
   mengganti sumber di `user/third_party/tinycc`.
+
+## Native build utility (OCTAGRAM)
+
+The Rust `/bin/make` utility is a deliberately limited native build orchestrator.
+It supports explicit targets and prerequisites, simple variable assignments
+(`=`, `?=`, `+=`), recursive variable expansion, automatic variables `$@`, `$<`,
+`$^`, `-C`, `-f`, `-B`, `-n`/`--dry-run`, `-s`/`--silent`, and serial `-j1`.
+It currently rebuilds recipes on each invocation; timestamp-based incremental
+builds, include directives, pattern rules, parallel jobs, and shell operators
+are not implemented.
+
+Example inside OCTAGRAM:
+
+```sh
+cd /share/octagram
+make -n
+make -j1 -n
+make
+```
+
+The QEMU native-toolchain smoke test checks TinyCC compile/execute and the
+native make dry-run expansion. A passing host build alone does not prove these
+commands work in the guest; use the QEMU CI result as the runtime gate.

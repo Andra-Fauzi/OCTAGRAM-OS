@@ -137,10 +137,14 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
         gib_tenths % 10
     );
     crate::println!("Creating GPT, EFI System Partition and persistent root...");
+    crate::terminal::terminal_show_task_progress("Create GPT", 0, 1);
 
     let (efi_partition, root_partition) =
         partition::create_octagram_gpt(device.as_ref())
             .map_err(|error| format!("GPT partitioning failed: {error:?}"))?;
+    crate::terminal::terminal_show_task_progress("Create GPT", 1, 1);
+    crate::println!("");
+    crate::terminal::terminal_show_task_progress("Verify GPT", 0, 2);
     let written_partitions = partition::read_gpt_partitions(device.as_ref())
         .map_err(|error| format!("GPT read-back failed: {error:?}"))?;
     let efi_verified = written_partitions.iter().any(|part| {
@@ -155,6 +159,8 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
             && part.first_lba == root_partition.first_lba
             && part.last_lba == root_partition.last_lba
     });
+    crate::terminal::terminal_show_task_progress("Verify GPT", 2, 2);
+    crate::println!("");
     if !efi_verified || !root_verified {
         return Err(String::from("GPT verification did not find the expected ESP and root partitions"));
     }
@@ -183,8 +189,11 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     }
 
     crate::println!("Formatting EFI partition as FAT32...");
+    crate::terminal::terminal_show_task_progress("Format EFI FAT32", 0, 1);
     Fat32::format(efi_device.as_ref())
         .map_err(|error| format!("EFI FAT32 format failed: {error:?}"))?;
+    crate::terminal::terminal_show_task_progress("Format EFI FAT32", 1, 1);
+    crate::println!("");
     crate::println!("Formatting root partition as EXT2...");
     let mut last_reported_bytes = None;
     let root_format_result =
@@ -203,16 +212,25 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     crate::println!("");
     root_format_result.map_err(|error| format!("root EXT2 format failed: {error:?}"))?;
 
+    crate::println!("");
+    crate::terminal::terminal_show_task_progress("Mount filesystems", 0, 2);
     let mut efi = Fat32::mount(efi_device)
         .map_err(|error| format!("cannot mount formatted EFI partition: {error:?}"))?;
+    crate::terminal::terminal_show_task_progress("Mount filesystems", 1, 2);
     let mut root = Ext2::mount(root_device)
         .map_err(|error| format!("cannot mount formatted root partition: {error:?}"))?;
+    crate::terminal::terminal_show_task_progress("Mount filesystems", 2, 2);
+    crate::println!("");
 
-    for directory in ["/EFI", "/EFI/BOOT", "/boot", "/boot/limine"] {
+    let efi_directories = ["/EFI", "/EFI/BOOT", "/boot", "/boot/limine"];
+    for (index, directory) in efi_directories.iter().enumerate() {
+        crate::terminal::terminal_show_task_progress("Create EFI directories", index as u64, efi_directories.len() as u64);
         ensure_directory(&mut efi, directory)
             .map_err(|error| format!("creating EFI directory {directory}: {error:?}"))?;
     }
-    for directory in [
+    crate::terminal::terminal_show_task_progress("Create EFI directories", efi_directories.len() as u64, efi_directories.len() as u64);
+    crate::println!("");
+    let root_directories = [
         "/etc",
         "/home",
         "/home/octagram",
@@ -236,10 +254,14 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
         "/usr/local",
         "/usr/local/bin",
         "/mnt",
-    ] {
+    ];
+    for (index, directory) in root_directories.iter().enumerate() {
+        crate::terminal::terminal_show_task_progress("Create root directories", index as u64, root_directories.len() as u64);
         ensure_directory(&mut root, directory)
             .map_err(|error| format!("creating root directory {directory}: {error:?}"))?;
     }
+    crate::terminal::terminal_show_task_progress("Create root directories", root_directories.len() as u64, root_directories.len() as u64);
+    crate::println!("");
 
     crate::println!("Copying kernel ({} bytes)...", kernel.len());
     let kernel_copy_result =
@@ -256,12 +278,15 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     );
     crate::println!("");
     loader_copy_result.map_err(|error| format!("copying UEFI loader failed: {error:?}"))?;
+    crate::terminal::terminal_show_task_progress("Write boot config", 0, 1);
     write_file(
         &mut efi,
         "/boot/limine/limine.conf",
         include_bytes!("../../limine.conf"),
     )
     .map_err(|error| format!("writing limine.conf failed: {error:?}"))?;
+    crate::terminal::terminal_show_task_progress("Write boot config", 1, 1);
+    crate::println!("");
 
     write_file(
         &mut root,

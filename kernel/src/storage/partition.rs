@@ -361,7 +361,10 @@ fn align_lba(value: u64, alignment: u64) -> u64 {
 }
 
 fn unique_seed(sectors: u64) -> u64 {
+    #[cfg(target_arch = "x86_64")]
     let clock = unsafe { core::arch::x86_64::_rdtsc() };
+    #[cfg(not(target_arch = "x86_64"))]
+    let clock = 0x4F4354414752414Du64;
     clock ^ sectors.rotate_left(17) ^ 0x4F4354414752414D
 }
 

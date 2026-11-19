@@ -288,60 +288,54 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     crate::terminal::terminal_show_task_progress("Write boot config", 1, 1);
     crate::println!("");
 
-    write_file(
-        &mut root,
-        "/etc/octagram-root",
-        b"OCTAGRAM-OS persistent root v1\nfilesystem=ext2\n",
-    )
-    .map_err(|error| format!("writing root marker failed: {error:?}"))?;
-    write_file(
-        &mut root,
-        "/etc/os-release",
-        b"OCTAGRAM_OS_NAME=\"OCTAGRAM-OS\"\nOCTAGRAM_OS_ID=octagram\nOCTAGRAM_OS_VERSION=1.0\n",
-    )
-    .map_err(|error| format!("writing os-release failed: {error:?}"))?;
-    write_file(
-        &mut root,
-        "/etc/passwd",
-        b"octagram:x:0:0:OCTAGRAM User:/home/octagram:/bin/sh\n",
-    )
-    .map_err(|error| format!("writing passwd failed: {error:?}"))?;
-    write_file(
-        &mut root,
-        "/home/octagram/.profile",
-        b"export PATH=/bin:/usr/bin:/usr/local/bin\n",
-    )
-    .map_err(|error| format!("writing user profile failed: {error:?}"))?;
-    write_file(
-        &mut root,
-        "/apps/apps.txt",
-        b"# OCTAGRAM native application registry\n",
-    )
-    .map_err(|error| format!("writing app registry failed: {error:?}"))?;
-    write_file(
-        &mut root,
-        "/var/lib/octagram/packages/registry.txt",
-        b"",
-    )
-    .map_err(|error| format!("writing package registry failed: {error:?}"))?;
+    let root_files: [(&str, &[u8], &str); 6] = [
+        ("/etc/octagram-root", b"OCTAGRAM-OS persistent root v1\nfilesystem=ext2\n", "root marker"),
+        ("/etc/os-release", b"OCTAGRAM_OS_NAME=\"OCTAGRAM-OS\"\nOCTAGRAM_OS_ID=octagram\nOCTAGRAM_OS_VERSION=1.0\n", "os-release"),
+        ("/etc/passwd", b"octagram:x:0:0:OCTAGRAM User:/home/octagram:/bin/sh\n", "passwd"),
+        ("/home/octagram/.profile", b"export PATH=/bin:/usr/bin:/usr/local/bin\n", "user profile"),
+        ("/apps/apps.txt", b"# OCTAGRAM native application registry\n", "app registry"),
+        ("/var/lib/octagram/packages/registry.txt", b"", "package registry"),
+    ];
+    for (index, (path, contents, description)) in root_files.iter().enumerate() {
+        crate::terminal::terminal_show_task_progress("Write root files", index as u64, root_files.len() as u64);
+        write_file(&mut root, path, contents)
+            .map_err(|error| format!("writing {description} failed: {error:?}"))?;
+    }
+    crate::terminal::terminal_show_task_progress("Write root files", root_files.len() as u64, root_files.len() as u64);
+    crate::println!("");
 
     crate::println!("Verifying installed filesystems...");
-    for path in ["/boot/kernel", "/EFI/BOOT/BOOTX64.EFI", "/boot/limine/limine.conf"] {
+    let efi_paths = ["/boot/kernel", "/EFI/BOOT/BOOTX64.EFI", "/boot/limine/limine.conf"];
+    for (index, path) in efi_paths.iter().enumerate() {
+        crate::terminal::terminal_show_task_progress("Verify EFI files", index as u64, efi_paths.len() as u64);
         if efi.metadata(path).is_err() {
             return Err(format!("EFI verification failed for {path}"));
         }
     }
-    for path in ["/etc/octagram-root", "/etc/os-release", "/home/octagram/.profile"] {
+    crate::terminal::terminal_show_task_progress("Verify EFI files", efi_paths.len() as u64, efi_paths.len() as u64);
+    crate::println!("");
+    let root_paths = ["/etc/octagram-root", "/etc/os-release", "/home/octagram/.profile"];
+    for (index, path) in root_paths.iter().enumerate() {
+        crate::terminal::terminal_show_task_progress("Verify root files", index as u64, root_paths.len() as u64);
         if root.metadata(path).is_err() {
             return Err(format!("root filesystem verification failed for {path}"));
         }
     }
-    verify_prefix(&efi, "/boot/kernel", b"\x7FELF")
-        .map_err(|error| format!("kernel read-back verification failed: {error:?}"))?;
-    verify_prefix(&efi, "/EFI/BOOT/BOOTX64.EFI", b"MZ")
-        .map_err(|error| format!("UEFI loader read-back verification failed: {error:?}"))?;
-    verify_prefix(&root, "/etc/octagram-root", b"OCTAGRAM-OS persistent root v1")
-        .map_err(|error| format!("root marker read-back verification failed: {error:?}"))?;
+    crate::terminal::terminal_show_task_progress("Verify root files", root_paths.len() as u64, root_paths.len() as u64);
+    crate::println!("");
+    let read_back_checks: [(&str, &[u8], &str); 3] = [
+        ("/boot/kernel", b"\x7FELF", "kernel"),
+        ("/EFI/BOOT/BOOTX64.EFI", b"MZ", "UEFI loader"),
+        ("/etc/octagram-root", b"OCTAGRAM-OS persistent root v1", "root marker"),
+    ];
+    for (index, (path, expected, description)) in read_back_checks.iter().enumerate() {
+        crate::terminal::terminal_show_task_progress("Read-back checks", index as u64, read_back_checks.len() as u64);
+        let filesystem: &dyn FileSystem = if *path == "/etc/octagram-root" { &root } else { &efi };
+        verify_prefix(filesystem, path, expected)
+            .map_err(|error| format!("{description} read-back verification failed: {error:?}"))?;
+    }
+    crate::terminal::terminal_show_task_progress("Read-back checks", read_back_checks.len() as u64, read_back_checks.len() as u64);
+    crate::println!("");
 
     crate::println!("EFI: 512 MiB FAT32 at LBA {}", efi_partition.first_lba);
     crate::println!(

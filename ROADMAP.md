@@ -37,6 +37,9 @@ services, and a package/application ecosystem.
 
 ## Priority 2: POSIX runtime
 
+- [x] Shared-libc `errno`/`h_errno` per-thread accessors keyed by PID/TID
+- [x] Synchronize shared-libc allocator free-list for concurrent threads
+- [x] Add `shared_errno_demo` regression program (QEMU runtime verification pending)
 - [x] Basic file and directory operations
 - [x] Process fork, execve, waitpid, pipes, and threads
 - [x] Signals, poll, select, epoll, sockets, eventfd, and timerfd

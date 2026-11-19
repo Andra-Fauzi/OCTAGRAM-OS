@@ -2,20 +2,40 @@
 
 ## Build kernel
 
-Gunakan Rust nightly sesuai `kernel/rust-toolchain.toml`:
+Gunakan Rust nightly sesuai `kernel/rust-toolchain.toml`. Pada Debian/
+Ubuntu/WSL, siapkan tool build:
 
 ```sh
-cargo +nightly fmt --manifest-path kernel/Cargo.toml --check
-make -C user/rust make
-cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
-make -C kernel KARCH=x86_64
+sudo apt update
+sudo apt install -y build-essential binutils nasm lld xorriso mtools gdisk qemu-system-x86 python3 curl git
+rustup toolchain install nightly --component rustfmt --target x86_64-unknown-none
 ```
 
-Program Rust user (`user/rust`) ditautkan dengan `ld.lld`; sediakan lewat paket
-`lld` atau symlink ke `ld.lld` bawaan toolchain Rust. `make -C kernel` membuat binary kernel; target root repository membuat ISO
-Limine dengan `make all` dan menjalankannya melalui QEMU dengan `make run`.
-Image memerlukan dependency yang dicantumkan di README utama, termasuk
-`xorriso` untuk ISO dan `qemu-system-x86_64` untuk menjalankan QEMU.
+Program Rust userspace (`user/rust`) ditautkan dengan `ld.lld`; paket `lld`
+menyediakan linker tersebut. Periksa dengan `command -v ld.lld` bila build
+mengeluh linker tidak ditemukan.
+
+**Urutan build dari clean checkout penting.** Kernel menyisipkan sejumlah
+binary userspace melalui `include_bytes!` di `kernel/src/fs/mod.rs`. Karena
+itu buat binary yang di-embed sebelum menjalankan `cargo test`:
+
+```sh
+make -C user/rust make
+make -C user
+make -C user dynamic
+cargo +nightly fmt --manifest-path kernel/Cargo.toml --check
+cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
+make -C kernel KARCH=x86_64
+make all
+```
+
+`make -C kernel` membuat binary kernel; target root `make all` membuat ISO
+Limine `OCTAGRAM-x86_64.iso`. `make run` membangun image lalu menjalankannya
+melalui QEMU. Build ISO memerlukan `xorriso`; QEMU memerlukan
+`qemu-system-x86_64`. HDD image juga memerlukan `gdisk` dan `mtools`.
+
+Untuk penjelasan setiap target, artefak yang dihasilkan, dan urutan dependensi,
+lihat [Panduan Pengembangan](development-guide.md).
 Log kernel juga dikirim ke COM1; tampilkan di host saat boot QEMU dengan
 `make run-bios QEMUFLAGS="-m 2G -serial stdio"`.
 

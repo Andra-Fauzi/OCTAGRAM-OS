@@ -270,6 +270,12 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
             return Err(format!("root filesystem verification failed for {path}"));
         }
     }
+    verify_prefix(&efi, "/boot/kernel", b"\\x7FELF")
+        .map_err(|error| format!("kernel read-back verification failed: {error:?}"))?;
+    verify_prefix(&efi, "/EFI/BOOT/BOOTX64.EFI", b"MZ")
+        .map_err(|error| format!("UEFI loader read-back verification failed: {error:?}"))?;
+    verify_prefix(&root, "/etc/octagram-root", b"OCTAGRAM-OS persistent root v1")
+        .map_err(|error| format!("root marker read-back verification failed: {error:?}"))?;
 
     crate::println!("EFI: 512 MiB FAT32 at LBA {}", efi_partition.first_lba);
     crate::println!(
@@ -288,6 +294,19 @@ fn ensure_directory(filesystem: &mut dyn FileSystem, path: &str) -> Result<(), F
         Err(FsError::NotFound) => filesystem.create_dir(path),
         Err(error) => Err(error),
     }
+}
+
+fn verify_prefix(
+    filesystem: &dyn FileSystem,
+    path: &str,
+    expected: &[u8],
+) -> Result<(), FsError> {
+    let mut actual = alloc::vec![0u8; expected.len()];
+    let count = filesystem.read(path, 0, &mut actual)?;
+    if count != expected.len() || actual != expected {
+        return Err(FsError::InvalidData);
+    }
+    Ok(())
 }
 
 fn write_file(

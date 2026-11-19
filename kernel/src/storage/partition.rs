@@ -405,7 +405,75 @@ fn crc32(data: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{crc32, make_header, GPT_HEADER_SIZE};
+    use super::{
+        create_octagram_gpt, crc32, make_header, read_gpt_partitions, GptPartition,
+        PartitionDevice, EFI_SYSTEM_PARTITION_GUID, GPT_HEADER_SIZE, LINUX_FILESYSTEM_GUID,
+    };
+    use crate::storage::block::{BlockDevice, BlockDeviceRef, BlockError, SECTOR_SIZE};
+    use alloc::collections::BTreeMap;
+    use alloc::string::String;
+    use alloc::sync::Arc;
+    use spin::Mutex;
+
+    struct SparseDisk {
+        sectors: u64,
+        data: Mutex<BTreeMap<u64, [u8; SECTOR_SIZE]>>,
+    }
+
+    impl SparseDisk {
+        fn new(sectors: u64) -> Self {
+            Self {
+                sectors,
+                data: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+
+    impl BlockDevice for SparseDisk {
+        fn name(&self) -> &str {
+            "sparse-test-disk"
+        }
+
+        fn sector_count(&self) -> u64 {
+            self.sectors
+        }
+
+        fn read_sectors(&self, lba: u64, buffer: &mut [u8]) -> Result<(), BlockError> {
+            if !buffer.len().is_multiple_of(SECTOR_SIZE) {
+                return Err(BlockError::InvalidBuffer);
+            }
+            let count = (buffer.len() / SECTOR_SIZE) as u64;
+            if lba.checked_add(count).is_none_or(|end| end > self.sectors) {
+                return Err(BlockError::OutOfRange);
+            }
+            let data = self.data.lock();
+            for (index, output) in buffer.chunks_exact_mut(SECTOR_SIZE).enumerate() {
+                if let Some(sector) = data.get(&(lba + index as u64)) {
+                    output.copy_from_slice(sector);
+                } else {
+                    output.fill(0);
+                }
+            }
+            Ok(())
+        }
+
+        fn write_sectors(&self, lba: u64, buffer: &[u8]) -> Result<(), BlockError> {
+            if !buffer.len().is_multiple_of(SECTOR_SIZE) {
+                return Err(BlockError::InvalidBuffer);
+            }
+            let count = (buffer.len() / SECTOR_SIZE) as u64;
+            if lba.checked_add(count).is_none_or(|end| end > self.sectors) {
+                return Err(BlockError::OutOfRange);
+            }
+            let mut data = self.data.lock();
+            for (index, input) in buffer.chunks_exact(SECTOR_SIZE).enumerate() {
+                let mut sector = [0; SECTOR_SIZE];
+                sector.copy_from_slice(input);
+                data.insert(lba + index as u64, sector);
+            }
+            Ok(())
+        }
+    }
 
     #[test]
     fn crc32_matches_standard_vector() {
@@ -416,7 +484,60 @@ mod tests {
     fn gpt_header_has_expected_signature_and_size() {
         let header = make_header(1, 99, 34, 90, 123, 2, &[1; 16]);
         assert_eq!(&header[..8], b"EFI PART");
-        assert_eq!(u32::from_le_bytes(header[12..16].try_into().unwrap()) as usize, GPT_HEADER_SIZE);
+        assert_eq!(
+            u32::from_le_bytes(header[12..16].try_into().unwrap()) as usize,
+            GPT_HEADER_SIZE
+        );
         assert_eq!(u32::from_le_bytes(header[16..20].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn installer_gpt_round_trips_and_partition_views_are_bounded() {
+        const DISK_SECTORS: u64 = 16 * 1024 * 1024 * 1024 / SECTOR_SIZE as u64;
+        let disk: BlockDeviceRef = Arc::new(SparseDisk::new(DISK_SECTORS));
+        let (efi, root) = create_octagram_gpt(disk.as_ref()).unwrap();
+
+        assert_eq!(efi.type_guid, EFI_SYSTEM_PARTITION_GUID);
+        assert_eq!(root.type_guid, LINUX_FILESYSTEM_GUID);
+        assert_eq!(efi.sector_count(), 512 * 1024 * 1024 / SECTOR_SIZE as u64);
+        assert_eq!(efi.index, 1);
+        assert_eq!(root.index, 2);
+
+        let partitions = read_gpt_partitions(disk.as_ref()).unwrap();
+        assert_eq!(
+            partitions,
+            alloc::vec![
+                GptPartition {
+                    index: 1,
+                    ..efi
+                },
+                GptPartition {
+                    index: 2,
+                    ..root
+                }
+            ]
+        );
+
+        let root_view = PartitionDevice::new(
+            disk,
+            String::from("root-test"),
+            root.first_lba,
+            root.sector_count(),
+        )
+        .unwrap();
+        let mut sector = [0xA5; SECTOR_SIZE];
+        root_view.read_sectors(0, &mut sector).unwrap();
+        assert!(sector.iter().all(|byte| *byte == 0));
+        assert_eq!(
+            root_view.read_sectors(root.sector_count(), &mut sector),
+            Err(BlockError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn installer_rejects_disks_smaller_than_sixteen_gib_before_writing() {
+        let disk = SparseDisk::new(1024 * 1024);
+        assert_eq!(create_octagram_gpt(&disk), Err(BlockError::Unsupported));
+        assert!(disk.data.lock().is_empty());
     }
 }

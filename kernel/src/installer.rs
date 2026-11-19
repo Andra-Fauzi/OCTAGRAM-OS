@@ -390,12 +390,20 @@ fn is_boot_source_device(device: &dyn BlockDevice) -> bool {
     if let Some(source_guid) = file.gpt_disk_id() {
         let mut header = [0u8; 512];
         if device.read_sectors(1, &mut header).is_ok() && &header[..8] == b"EFI PART" {
-            let mut guid = [0u8; 16];
-            guid[..4].copy_from_slice(&source_guid.a.to_le_bytes());
-            guid[4..6].copy_from_slice(&source_guid.b.to_le_bytes());
-            guid[6..8].copy_from_slice(&source_guid.c.to_le_bytes());
-            guid[8..16].copy_from_slice(&source_guid.d);
-            if &header[56..72] == &guid[..] {
+            let mut guid_le = [0u8; 16];
+            guid_le[..4].copy_from_slice(&source_guid.a.to_le_bytes());
+            guid_le[4..6].copy_from_slice(&source_guid.b.to_le_bytes());
+            guid_le[6..8].copy_from_slice(&source_guid.c.to_le_bytes());
+            guid_le[8..16].copy_from_slice(&source_guid.d);
+            let mut guid_be = [0u8; 16];
+            guid_be[..4].copy_from_slice(&source_guid.a.to_be_bytes());
+            guid_be[4..6].copy_from_slice(&source_guid.b.to_be_bytes());
+            guid_be[6..8].copy_from_slice(&source_guid.c.to_be_bytes());
+            guid_be[8..16].copy_from_slice(&source_guid.d);
+            // Be defensive about the GUID field byte order used by firmware /
+            // bootloader implementations; either representation protects the
+            // source disk from being selected as the installation target.
+            if &header[56..72] == &guid_le[..] || &header[56..72] == &guid_be[..] {
                 return true;
             }
         }

@@ -143,3 +143,11 @@ POSIX destructor iteration.
 The `posix_spawn_demo` also appends twelve file actions to one action object,
 exercising dynamic growth beyond the former fixed eight-action limit, and
 checks the 4095-byte `addopen` path bound.
+
+
+## Thread stack attributes
+
+`thread_demo.elf` initializes a `pthread_attr_t`, configures a 96 KiB
+stack, reads the value back, and creates both workers with that attribute.
+Run `run /bin/thread_demo.elf`; expected output is
+`preemptive threads and TLS passed`.

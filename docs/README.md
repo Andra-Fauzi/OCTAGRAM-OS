@@ -15,6 +15,7 @@ kompatibilitas Linux/POSIX; batasan yang belum didukung dicatat eksplisit di
 | Bagian | Berkas | Isi |
 | --- | --- | --- |
 | Arsitektur | [architecture.md](architecture.md) | Peta modul, alur boot ringkas, batas isolasi, model task dan proses |
+| Panduan pengembangan | [development-guide.md](development-guide.md) | Peta file kernel/userspace, boot, build dependency order, debugging dan workflow kontribusi |
 | Boot dan inisialisasi | [boot.md](boot.md) | Limine, urutan `kmain`, APIC, timer, idle loop |
 | Memori | [memory.md](memory.md) | Frame allocator, heap, paging, pemetaan user, ASLR |
 | Proses, thread, sinyal | [process.md](process.md) | Executor kernel, scheduler user, `fork`/`execve`, sinyal, futex |
@@ -41,7 +42,9 @@ kompatibilitas Linux/POSIX; batasan yang belum didukung dicatat eksplisit di
 
 | Berkas | Isi |
 | --- | --- |
-| [writing-drivers.md](writing-drivers.md) | Pola menulis driver baru: PCI, interrupt, DMA, block device |
+| [writing-drivers.md](writing-drivers.md) | Kontrak umum driver: PCI, interrupt, DMA, block device |
+| [pci-driver-tutorial.md](pci-driver-tutorial.md) | Tutorial membuat driver PCI: BDF, device model, BAR/MMIO, DMA, interrupt, pengujian |
+| [usb-driver-tutorial.md](usb-driver-tutorial.md) | Tutorial host controller dan class driver USB: descriptor, endpoint, HID, Mass Storage, hotplug |
 | [CARA-BIKIN-DRIVER.md](CARA-BIKIN-DRIVER.md) | Alur kerja driver dari nol |
 | [CARA-BIKIN-DRIVER-DRIVER-PENTING.md](CARA-BIKIN-DRIVER-DRIVER-PENTING.md) | Driver yang paling penting untuk dibangun lebih dulu |
 | [CARA-BIKIN-DRIVER-USB.md](CARA-BIKIN-DRIVER-USB.md) | Driver USB umum |

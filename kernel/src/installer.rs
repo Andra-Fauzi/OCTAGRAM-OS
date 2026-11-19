@@ -186,8 +186,22 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     Fat32::format(efi_device.as_ref())
         .map_err(|error| format!("EFI FAT32 format failed: {error:?}"))?;
     crate::println!("Formatting root partition as EXT2...");
-    Ext2::format(root_device.as_ref())
-        .map_err(|error| format!("root EXT2 format failed: {error:?}"))?;
+    let mut last_reported_bytes = None;
+    let root_format_result =
+        Ext2::format_with_progress(root_device.as_ref(), |written, total| {
+            // Limit terminal redraws to roughly 100 updates on large volumes.
+            let report_interval = (total / 100).max(1024 * 1024);
+            if let Some(last_reported) = last_reported_bytes
+                && written.saturating_sub(last_reported) < report_interval
+                && written < total
+            {
+                return;
+            }
+            last_reported_bytes = Some(written);
+            crate::terminal::terminal_show_progress("EXT2 root", written, total);
+        });
+    crate::println!("");
+    root_format_result.map_err(|error| format!("root EXT2 format failed: {error:?}"))?;
 
     let mut efi = Fat32::mount(efi_device)
         .map_err(|error| format!("cannot mount formatted EFI partition: {error:?}"))?;

@@ -64,6 +64,292 @@ pub struct Ext2 {
 }
 
 impl Ext2 {
+    /// Format a fresh EXT2 filesystem using 4 KiB blocks, sparse superblocks,
+    /// 128-byte inodes and the file-type directory feature. Journaling and
+    /// extents are deliberately disabled to match this kernel's EXT2 reader.
+    pub fn format(device: &dyn BlockDevice) -> Result<(), FsError> {
+        const BLOCK_SIZE: usize = 4096;
+        const SECTORS_PER_BLOCK: u64 = (BLOCK_SIZE / SECTOR_SIZE) as u64;
+        const BLOCKS_PER_GROUP: u32 = 32_768;
+        const INODES_PER_GROUP: u32 = 8_192;
+        const INODE_SIZE: usize = EXT2_GOOD_OLD_INODE_SIZE;
+        const INODE_TABLE_BLOCKS: u32 =
+            (INODES_PER_GROUP * INODE_SIZE as u32).div_ceil(BLOCK_SIZE as u32);
+        const MIN_BLOCKS: u64 = 1024;
+
+        let available_blocks = device.sector_count() / SECTORS_PER_BLOCK;
+        if available_blocks < MIN_BLOCKS {
+            return Err(FsError::Unsupported);
+        }
+        let available_blocks = available_blocks.min(u32::MAX as u64);
+        let full_groups = available_blocks / BLOCKS_PER_GROUP as u64;
+        let remainder = available_blocks % BLOCKS_PER_GROUP as u64;
+
+        let mut group_count = full_groups.max(1);
+        let candidate_groups = group_count.saturating_add(u64::from(remainder != 0));
+        let candidate_gdt_blocks = (candidate_groups * EXT2_GROUP_DESC_SIZE as u64)
+            .div_ceil(BLOCK_SIZE as u64);
+        let candidate_group_index = full_groups.min(u32::MAX as u64) as u32;
+        let candidate_prefix = if format_has_backup_superblock(candidate_group_index) {
+            1 + candidate_gdt_blocks
+        } else {
+            0
+        };
+        let candidate_metadata = candidate_prefix + 2 + INODE_TABLE_BLOCKS as u64;
+        let include_partial_group = remainder > 0 && remainder > candidate_metadata;
+        if include_partial_group {
+            group_count = candidate_groups;
+        }
+
+        let blocks_count_u64 = if full_groups == 0 {
+            available_blocks
+        } else if include_partial_group {
+            full_groups * BLOCKS_PER_GROUP as u64 + remainder
+        } else {
+            full_groups * BLOCKS_PER_GROUP as u64
+        };
+        if group_count == 0
+            || group_count > MAX_GROUPS as u64
+            || blocks_count_u64 > u32::MAX as u64
+        {
+            return Err(FsError::Unsupported);
+        }
+        let blocks_count = blocks_count_u64 as u32;
+        let groups_count = group_count as u32;
+        let gdt_bytes = group_count
+            .checked_mul(EXT2_GROUP_DESC_SIZE as u64)
+            .ok_or(FsError::Unsupported)?;
+        let gdt_blocks = gdt_bytes.div_ceil(BLOCK_SIZE as u64) as u32;
+        let inode_count = groups_count
+            .checked_mul(INODES_PER_GROUP)
+            .ok_or(FsError::Unsupported)?;
+
+        let mut group_descriptors = vec![0u8; gdt_blocks as usize * BLOCK_SIZE];
+        let mut free_blocks_total = 0u32;
+        let mut free_inodes_total = 0u32;
+        let mut root_data_block = None;
+        let mut root_inode_table = None;
+
+        for group in 0..groups_count {
+            let group_start = group
+                .checked_mul(BLOCKS_PER_GROUP)
+                .ok_or(FsError::Unsupported)?;
+            let valid_blocks = blocks_count
+                .saturating_sub(group_start)
+                .min(BLOCKS_PER_GROUP);
+            let has_backup = format_has_backup_superblock(group);
+            let prefix = if has_backup { 1 + gdt_blocks } else { 0 };
+            let block_bitmap = group_start + prefix;
+            let inode_bitmap = block_bitmap + 1;
+            let inode_table = inode_bitmap + 1;
+            let metadata_end = inode_table
+                .checked_add(INODE_TABLE_BLOCKS)
+                .ok_or(FsError::Unsupported)?;
+            let reserved_blocks = metadata_end - group_start;
+            let root_block = if group == 0 { Some(metadata_end) } else { None };
+            let blocks_used = reserved_blocks + u32::from(root_block.is_some());
+            if blocks_used >= valid_blocks {
+                return Err(FsError::Unsupported);
+            }
+
+            let free_blocks = (valid_blocks - blocks_used) as u16;
+            let used_inodes = if group == 0 { 10u16 } else { 0u16 };
+            let free_inodes = (INODES_PER_GROUP as u16)
+                .checked_sub(used_inodes)
+                .ok_or(FsError::InvalidData)?;
+            free_blocks_total = free_blocks_total
+                .checked_add(free_blocks as u32)
+                .ok_or(FsError::Unsupported)?;
+            free_inodes_total = free_inodes_total
+                .checked_add(free_inodes as u32)
+                .ok_or(FsError::Unsupported)?;
+
+            let descriptor_offset = group as usize * EXT2_GROUP_DESC_SIZE;
+            write_u32(&mut group_descriptors, descriptor_offset, block_bitmap)?;
+            write_u32(&mut group_descriptors, descriptor_offset + 4, inode_bitmap)?;
+            write_u32(&mut group_descriptors, descriptor_offset + 8, inode_table)?;
+            write_u16(&mut group_descriptors, descriptor_offset + 12, free_blocks)?;
+            write_u16(&mut group_descriptors, descriptor_offset + 14, free_inodes)?;
+            write_u16(
+                &mut group_descriptors,
+                descriptor_offset + 16,
+                u16::from(group == 0),
+            )?;
+
+            let mut block_map = vec![0u8; BLOCK_SIZE];
+            for bit in 0..reserved_blocks as usize {
+                block_map[bit / 8] |= 1 << (bit % 8);
+            }
+            if let Some(root_block) = root_block {
+                let bit = (root_block - group_start) as usize;
+                block_map[bit / 8] |= 1 << (bit % 8);
+                root_data_block = Some(root_block);
+                root_inode_table = Some(inode_table);
+            }
+            for bit in valid_blocks as usize..BLOCKS_PER_GROUP as usize {
+                block_map[bit / 8] |= 1 << (bit % 8);
+            }
+            write_format_block(
+                device,
+                blocks_count,
+                BLOCK_SIZE,
+                block_bitmap,
+                &block_map,
+            )?;
+
+            let mut inode_map = vec![0u8; BLOCK_SIZE];
+            if group == 0 {
+                // Inodes 1..=10 are reserved by the EXT2 format; inode 2 is /.
+                for bit in 0..10usize {
+                    inode_map[bit / 8] |= 1 << (bit % 8);
+                }
+            }
+            write_format_block(
+                device,
+                blocks_count,
+                BLOCK_SIZE,
+                inode_bitmap,
+                &inode_map,
+            )?;
+
+            // Initialize the inode table so unused inode records cannot expose
+            // stale data from a disk that previously held another filesystem.
+            write_format_zero_blocks(
+                device,
+                blocks_count,
+                BLOCK_SIZE,
+                inode_table,
+                INODE_TABLE_BLOCKS,
+            )?;
+        }
+
+        let root_data_block = root_data_block.ok_or(FsError::InvalidData)?;
+        let root_inode_table = root_inode_table.ok_or(FsError::InvalidData)?;
+
+        let mut superblock = [0u8; EXT2_SUPERBLOCK_SIZE];
+        write_u32(&mut superblock, 0, inode_count)?;
+        write_u32(&mut superblock, 4, blocks_count)?;
+        write_u32(&mut superblock, 8, blocks_count / 20)?;
+        write_u32(&mut superblock, 12, free_blocks_total)?;
+        write_u32(&mut superblock, 16, free_inodes_total)?;
+        write_u32(&mut superblock, 20, 0)?; // first_data_block for 4 KiB blocks
+        write_u32(&mut superblock, 24, 2)?; // log2(4096 / 1024)
+        write_u32(&mut superblock, 28, 2)?;
+        write_u32(&mut superblock, 32, BLOCKS_PER_GROUP)?;
+        write_u32(&mut superblock, 36, BLOCKS_PER_GROUP)?;
+        write_u32(&mut superblock, 40, INODES_PER_GROUP)?;
+        write_u16(&mut superblock, 52, 0)?;
+        write_u16(&mut superblock, 54, u16::MAX)?;
+        write_u16(&mut superblock, 56, EXT2_MAGIC)?;
+        write_u16(&mut superblock, 58, 1)?; // clean filesystem state
+        write_u16(&mut superblock, 60, 1)?; // continue on errors
+        write_u32(&mut superblock, 76, 1)?; // dynamic revision
+        write_u32(&mut superblock, 84, 11)?;
+        write_u16(&mut superblock, 88, INODE_SIZE as u16)?;
+        write_u16(&mut superblock, 90, 0)?;
+        write_u32(&mut superblock, 92, 0)?; // no compatible optional features
+        write_u32(&mut superblock, 96, EXT2_FILETYPE_FEATURE)?;
+        write_u32(&mut superblock, 100, 0x0001)?; // sparse_super only
+        superblock[104..120].copy_from_slice(b"OCTAGRAM-EXT2-01");
+        superblock[120..132].copy_from_slice(b"OCTAGRAM ROOT");
+
+        // Write the primary and sparse backup superblocks. For 4 KiB EXT2,
+        // the superblock occupies bytes 1024..2048 of the group's first block.
+        for group in 0..groups_count {
+            if !format_has_backup_superblock(group) {
+                continue;
+            }
+            let group_start = group
+                .checked_mul(BLOCKS_PER_GROUP)
+                .ok_or(FsError::Unsupported)?;
+            let mut block = vec![0u8; BLOCK_SIZE];
+            let mut backup = superblock;
+            write_u16(&mut backup, 90, group as u16)?;
+            block[EXT2_SUPERBLOCK_OFFSET as usize
+                ..EXT2_SUPERBLOCK_OFFSET as usize + EXT2_SUPERBLOCK_SIZE]
+                .copy_from_slice(&backup);
+            write_format_block(
+                device,
+                blocks_count,
+                BLOCK_SIZE,
+                group_start,
+                &block,
+            )?;
+        }
+
+        // Write primary and backup group descriptor tables.
+        for group in 0..groups_count {
+            if !format_has_backup_superblock(group) {
+                continue;
+            }
+            let group_start = group
+                .checked_mul(BLOCKS_PER_GROUP)
+                .ok_or(FsError::Unsupported)?;
+            for index in 0..gdt_blocks {
+                let offset = index as usize * BLOCK_SIZE;
+                let block_data = &group_descriptors[offset..offset + BLOCK_SIZE];
+                write_format_block(
+                    device,
+                    blocks_count,
+                    BLOCK_SIZE,
+                    group_start + 1 + index,
+                    block_data,
+                )?;
+            }
+        }
+
+        // Create inode 2 (/) with a single directory block containing . and ...
+        let mut root_inode = Inode::new(INODE_SIZE);
+        root_inode.set_mode(0x4000 | 0o755);
+        root_inode.set_links(2);
+        root_inode.set_size(BLOCK_SIZE as u64, 0)?;
+        root_inode.set_block_pointer(0, root_data_block)?;
+        root_inode.set_sector_count(SECTORS_PER_BLOCK as u32);
+        let inode_index = (EXT2_ROOT_INODE - 1) as usize;
+        let byte_offset = inode_index * INODE_SIZE;
+        let inode_block = root_inode_table + (byte_offset / BLOCK_SIZE) as u32;
+        let inode_offset = byte_offset % BLOCK_SIZE;
+        let mut inode_table_block = vec![0u8; BLOCK_SIZE];
+        inode_table_block[inode_offset..inode_offset + INODE_SIZE]
+            .copy_from_slice(&root_inode.bytes);
+        write_format_block(
+            device,
+            blocks_count,
+            BLOCK_SIZE,
+            inode_block,
+            &inode_table_block,
+        )?;
+
+        let mut root_directory = vec![0u8; BLOCK_SIZE];
+        write_directory_record(
+            &mut root_directory,
+            0,
+            12,
+            EXT2_ROOT_INODE,
+            ".",
+            EXT2_FT_DIR,
+            true,
+        )?;
+        write_directory_record(
+            &mut root_directory,
+            12,
+            BLOCK_SIZE - 12,
+            EXT2_ROOT_INODE,
+            "..",
+            EXT2_FT_DIR,
+            true,
+        )?;
+        write_format_block(
+            device,
+            blocks_count,
+            BLOCK_SIZE,
+            root_data_block,
+            &root_directory,
+        )?;
+
+        Ok(())
+    }
+
     pub fn mount(device: BlockDeviceRef) -> Result<Self, FsError> {
         let (partition_start, partition_sectors, raw_superblock) =
             locate_superblock(device.as_ref())?;
@@ -1517,6 +1803,71 @@ fn read_superblock(
     } else {
         Ok(None)
     }
+}
+
+
+fn format_has_backup_superblock(group: u32) -> bool {
+    group == 0 || group == 1 || [3, 5, 7].iter().any(|base| is_power_of(group, *base))
+}
+
+fn write_format_block(
+    device: &dyn BlockDevice,
+    blocks_count: u32,
+    block_size: usize,
+    block: u32,
+    data: &[u8],
+) -> Result<(), FsError> {
+    if data.len() != block_size || block >= blocks_count || !block_size.is_multiple_of(SECTOR_SIZE) {
+        return Err(FsError::InvalidData);
+    }
+    let sectors_per_block = (block_size / SECTOR_SIZE) as u64;
+    let lba = (block as u64)
+        .checked_mul(sectors_per_block)
+        .ok_or(FsError::IoError)?;
+    if lba
+        .checked_add(sectors_per_block)
+        .is_none_or(|end| end > device.sector_count())
+    {
+        return Err(FsError::IoError);
+    }
+    device
+        .write_sectors(lba, data)
+        .map_err(|_| FsError::IoError)
+}
+
+fn write_format_zero_blocks(
+    device: &dyn BlockDevice,
+    blocks_count: u32,
+    block_size: usize,
+    first_block: u32,
+    count: u32,
+) -> Result<(), FsError> {
+    const ZERO_BUFFER_SIZE: usize = 32 * 1024;
+    let blocks_per_chunk = (ZERO_BUFFER_SIZE / block_size).max(1);
+    let zeroes = vec![0u8; blocks_per_chunk * block_size];
+    let mut written = 0u32;
+    while written < count {
+        let chunk_blocks = (count - written).min(blocks_per_chunk as u32);
+        let block = first_block
+            .checked_add(written)
+            .ok_or(FsError::IoError)?;
+        if block
+            .checked_add(chunk_blocks)
+            .is_none_or(|end| end > blocks_count)
+        {
+            return Err(FsError::IoError);
+        }
+        let sectors_per_block = (block_size / SECTOR_SIZE) as u64;
+        let lba = (block as u64)
+            .checked_mul(sectors_per_block)
+            .ok_or(FsError::IoError)?;
+        let byte_len = chunk_blocks as usize * block_size;
+        device
+            .write_sectors(lba, &zeroes[..byte_len])
+            .map_err(|_| FsError::IoError)?;
+        written += chunk_blocks;
+    }
+    Ok(())
 }
 
 fn parse_superblock(bytes: &[u8; EXT2_SUPERBLOCK_SIZE]) -> Result<Superblock, FsError> {

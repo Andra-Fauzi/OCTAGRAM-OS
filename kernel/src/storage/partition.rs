@@ -1,7 +1,7 @@
 //! Minimal GPT partition-table support and bounded block-device slices.
 //!
-//! The installer uses GPT with a 512 MiB EFI System Partition and an EXT2/FAT32
-//! Linux filesystem partition. All I/O is bounded to the parent block device.
+//! The installer uses GPT with a 512 MiB FAT32 EFI System Partition and an
+//! EXT2 Linux root partition. All I/O is bounded to the parent block device.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -226,10 +226,10 @@ pub fn create_octagram_gpt(
     if root_first >= last_usable || last_usable - root_first < 1024 * 1024 {
         return Err(BlockError::Unsupported);
     }
-    // FAT32's BPB total-sector field is 32-bit. Keep the install root within
-    // that limit on very large disks; remaining capacity stays unallocated.
-    let fat32_max_last = root_first.saturating_add(u32::MAX as u64 - 1);
-    let root_last = last_usable.min(fat32_max_last);
+    // EXT2 uses 32-bit block numbers. The formatter uses 4 KiB blocks and
+    // refuses any filesystem whose block count exceeds the EXT2 limit.
+    let ext2_max_last = root_first.saturating_add(u32::MAX as u64 * 8 - 1);
+    let root_last = last_usable.min(ext2_max_last);
 
     let seed = unique_seed(total);
     let disk_guid = guid_from_seed(seed ^ 0x4F4354414752414D);

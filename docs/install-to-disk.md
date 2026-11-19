@@ -42,7 +42,8 @@ Shell menampilkan nama device, kapasitas, dan status perlindungan. Untuk saat
 ini hanya disk internal yang terdeteksi sebagai `sataN` (SATA/AHCI) yang dapat
 dipilih. Perangkat USB tidak ditawarkan sebagai target. Disk yang menjalankan
 root terpasang dan disk yang identitasnya cocok dengan sumber kernel Limine
-ditolak sebagai target.
+ditolak sebagai target. Jika firmware/bootloader tidak memberi identitas disk
+sumber, installer menolak operasi hapus demi mencegah flashdisk Live terhapus.
 
 ### 3. Instal ke disk internal
 

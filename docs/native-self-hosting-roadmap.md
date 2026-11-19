@@ -139,7 +139,7 @@ dan diproses beberapa executable native dengan exit status benar.
 Tujuan: mengubah TinyCC dari compiler yang sekadar ada di image menjadi
 toolchain native yang teruji.
 
-- [ ] Uji `tcc` dari shell: compile C -> ELF OCTAGRAM -> execute. (QEMU smoke test ditambahkan; menunggu hasil CI.)
+- [ ] Uji `tcc` dari shell: compile C -> ELF OCTAGRAM -> execute. (QEMU smoke test compile/run ditambahkan; menunggu hasil CI.)
 - [ ] Uji include header, libc statis, relocation, argv/envp, file I/O, dan
   error diagnostics.
 - [x] Tambahkan command wrapper `tcc` pada shell untuk menjalankan `/bin/tcc.elf`;
@@ -163,7 +163,8 @@ Tujuan: build system native yang cukup kuat untuk membangun proyek OS.
 - [ ] Tambahkan timestamp/metadata yang andal dan incremental rebuild.
 - [ ] Tambahkan recipe exit code, quoting, environment, cwd, dan log.
 - [ ] Tambahkan parallel build hanya setelah dependency graph dan locking aman.
-- [ ] Sediakan mode `-n`, `-B`, `-j1`, dan build log.
+- [x] Implementasikan mode `-n`/`--dry-run`, `-s`/`--silent`, dan `-j1` pada native `make`.
+- [ ] Tambahkan build log, dan validasi opsi tersebut di QEMU.
 - [ ] Buat build manifest agar hasil build dapat direproduksi.
 
 Gate: build proyek C multi-directory dan dependency graph bertingkat di

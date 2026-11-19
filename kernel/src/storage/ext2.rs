@@ -1446,39 +1446,52 @@ fn locate_superblock(
     device: &dyn BlockDevice,
 ) -> Result<(u64, u64, [u8; EXT2_SUPERBLOCK_SIZE]), FsError> {
     let total_sectors = device.sector_count();
-    if total_sectors < 4 {
-        return Err(FsError::InvalidData);
-    }
+    if total_sectors < 4 { return Err(FsError::InvalidData); }
     let mut mbr = [0; SECTOR_SIZE];
-    device
-        .read_sectors(0, &mut mbr)
-        .map_err(|_| FsError::IoError)?;
+    device.read_sectors(0, &mut mbr).map_err(|_| FsError::IoError)?;
+    if mbr[510..512] == [0x55, 0xAA] && mbr[450] == 0xEE {
+        if let Some(root) = locate_gpt_ext2(device, total_sectors)? { return Ok(root); }
+    }
     if mbr[510..512] == [0x55, 0xAA] {
         for index in 0..4 {
             let offset = 446 + index * 16;
-            if mbr[offset + 4] != 0x83 {
-                continue;
-            }
+            if mbr[offset + 4] != 0x83 { continue; }
             let start = read_u32(&mbr, offset + 8)? as u64;
             let sectors = read_u32(&mbr, offset + 12)? as u64;
-            if sectors == 0
-                || start
-                    .checked_add(sectors)
-                    .is_none_or(|end| end > total_sectors)
-            {
-                continue;
-            }
-            if let Some(superblock) = read_superblock(device, start, sectors)? {
-                return Ok((start, sectors, superblock));
-            }
+            if sectors == 0 || start.checked_add(sectors).is_none_or(|end| end > total_sectors) { continue; }
+            if let Some(superblock) = read_superblock(device, start, sectors)? { return Ok((start, sectors, superblock)); }
         }
     }
-    if let Some(superblock) = read_superblock(device, 0, total_sectors)? {
-        return Ok((0, total_sectors, superblock));
-    }
+    if let Some(superblock) = read_superblock(device, 0, total_sectors)? { return Ok((0, total_sectors, superblock)); }
     Err(FsError::InvalidData)
 }
 
+fn locate_gpt_ext2(device: &dyn BlockDevice, total_sectors: u64) -> Result<Option<(u64, u64, [u8; EXT2_SUPERBLOCK_SIZE])>, FsError> {
+    const LINUX_FS_GUID: [u8; 16] = [0xAF,0x3D,0xC6,0x0F,0x83,0x84,0x72,0x47,0x8E,0x79,0x3D,0x69,0xD8,0x47,0x7D,0xE4];
+    let mut header = [0; SECTOR_SIZE];
+    device.read_sectors(1, &mut header).map_err(|_| FsError::IoError)?;
+    if &header[..8] != b"EFI PART" { return Ok(None); }
+    let entries_lba = u64::from_le_bytes(header[72..80].try_into().unwrap());
+    let count = u32::from_le_bytes(header[80..84].try_into().unwrap()).min(4096);
+    let size = u32::from_le_bytes(header[84..88].try_into().unwrap());
+    if !(128..=512).contains(&size) || size % 8 != 0 { return Err(FsError::InvalidData); }
+    let bytes = (count as u64).checked_mul(size as u64).ok_or(FsError::InvalidData)?;
+    let sectors = bytes.div_ceil(SECTOR_SIZE as u64);
+    if bytes > 2 * 1024 * 1024 || entries_lba == 0 || entries_lba.checked_add(sectors).is_none_or(|end| end > total_sectors) { return Err(FsError::InvalidData); }
+    let mut entries = alloc::vec![0u8; sectors as usize * SECTOR_SIZE];
+    if !entries.is_empty() { device.read_sectors(entries_lba, &mut entries).map_err(|_| FsError::IoError)?; }
+    for index in 0..count as usize {
+        let off = index * size as usize;
+        let entry = &entries[off..off + size as usize];
+        if entry[..16] != LINUX_FS_GUID { continue; }
+        let start = u64::from_le_bytes(entry[32..40].try_into().unwrap());
+        let last = u64::from_le_bytes(entry[40..48].try_into().unwrap());
+        let Some(length) = last.checked_sub(start).and_then(|n| n.checked_add(1)) else { continue; };
+        if length == 0 || start.checked_add(length).is_none_or(|end| end > total_sectors) { continue; }
+        if let Some(superblock) = read_superblock(device, start, length)? { return Ok(Some((start, length, superblock))); }
+    }
+    Ok(None)
+}
 fn read_superblock(
     device: &dyn BlockDevice,
     partition_start: u64,

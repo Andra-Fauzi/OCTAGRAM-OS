@@ -136,5 +136,5 @@ pthread TSD isolation and destructors: PASS
 ```
 
 The test checks that two threads can store different values under the same
-key, that the main thread's value remains isolated, and that each thread's
-key destructor runs once when its start routine returns.
+key, that the main thread's value remains isolated, and that key destructors may repopulate a value and run again on a later
+POSIX destructor iteration.

@@ -79,7 +79,7 @@ impl Ext2 {
 
         let available_blocks = device.sector_count() / SECTORS_PER_BLOCK;
         if available_blocks < MIN_BLOCKS {
-            return Err(FsError::Unsupported);
+            return Err(FsError::NoSpace);
         }
         let available_blocks = available_blocks.min(u32::MAX as u64);
         let full_groups = available_blocks / BLOCKS_PER_GROUP as u64;
@@ -112,7 +112,7 @@ impl Ext2 {
             || group_count > MAX_GROUPS as u64
             || blocks_count_u64 > u32::MAX as u64
         {
-            return Err(FsError::Unsupported);
+            return Err(FsError::InvalidData);
         }
         let blocks_count = blocks_count_u64 as u32;
         let groups_count = group_count as u32;
@@ -149,7 +149,7 @@ impl Ext2 {
             let root_block = if group == 0 { Some(metadata_end) } else { None };
             let blocks_used = reserved_blocks + if root_block.is_some() { 1 } else { 0 };
             if blocks_used >= valid_blocks {
-                return Err(FsError::Unsupported);
+                return Err(FsError::Busy);
             }
 
             let free_blocks = (valid_blocks - blocks_used) as u16;

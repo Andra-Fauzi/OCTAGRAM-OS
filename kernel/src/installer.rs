@@ -355,7 +355,22 @@ fn write_file(
     path: &str,
     bytes: &[u8],
 ) -> Result<(), FsError> {
-    write_file_with_progress(filesystem, path, bytes, "")
+    match filesystem.metadata(path) {
+        Ok(_) => filesystem.remove(path)?,
+        Err(FsError::NotFound) => {}
+        Err(error) => return Err(error),
+    }
+    filesystem.create_file(path)?;
+    let mut offset = 0usize;
+    for chunk in bytes.chunks(COPY_CHUNK_SIZE) {
+        let written = filesystem.write(path, offset, chunk)?;
+        if written != chunk.len() {
+            let _ = filesystem.remove(path);
+            return Err(FsError::NoSpace);
+        }
+        offset += written;
+    }
+    Ok(())
 }
 
 fn write_file_with_progress(

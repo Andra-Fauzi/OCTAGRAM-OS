@@ -80,8 +80,11 @@ run /bin/thread-demo
 ```
 
 `<pthread.h>` menyediakan subset `pthread` dengan scheduler preemptive.
-Thread berbagi address space; atribut thread hanya mendukung default dan
-`pthread_mutex` memakai spin lock.
+Thread berbagi address space; thread joinable dapat memakai ukuran stack custom
+melalui `pthread_attr_setstacksize()`/`pthread_attr_getstacksize()`. Detached
+thread belum didukung (`pthread_detach()` dan `PTHREAD_CREATE_DETACHED`
+mengembalikan `ENOTSUP`). Sinkronisasi mutex/condition variable/semaphore
+menggunakan futex userspace-kernel; mutex robust dapat melaporkan `EOWNERDEAD`.
 
 ## Program Rust `no_std`
 

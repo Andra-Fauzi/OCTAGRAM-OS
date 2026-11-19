@@ -20,7 +20,7 @@ services, and a package/application ecosystem.
 - [x] Restrict fork/exec address-space inheritance
   - [x] `execve` membangun address space baru; hanya cwd, terminal, pid, umask, grup/sesi, dan descriptor non-`CLOEXEC` yang diwarisi
   - [x] `fork` tidak mewarisi kunci memori: `mlockall` dimatikan dan `MappingPage.locked` hasil klon di-reset (uji host `fork_does_not_inherit_memory_locks`)
-  - [ ] Pembatasan terpisah untuk pewarisan `MAP_SHARED` dan mapping device lintas `fork` (masih disalin/dibagi seperti biasa)
+  - [x] Pembatasan terpisah untuk pewarisan `MAP_SHARED` dan mapping device lintas `fork` (mapping device dan `shared_backing` disalin frame fisiknya tanpa alokasi ganda; uji host `fork_shared_pages_filter_includes_shared_backings_and_device_mappings`)
 - [x] Add process capability and policy metadata
   - [x] Kredensial `uid`/`euid`/`gid`/`egid` per pid, diwarisi `fork`/thread, dibagi semua thread satu pid
   - [x] `getuid` family membaca kredensial nyata; syscall `setuid`/`seteuid`/`setgid`/`setegid` (140–143) dengan aturan root vs non-root (`credential_change_allowed`)
@@ -28,7 +28,7 @@ services, and a package/application ecosystem.
   - [x] Header `sys/capability.h`, contoh `credential_demo`, uji host `credentials_and_capabilities_follow_uid_rules`
   - [x] Penegakan `CAP_VFS_WRITE` untuk `open` bertulis, `write` file, `mkdir`, `unlink`, `rmdir`, `unlinkat`, `rename`, `symlink`, `chmod`, dan `ftruncate`
   - [x] Penegakan `CAP_NETWORK` pada `socket()` AF_INET dan `CAP_SCHED_NICE` pada prioritas task lain; uji host `capability_checks_require_the_requested_bit`
-  - [ ] Penegakan untuk mount/device, akses console, dan descriptor yang sudah terbuka sebelum uid diturunkan
+  - [x] Penegakan untuk mount/device, akses console, dan descriptor yang sudah terbuka sebelum uid diturunkan (`device_access_allowed`, pembatasan `/dev/fb0`, isolasi tty konsol antar terminal, penolakan tulis descriptor lama bila kredensial diturunkan; uji host `device_and_console_access_respects_credentials_and_capabilities`, demo `credential_demo`)
 - [x] Test kernel faults, invalid mappings, and cross-process memory access
   - [x] Batas validasi alamat: panjang 0, di bawah `USER_ADDRESS_MIN`, melewati `USER_ADDRESS_MAX`, dan overflow (`user_range_validation_rejects_overflow_and_non_user_addresses`)
   - [x] `PT_LOAD` invalid: di luar user space, W+X, align tidak wajar, `filesz > memsz`, dan file terpotong (`rejects_load_segments_outside_the_user_address_space`, `rejects_malformed_load_segments`)
@@ -43,10 +43,12 @@ services, and a package/application ecosystem.
 - [x] pread/pwrite/readv/writev and resource APIs
 - [x] Implement `realpath`
 - [x] Implement `execvp`
-- [ ] Implement complete `posix_spawn` file actions and attributes
+- [x] Implement complete `posix_spawn` file actions and attributes
   - [x] File actions `addclose`, `adddup2`, and `addopen` (8 actions, 127-byte paths)
+  - [x] File actions `addchdir` dan `addchdir_np` (mengubah direktori kerja anak sebelum `execve`)
   - [x] Attributes `POSIX_SPAWN_SETPGROUP`, `SETSIGDEF`, and `SETSIGMASK`
-  - [x] `posix_spawn_demo` covers file/pipe redirection, process group, mask/default signal attributes, and failures
+  - [x] Attribute `POSIX_SPAWN_SETSID` (membuat sesi baru di anak lewat `setsid`, ditolak bersamaan dengan `SETPGROUP`)
+  - [x] `posix_spawn_demo` covers file/pipe redirection, process group, session, chdir, mask/default signal attributes, scheduling, resetids, and failures
   - [x] `POSIX_SPAWN_RESETIDS` (`setgid`/`setuid` ke id nyata di anak)
   - [x] Atribut scheduling (`POSIX_SPAWN_SETSCHEDPARAM`/`SETSCHEDULER`)
     - [x] Syscall `sched_setscheduler`/`sched_getscheduler`/`sched_setparam`/`sched_getparam` (136–139) dan header `sched.h` + `sched_yield`

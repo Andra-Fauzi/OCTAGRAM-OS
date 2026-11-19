@@ -9,6 +9,7 @@
 #define POSIX_SPAWN_SETPGROUP 0x0002
 #define POSIX_SPAWN_SETSIGDEF 0x0004
 #define POSIX_SPAWN_SETSIGMASK 0x0008
+#define POSIX_SPAWN_SETSID 0x0010
 /* Didukung untuk SCHED_OTHER (prioritas 0); SCHED_FIFO/SCHED_RR -> EPERM. */
 #define POSIX_SPAWN_SETSCHEDPARAM 0x0040
 #define POSIX_SPAWN_SETSCHEDULER 0x0080
@@ -21,6 +22,7 @@ enum octagram_spawn_action_kind {
     OCTAGRAM_SPAWN_ACTION_CLOSE = 1,
     OCTAGRAM_SPAWN_ACTION_DUP2 = 2,
     OCTAGRAM_SPAWN_ACTION_OPEN = 3,
+    OCTAGRAM_SPAWN_ACTION_CHDIR = 4,
 };
 
 struct octagram_spawn_file_action {
@@ -58,6 +60,10 @@ int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t *actions,
 int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *actions,
                                      int fd, const char *path, int flags,
                                      mode_t mode);
+int posix_spawn_file_actions_addchdir(posix_spawn_file_actions_t *actions,
+                                      const char *path);
+int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *actions,
+                                         const char *path);
 int posix_spawnattr_init(posix_spawnattr_t *attributes);
 int posix_spawnattr_destroy(posix_spawnattr_t *attributes);
 int posix_spawnattr_setflags(posix_spawnattr_t *attributes, short flags);

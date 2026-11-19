@@ -125,7 +125,14 @@ tidak pernah terbangun oleh timeout yang sudah basi.
 
 - `fork` menyalin halaman user secara eager (tanpa copy-on-write). Kunci memori
   tidak diwarisi: `mlockall` (`lock_future_mappings`) dimatikan dan setiap
-  `MappingPage.locked` hasil klon di-reset sesuai POSIX.
+  `MappingPage.locked` hasil klon di-reset sesuai POSIX. Halaman `MAP_SHARED`
+  dan pemetaan perangkat (`is_device`) dibagikan ke page table anak tanpa
+  alokasi frame fisik baru, sehingga frame perangkat tidak bocor.
+- `posix_spawn` mendukung file actions `addopen`, `addclose`, `adddup2`, dan
+  `addchdir`/`addchdir_np`, serta atribut `POSIX_SPAWN_RESETIDS`,
+  `POSIX_SPAWN_SETPGROUP`, `POSIX_SPAWN_SETSID` (membuat sesi baru di anak),
+  `POSIX_SPAWN_SETSIGDEF`, `POSIX_SPAWN_SETSIGMASK`, `POSIX_SPAWN_SETSCHEDPARAM`,
+  dan `POSIX_SPAWN_SETSCHEDULER`.
 - `execve`/`execvp` memakai address space yang benar-benar baru (hanya cwd,
   terminal, pid, umask, grup/sesi, dan descriptor non-`CLOEXEC` yang diwarisi);
   stack baru diberi entropi, signal handler di-reset sesuai aturan `exec`.
@@ -163,13 +170,17 @@ Kemampuan yang didefinisikan: `CAP_VFS_WRITE`, `CAP_NETWORK`, `CAP_SYS_ADMIN`,
 `CAP_SCHED_NICE`. `capget` (144) membaca bitmask, `capset` (145) menulisnya dan
 membutuhkan `CAP_SYS_ADMIN`; bit di luar `CAP_ALL` ditolak `EINVAL`.
 
-Penegakan baru sebagian: `CAP_VFS_WRITE` diperlukan untuk `open` dengan niat tulis
+Penegakan kapabilitas: `CAP_VFS_WRITE` diperlukan untuk `open` dengan niat tulis
 (`O_WRONLY`/`O_RDWR`/`O_CREAT`/`O_TRUNC`/`O_APPEND`), `write` ke file biasa,
 `mkdir`, `unlink`, `rmdir`, `unlinkat`, `rename`, `symlink`, `chmod`, dan
 `ftruncate`; `CAP_NETWORK` diperlukan untuk `socket()` AF_INET; `CAP_SCHED_NICE`
-untuk menaikkan prioritas task lain. Pelanggaran mengembalikan `EPERM`. Yang belum
-diperiksa: mount/device, akses console, dan descriptor yang sudah terbuka sebelum
-uid diturunkan. Header userspace-nya `sys/capability.h`, contoh `credential_demo`.
+untuk menaikkan prioritas task lain atau memakai penjadwalan real-time;
+`CAP_SYS_ADMIN` diperlukan untuk mengakses perangkat raw (`/dev/fb0`), memodifikasi
+framebuffer via `ioctl`/`mmap`, atau membuka konsol virtual milik terminal lain
+(`/dev/tty0..3`). Descriptor yang dibuka sebelum uid diturunkan diperiksa ulang saat
+penulisan, sehingga pencabutan kapabilitas tetap efektif. Pelanggaran mengembalikan `EPERM`.
+Header userspace-nya `sys/capability.h`, contoh `credential_demo`.
+Dokumentasi lengkap model kredensial, kapabilitas, dan basis data autentikasi ada di [auth.md](auth.md).
 
 ## Sinkronisasi dan futex
 

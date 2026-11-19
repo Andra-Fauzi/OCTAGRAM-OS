@@ -25,11 +25,13 @@ aktif dan dapat dipindah dengan Ctrl+Alt+F1..F4.
 **Sistem**
 `date`, `shutdown`, `reboot`, `sched`, `devices`, `lsdev`, `drivers`, `savelog`.
 `shutdown` meminta S5 lewat PM1 control; `reboot` memakai register reset FADT
-(`RESET_REG`/`RESET_VALUE`) dengan fallback pulsa 8042 lalu triple fault.
+(`RESET_REG`/`RESET_VALUE`) dengan fallback pulsa 8042 lalu triple fault (detail di [acpi-power.md](acpi-power.md)).
+
+`savelog <path>` mengambil snapshot buffer log kernel in-memory dan menyimpannya ke berkas VFS (detail di [logging.md](logging.md)).
 
 `sched` menampilkan PID/TID, nice, policy, umur tunggu (`AGE`), dan status tiap
 task terjadwal. Penanda `WATCHDOG` muncul bila umur tunggu proses runnable
-melewati ambang anti-starvasi (78 putaran aging).
+melewati ambang anti-starvasi (78 putaran aging atau wait >= 500 ms).
 
 **Jaringan**
 `net` (`net status`, `net dhcp`, `net wifi ...`), `ping`, `dns`, `http`/`curl`.
@@ -39,7 +41,7 @@ melewati ambang anti-starvasi (78 putaran aging).
 
 **Paket dan sesi**
 `apps`, `pkg add|update|remove|list|info|verify`, `login`, `whoami`, `session`,
-`passwd [user]`.
+`passwd [user]`. Detail autentikasi dan basis data `/etc/shadow` ada di [auth.md](auth.md); manajemen paket dan direktori `/apps` ada di [packages.md](packages.md).
 
 `passwd` meminta kata sandi baru dua kali tanpa menampilkan karakter, lalu
 menulis `/etc/shadow` dalam bentuk `user:salt:sha256(salt+password)` (SHA-256 di
@@ -76,8 +78,8 @@ harus statis atau memakai `ld-octagram.so` yang tersedia; lihat
 
 `pkg` membaca metadata paket dari `/var/lib/octagram/packages/*.pkg` dan registry
 `registry.txt`, lalu menyalin/menghapus berkas aplikasi. `apps` membaca direktori
-`/apps` untuk daftar aplikasi yang terpasang. Format dan batasannya dijelaskan
-di [filesystem.md](filesystem.md) dan [limitations.md](limitations.md).
+`/apps` untuk daftar aplikasi yang terpasang. Format paket, perintah `pkg`, dan
+batasannya dijelaskan lengkap di [packages.md](packages.md).
 
 ## Menambah perintah
 

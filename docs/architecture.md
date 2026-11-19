@@ -77,7 +77,11 @@ terminal control job, window system, atau filesystem terisolasi per proses.
 - `storage/fat32.rs` dan `storage/ext2.rs`: parsing serta operasi baca/tulis FAT32
   dan ext2.
 - `drivers/`: driver PCI, AHCI, keyboard, USB, serial COM1 untuk log kernel,
-  RTC CMOS untuk perintah `date`, dan ACPI untuk shutdown.
+  RTC CMOS untuk perintah `date`, dan ACPI (`drivers/acpi/`) untuk manajemen daya
+  (S5 shutdown, reboot FADT, dan evaluasi power resources).
+- `klog.rs`: buffer ganda log kernel in-memory untuk bring-up driver dan `savelog`.
+- `auth.rs` serta `sha256.rs`: basis data `/etc/shadow`, algoritma hash SHA-256 bergaram,
+  dan autentikasi pengguna.
 - `drivers/qca9377.rs`: deteksi PCI Qualcomm, wake/sleep MMIO terbatas untuk
   membaca register target. Probe laptop menunjukkan RTC ON (`0x73`), tetapi
   chip-ID sebelumnya dibaca dari offset yang keliru dan revisi belum
@@ -94,10 +98,13 @@ terminal control job, window system, atau filesystem terisolasi per proses.
 - [Boot dan inisialisasi](boot.md) — urutan `kmain` dan idle loop.
 - [Memori](memory.md) — frame allocator, paging, ASLR.
 - [Proses, thread, dan sinyal](process.md) — scheduler dan futex.
+- [Autentikasi dan keamanan](auth.md) — kredensial, kapabilitas, `/etc/shadow`.
 - [Filesystem dan VFS](filesystem.md) — RAMFS, devfs, mount.
 - [Jaringan](networking.md) — link layer sampai DNS/HTTP.
-- [Driver](drivers.md) dan [grafis/terminal](graphics-terminal.md).
-- [Shell](shell.md), [program user](userspace.md), [dynamic linker](dynamic-linker.md),
+- [Driver](drivers.md), [ACPI & manajemen daya](acpi-power.md), dan [grafis/terminal](graphics-terminal.md).
+- [Kernel logging & diagnostik](logging.md) — buffer log dan `savelog`.
+- [Shell](shell.md), [paket dan aplikasi](packages.md), [program user](userspace.md),
+  [userspace Rust](rust-userspace.md), [dynamic linker](dynamic-linker.md),
   [toolchain](toolchain.md), [pengujian](testing.md), [batasan](limitations.md).
 
 Sebelum mengubah subsystem, baca implementasi modul dan tesnya; jangan

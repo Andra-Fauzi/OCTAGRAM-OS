@@ -89,7 +89,7 @@ async fn execute(
     }
 
     match command {
-        "help" => print_help(),
+        "help" => print_help(arguments),
         "clear" => crate::terminal::terminal_clear(),
         "pwd" => crate::println!("{current_dir}"),
         "path" => print_program_path(program_path),
@@ -132,7 +132,6 @@ async fn execute(
         "whoami" => crate::println!("{current_user}"),
         "session" => crate::println!("session user={current_user} tty=tty{terminal}"),
         "sched" => show_scheduler_status(),
-        "passwd" => crate::println!("passwd: password authentication is not implemented"),
         "mkfs.fat" => format_fat32_device(arguments),
         "as" => run_toolchain_command("as", current_dir, arguments),
         "ld" => run_toolchain_command("ld", current_dir, arguments),
@@ -198,61 +197,87 @@ fn show_scheduler_status() {
     }
 }
 
-fn print_help() {
-    crate::println!("Commands:");
-    crate::println!("  help                   show this help");
-    crate::println!("  clear                  clear the screen");
-    crate::println!("  savelog <path>         save the kernel log to a file (e.g. /mnt/LOG.TXT)");
-    crate::println!("  pwd                    show the current directory");
-    crate::println!("  path                   show executable search directories");
-    crate::println!("  export NAME=value     set an environment variable");
-    crate::println!("  cd [path]              change directory (default: /)");
-    crate::println!("  ls [path]              list a directory");
-    crate::println!("  cat <path>             print a UTF-8 file");
-    crate::println!("  head [-n count] <file> print the first lines of a text file");
-    crate::println!("  tail [-n count] <file> print the last lines of a text file");
-    crate::println!("  wc <file>              count lines, words, and bytes");
-    crate::println!("  grep [-n] <text> <file> search literal text in a file");
-    crate::println!("  touch <path>           create an empty file");
-    crate::println!("  mkdir <path>           create a directory");
-    crate::println!("  ln -s <target> <link>  create a symbolic link");
-    crate::println!("  rm <path>              remove an empty file or directory");
-    crate::println!("  chmod <mode> <path>    set RAMFS permissions (e.g. +x, 755)");
-    crate::println!("  stat <path>            show file metadata");
-    crate::println!("  cp <source> <target>   copy a file");
-    crate::println!("  edit <path>            edit a UTF-8 file");
-    crate::println!("  date                   show date and time from the RTC");
-    crate::println!("  shutdown               power off using ACPI");
-    crate::println!("  reboot                 reset using the ACPI reset register");
-    crate::println!("  sched                  show scheduler priorities, aging, and watchdog flags");
-    crate::println!("  devices                list detected storage devices");
-    crate::println!("  lsdev                  list bus devices and bound drivers");
-    crate::println!("  drivers                list registered kernel drivers");
-    crate::println!("  net status|dhcp        inspect interface or request an IPv4 lease");
-    crate::println!("  net tcp <host> <port> <text> send TCP payload and print response");
-    crate::println!("  net udp <IP> <port> <text> send one UDP datagram");
-    crate::println!("  dns <hostname>         resolve domain name to IPv4");
-    crate::println!("  http <url>             make HTTP GET request (curl also works)");
-    crate::println!("  ping <IPv4 | host>     send an ICMP echo request");
-    crate::println!("  mount <device> <path> [fat32|ext2]  mount a filesystem read-write");
-    crate::println!("  umount <path>          unmount a filesystem");
-    crate::println!("  df                     list mounted filesystem roots");
-    crate::println!("  persist <mount>        prepare /home/octagram on a mounted filesystem");
-    crate::println!("  apps                   list native apps under /apps");
-    crate::println!("  pkg list|info|add|update|remove|verify  manage native packages");
-    crate::println!("  login [octagram|root]  start a local shell session");
-    crate::println!("  passwd [user]          set a password in /etc/shadow");
-    crate::println!("  whoami                 show current session user");
-    crate::println!("  session                show current session");
-    crate::println!("  mkfs.fat <device> --yes  format a FAT32 superfloppy (erases data)");
-    crate::println!("  as <input.s> -o <out.o> assemble supported x86_64 source");
-    crate::println!("  ld <input.o> -o <out.elf> link a native toolchain object");
-    crate::println!("  cc <input.c> -o <out.elf> compile the kernel C subset");
-    crate::println!("  tcc <input.c> [-o <out.elf>] compile C with TinyCC");
-    crate::println!("  echo <text>            print text");
-    crate::println!("  run <path>             run a static x86_64 ELF");
-    crate::println!("  runp <elf> <elf>...    run multiple ELFs with timer preemption");
-    crate::println!("  <program>              run a program found in PATH");
+const HELP_ENTRIES: &[&str] = &[
+    "help [page]            show shell help (e.g. help 1, help 2)",
+    "clear                  clear the screen",
+    "savelog <path>         save the kernel log to a file (e.g. /mnt/LOG.TXT)",
+    "pwd                    show the current directory",
+    "path                   show executable search directories",
+    "export NAME=value      set an environment variable",
+    "cd [path]              change directory (default: /)",
+    "ls [path]              list a directory",
+    "cat <path>             print a UTF-8 file",
+    "head [-n count] <file> print the first lines of a text file",
+    "tail [-n count] <file> print the last lines of a text file",
+    "wc <file>              count lines, words, and bytes",
+    "grep [-n] <text> <file> search literal text in a file",
+    "touch <path>           create an empty file",
+    "mkdir <path>           create a directory",
+    "ln -s <target> <link>  create a symbolic link",
+    "rm <path>              remove an empty file or directory",
+    "chmod <mode> <path>    set RAMFS permissions (e.g. +x, 755)",
+    "stat <path>            show file metadata",
+    "cp <source> <target>   copy a file",
+    "edit <path>            edit a UTF-8 file",
+    "date                   show date and time from the RTC",
+    "shutdown               power off using ACPI",
+    "reboot                 reset using the ACPI reset register",
+    "sched                  show scheduler priorities, aging, and watchdog flags",
+    "devices                list detected storage devices",
+    "lsdev                  list bus devices and bound drivers",
+    "drivers                list registered kernel drivers",
+    "net status|dhcp        inspect interface or request an IPv4 lease",
+    "net tcp <host> <port> <text> send TCP payload and print response",
+    "net udp <IP> <port> <text> send one UDP datagram",
+    "dns <hostname>         resolve domain name to IPv4",
+    "http <url>             make HTTP GET request (curl also works)",
+    "ping <IPv4 | host>     send an ICMP echo request",
+    "mount <device> <path> [fat32|ext2]  mount a filesystem read-write",
+    "umount <path>          unmount a filesystem",
+    "df                     list mounted filesystem roots",
+    "persist <mount>        prepare /home/octagram on a mounted filesystem",
+    "apps                   list native apps under /apps",
+    "pkg list|info|add|update|remove|verify  manage native packages",
+    "login [octagram|root]  start a local shell session",
+    "passwd [user]          set a password in /etc/shadow",
+    "whoami                 show current session user",
+    "session                show current session",
+    "mkfs.fat <device> --yes  format a FAT32 superfloppy (erases data)",
+    "as <input.s> -o <out.o> assemble supported x86_64 source",
+    "ld <input.o> -o <out.elf> link a native toolchain object",
+    "cc <input.c> -o <out.elf> compile the kernel C subset",
+    "tcc <input.c> [-o <out.elf>] compile C with TinyCC",
+    "echo <text>            print text",
+    "run <path>             run a static x86_64 ELF",
+    "runp <elf> <elf>...    run multiple ELFs with timer preemption",
+    "<program>              run a program found in PATH",
+];
+
+const HELP_PAGE_SIZE: usize = 12;
+
+fn print_help(arguments: &str) {
+    let total_pages = (HELP_ENTRIES.len() + HELP_PAGE_SIZE - 1) / HELP_PAGE_SIZE;
+    let page = if arguments.is_empty() {
+        1
+    } else {
+        match arguments.parse::<usize>() {
+            Ok(p) if p >= 1 && p <= total_pages => p,
+            _ => {
+                crate::println!("help: invalid page (available: 1..{total_pages})");
+                return;
+            }
+        }
+    };
+
+    crate::println!("Commands (page {page}/{total_pages}):");
+    let start = (page - 1) * HELP_PAGE_SIZE;
+    let end = (start + HELP_PAGE_SIZE).min(HELP_ENTRIES.len());
+    for &entry in &HELP_ENTRIES[start..end] {
+        crate::println!("  {entry}");
+    }
+    if page < total_pages {
+        crate::println!("Use 'help {}' to see next page.", page + 1);
+    }
 }
 
 fn show_date() {

@@ -74,6 +74,10 @@ Selain itu dibangun `dynamic_demo`, `copy_reloc_demo`, `versioned_demo`,
 `dlopen_demo`, `aslr_demo`, `ld-octagram.so`, `liboctagram.so`,
 `libdyn_demo.so`, serta `tcc.elf` dan `libc.a` untuk TinyCC.
 
+Pengembangan aplikasi userspace dengan bahasa Rust (tanpa pustaka C) didukung
+melalui workspace `user/rust/` dengan crate `octagram-runtime`; panduan lengkap
+ada di [rust-userspace.md](rust-userspace.md).
+
 ## Menjalankan di OS
 
 Salin ELF ke image atau filesystem yang bisa diakses OS, lalu dari shell:

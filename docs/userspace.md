@@ -42,7 +42,8 @@ syscall `int $0x80` langsung.
 - socket (`socket`, `bind`, `connect`, `sendmsg`/`recvmsg`, `poll`, `select`,
   `epoll`), resolver (`getaddrinfo`, `gethostbyname`, A/AAAA/PTR);
 - `pthread` (mutex termasuk mutex robust dengan `EOWNERDEAD`, condvar,
-  semaphore) di atas futex;
+  semaphore) di atas futex; thread-specific data memakai slot per-thread
+  dengan destructor hingga `PTHREAD_DESTRUCTOR_ITERATIONS` putaran;
 - dynamic loading (`dlopen`, `dlsym`, `dlclose`, `dlerror`);
 - locale/multibyte UTF-8, termios, `time`, `setjmp`, `stdatomic`.
 

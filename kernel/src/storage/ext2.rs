@@ -2221,7 +2221,7 @@ mod tests {
         assert_eq!(filesystem.metadata("/").unwrap().node_type, NodeType::Directory);
         filesystem.create_dir("/etc").unwrap();
         filesystem.create_file("/etc/octagram-root").unwrap();
-        let marker = b"OCTAGRAM-OS persistent root v1\\nfilesystem=ext2\\n";
+        let marker = b"OCTAGRAM-OS persistent root v1\nfilesystem=ext2\n";
         assert_eq!(filesystem.write("/etc/octagram-root", 0, marker).unwrap(), marker.len());
         drop(filesystem);
 

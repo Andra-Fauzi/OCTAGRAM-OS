@@ -4,7 +4,7 @@ This repository will demonstrate how to set up a basic kernel in Rust using Limi
 
 ## Instalasi ke hard disk
 
-Untuk memasang dari dalam Live OCTAGRAM-OS, boot flashdisk lalu jalankan `installer` di shell. Lihat [panduan instalasi hard disk](docs/install-to-disk.md). Target internal saat ini SATA/AHCI dengan UEFI; installer menghapus seluruh isi disk setelah konfirmasi eksplisit.
+Untuk memasang dari dalam Live OCTAGRAM-OS, boot flashdisk lalu jalankan `installer` di shell. Lihat [panduan instalasi hard disk](docs/install-to-disk.md). Layout internal saat ini UEFI + GPT, EFI FAT32, dan root EXT2 pada SATA/AHCI; installer menghapus seluruh isi disk setelah konfirmasi eksplisit.
 
 ## Kernel layout
 
@@ -19,7 +19,8 @@ have a clear place:
   services.
 - `kernel/src/fs/` contains the VFS, and `kernel/src/storage/` contains block
   devices, GPT partition handling, and on-disk filesystems. An installed system
-  selects a marked FAT32/EXT2 disk root at boot; RAMFS remains the rescue fallback.
+  selects a marked EXT2 disk root at boot (legacy FAT32 roots are still detected);
+  RAMFS remains the rescue fallback.
 
 Keep hardware-specific instructions in `arch/`, and build reusable device
 logic in `drivers/`. When adding a subsystem, expose its module through the

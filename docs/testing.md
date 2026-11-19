@@ -12,8 +12,8 @@ cargo +nightly test --manifest-path kernel/Cargo.toml \
 ```
 
 Kernel dikompilasi dengan `cfg(test)` sehingga bagian yang tidak menyentuh
-hardware bisa diuji sebagai binary biasa. Saat ini ada **325 uji** yang mencakup
-antara lain:
+hardware bisa diuji sebagai binary biasa. Jumlah test dapat berubah seiring
+perkembangan branch; cakupan yang sudah ada antara lain:
 
 - ELF loader: validasi header/segmen, penolakan W+X, load bias PIE;
 - tata letak stack/ASLR (`stack_layout`, `STACK_RANDOM_PAGES`);
@@ -54,11 +54,19 @@ diverifikasi kompilasi.
 Perubahan dianggap sehat bila semua perintah ini exit 0 tanpa `error:`:
 
 ```sh
+make -C user/rust make
 make -C user
 make -C user dynamic
-make -C kernel KARCH=x86_64
+cargo +nightly fmt --manifest-path kernel/Cargo.toml --check
 cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
+make -C kernel KARCH=x86_64
+make all
 ```
+
+Artefak userspace harus dibuat lebih dahulu karena `kernel/src/fs/mod.rs`
+memakai `include_bytes!` untuk executable seperti `make.elf`, `tcc.elf`,
+dan beberapa demo ELF. Program Rust userspace memerlukan `ld.lld` (paket
+Debian/Ubuntu: `lld`).
 
 ## Uji di QEMU
 
@@ -88,7 +96,10 @@ cakupan uji kernel.
 
 - Perilaku runtime penuh (scheduler, sinyal, dlopen, TCP, keepalive, futex
   bitset) hanya diverifikasi kompilasi dan uji helper.
-- Tanpa uji otomatis boot QEMU di CI.
+- Workflow GitHub Actions ada di `.github/workflows/posix-core-stage1.yml`;
+  jalur QEMU smoke test hanya menjalankan `syscall-compat-demo` setelah build
+  sebelumnya sukses. Ini bukan pengujian seluruh POSIX API atau semua driver
+  pada hardware fisik.
 - Tanpa fuzzing untuk parser FAT32/ext2/DHCP/DNS.
 - Tanpa pengukuran performa atau regression benchmark.
 
@@ -151,3 +162,25 @@ checks the 4095-byte `addopen` path bound.
 stack, reads the value back, and creates both workers with that attribute.
 Run `run /bin/thread_demo.elf`; expected output is
 `preemptive threads and TLS passed`.
+
+
+## Uji integrasi driver
+
+Pengujian driver perlu dibagi menjadi:
+
+1. **Host unit test** untuk parser descriptor, BAR size/address helper,
+   register encoding, state machine, batas panjang/alignment, dan error handling
+   menggunakan fake register/device. Tes ini tidak membuktikan hardware hidup.
+2. **Build bare-metal** untuk memastikan unsafe/register path bisa dikompilasi
+   pada target kernel.
+3. **QEMU** untuk controller/peripheral yang diemulasikan; catat konfigurasi
+   QEMU dan model device yang digunakan.
+4. **Hardware fisik** untuk fitur yang perilakunya bergantung firmware, power
+   sequencing, DMA/IOMMU, interrupt routing, atau implementasi controller
+   nyata.
+
+Saat ini workflow CI menjalankan smoke test syscall kompatibilitas otomatis
+setelah seluruh build berhasil. Pengujian khusus USB hotplug, seluruh alur
+Mass Storage, Wi-Fi QCA9377, dan kompatibilitas seluruh perangkat fisik tetap
+memerlukan pengujian terarah. Jangan mengartikan CI build sukses sebagai bukti
+seluruh kelas perangkat bekerja.

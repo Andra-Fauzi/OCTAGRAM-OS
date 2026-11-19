@@ -272,7 +272,7 @@ pub fn create_octagram_gpt_with_progress(
     mbr[454..458].copy_from_slice(&1u32.to_le_bytes());
     mbr[458..462].copy_from_slice(&(total.saturating_sub(1).min(u32::MAX as u64) as u32).to_le_bytes());
     mbr[510..512].copy_from_slice(&[0x55, 0xAA]);
-    let total_writes = (GPT_ENTRY_COUNT as u64) * 2 + 3;
+    let total_writes = GPT_ENTRY_SECTORS * 2 + 3;
     let mut completed_writes = 0u64;
     progress(0, total_writes);
     device.write_sectors(0, &mbr)?;

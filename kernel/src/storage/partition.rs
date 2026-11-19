@@ -227,7 +227,10 @@ pub fn create_octagram_gpt(
     if root_first >= last_usable || last_usable - root_first < 1024 * 1024 {
         return Err(BlockError::Unsupported);
     }
-    let root_last = last_usable;
+    // FAT32's BPB total-sector field is 32-bit. Keep the install root within
+    // that limit on very large disks; remaining capacity stays unallocated.
+    let fat32_max_last = root_first.saturating_add(u32::MAX as u64 - 1);
+    let root_last = last_usable.min(fat32_max_last);
 
     let seed = unique_seed(total);
     let disk_guid = guid_from_seed(seed ^ 0x4F4354414752414D);

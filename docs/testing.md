@@ -119,3 +119,22 @@ This QEMU/runtime test checks independent `errno` and `h_errno` values for
 two threads while the shared allocator services concurrent allocations and
 frees. It must be run on OCTAGRAM because the accessors use the OCTAGRAM
 thread/process ID syscalls.
+
+
+## POSIX thread-specific data regression
+
+`make -C user` builds `thread_tsd_demo.elf`. Run it on OCTAGRAM:
+
+```text
+run /bin/thread_tsd_demo.elf
+```
+
+Expected output:
+
+```text
+pthread TSD isolation and destructors: PASS
+```
+
+The test checks that two threads can store different values under the same
+key, that the main thread's value remains isolated, and that each thread's
+key destructor runs once when its start routine returns.

@@ -92,6 +92,21 @@ pub fn terminal_print(text: &str) {
 }
 
 /// Show formatter progress on one terminal row without flooding the log.
+/// Display a task-level progress bar measured in completed operations.
+pub fn terminal_show_task_progress(label: &str, completed: u64, total: u64) {
+    let percent = if total == 0 {
+        100
+    } else {
+        completed.saturating_mul(100).checked_div(total).unwrap_or(100).min(100)
+    };
+    let bar_width = 20usize;
+    let filled = (percent as usize * bar_width) / 100;
+    let bar = alloc::format!("{}{}", "#".repeat(filled), ".".repeat(bar_width - filled));
+    terminal_replace_current_line(&alloc::format!(
+        "{label} [{bar}] {completed}/{total} ({percent}%)"
+    ));
+}
+
 pub fn terminal_show_progress(label: &str, written_bytes: u64, total_bytes: u64) {
     let percent = if total_bytes == 0 {
         100

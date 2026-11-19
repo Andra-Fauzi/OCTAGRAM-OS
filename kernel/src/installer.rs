@@ -1,0 +1,364 @@
+//! In-kernel installer used from the OCTAGRAM Live shell.
+//!
+//! Run installer to list target disks, then use the explicit destructive
+//! confirmation: installer sata0 INSTALL-OCTAGRAM-ERASE.
+
+use alloc::format;
+use alloc::string::String;
+use alloc::sync::Arc;
+
+use crate::fs::{FileSystem, FsError};
+use crate::storage::{
+    block::{self, BlockDevice, BlockDeviceRef},
+    fat32::Fat32,
+    partition::{self, PartitionDevice},
+};
+
+const CONFIRMATION: &str = "INSTALL-OCTAGRAM-ERASE";
+const COPY_CHUNK_SIZE: usize = 32 * 1024;
+const MINIMUM_ROOT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+pub fn run(arguments: &str) {
+    let mut parts = arguments.split_whitespace();
+    let Some(device_name) = parts.next() else {
+        print_devices();
+        crate::println!("");
+        crate::println!("Usage: installer <sata-device> {CONFIRMATION}");
+        crate::println!("This erases the selected SATA disk and installs OCTAGRAM-OS.");
+        return;
+    };
+
+    if device_name == "list" {
+        print_devices();
+        return;
+    }
+
+    let Some(confirmation) = parts.next() else {
+        crate::println!("installer: destructive confirmation is required");
+        crate::println!("Usage: installer {device_name} {CONFIRMATION}");
+        return;
+    };
+    if parts.next().is_some() || confirmation != CONFIRMATION {
+        crate::println!("installer: confirmation did not match");
+        crate::println!("Usage: installer {device_name} {CONFIRMATION}");
+        return;
+    }
+
+    match install_to_disk(device_name) {
+        Ok(()) => {
+            crate::println!("");
+            crate::println!("OCTAGRAM-OS installation completed.");
+            crate::println!("Restart, remove the Live USB, and select the internal disk in UEFI.");
+            crate::println!("The first boot will populate built-in files on the persistent root.");
+        }
+        Err(error) => crate::println!("installer: {error}"),
+    }
+}
+
+fn print_devices() {
+    crate::println!("Available storage devices:");
+    let mut found = false;
+    for info in block::list() {
+        let gib_tenths = (info.sectors as u128 * 512 * 10) / (1024 * 1024 * 1024);
+        let target = info.name.starts_with("sata");
+        let root = crate::fs::persistent_root_device()
+            .is_some_and(|current| current == info.name);
+        let source = block::get(&info.name)
+            .is_some_and(|device| is_boot_source_device(device.as_ref()));
+        let status = if root {
+            " [CURRENT ROOT - PROTECTED]"
+        } else if source {
+            " [BOOT SOURCE - PROTECTED]"
+        } else if target {
+            " [INSTALL TARGET]"
+        } else {
+            " [not an installer target]"
+        };
+        crate::println!(
+            "  {:<10} {}.{} GiB{}",
+            info.name,
+            gib_tenths / 10,
+            gib_tenths % 10,
+            status
+        );
+        found = true;
+    }
+    if !found {
+        crate::println!("  no block devices detected");
+    }
+    crate::println!("Only internal SATA/AHCI disks are accepted by this installer.");
+}
+
+fn install_to_disk(device_name: &str) -> Result<(), String> {
+    if !device_name.starts_with("sata") {
+        return Err(String::from("only internal SATA/AHCI devices (sataN) are supported"));
+    }
+
+    if crate::fs::persistent_root_device().as_deref() == Some(device_name) {
+        return Err(String::from("refusing to erase the disk that currently contains /"));
+    }
+
+    let device = block::get(device_name)
+        .ok_or_else(|| format!("storage device {device_name} was not found; run devices"))?;
+
+    if is_boot_source_device(device.as_ref()) {
+        return Err(String::from(
+            "refusing to erase the disk from which Limine loaded this kernel",
+        ));
+    }
+
+    let size_bytes = device.sector_count() as u128 * 512;
+    if size_bytes < 16 * 1024 * 1024 * 1024u128 {
+        return Err(String::from("target disk must be at least 16 GiB"));
+    }
+    let gib_tenths = size_bytes * 10 / (1024 * 1024 * 1024);
+    crate::println!(
+        "Target: {} ({}.{:01} GiB)",
+        device_name,
+        gib_tenths / 10,
+        gib_tenths % 10
+    );
+    crate::println!("Creating GPT, EFI System Partition and persistent root...");
+
+    let (efi_partition, root_partition) =
+        partition::create_octagram_gpt(device.as_ref())
+            .map_err(|error| format!("GPT partitioning failed: {error:?}"))?;
+
+    let efi_device: BlockDeviceRef = Arc::new(
+        PartitionDevice::new(
+            device.clone(),
+            format!("{device_name}p1"),
+            efi_partition.first_lba,
+            efi_partition.sector_count(),
+        )
+        .map_err(|error| format!("EFI partition view failed: {error:?}"))?,
+    );
+    let root_device: BlockDeviceRef = Arc::new(
+        PartitionDevice::new(
+            device.clone(),
+            format!("{device_name}p2"),
+            root_partition.first_lba,
+            root_partition.sector_count(),
+        )
+        .map_err(|error| format!("root partition view failed: {error:?}"))?,
+    );
+
+    if root_device.sector_count() * 512 < MINIMUM_ROOT_BYTES {
+        return Err(String::from("root partition is too small"));
+    }
+
+    crate::println!("Formatting EFI partition as FAT32...");
+    Fat32::format(efi_device.as_ref())
+        .map_err(|error| format!("EFI FAT32 format failed: {error:?}"))?;
+    crate::println!("Formatting root partition as FAT32...");
+    Fat32::format(root_device.as_ref())
+        .map_err(|error| format!("root FAT32 format failed: {error:?}"))?;
+
+    let mut efi = Fat32::mount(efi_device)
+        .map_err(|error| format!("cannot mount formatted EFI partition: {error:?}"))?;
+    let mut root = Fat32::mount(root_device)
+        .map_err(|error| format!("cannot mount formatted root partition: {error:?}"))?;
+
+    for directory in ["/EFI", "/EFI/BOOT", "/boot", "/boot/limine"] {
+        ensure_directory(&mut efi, directory)
+            .map_err(|error| format!("creating EFI directory {directory}: {error:?}"))?;
+    }
+    for directory in [
+        "/etc",
+        "/home",
+        "/home/octagram",
+        "/bin",
+        "/lib",
+        "/lib/tcc",
+        "/share",
+        "/share/octagram",
+        "/include",
+        "/include/sys",
+        "/tmp",
+        "/var",
+        "/var/log",
+        "/var/lib",
+        "/var/lib/octagram",
+        "/var/lib/octagram/packages",
+        "/opt",
+        "/apps",
+        "/usr",
+        "/usr/bin",
+        "/usr/local",
+        "/usr/local/bin",
+        "/mnt",
+    ] {
+        ensure_directory(&mut root, directory)
+            .map_err(|error| format!("creating root directory {directory}: {error:?}"))?;
+    }
+
+    let (kernel, efi_loader) = live_boot_files()
+        .ok_or_else(|| String::from(
+            "Limine did not provide the running kernel and BOOTX64.EFI module; rebuild the Live image with the updated limine.conf",
+        ))?;
+
+    if kernel.len() < 4 || &kernel[..4] != b"\x7FELF" {
+        return Err(String::from("loaded executable is not an ELF kernel image"));
+    }
+    if efi_loader.len() < 512 || &efi_loader[..2] != b"MZ" {
+        return Err(String::from("preloaded BOOTX64.EFI is missing or invalid"));
+    }
+
+    crate::println!("Copying kernel ({} bytes)...", kernel.len());
+    write_file(&mut efi, "/boot/kernel", kernel)
+        .map_err(|error| format!("copying kernel failed: {error:?}"))?;
+    crate::println!("Copying Limine UEFI loader ({} bytes)...", efi_loader.len());
+    write_file(&mut efi, "/EFI/BOOT/BOOTX64.EFI", efi_loader)
+        .map_err(|error| format!("copying UEFI loader failed: {error:?}"))?;
+    write_file(
+        &mut efi,
+        "/boot/limine/limine.conf",
+        include_bytes!("../../limine.conf"),
+    )
+    .map_err(|error| format!("writing limine.conf failed: {error:?}"))?;
+
+    write_file(
+        &mut root,
+        "/etc/octagram-root",
+        b"OCTAGRAM-OS persistent root v1\nfilesystem=fat32\n",
+    )
+    .map_err(|error| format!("writing root marker failed: {error:?}"))?;
+    write_file(
+        &mut root,
+        "/etc/os-release",
+        b"OCTAGRAM_OS_NAME=\"OCTAGRAM-OS\"\nOCTAGRAM_OS_ID=octagram\nOCTAGRAM_OS_VERSION=1.0\n",
+    )
+    .map_err(|error| format!("writing os-release failed: {error:?}"))?;
+    write_file(
+        &mut root,
+        "/etc/passwd",
+        b"octagram:x:0:0:OCTAGRAM User:/home/octagram:/bin/sh\n",
+    )
+    .map_err(|error| format!("writing passwd failed: {error:?}"))?;
+    write_file(
+        &mut root,
+        "/home/octagram/.profile",
+        b"export PATH=/bin:/usr/bin:/usr/local/bin\n",
+    )
+    .map_err(|error| format!("writing user profile failed: {error:?}"))?;
+    write_file(
+        &mut root,
+        "/apps/apps.txt",
+        b"# OCTAGRAM native application registry\n",
+    )
+    .map_err(|error| format!("writing app registry failed: {error:?}"))?;
+    write_file(
+        &mut root,
+        "/var/lib/octagram/packages/registry.txt",
+        b"",
+    )
+    .map_err(|error| format!("writing package registry failed: {error:?}"))?;
+
+    crate::println!("Verifying installed filesystems...");
+    for path in ["/boot/kernel", "/EFI/BOOT/BOOTX64.EFI", "/boot/limine/limine.conf"] {
+        if efi.metadata(path).is_err() {
+            return Err(format!("EFI verification failed for {path}"));
+        }
+    }
+    for path in ["/etc/octagram-root", "/etc/os-release", "/home/octagram/.profile"] {
+        if root.metadata(path).is_err() {
+            return Err(format!("root filesystem verification failed for {path}"));
+        }
+    }
+
+    crate::println!("EFI: 512 MiB FAT32 at LBA {}", efi_partition.first_lba);
+    crate::println!(
+        "Root: FAT32 at LBA {} ({} sectors)",
+        root_partition.first_lba,
+        root_partition.sector_count()
+    );
+    crate::println!("Root marker and boot files were verified.");
+    Ok(())
+}
+
+fn ensure_directory(filesystem: &mut dyn FileSystem, path: &str) -> Result<(), FsError> {
+    match filesystem.metadata(path) {
+        Ok(metadata) if metadata.node_type == crate::fs::NodeType::Directory => Ok(()),
+        Ok(_) => Err(FsError::NotDirectory),
+        Err(FsError::NotFound) => filesystem.create_dir(path),
+        Err(error) => Err(error),
+    }
+}
+
+fn write_file(
+    filesystem: &mut dyn FileSystem,
+    path: &str,
+    bytes: &[u8],
+) -> Result<(), FsError> {
+    match filesystem.metadata(path) {
+        Ok(_) => filesystem.remove(path)?,
+        Err(FsError::NotFound) => {}
+        Err(error) => return Err(error),
+    }
+    filesystem.create_file(path)?;
+    let mut offset = 0usize;
+    for chunk in bytes.chunks(COPY_CHUNK_SIZE) {
+        let written = filesystem.write(path, offset, chunk)?;
+        if written != chunk.len() {
+            let _ = filesystem.remove(path);
+            return Err(FsError::NoSpace);
+        }
+        offset += written;
+    }
+    Ok(())
+}
+
+fn live_boot_files() -> Option<(&'static [u8], &'static [u8])> {
+    let executable_response = crate::EXECUTABLE_FILE_REQUEST.get_response()?;
+    let executable = executable_response.executable_file();
+    let kernel_size = usize::try_from(executable.size()).ok()?;
+    if executable.addr().is_null() || kernel_size == 0 {
+        return None;
+    }
+    let kernel = unsafe { core::slice::from_raw_parts(executable.addr(), kernel_size) };
+
+    let modules_response = crate::INSTALLER_MODULES_REQUEST.get_response()?;
+    let mut loader = None;
+    for module in modules_response.modules() {
+        if module.path().to_bytes().ends_with(b"/BOOTX64.EFI") {
+            let size = usize::try_from(module.size()).ok()?;
+            if !module.addr().is_null() && size > 0 {
+                loader = Some(unsafe { core::slice::from_raw_parts(module.addr(), size) });
+                break;
+            }
+        }
+    }
+    Some((kernel, loader?))
+}
+
+fn is_boot_source_device(device: &dyn BlockDevice) -> bool {
+    let Some(response) = crate::EXECUTABLE_FILE_REQUEST.get_response() else {
+        return false;
+    };
+    let file = response.executable_file();
+
+    if let Some(source_guid) = file.gpt_disk_id() {
+        let mut header = [0u8; 512];
+        if device.read_sectors(1, &mut header).is_ok() && &header[..8] == b"EFI PART" {
+            let mut guid = [0u8; 16];
+            guid[..4].copy_from_slice(&source_guid.a.to_le_bytes());
+            guid[4..6].copy_from_slice(&source_guid.b.to_le_bytes());
+            guid[6..8].copy_from_slice(&source_guid.c.to_le_bytes());
+            guid[8..16].copy_from_slice(&source_guid.d);
+            if header[56..72] == guid {
+                return true;
+            }
+        }
+    }
+
+    if let Some(source_mbr_id) = file.mbr_disk_id() {
+        let mut mbr = [0u8; 512];
+        if device.read_sectors(0, &mut mbr).is_ok() {
+            let disk_id = u32::from_le_bytes(mbr[440..444].try_into().unwrap());
+            if disk_id == source_mbr_id.get() {
+                return true;
+            }
+        }
+    }
+    false
+}

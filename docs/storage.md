@@ -38,6 +38,22 @@ kosong atau setelah mencadangkan data, dan unmount volume sebelum memformatnya.
 Opsi `--yes` adalah konfirmasi wajib. Formatter menolak ukuran media yang tidak
 cocok untuk FAT32.
 
+Shell juga menyediakan formatter EXT2 native:
+
+```text
+devices
+mkfs.ext2 usb0 --yes       # format seluruh media tanpa tabel partisi
+mkfs.ext2 sata0p2 --yes    # format partisi GPT nomor 2 pada sata0
+mount sata0 /mnt ext2
+```
+
+Untuk target satu disk, `mkfs.ext2` hanya menerima media tanpa signature tabel
+partisi agar GPT/MBR yang ada tidak tertimpa. Untuk target partisi, gunakan nama
+`<disk>p<nomor>`; partisi harus bertipe GPT Linux filesystem. Formatter menolak
+disk sumber Live, disk yang menyediakan root aktif, dan disk yang masih memiliki
+filesystem ter-mount melalui perintah shell. Unmount volume terlebih dahulu.
+Konfirmasi `--yes` wajib. EXT2 dibuat dengan blok 4 KiB dan tanpa journal.
+
 Ext2 juga dipakai sebagai root filesystem oleh installer internal. Installer
 memformat partisi root GPT dengan `Ext2::format()` (4 KiB blocks, sparse
 superblocks, 128-byte inodes, tanpa journal), lalu membuat marker

@@ -188,6 +188,13 @@ melewati `list_op_pending`) dan untuk setiap futex yang TID-nya masih dimiliki
 task itu menulis `FUTEX_OWNER_DIED`, mempertahankan `FUTEX_WAITERS`, melepas TID,
 lalu membangunkan waiter pada alamat tersebut.
 
+Thread-specific data POSIX disediakan oleh `pthread_key_create`,
+`pthread_key_delete`, `pthread_getspecific`, dan `pthread_setspecific`.
+Setiap thread memiliki 64 slot nilai yang terpisah (TLS statis pada executable,
+tabel PID/TID pada shared libc). Destructor key dijalankan saat thread keluar,
+maksimum empat putaran; key yang dihapus tidak dapat dipakai lagi dan slot key
+tidak didaur ulang dalam satu proses.
+
 Di sisi libc, `pthread_mutex_t` menyimpan kata futex di offset 8 dan tautan
 `robust_list_head` di offset 0 (`futex_offset` = 8). Setiap thread mendaftarkan
 satu `robust_list_head` dari kumpulan 64 slot saat pertama kali mengunci mutex

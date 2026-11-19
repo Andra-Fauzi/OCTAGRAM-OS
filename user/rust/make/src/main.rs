@@ -56,6 +56,8 @@ fn run(argc: i32, argv: *const *const u8) -> Result<i32, String> {
     let mut makefile_path = String::from("Makefile");
     let mut change_directory = None;
     let mut targets = Vec::new();
+    let mut dry_run = false;
+    let mut silent = false;
     let mut overrides = Vec::new();
     let mut index = 0;
 
@@ -64,7 +66,7 @@ fn run(argc: i32, argv: *const *const u8) -> Result<i32, String> {
             "--help" | "-h" => {
                 write_all(
                     STDOUT,
-                    b"usage: make [-B] [-C directory] [-f file] [NAME=value] [target...]\n\
+                    b"usage: make [-B] [-n] [-s] [-j1] [-C directory] [-f file] [NAME=value] [target...]\n\
 Supported Makefile features: explicit dependencies, recipes, variables, and $@/$</$^.\n\
 Targets are rebuilt on every invocation; shell operators and implicit rules are unsupported.\n",
                 )
@@ -72,6 +74,9 @@ Targets are rebuilt on every invocation; shell operators and implicit rules are 
                 return Ok(0);
             }
             "-B" => {}
+            "-n" | "--dry-run" => dry_run = true,
+            "-s" | "--silent" => silent = true,
+            "-j1" => {},
             "-f" | "-C" => {
                 index += 1;
                 let Some(value) = arguments.get(index) else {
@@ -122,7 +127,9 @@ Targets are rebuilt on every invocation; shell operators and implicit rules are 
     let mut built = Vec::new();
     let mut visiting = Vec::new();
     for target in targets {
-        if let Err(error) = build_target(&target, &makefile, &mut visiting, &mut built) {
+        if let Err(error) = build_target(
+            &target, &makefile, &mut visiting, &mut built, dry_run, silent,
+        ) {
             report(&format!("make: {error}\n"));
             return Ok(2);
         }
@@ -372,6 +379,8 @@ fn build_target(
     makefile: &Makefile,
     visiting: &mut Vec<String>,
     built: &mut Vec<String>,
+    dry_run: bool,
+    silent: bool,
 ) -> Result<(), String> {
     if built.iter().any(|name| name == target) {
         return Ok(());
@@ -389,14 +398,14 @@ fn build_target(
     visiting.push(target.to_string());
     let rule = rule.clone();
     for dependency in &rule.dependencies {
-        build_target(dependency, makefile, visiting, built)?;
+        build_target(dependency, makefile, visiting, built, dry_run, silent)?;
     }
     visiting.pop();
 
     let first = rule.dependencies.first().map(String::as_str).unwrap_or("");
     let all = rule.dependencies.join(" ");
     for recipe in &rule.recipes {
-        run_recipe(recipe, &rule.target, first, &all, &makefile.variables)?;
+        run_recipe(recipe, &rule.target, first, &all, &makefile.variables, dry_run, silent)?;
     }
     built.push(target.to_string());
     Ok(())
@@ -408,6 +417,8 @@ fn run_recipe(
     first_dependency: &str,
     all_dependencies: &str,
     variables: &[(String, String)],
+    dry_run: bool,
+    globally_silent: bool,
 ) -> Result<(), String> {
     let mut recipe = recipe.trim();
     let mut silent = false;
@@ -443,10 +454,14 @@ fn run_recipe(
             "shell operators are unsupported in recipes; invoke one program per recipe",
         ));
     }
-    if !silent {
+    if !silent && !globally_silent {
         write_all(STDOUT, expanded.as_bytes())
             .and_then(|_| write_all(STDOUT, b"\n"))
             .map_err(|error| format!("write failed ({error})"))?;
+    }
+
+    if dry_run {
+        return Ok(());
     }
 
     let command = &arguments[0];

@@ -68,6 +68,14 @@ impl Ext2 {
     /// 128-byte inodes and the file-type directory feature. Journaling and
     /// extents are deliberately disabled to match this kernel's EXT2 reader.
     pub fn format(device: &dyn BlockDevice) -> Result<(), FsError> {
+        Self::format_with_progress(device, |_, _| {})
+    }
+
+    /// Format EXT2 and report real bytes written after every successful device write.
+    pub fn format_with_progress(
+        device: &dyn BlockDevice,
+        mut on_progress: impl FnMut(u64, u64),
+    ) -> Result<(), FsError> {
         const BLOCK_SIZE: usize = 4096;
         const SECTORS_PER_BLOCK: u64 = (BLOCK_SIZE / SECTOR_SIZE) as u64;
         const BLOCKS_PER_GROUP: u32 = 32_768;
@@ -127,6 +135,25 @@ impl Ext2 {
         let inode_count = groups_count
             .checked_mul(INODES_PER_GROUP)
             .ok_or(FsError::Unsupported)?;
+
+        let backup_group_count = (0..groups_count)
+            .filter(|group| format_has_backup_superblock(*group))
+            .count() as u64;
+        let metadata_blocks_per_group = 2u64 + INODE_TABLE_BLOCKS as u64;
+        let total_write_blocks = (groups_count as u64)
+            .checked_mul(metadata_blocks_per_group)
+            .and_then(|blocks| {
+                backup_group_count
+                    .checked_mul(1 + gdt_blocks as u64)
+                    .and_then(|backup_blocks| blocks.checked_add(backup_blocks))
+            })
+            .and_then(|blocks| blocks.checked_add(2))
+            .ok_or(FsError::Unsupported)?;
+        let total_write_bytes = total_write_blocks
+            .checked_mul(BLOCK_SIZE as u64)
+            .ok_or(FsError::Unsupported)?;
+        let mut progress = FormatProgress::new(total_write_bytes, &mut on_progress);
+        progress.report();
 
         let mut group_descriptors = vec![0u8; gdt_blocks as usize * BLOCK_SIZE];
         let mut free_blocks_total = 0u32;
@@ -199,6 +226,7 @@ impl Ext2 {
                 BLOCK_SIZE,
                 block_bitmap,
                 &block_map,
+                &mut progress,
             )?;
 
             let mut inode_map = vec![0u8; BLOCK_SIZE];
@@ -214,6 +242,7 @@ impl Ext2 {
                 BLOCK_SIZE,
                 inode_bitmap,
                 &inode_map,
+                &mut progress,
             )?;
 
             // Initialize the inode table so unused inode records cannot expose
@@ -224,6 +253,7 @@ impl Ext2 {
                 BLOCK_SIZE,
                 inode_table,
                 INODE_TABLE_BLOCKS,
+                &mut progress,
             )?;
         }
 
@@ -278,6 +308,7 @@ impl Ext2 {
                 BLOCK_SIZE,
                 group_start,
                 &block,
+                &mut progress,
             )?;
         }
 
@@ -298,6 +329,7 @@ impl Ext2 {
                     BLOCK_SIZE,
                     group_start + 1 + index,
                     block_data,
+                    &mut progress,
                 )?;
             }
         }
@@ -322,6 +354,7 @@ impl Ext2 {
             BLOCK_SIZE,
             inode_block,
             &inode_table_block,
+            &mut progress,
         )?;
 
         let mut root_directory = vec![0u8; BLOCK_SIZE];
@@ -349,8 +382,10 @@ impl Ext2 {
             BLOCK_SIZE,
             root_data_block,
             &root_directory,
+            &mut progress,
         )?;
 
+        progress.finish()?;
         Ok(())
     }
 
@@ -1814,12 +1849,51 @@ fn format_has_backup_superblock(group: u32) -> bool {
     group == 0 || group == 1 || [3, 5, 7].iter().any(|base| is_power_of(group, *base))
 }
 
+struct FormatProgress<'a> {
+    written_bytes: u64,
+    total_bytes: u64,
+    callback: &'a mut dyn FnMut(u64, u64),
+}
+
+impl<'a> FormatProgress<'a> {
+    fn new(total_bytes: u64, callback: &'a mut dyn FnMut(u64, u64)) -> Self {
+        Self {
+            written_bytes: 0,
+            total_bytes,
+            callback,
+        }
+    }
+
+    fn report(&mut self) {
+        (self.callback)(self.written_bytes, self.total_bytes);
+    }
+
+    fn record_write(&mut self, bytes: usize) -> Result<(), FsError> {
+        self.written_bytes = self
+            .written_bytes
+            .checked_add(bytes as u64)
+            .filter(|written| *written <= self.total_bytes)
+            .ok_or(FsError::InvalidData)?;
+        self.report();
+        Ok(())
+    }
+
+    fn finish(&self) -> Result<(), FsError> {
+        if self.written_bytes == self.total_bytes {
+            Ok(())
+        } else {
+            Err(FsError::InvalidData)
+        }
+    }
+}
+
 fn write_format_block(
     device: &dyn BlockDevice,
     blocks_count: u32,
     block_size: usize,
     block: u32,
     data: &[u8],
+    progress: &mut FormatProgress<'_>,
 ) -> Result<(), FsError> {
     if data.len() != block_size || block >= blocks_count || !block_size.is_multiple_of(SECTOR_SIZE) {
         return Err(FsError::InvalidData);
@@ -1836,7 +1910,8 @@ fn write_format_block(
     }
     device
         .write_sectors(lba, data)
-        .map_err(|_| FsError::IoError)
+        .map_err(|_| FsError::IoError)?;
+    progress.record_write(data.len())
 }
 
 fn write_format_zero_blocks(
@@ -1845,6 +1920,7 @@ fn write_format_zero_blocks(
     block_size: usize,
     first_block: u32,
     count: u32,
+    progress: &mut FormatProgress<'_>,
 ) -> Result<(), FsError> {
     const ZERO_BUFFER_SIZE: usize = 32 * 1024;
     let blocks_per_chunk = (ZERO_BUFFER_SIZE / block_size).max(1);
@@ -1869,6 +1945,7 @@ fn write_format_zero_blocks(
         device
             .write_sectors(lba, &zeroes[..byte_len])
             .map_err(|_| FsError::IoError)?;
+        progress.record_write(byte_len)?;
         written += chunk_blocks;
     }
     Ok(())

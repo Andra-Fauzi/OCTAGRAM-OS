@@ -99,8 +99,10 @@ volume before disconnecting its device.
 ## Running ELF programs
 
 The x86_64 kernel has an initial user-mode ELF64 loader in `kernel/src/elf.rs`.
-It accepts little-endian, static `ET_EXEC` binaries only; interpreters,
-dynamic linking, and writable-executable segments are rejected. Loaded program
+It accepts little-endian x86_64 static `ET_EXEC` binaries and a supported
+subset of PIE `ET_DYN` binaries using `/lib/ld-octagram.so`. Unsupported ELF
+interpreter/relocation features and writable-executable segments are rejected;
+lihat [docs/dynamic-linker.md](docs/dynamic-linker.md) untuk batas loader. Loaded program
 pages are user-accessible, the stack is
 non-executable, and user faults terminate the program. ELF files can be loaded
 from the VFS with
@@ -132,19 +134,31 @@ subset for simple programs; these are not GNU toolchain ports. See
 ## Developer documentation
 
 The [docs/](docs/README.md) directory contains guides to kernel architecture,
-building user programs, the syscall ABI, storage, porting applications, and
-adding drivers.
+boot, memory, filesystem, networking, userspace, syscall ABI, storage, and
+porting applications. Untuk mulai mengembangkan kernel, baca
+[development guide](docs/development-guide.md), lalu ikuti
+tutorial [PCI driver](docs/pci-driver-tutorial.md) dan
+[USB driver](docs/usb-driver-tutorial.md).
 
 ## Development checks
 
-From the repository root, format and check the x86_64 kernel with:
+From the repository root, build the embedded userspace artifacts before
+kernel tests (the VFS embeds several ELF files with `include_bytes!`):
 
 ```sh
-cargo fmt --manifest-path kernel/Cargo.toml -- --check
-cargo test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
-make -C kernel KARCH=x86_64
+make -C user/rust make
 make -C user
+make -C user dynamic
+cargo +nightly fmt --manifest-path kernel/Cargo.toml --check
+cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
+make -C kernel KARCH=x86_64
+make all
 ```
+
+Di Debian/Ubuntu, dependency build mencakup `build-essential binutils nasm lld
+xorriso mtools gdisk qemu-system-x86 python3 curl git`. Rust nightly diperlukan;
+Rust userspace membutuhkan `ld.lld` dari paket `lld`. Detail ada di
+[docs/building.md](docs/building.md) dan [docs/testing.md](docs/testing.md).
 
 The build requires the Rust target configured by `kernel/rust-toolchain.toml`.
 See the sections below for image creation and running the OS in QEMU.

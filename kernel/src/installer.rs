@@ -242,11 +242,20 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     }
 
     crate::println!("Copying kernel ({} bytes)...", kernel.len());
-    write_file(&mut efi, "/boot/kernel", kernel)
-        .map_err(|error| format!("copying kernel failed: {error:?}"))?;
+    let kernel_copy_result =
+        write_file_with_progress(&mut efi, "/boot/kernel", kernel, "Copy kernel");
+    crate::println!("");
+    kernel_copy_result.map_err(|error| format!("copying kernel failed: {error:?}"))?;
+
     crate::println!("Copying Limine UEFI loader ({} bytes)...", efi_loader.len());
-    write_file(&mut efi, "/EFI/BOOT/BOOTX64.EFI", efi_loader)
-        .map_err(|error| format!("copying UEFI loader failed: {error:?}"))?;
+    let loader_copy_result = write_file_with_progress(
+        &mut efi,
+        "/EFI/BOOT/BOOTX64.EFI",
+        efi_loader,
+        "Copy EFI loader",
+    );
+    crate::println!("");
+    loader_copy_result.map_err(|error| format!("copying UEFI loader failed: {error:?}"))?;
     write_file(
         &mut efi,
         "/boot/limine/limine.conf",
@@ -346,12 +355,27 @@ fn write_file(
     path: &str,
     bytes: &[u8],
 ) -> Result<(), FsError> {
+    write_file_with_progress(filesystem, path, bytes, "")
+}
+
+fn write_file_with_progress(
+    filesystem: &mut dyn FileSystem,
+    path: &str,
+    bytes: &[u8],
+    label: &str,
+) -> Result<(), FsError> {
     match filesystem.metadata(path) {
         Ok(_) => filesystem.remove(path)?,
         Err(FsError::NotFound) => {}
         Err(error) => return Err(error),
     }
     filesystem.create_file(path)?;
+
+    let total_bytes = bytes.len() as u64;
+    let report_interval = (total_bytes / 50).max(COPY_CHUNK_SIZE as u64);
+    let mut last_reported_bytes = None;
+    crate::terminal::terminal_show_progress(label, 0, total_bytes);
+
     let mut offset = 0usize;
     for chunk in bytes.chunks(COPY_CHUNK_SIZE) {
         let written = filesystem.write(path, offset, chunk)?;
@@ -360,6 +384,15 @@ fn write_file(
             return Err(FsError::NoSpace);
         }
         offset += written;
+
+        let written_bytes = offset as u64;
+        if last_reported_bytes.is_none_or(|last| {
+            written_bytes.saturating_sub(last) >= report_interval
+        }) || written_bytes == total_bytes
+        {
+            last_reported_bytes = Some(written_bytes);
+            crate::terminal::terminal_show_progress(label, written_bytes, total_bytes);
+        }
     }
     Ok(())
 }

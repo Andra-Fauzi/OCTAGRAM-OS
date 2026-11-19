@@ -6895,14 +6895,14 @@ pid_t fork(void)
 #if defined(OCTAGRAM_SHARED)
     oct_runtime_state_lock_acquire();
 #endif
-    pid_t result = (pid_t)posix_result(oct_fork());
+    int64_t raw_result = oct_fork();
     __sync_lock_release(&oct_robust_head_lock);
     __sync_lock_release(&oct_pthread_key_lock);
     __sync_lock_release(&oct_allocator_lock);
 #if defined(OCTAGRAM_SHARED)
     __sync_lock_release(&oct_runtime_state_lock);
 #endif
-    return result;
+    return (pid_t)posix_result(raw_result);
 }
 
 FILE *freopen(const char *path, const char *mode, FILE *stream)

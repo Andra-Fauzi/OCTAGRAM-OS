@@ -208,6 +208,14 @@ pub fn read_gpt_partitions(device: &dyn BlockDevice) -> Result<Vec<GptPartition>
 pub fn create_octagram_gpt(
     device: &dyn BlockDevice,
 ) -> Result<(GptPartition, GptPartition), BlockError> {
+    create_octagram_gpt_with_progress(device, |_, _| {})
+}
+
+/// Create the OCTAGRAM GPT layout and report completed sector writes.
+pub fn create_octagram_gpt_with_progress(
+    device: &dyn BlockDevice,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<(GptPartition, GptPartition), BlockError> {
     const ESP_SECTORS: u64 = 512 * 1024 * 1024 / SECTOR_SIZE as u64;
     const FIRST_PARTITION_LBA: u64 = 2048;
     const MINIMUM_DISK_SECTORS: u64 = 16 * 1024 * 1024 * 1024 / SECTOR_SIZE as u64;
@@ -264,7 +272,12 @@ pub fn create_octagram_gpt(
     mbr[454..458].copy_from_slice(&1u32.to_le_bytes());
     mbr[458..462].copy_from_slice(&(total.saturating_sub(1).min(u32::MAX as u64) as u32).to_le_bytes());
     mbr[510..512].copy_from_slice(&[0x55, 0xAA]);
+    let total_writes = (GPT_ENTRY_COUNT as u64) * 2 + 3;
+    let mut completed_writes = 0u64;
+    progress(0, total_writes);
     device.write_sectors(0, &mbr)?;
+    completed_writes += 1;
+    progress(completed_writes, total_writes);
 
     let mut primary_header = make_header(
         1,
@@ -293,10 +306,18 @@ pub fn create_octagram_gpt(
         let mut block = [0u8; SECTOR_SIZE];
         block.copy_from_slice(sector);
         device.write_sectors(2 + index as u64, &block)?;
+        completed_writes += 1;
+        progress(completed_writes, total_writes);
         device.write_sectors(backup_entries_lba + index as u64, &block)?;
+        completed_writes += 1;
+        progress(completed_writes, total_writes);
     }
     device.write_sectors(1, &primary_header)?;
+    completed_writes += 1;
+    progress(completed_writes, total_writes);
     device.write_sectors(backup_header_lba, &backup_header)?;
+    completed_writes += 1;
+    progress(completed_writes, total_writes);
 
     Ok((
         GptPartition {

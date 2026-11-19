@@ -38,8 +38,15 @@ kosong atau setelah mencadangkan data, dan unmount volume sebelum memformatnya.
 Opsi `--yes` adalah konfirmasi wajib. Formatter menolak ukuran media yang tidak
 cocok untuk FAT32.
 
-Ext2 dapat dipasang eksplisit dari primary MBR partition bertipe `0x83` atau
-superfloppy:
+Ext2 juga dipakai sebagai root filesystem oleh installer internal. Installer
+memformat partisi root GPT dengan `Ext2::format()` (4 KiB blocks, sparse
+superblocks, 128-byte inodes, tanpa journal), lalu membuat marker
+`/etc/octagram-root`. Formatter menginisialisasi bitmap, inode table, group
+descriptors, superblock cadangan, inode root, dan direktori root. Partisi EFI
+tetap FAT32; root EXT2 dipilih saat boot berdasarkan marker tersebut.
+
+Ext2 dapat dipasang eksplisit dari primary MBR partition bertipe `0x83`, GPT
+Linux filesystem partition, atau superfloppy:
 
 ```text
 mount sata0 /mnt ext2
@@ -65,7 +72,8 @@ penting; gunakan image atau media uji.
 Implementasi filesystem memenuhi trait `FileSystem` di `fs/mod.rs`.
 `normalize_path` meminta path absolute dan menolak keluar dari root. Mount
 router menggunakan mount terpanjang dengan batas komponen path. Root RAMFS
-bersifat volatil, sedangkan mount FAT32 memiliki storage persisten.
+bersifat volatil; installer internal menggunakan EXT2 sebagai root persisten,
+sedangkan volume FAT32 tetap dapat dipasang sebagai data.
 
 `read` mengembalikan jumlah byte aktual, `write` menerima offset, `truncate`
 mengubah panjang file, `create_file`/`create_dir` membuat node, `remove`

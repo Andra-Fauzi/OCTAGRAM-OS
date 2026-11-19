@@ -1596,15 +1596,22 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
     if (thread == NULL || start_routine == NULL) {
         return EINVAL;
     }
+    size_t stack_size = OCT_PTHREAD_STACK_SIZE;
     if (attributes != NULL) {
-        return ENOTSUP;
+        if (attributes->opaque != PTHREAD_CREATE_JOINABLE) {
+            return ENOTSUP;
+        }
+        if (attributes->stack_size < PTHREAD_STACK_MIN) {
+            return EINVAL;
+        }
+        stack_size = attributes->stack_size;
     }
 
     uintptr_t tls_aligned_size = oct_tls_aligned_size();
-    if (tls_aligned_size > SIZE_MAX - OCT_PTHREAD_STACK_SIZE - 4095) {
+    if (tls_aligned_size > SIZE_MAX - stack_size - 4095) {
         return EINVAL;
     }
-    size_t mapping_size = OCT_PTHREAD_STACK_SIZE + (size_t)tls_aligned_size;
+    size_t mapping_size = stack_size + (size_t)tls_aligned_size;
     mapping_size = (mapping_size + 4095) & ~(size_t)4095;
     void *mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -1638,7 +1645,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
     start->argument = argument;
     int64_t result = oct_thread_create(
         oct_pthread_start, start,
-        (unsigned char *)mapping + OCT_PTHREAD_STACK_SIZE,
+        (unsigned char *)mapping + stack_size,
         thread_pointer, mapping, mapping_size);
     if (result < 0) {
         free(start);
@@ -2151,7 +2158,7 @@ int pthread_condattr_setclock(pthread_condattr_t *attributes, clockid_t clock)
 int pthread_detach(pthread_t thread)
 {
     (void)thread;
-    return 0;
+    return ENOTSUP;
 }
 
 int pthread_attr_init(pthread_attr_t *attributes)
@@ -2160,6 +2167,7 @@ int pthread_attr_init(pthread_attr_t *attributes)
         return EINVAL;
     }
     attributes->opaque = PTHREAD_CREATE_JOINABLE;
+    attributes->stack_size = OCT_PTHREAD_STACK_SIZE;
     return 0;
 }
 
@@ -2169,6 +2177,28 @@ int pthread_attr_destroy(pthread_attr_t *attributes)
         return EINVAL;
     }
     attributes->opaque = 0;
+    attributes->stack_size = 0;
+    return 0;
+}
+
+int pthread_attr_setstacksize(pthread_attr_t *attributes, size_t stack_size)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    if (stack_size < PTHREAD_STACK_MIN || stack_size > SIZE_MAX - 4095) {
+        return EINVAL;
+    }
+    attributes->stack_size = stack_size;
+    return 0;
+}
+
+int pthread_attr_getstacksize(const pthread_attr_t *attributes, size_t *stack_size)
+{
+    if (attributes == NULL || stack_size == NULL || attributes->stack_size == 0) {
+        return EINVAL;
+    }
+    *stack_size = attributes->stack_size;
     return 0;
 }
 

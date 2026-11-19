@@ -20,9 +20,12 @@ const BOARD_ENTRY_NAME: u32 = 0;
 const BOARD_ENTRY_DATA: u32 = 1;
 const BOARD_IE_INVALID: &str = "QCA9377 board bundle has an invalid information element";
 
+// Limine exposes a single Modules request ID. Keep one shared request for both
+// the driver's internal firmware modules and bootloader-configured modules
+// (including EFI/BOOT/BOOTX64.EFI, which the installer copies to disk).
 #[used]
 #[unsafe(link_section = ".requests")]
-static MODULE_REQUEST: ModuleRequest = ModuleRequest::new().with_internal_modules(&[
+pub(crate) static MODULE_REQUEST: ModuleRequest = ModuleRequest::new().with_internal_modules(&[
     &InternalModule::new().with_path(c"/boot/firmware/ath10k/QCA9377/hw1.0/firmware-6.bin"),
     &InternalModule::new().with_path(c"/boot/firmware/ath10k/QCA9377/hw1.0/board-2.bin"),
 ]);

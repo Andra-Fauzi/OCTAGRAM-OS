@@ -62,7 +62,7 @@ Installer akan membuat layout:
 | Partisi | Ukuran | Format | Fungsi |
 | --- | ---: | --- | --- |
 | 1 | 512 MiB | FAT32 / EFI System Partition | Limine UEFI dan kernel |
-| 2 | Sisa sampai batas FAT32 | FAT32 | Root filesystem permanen `/` |
+| 2 | Sisa disk (dalam batas EXT2) | EXT2 | Root filesystem permanen `/` |
 
 Installer menyalin `BOOTX64.EFI`, kernel ELF yang sedang berjalan, dan
 `limine.conf` ke ESP. Ia juga membuat direktori sistem awal dan marker
@@ -80,10 +80,10 @@ atau restart.
 3. Buka firmware boot menu.
 4. Pastikan UEFI aktif dan pilih disk OCTAGRAM.
 
-Di log kernel, instalasi sukses harus menampilkan salah satu pesan berikut:
+Di log kernel, instalasi sukses harus menampilkan pesan berikut:
 
 ```text
-[rootfs] persistent FAT32 root selected from sata0p2
+[rootfs] persistent EXT2 root selected from sata0p2
 ```
 
 Jika muncul `using volatile RAMFS`, sistem belum menggunakan root permanen.
@@ -107,7 +107,7 @@ Restart tanpa flashdisk, lalu:
 cat /home/octagram/persistence-test.txt
 ```
 
-Jika isi file tetap ada dan log menunjukkan persistent FAT32 root, root
+Jika isi file tetap ada dan log menunjukkan persistent EXT2 root, root
 filesystem dijalankan dari disk internal.
 
 ## B. Instalasi dari Linux/WSL (jalur pengembang)
@@ -119,8 +119,7 @@ sudo tools/install-disk.sh /dev/sdX
 ```
 
 Ganti `/dev/sdX` dengan **whole disk** yang benar, bukan partisi. Script host
-membuat ESP FAT32 dan root EXT2. Kernel mendeteksi marker root pada kedua tipe
-filesystem tersebut.
+membuat ESP FAT32 dan root EXT2. Kernel mendeteksi marker root EXT2 tersebut.
 
 Jalur host memerlukan Linux/WSL; jalur A tidak.
 
@@ -131,12 +130,12 @@ Jalur host memerlukan Linux/WSL; jalur A tidak.
   oleh installer internal.
 - **UEFI saja** untuk layout installer internal. Instalasi BIOS/Legacy belum
   disediakan.
-- Root internal installer memakai FAT32. FAT32 tidak memiliki journaling,
-  symlink, atau permission POSIX penuh; fitur filesystem tersebut memiliki
-  keterbatasan dibanding EXT2.
-- FAT32 memiliki batas ukuran volume/file 32-bit; pada disk yang sangat besar
-  ruang root dipotong ke batas yang didukung dan sisa disk dibiarkan kosong.
-- Root EXT2 dari jalur host juga belum memiliki journaling. Shutdown paksa
-  ketika ada penulisan dapat merusak metadata filesystem.
+- Root filesystem internal menggunakan EXT2 dengan blok 4 KiB, inode 128 byte,
+  sparse superblocks, dan tanpa journaling. Shutdown paksa ketika ada penulisan
+  dapat merusak metadata filesystem; lakukan shutdown dengan benar dan simpan
+  backup.
+- EFI System Partition tetap FAT32 sesuai persyaratan UEFI.
+- EXT2 memakai 32-bit block numbering; installer membatasi ukuran partisi pada
+  kapasitas yang didukung kernel dan menyisakan ruang disk berlebih tanpa partisi.
 - Sebelum mencoba pada hardware, uji terlebih dahulu di QEMU dengan disk virtual
   kosong. Jangan gunakan disk yang berisi data penting.

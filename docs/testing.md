@@ -138,3 +138,8 @@ pthread TSD isolation and destructors: PASS
 The test checks that two threads can store different values under the same
 key, that the main thread's value remains isolated, and that key destructors may repopulate a value and run again on a later
 POSIX destructor iteration.
+
+
+The `posix_spawn_demo` also appends twelve file actions to one action object,
+exercising dynamic growth beyond the former fixed eight-action limit, and
+checks the 4095-byte `addopen` path bound.

@@ -91,6 +91,39 @@ pub fn terminal_print(text: &str) {
     terminal_print_to(OUTPUT_TERMINAL.load(Ordering::Acquire), text);
 }
 
+/// Replace the current output row in-place using ASCII text.
+/// The terminal cursor remains at column zero so a following newline advances
+/// to the row below the progress display.
+pub fn terminal_replace_current_line(text: &str) {
+    let terminal = OUTPUT_TERMINAL.load(Ordering::Acquire);
+    let Some(state) = TERMINALS.get(terminal) else {
+        return;
+    };
+    let mut state = state.lock();
+    let framebuffer = Framebuffer::get();
+    let (columns, rows) = state.dimensions(framebuffer.as_ref());
+    if state.row >= rows {
+        return;
+    }
+
+    let row = state.row;
+    let bytes = text.as_bytes();
+    for column in 0..columns {
+        let byte = bytes
+            .get(column)
+            .copied()
+            .filter(|byte| byte.is_ascii())
+            .unwrap_or(b' ');
+        state.cells[row][column] = byte as u16;
+        if terminal == active_terminal()
+            && let Some(framebuffer) = framebuffer.as_ref()
+        {
+            draw_character(framebuffer, column, row, byte);
+        }
+    }
+    state.column = 0;
+}
+
 /// Write text to a specific virtual terminal.
 pub fn terminal_print_to(terminal: usize, text: &str) {
     let Some(state) = TERMINALS.get(terminal) else {

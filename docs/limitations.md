@@ -32,6 +32,8 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
 - Detached pthread belum didukung (`pthread_detach` dan create dengan
   `PTHREAD_CREATE_DETACHED` mengembalikan `ENOTSUP`); stack size thread joinable
   dapat diatur melalui `pthread_attr_setstacksize`.
+- `posix_spawn` file actions memakai alokasi dinamis untuk jumlah action dan
+  membatasi path `addopen` hingga 4095 byte (`OCTAGRAM_SPAWN_MAX_PATH`).
 - Robust futex tersedia lewat syscall `set_robust_list`/`get_robust_list` dan
   API libc `pthread_mutexattr_setrobust`/`pthread_mutex_consistent`
   (`EOWNERDEAD`/`ENOTRECOVERABLE`). Tanpa `clone3` dan tanpa `vfork`.

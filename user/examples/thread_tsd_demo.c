@@ -76,6 +76,15 @@ int main(void)
         return 6;
     }
 
+    pthread_key_t recycled_key;
+    if (pthread_key_create(&recycled_key, NULL) != 0 ||
+        recycled_key != value_key || pthread_getspecific(recycled_key) != NULL ||
+        pthread_setspecific(recycled_key, (void *)(uintptr_t)23) != 0 ||
+        pthread_getspecific(recycled_key) != (void *)(uintptr_t)23 ||
+        pthread_key_delete(recycled_key) != 0) {
+        return 7;
+    }
+
     puts("pthread TSD isolation and destructors: PASS");
     return 0;
 }

@@ -145,9 +145,10 @@ Wrapper POSIX dasar melalui `<fcntl.h>`, `<sys/stat.h>`, `<unistd.h>`,
 `st_mode` dan `st_size`; `mkdir` serta `open` dengan `O_CREAT` menerapkan
 permission setelah `umask`. Perubahan permission bergantung pada dukungan
 filesystem; FAT32 belum menyediakan `chmod`. `posix_spawn`/`posix_spawnp`
-serta `waitpid` tersedia untuk menjalankan dan menunggu ELF anak. Pada build statis,
-kesalahan wrapper syscall dikembalikan sebagai `-1` dan mengisi `errno` TLS
-per-thread; shared libc masih memakai `errno` global. Fungsi
+serta `waitpid` tersedia untuk menjalankan dan menunggu ELF anak. Pada build statis, kesalahan wrapper syscall dikembalikan sebagai `-1` dan
+mengisi `errno` TLS per-thread. Shared libc menyediakan `errno` dan
+`h_errno` per-thread melalui accessor per-TID; free-list allocator shared
+dilindungi spin lock. Fungsi
 `posix_spawn` mengembalikan nomor error langsung. File actions `posix_spawn`
 mendukung `addclose`, `adddup2`, dan `addopen` (maksimal 8 aksi dengan path
 127 byte); attributes mendukung `POSIX_SPAWN_SETPGROUP`,

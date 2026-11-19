@@ -5,7 +5,7 @@ use core::arch::asm;
 
 use limine::BaseRevision;
 use limine::request::{
-    ExecutableFileRequest, ModuleRequest, RequestsEndMarker, RequestsStartMarker,
+    ExecutableFileRequest, RequestsEndMarker, RequestsStartMarker,
     StackSizeRequest,
 };
 
@@ -25,12 +25,6 @@ static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(
 #[used]
 #[unsafe(link_section = ".requests")]
 pub static EXECUTABLE_FILE_REQUEST: ExecutableFileRequest = ExecutableFileRequest::new();
-
-/// Limine preloads BOOTX64.EFI as a module so the installer can copy it to the
-/// destination EFI System Partition without needing to mount the Live medium.
-#[used]
-#[unsafe(link_section = ".requests")]
-pub static INSTALLER_MODULE_REQUEST: ModuleRequest = ModuleRequest::new();
 
 /// Define the stand and end markers for Limine requests.
 #[used]

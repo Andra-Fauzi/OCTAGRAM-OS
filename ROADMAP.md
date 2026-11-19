@@ -115,7 +115,9 @@ services, and a package/application ecosystem.
 ## Priority 4: Scheduler and threads
 
 - [x] Replace the fixed 16-task limit with a 64-task scheduler limit
-- [x] Add basic thread attributes (stack size and joinable state; detached lifecycle pending)
+- [ ] Complete POSIX thread attributes and detached lifecycle
+  - [x] Joinable threads and configurable stack size (`pthread_attr_setstacksize`)
+  - [ ] Detached thread reaping (`pthread_detach` and `PTHREAD_CREATE_DETACHED`)
 - [x] Add scheduler priorities and aging
   - [x] Prioritas nice (-20..19) per proses/thread di `ScheduledProcess`, diwarisi anak `fork` dan thread baru
   - [x] Aging anti-starvasi: umur tunggu naik tiap pemilihan, boost maksimum 39 level, seri diputus umur terlama; uji host `scheduler_prefers_higher_nice_priority` dan `scheduler_aging_prevents_starvation`

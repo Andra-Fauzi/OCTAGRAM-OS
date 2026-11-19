@@ -68,15 +68,15 @@ jobs:
         shell: bash
         run: |
           rm -f /tmp/serial-tcc.log /tmp/mon-tcc.sock
-          qemu-system-x86_64 \\
-            -M q35 \\
-            -cdrom OCTAGRAM-x86_64.iso \\
-            -boot d \\
-            -m 2G \\
-            -display none \\
-            -serial file:/tmp/serial-tcc.log \\
-            -monitor unix:/tmp/mon-tcc.sock,server,nowait \\
-            -no-reboot -no-shutdown \\
+          qemu-system-x86_64 \
+            -M q35 \
+            -cdrom OCTAGRAM-x86_64.iso \
+            -boot d \
+            -m 2G \
+            -display none \
+            -serial file:/tmp/serial-tcc.log \
+            -monitor unix:/tmp/mon-tcc.sock,server,nowait \
+            -no-reboot -no-shutdown \
             >/tmp/qemu-tcc.stderr 2>&1 &
           qemu_pid=$!
           trap 'kill "$qemu_pid" 2>/dev/null || true' EXIT

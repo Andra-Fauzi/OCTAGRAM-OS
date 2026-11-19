@@ -253,3 +253,21 @@ No milestone is complete until:
 3. It is seeded into the runtime/VFS when required.
 4. It has a focused positive and negative test.
 5. Documentation records unsupported behavior explicitly.
+
+
+## Priority 9: Documentation and contributor workflow
+
+- [x] Add a central development guide with a map of the main kernel and userspace files
+- [x] Document the boot sequence and subsystem initialization order
+- [x] Document the clean build dependency order, including embedded userspace binaries and the `ld.lld` requirement
+- [x] Add a PCI driver tutorial covering BDF discovery, device-model matching, BAR/MMIO, DMA, interrupt handling, cleanup, and tests
+- [x] Add a USB driver tutorial separating PCI host-controller drivers from USB interface class drivers
+- [x] Link the development guide and driver tutorials from the documentation index and driver overview
+- [ ] Keep source maps synchronized as files/modules are added or renamed
+- [ ] Add focused automated QEMU coverage for pthread attributes, TSD, posix_spawn, dynamic loading, USB hotplug, and block I/O
+- [ ] Validate USB controller and class-driver behavior on physical hardware; QEMU smoke tests are not a substitute
+
+Documentation milestone means the instructions match the code that exists today.
+A tutorial or source-map entry does not imply that every device, controller,
+POSIX feature, or architecture has been validated on real hardware.
+

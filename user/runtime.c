@@ -1569,6 +1569,8 @@ typedef struct ThreadStart {
     void *argument;
 } ThreadStart;
 
+static void oct_pthread_run_key_destructors(void);
+
 #define OCT_PTHREAD_STACK_SIZE (64u * 1024u)
 
 static void oct_pthread_start(void *opaque) __attribute__((noreturn));

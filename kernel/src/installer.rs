@@ -270,7 +270,7 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
             return Err(format!("root filesystem verification failed for {path}"));
         }
     }
-    verify_prefix(&efi, "/boot/kernel", b"\\x7FELF")
+    verify_prefix(&efi, "/boot/kernel", b"\x7FELF")
         .map_err(|error| format!("kernel read-back verification failed: {error:?}"))?;
     verify_prefix(&efi, "/EFI/BOOT/BOOTX64.EFI", b"MZ")
         .map_err(|error| format!("UEFI loader read-back verification failed: {error:?}"))?;

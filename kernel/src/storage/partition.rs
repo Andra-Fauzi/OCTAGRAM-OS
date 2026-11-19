@@ -5,7 +5,6 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::sync::Arc;
 
 use super::block::{BlockDevice, BlockDeviceRef, BlockError, SECTOR_SIZE};
 
@@ -537,7 +536,7 @@ mod tests {
     #[test]
     fn installer_rejects_disks_smaller_than_sixteen_gib_before_writing() {
         let disk = SparseDisk::new(1024 * 1024);
-        assert_eq!(create_octagram_gpt(disk.as_ref()), Err(BlockError::Unsupported));
+        assert_eq!(create_octagram_gpt(&disk), Err(BlockError::Unsupported));
         assert!(disk.data.lock().is_empty());
     }
 }

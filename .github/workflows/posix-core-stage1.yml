@@ -5,6 +5,7 @@ on:
     branches:
       - feature/posix-core-stage1
       - feature/persistent-root-install
+      - feature/native-self-hosting
   pull_request:
     branches:
       - trunk

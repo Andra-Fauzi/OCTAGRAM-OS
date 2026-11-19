@@ -373,6 +373,17 @@ fn live_boot_files() -> Option<(&'static [u8], &'static [u8])> {
     Some((kernel, loader?))
 }
 
+/// Fail closed when formatting because the source Live disk cannot be identified.
+pub(crate) fn ensure_safe_format_target(device: &dyn BlockDevice) -> Result<(), &'static str> {
+    if !boot_source_identity_available() {
+        return Err("Limine did not report the source disk identity; refusing to format a disk that might contain the Live system");
+    }
+    if is_boot_source_device(device) {
+        return Err("refusing to format the disk from which Limine loaded this kernel");
+    }
+    Ok(())
+}
+
 fn boot_source_identity_available() -> bool {
     crate::EXECUTABLE_FILE_REQUEST
         .get_response()

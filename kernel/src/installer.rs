@@ -359,7 +359,7 @@ fn live_boot_files() -> Option<(&'static [u8], &'static [u8])> {
     }
     let kernel = unsafe { core::slice::from_raw_parts(executable.addr(), kernel_size) };
 
-    let modules_response = crate::INSTALLER_MODULE_REQUEST.get_response()?;
+    let modules_response = crate::drivers::wifi_firmware::MODULE_REQUEST.get_response()?;
     let mut loader = None;
     for module in modules_response.modules() {
         if module.path().to_bytes().ends_with(b"/BOOTX64.EFI") {

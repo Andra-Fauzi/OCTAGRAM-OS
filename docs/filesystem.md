@@ -1,7 +1,7 @@
 # Filesystem dan VFS
 
 `kernel/src/fs/mod.rs` berisi VFS, router mount, dan tipe node. Dua filesystem
-in-memory tersedia: **RAMFS** untuk root dan **devfs** untuk `/dev`. Filesystem
+in-memory tersedia: **RAMFS** sebagai root rescue dan **devfs** untuk `/dev`. Filesystem
 on-disk (FAT32 dan ext2) berada di `kernel/src/storage/` dan didokumentasikan di
 [storage.md](storage.md).
 
@@ -45,7 +45,7 @@ sendiri, sedangkan daftar mount bersifat global.
 /tmp         berkas sementara
 ```
 
-Saat tidak ada instalasi disk, root fallback adalah RAMFS dan isinya hilang saat reboot. Pada instalasi hard disk, kernel memilih EXT2 sebagai `/` jika partisi memiliki marker `/etc/octagram-root`; file dan direktori sistem kemudian persisten. Lihat [panduan instalasi hard disk](install-to-disk.md). Pengaturan identitas dan kata sandi di `/etc/shadow`
+Saat tidak ada instalasi disk, root fallback adalah RAMFS dan isinya hilang saat reboot. Pada instalasi hard disk, kernel memilih EXT2 atau FAT32 sebagai `/` jika partisi GPT bertipe Linux filesystem memiliki marker `/etc/octagram-root`; file dan direktori sistem kemudian persisten. FAT32 tidak mendukung symlink dan permission POSIX penuh. Lihat [panduan instalasi hard disk](install-to-disk.md). Pengaturan identitas dan kata sandi di `/etc/shadow`
 dijelaskan di [auth.md](auth.md); pengelolaan direktori `/apps` dijelaskan di
 [packages.md](packages.md).
 

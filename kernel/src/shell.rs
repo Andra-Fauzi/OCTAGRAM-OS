@@ -148,6 +148,14 @@ async fn execute(
         "as" => run_toolchain_command("as", current_dir, arguments),
         "ld" => run_toolchain_command("ld", current_dir, arguments),
         "cc" => run_toolchain_command("cc", current_dir, arguments),
+        "tcc" => run_external_program(
+            current_dir,
+            "tcc.elf",
+            arguments,
+            program_path,
+            environment,
+            terminal,
+        ),
         "run" => run_program(current_dir, arguments, environment, terminal),
         "runp" => run_parallel_programs(current_dir, arguments, environment, terminal),
         _ => run_external_program(
@@ -260,6 +268,7 @@ const HELP_ENTRIES: &[&str] = &[
     "as <input.s> -o <out.o> assemble supported x86_64 source",
     "ld <input.o> -o <out.elf> link a native toolchain object",
     "cc <input.c> -o <out.elf> compile the kernel C subset",
+    "tcc <input.c> [options] compile C with native TinyCC",
     "tcc <input.c> [-o <out.elf>] compile C with TinyCC",
     "echo <text>            print text",
     "run <path>             run a static x86_64 ELF",

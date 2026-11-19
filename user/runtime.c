@@ -6305,9 +6305,7 @@ void *malloc(size_t size)
                     *free_link = header->next_free;
                 }
                 header->next_free = NULL;
-#if defined(OCTAGRAM_SHARED)
                 oct_allocator_lock_release();
-#endif
                 return header + 1;
             }
             free_link = &header->next_free;
@@ -6368,14 +6366,10 @@ void free(void *pointer)
         return;
     }
     AllocationHeader *header = (AllocationHeader *)pointer - 1;
-#if defined(OCTAGRAM_SHARED)
     oct_allocator_lock_acquire();
-#endif
     header->next_free = free_list;
     free_list = header;
-#if defined(OCTAGRAM_SHARED)
     oct_allocator_lock_release();
-#endif
 }
 
 void *calloc(size_t count, size_t size)

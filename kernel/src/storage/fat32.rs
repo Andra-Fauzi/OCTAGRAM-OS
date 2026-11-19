@@ -124,6 +124,15 @@ pub struct Fat32 {
 
 impl Fat32 {
     pub fn format(device: &dyn BlockDevice) -> Result<(), FsError> {
+        Self::format_with_progress(device, |_, _| {})
+    }
+
+    /// Format FAT32 and report bytes written while clearing the reserved and
+    /// initial data area. The total reflects this formatter's actual bulk I/O.
+    pub fn format_with_progress(
+        device: &dyn BlockDevice,
+        mut progress: impl FnMut(u64, u64),
+    ) -> Result<(), FsError> {
         const RESERVED_SECTORS: u32 = 32;
         const FAT_COUNT: u64 = 2;
         const MIN_FAT32_CLUSTERS: u64 = 65_525;
@@ -161,13 +170,16 @@ impl Fat32 {
 
         let clear_end = data_start + sectors_per_cluster as u64;
         let zeroes = [0u8; SECTOR_SIZE * 8];
+        let total_bytes = clear_end.saturating_mul(SECTOR_SIZE as u64);
         let mut lba = 0;
+        progress(0, total_bytes);
         while lba < clear_end {
             let count = (clear_end - lba).min(8) as usize;
             device
                 .write_sectors(lba, &zeroes[..count * SECTOR_SIZE])
                 .map_err(|_| FsError::IoError)?;
             lba += count as u64;
+            progress(lba.saturating_mul(SECTOR_SIZE as u64), total_bytes);
         }
 
         let mut boot = [0u8; SECTOR_SIZE];

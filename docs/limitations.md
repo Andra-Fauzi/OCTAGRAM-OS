@@ -29,6 +29,7 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
 - `read()` console dan `read()` dari tty yang dibuka lewat path
   (`/dev/stdin`, `/dev/tty*`, `/dev/console`) sama-sama scheduler-aware; tidak
   ada jalur tty yang menahan CPU di kernel saat masih ada proses lain.
+- POSIX thread-specific data (`pthread_key_*`) memiliki maksimum 64 key per proses lifetime; key yang dihapus belum didaur ulang.
 - Robust futex tersedia lewat syscall `set_robust_list`/`get_robust_list` dan
   API libc `pthread_mutexattr_setrobust`/`pthread_mutex_consistent`
   (`EOWNERDEAD`/`ENOTRECOVERABLE`). Tanpa `clone3` dan tanpa `vfork`.

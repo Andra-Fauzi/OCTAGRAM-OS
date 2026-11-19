@@ -303,7 +303,7 @@ fn verify_prefix(
 ) -> Result<(), FsError> {
     let mut actual = alloc::vec![0u8; expected.len()];
     let count = filesystem.read(path, 0, &mut actual)?;
-    if count != expected.len() || actual != expected {
+    if count != expected.len() || actual.as_slice() != expected {
         return Err(FsError::InvalidData);
     }
     Ok(())

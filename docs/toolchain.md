@@ -48,12 +48,19 @@ Direktori yang diharapkan saat runtime: `/lib/tcc` (binary dan library),
 Header yang dipasang adalah header `user/include/`, sehingga program yang
 dikompilasi TinyCC memakai ABI dan deklarasi yang sama dengan program bawaan.
 
-Catatan: `help` menyebut perintah `tcc <input.c> -o <out.elf>`, tetapi cabang
-`tcc` belum ada di `match` shell. Untuk sekarang jalankan binary-nya langsung:
+Perintah `tcc` kini menjadi alias shell untuk executable native `/bin/tcc.elf`.
+Ia menerima argumen TinyCC secara langsung, sehingga pola compile dan eksekusi
+program sederhana adalah:
 
 ```
-run /bin/tcc.elf -o /tmp/a.elf /tmp/a.c
+tcc -o /tmp/a.elf /tmp/a.c
+run /tmp/a.elf
 ```
+
+Perintah `cc` tetap menjalankan compiler C-subset eksperimental di kernel;
+`as` dan `ld` juga tetap memakai toolchain mini. Jangan samakan ketiganya
+dengan assembler/linker ELF lengkap. Jalur TinyCC perlu divalidasi dengan
+program nyata dan tidak otomatis membuktikan seluruh kompatibilitas C/POSIX.
 
 ## Target Rust userland
 

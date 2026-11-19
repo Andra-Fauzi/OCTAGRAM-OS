@@ -64,6 +64,18 @@ jobs:
       - name: Build bootable ISO
         run: make all
 
+      - name: Inspect native TinyCC fault location
+        if: always()
+        run: |
+          if [ -f user/build/tcc.elf ]; then
+            echo "TinyCC ELF headers and entry point:"
+            readelf -h user/build/tcc.elf
+            echo "Instructions around the guest fault address 0x402a2e:"
+            objdump -d --start-address=0x402a00 --stop-address=0x402a60 user/build/tcc.elf || true
+          else
+            echo "TinyCC guest ELF was not produced at user/build/tcc.elf"
+          fi
+
       - name: QEMU native TinyCC compile and run smoke test
         shell: bash
         run: |

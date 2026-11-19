@@ -276,3 +276,29 @@ Documentation milestone means the instructions match the code that exists today.
 A tutorial or source-map entry does not imply that every device, controller,
 POSIX feature, or architecture has been validated on real hardware.
 
+
+
+## Priority 10: Native self-hosting (jalur strategis)
+
+Tujuan: OCTAGRAM mengedit source, membangun userspace dan kernel, menguji,
+membuat image bootable, memasang ke slot nonaktif, dan reboot ke hasil build
+sendiri tanpa host dalam workflow normal.
+
+Rencana teknis dan audit baseline rinci berada di
+[Native Self-Hosting Roadmap](docs/native-self-hosting-roadmap.md).
+Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate.
+
+- [ ] M0: baseline build/test dan manifest artefak yang reproducible
+- [ ] M1: native developer substrate, editor terminal, source tree persisten
+- [ ] M2: native C toolchain (TinyCC + assembler/linker) teruji end-to-end
+- [ ] M3: native build orchestrator dengan dependency dan incremental rebuild
+- [ ] M4: bootstrap `rustc`, Rust `core/alloc`, lalu Cargo native/offline
+- [ ] M5: build kernel Rust sepenuhnya dari dalam OCTAGRAM
+- [ ] M6: native disk/boot image builder dan installer
+- [ ] M7: A/B update, verifikasi, rollback, dan bootstrap proof
+
+Status awal pada branch roadmap: fondasi userspace, TinyCC, toolchain mini,
+Rust `no_std`, ELF loader, dan installer persisten sudah ada. Tidak ada milestone
+self-hosting yang dianggap selesai pada saat roadmap ini dibuat. Build Rust yang
+menggunakan Cargo host tetap dikategorikan cross-build; QEMU smoke test baseline
+juga masih memiliki kegagalan yang dicatat di dokumen audit.

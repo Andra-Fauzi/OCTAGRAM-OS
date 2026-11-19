@@ -2297,7 +2297,18 @@ mod tests {
             bytes: Mutex::new(vec![0; 64 * 1024 * 1024]),
         });
 
-        Ext2::format(disk.as_ref()).unwrap();
+        let mut progress_updates = alloc::vec::Vec::new();
+        Ext2::format_with_progress(disk.as_ref(), |written, total| {
+            progress_updates.push((written, total));
+        })
+        .unwrap();
+        assert!(!progress_updates.is_empty());
+        assert_eq!(progress_updates.first().copied(), Some((0, progress_updates[0].1)));
+        assert!(progress_updates.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+        let (written, total) = *progress_updates.last().unwrap();
+        assert_eq!(written, total);
+        assert!(total > 0);
+
         let mut filesystem = Ext2::mount(disk.clone()).unwrap();
         assert_eq!(filesystem.metadata("/").unwrap().node_type, NodeType::Directory);
         filesystem.create_dir("/etc").unwrap();

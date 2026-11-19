@@ -45,7 +45,7 @@ sendiri, sedangkan daftar mount bersifat global.
 /tmp         berkas sementara
 ```
 
-Saat tidak ada instalasi disk, root fallback adalah RAMFS dan isinya hilang saat reboot. Pada instalasi hard disk, kernel memilih EXT2 atau FAT32 sebagai `/` jika partisi GPT bertipe Linux filesystem memiliki marker `/etc/octagram-root`; file dan direktori sistem kemudian persisten. FAT32 tidak mendukung symlink dan permission POSIX penuh. Lihat [panduan instalasi hard disk](install-to-disk.md). Pengaturan identitas dan kata sandi di `/etc/shadow`
+Saat tidak ada instalasi disk, root fallback adalah RAMFS dan isinya hilang saat reboot. Installer internal membuat root EXT2 pada partisi GPT bertipe Linux filesystem dengan marker `/etc/octagram-root`; FAT32 masih dikenali untuk kompatibilitas dengan instalasi eksperimental yang lebih lama. Root EXT2 menyediakan permission POSIX dan symlink, tetapi belum memiliki journaling. Lihat [panduan instalasi hard disk](install-to-disk.md). Pengaturan identitas dan kata sandi di `/etc/shadow`
 dijelaskan di [auth.md](auth.md); pengelolaan direktori `/apps` dijelaskan di
 [packages.md](packages.md).
 

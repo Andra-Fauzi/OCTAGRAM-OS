@@ -4255,7 +4255,8 @@ static int posix_spawn_impl(pid_t *pid, const char *path,
     }
     if (file_actions != NULL &&
         (file_actions->count < 0 ||
-         file_actions->count > OCTAGRAM_SPAWN_MAX_FILE_ACTIONS)) {
+         (size_t)file_actions->count > file_actions->capacity ||
+         (file_actions->count != 0 && file_actions->actions == NULL))) {
         return EINVAL;
     }
     if (attributes != NULL &&

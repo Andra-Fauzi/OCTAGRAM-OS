@@ -76,7 +76,7 @@ Targets are rebuilt on every invocation; shell operators and implicit rules are 
             "-B" => {}
             "-n" | "--dry-run" => dry_run = true,
             "-s" | "--silent" => silent = true,
-            "-j1" => {},
+            "-j1" => {}
             "-f" | "-C" => {
                 index += 1;
                 let Some(value) = arguments.get(index) else {
@@ -405,7 +405,15 @@ fn build_target(
     let first = rule.dependencies.first().map(String::as_str).unwrap_or("");
     let all = rule.dependencies.join(" ");
     for recipe in &rule.recipes {
-        run_recipe(recipe, &rule.target, first, &all, &makefile.variables, dry_run, silent)?;
+        run_recipe(
+            recipe,
+            &rule.target,
+            first,
+            &all,
+            &makefile.variables,
+            dry_run,
+            silent,
+        )?;
     }
     built.push(target.to_string());
     Ok(())

@@ -12,8 +12,10 @@ libc OCTAGRAM (`user/runtime.c`) — bukan glibc.
 - Nomor syscall, nilai balik, dan batas buffer: [syscall-abi.md](syscall-abi.md).
 - Pada executable statis, `errno` dan `h_errno` memakai TLS statis
   (`-DOCTAGRAM_TLS_ERRNO`). Shared libc memakai accessor
-  `__errno_location()`/`__h_errno_location()` dengan slot per-TID; allocator
-  shared libc melindungi free-list dari akses bersamaan.
+  `__errno_location()`/`__h_errno_location()` dengan slot per-TID. Allocator
+  melindungi free-list dari akses bersamaan pada build statis maupun shared.
+  `fork()` mengunci metadata allocator/TSD/robust-list sebelum snapshot address
+  space agar child tidak mewarisi spin lock sibling yang sedang ditahan.
 
 ## Entry point dan exit
 

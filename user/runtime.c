@@ -1713,6 +1713,13 @@ struct oct_robust_head {
 static struct oct_robust_head oct_robust_heads[OCT_MAX_ROBUST_HEADS];
 static volatile int oct_robust_head_lock;
 
+static void oct_robust_head_lock_acquire(void)
+{
+    while (__sync_lock_test_and_set(&oct_robust_head_lock, 1)) {
+        __asm__ volatile ("pause");
+    }
+}
+
 static struct oct_robust_head *oct_robust_head_for_self(void)
 {
     unsigned long tid = (unsigned long)pthread_self();
@@ -1725,9 +1732,7 @@ static struct oct_robust_head *oct_robust_head_for_self(void)
         }
     }
 
-    while (__sync_lock_test_and_set(&oct_robust_head_lock, 1)) {
-        /* putaran pendek; pemilik lock hanya mengisi satu slot */
-    }
+    oct_robust_head_lock_acquire();
     struct oct_robust_head *head = NULL;
     for (unsigned int i = 0; i < OCT_MAX_ROBUST_HEADS; ++i) {
         if (oct_robust_heads[i].tid == tid && oct_robust_heads[i].registered) {
@@ -6882,17 +6887,21 @@ int execve(const char *path, char *const arguments[], char *const environment[])
 
 pid_t fork(void)
 {
-    pid_t result = (pid_t)posix_result(oct_fork());
-    if (result == 0) {
-        /* Only the calling thread survives in the child. Do not inherit a
-         * userspace spin lock held by a suspended sibling thread. */
-        __sync_lock_release(&oct_allocator_lock);
-        __sync_lock_release(&oct_pthread_key_lock);
-        __sync_lock_release(&oct_robust_head_lock);
+    /* Serialize libc metadata before the kernel snapshots this address space.
+     * The child inherits these locks held and releases its private copies below. */
+    oct_allocator_lock_acquire();
+    oct_pthread_key_lock_acquire();
+    oct_robust_head_lock_acquire();
 #if defined(OCTAGRAM_SHARED)
-        __sync_lock_release(&oct_runtime_state_lock);
+    oct_runtime_state_lock_acquire();
 #endif
-    }
+    pid_t result = (pid_t)posix_result(oct_fork());
+    __sync_lock_release(&oct_robust_head_lock);
+    __sync_lock_release(&oct_pthread_key_lock);
+    __sync_lock_release(&oct_allocator_lock);
+#if defined(OCTAGRAM_SHARED)
+    __sync_lock_release(&oct_runtime_state_lock);
+#endif
     return result;
 }
 

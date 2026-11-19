@@ -84,7 +84,7 @@ char **environ;
 #if defined(OCTAGRAM_TLS_ERRNO) && !defined(OCTAGRAM_SHARED)
 __thread int errno;
 __thread int h_errno;
-#else
+#elif !defined(OCTAGRAM_SHARED)
 int errno;
 int h_errno;
 #endif
@@ -1575,6 +1575,9 @@ static void oct_pthread_start(void *opaque) __attribute__((noreturn));
 
 static void oct_pthread_start(void *opaque)
 {
+    /* Initialize shared-libc state before user code can observe errno. */
+    (void)__errno_location();
+    (void)__h_errno_location();
     ThreadStart start = *(ThreadStart *)opaque;
     free(opaque);
     void *result = start.function(start.argument);
@@ -6063,6 +6066,22 @@ int sprintf(char *buffer, const char *format, ...)
     return result;
 }
 
+#if defined(OCTAGRAM_SHARED)
+static volatile int oct_allocator_lock;
+
+static void oct_allocator_lock_acquire(void)
+{
+    while (__sync_lock_test_and_set(&oct_allocator_lock, 1)) {
+        __asm__ volatile ("pause");
+    }
+}
+
+static void oct_allocator_lock_release(void)
+{
+    __sync_lock_release(&oct_allocator_lock);
+}
+#endif
+
 void *malloc(size_t size)
 {
     if (size == 0) {
@@ -6075,46 +6094,61 @@ void *malloc(size_t size)
     size = (size + 15) & ~(size_t)15;
 
     for (;;) {
-    AllocationHeader **free_link = &free_list;
-    while (*free_link != NULL) {
-        AllocationHeader *header = *free_link;
-        if (header->size >= size) {
-            if (header->size - size >= sizeof(*header) + 16) {
-                AllocationHeader *remainder =
-                    (AllocationHeader *)((unsigned char *)(header + 1) + size);
-                remainder->size = header->size - size - sizeof(*header);
-                remainder->next_free = header->next_free;
-                *free_link = remainder;
-                header->size = size;
-            } else {
-                *free_link = header->next_free;
+#if defined(OCTAGRAM_SHARED)
+        oct_allocator_lock_acquire();
+#endif
+        AllocationHeader **free_link = &free_list;
+        while (*free_link != NULL) {
+            AllocationHeader *header = *free_link;
+            if (header->size >= size) {
+                if (header->size - size >= sizeof(*header) + 16) {
+                    AllocationHeader *remainder =
+                        (AllocationHeader *)((unsigned char *)(header + 1) + size);
+                    remainder->size = header->size - size - sizeof(*header);
+                    remainder->next_free = header->next_free;
+                    *free_link = remainder;
+                    header->size = size;
+                } else {
+                    *free_link = header->next_free;
+                }
+                header->next_free = NULL;
+#if defined(OCTAGRAM_SHARED)
+                oct_allocator_lock_release();
+#endif
+                return header + 1;
             }
-            header->next_free = NULL;
-            return header + 1;
-            }
-        free_link = &header->next_free;
+            free_link = &header->next_free;
         }
+#if defined(OCTAGRAM_SHARED)
+        oct_allocator_lock_release();
+#endif
 
-    if (size > SIZE_MAX - sizeof(AllocationHeader)) {
-        errno = ENOMEM;
-        return NULL;
-    }
-    size_t requested = size + sizeof(AllocationHeader);
-    size_t mapping_size = requested > 65536 ? requested : 65536;
-    if (mapping_size > SIZE_MAX - 4095) {
-        errno = ENOMEM;
-        return NULL;
-    }
-    mapping_size = (mapping_size + 4095) & ~(size_t)4095;
-    void *mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (mapping == MAP_FAILED) {
-        return NULL;
-    }
-    AllocationHeader *header = mapping;
-    header->size = mapping_size - sizeof(*header);
-    header->next_free = free_list;
-    free_list = header;
+        if (size > SIZE_MAX - sizeof(AllocationHeader)) {
+            errno = ENOMEM;
+            return NULL;
+        }
+        size_t requested = size + sizeof(AllocationHeader);
+        size_t mapping_size = requested > 65536 ? requested : 65536;
+        if (mapping_size > SIZE_MAX - 4095) {
+            errno = ENOMEM;
+            return NULL;
+        }
+        mapping_size = (mapping_size + 4095) & ~(size_t)4095;
+        void *mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (mapping == MAP_FAILED) {
+            return NULL;
+        }
+        AllocationHeader *header = mapping;
+        header->size = mapping_size - sizeof(*header);
+#if defined(OCTAGRAM_SHARED)
+        oct_allocator_lock_acquire();
+#endif
+        header->next_free = free_list;
+        free_list = header;
+#if defined(OCTAGRAM_SHARED)
+        oct_allocator_lock_release();
+#endif
     }
 }
 
@@ -6147,8 +6181,14 @@ void free(void *pointer)
         return;
     }
     AllocationHeader *header = (AllocationHeader *)pointer - 1;
+#if defined(OCTAGRAM_SHARED)
+    oct_allocator_lock_acquire();
+#endif
     header->next_free = free_list;
     free_list = header;
+#if defined(OCTAGRAM_SHARED)
+    oct_allocator_lock_release();
+#endif
 }
 
 void *calloc(size_t count, size_t size)
@@ -6207,9 +6247,105 @@ void qsort(void *base, size_t count, size_t size,
     }
 }
 
+#if defined(OCTAGRAM_SHARED)
+#define OCT_MAX_RUNTIME_THREAD_STATES 128u
+
+typedef struct OctRuntimeThreadState {
+    volatile uint64_t tid;
+    int errno_value;
+    int h_errno_value;
+} OctRuntimeThreadState;
+
+static OctRuntimeThreadState oct_runtime_thread_states[OCT_MAX_RUNTIME_THREAD_STATES];
+static OctRuntimeThreadState oct_runtime_fallback_state;
+static volatile int oct_runtime_state_lock;
+
+static void oct_runtime_state_lock_acquire(void)
+{
+    while (__sync_lock_test_and_set(&oct_runtime_state_lock, 1)) {
+        __asm__ volatile ("pause");
+    }
+}
+
+static void oct_runtime_state_lock_release(void)
+{
+    __sync_lock_release(&oct_runtime_state_lock);
+}
+
+static OctRuntimeThreadState *oct_runtime_state_for_thread(void)
+{
+    int64_t current_tid = oct_thread_self();
+    if (current_tid <= 0) {
+        return &oct_runtime_fallback_state;
+    }
+    uint64_t tid = (uint64_t)current_tid;
+
+    for (unsigned int i = 0; i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
+        if (oct_runtime_thread_states[i].tid == tid) {
+            return &oct_runtime_thread_states[i];
+        }
+    }
+
+    oct_runtime_state_lock_acquire();
+    OctRuntimeThreadState *slot = NULL;
+
+    for (unsigned int i = 0; i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
+        if (oct_runtime_thread_states[i].tid == tid) {
+            slot = &oct_runtime_thread_states[i];
+            break;
+        }
+    }
+
+    for (unsigned int i = 0; slot == NULL &&
+         i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
+        if (oct_runtime_thread_states[i].tid == 0) {
+            slot = &oct_runtime_thread_states[i];
+        }
+    }
+
+    for (unsigned int i = 0; slot == NULL &&
+         i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
+        uint64_t other_tid = oct_runtime_thread_states[i].tid;
+        if (other_tid == 0) {
+            continue;
+        }
+        uint64_t robust_head = 0;
+        uint64_t robust_length = 0;
+        if (oct_get_robust_list(other_tid, &robust_head, &robust_length) == -ESRCH) {
+            slot = &oct_runtime_thread_states[i];
+        }
+    }
+
+    if (slot != NULL && slot->tid != tid) {
+        slot->errno_value = 0;
+        slot->h_errno_value = 0;
+        __sync_synchronize();
+        slot->tid = tid;
+    }
+    oct_runtime_state_lock_release();
+
+    /* The kernel scheduler limit is 64 tasks; spare entries cover stale IDs
+     * and state inherited by a forked address space. */
+    return slot != NULL ? slot : &oct_runtime_fallback_state;
+}
+#endif
+
 int *__errno_location(void)
 {
+#if defined(OCTAGRAM_SHARED)
+    return &oct_runtime_state_for_thread()->errno_value;
+#else
     return &errno;
+#endif
+}
+
+int *__h_errno_location(void)
+{
+#if defined(OCTAGRAM_SHARED)
+    return &oct_runtime_state_for_thread()->h_errno_value;
+#else
+    return &h_errno;
+#endif
 }
 
 void __assert_fail(const char *expression, const char *file, unsigned int line,

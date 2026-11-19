@@ -323,3 +323,17 @@ event translation rather than trying to emulate hardware in a unit test.
 - [ ] Resource dilepas pada jalur gagal dan unplug/hot-remove.
 - [ ] Ada tes untuk parsing/state transition dan build target kernel berhasil.
 - [ ] Dokumentasi menjelaskan asumsi hardware dan fitur yang belum didukung.
+
+
+## Tutorial terstruktur
+
+Dokumen ini menjelaskan kontrak umum dan resource bersama. Untuk urutan
+praktis dari mengenali device sampai membuat driver pertama, lanjutkan ke:
+
+- [Tutorial driver PCI](pci-driver-tutorial.md) — BDF, class/vendor matching,
+  device model, BAR/MMIO, DMA, interrupt, dan cleanup.
+- [Tutorial driver USB](usb-driver-tutorial.md) — beda host controller PCI
+  dengan USB interface class, parsing descriptor, transfer endpoint, class
+  driver, dan lifecycle hotplug.
+- [Peta source dan workflow pengembangan](development-guide.md) — fungsi file
+  kernel/userspace, boot sequence, build, debugging, dan checklist kontribusi.

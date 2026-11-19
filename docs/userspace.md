@@ -96,3 +96,11 @@ PATH default (`/bin`) membuat `hello.elf` bisa dijalankan sebagai `hello.elf`.
 - Tanpa `mmap` file umum, tanpa `mprotect` granular, tanpa `mremap`.
 - Tanpa NSS, `iconv`, atau locale database; hanya konversi UTF-8 bawaan.
 - Tanpa `/proc`, `/sys`, atau `sysconf` dinamis.
+
+
+## POSIX Core Stage 1
+
+- TSD key generation mencegah nilai thread lama muncul kembali setelah key dihapus dan ID-nya dipakai ulang.
+- Pthread attributes mendukung ukuran stack custom untuk thread joinable. Detached threads belum didukung (`ENOTSUP`).
+- File actions `posix_spawn` memakai kapasitas dinamis, menyimpan path secara terpisah, dan tidak dibatasi delapan aksi/127 byte path; demo menguji lebih dari delapan aksi dan batas path.
+- `fork()` mengunci metadata libc yang relevan sebelum membuat snapshot agar child tidak mewarisi lock yang sedang dipegang thread lain.

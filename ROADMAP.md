@@ -39,12 +39,15 @@ services, and a package/application ecosystem.
 
 - [x] Basic file and directory operations
 - [x] Process fork, execve, waitpid, pipes, and threads
+- [x] POSIX thread-specific data lifecycle
+  - [x] Per-thread values and up to four destructor iterations
+  - [x] Recycle deleted key IDs safely using per-thread generation counters
 - [x] Signals, poll, select, epoll, sockets, eventfd, and timerfd
 - [x] pread/pwrite/readv/writev and resource APIs
 - [x] Implement `realpath`
 - [x] Implement `execvp`
 - [x] Implement complete `posix_spawn` file actions and attributes
-  - [x] File actions `addclose`, `adddup2`, and `addopen` (8 actions, 127-byte paths)
+  - [x] File actions `addclose`, `adddup2`, and `addopen` (dynamic action list, tested beyond 8 actions, paths up to 4095 bytes)
   - [x] File actions `addchdir` dan `addchdir_np` (mengubah direktori kerja anak sebelum `execve`)
   - [x] Attributes `POSIX_SPAWN_SETPGROUP`, `SETSIGDEF`, and `SETSIGMASK`
   - [x] Attribute `POSIX_SPAWN_SETSID` (membuat sesi baru di anak lewat `setsid`, ditolak bersamaan dengan `SETPGROUP`)
@@ -111,7 +114,9 @@ services, and a package/application ecosystem.
 ## Priority 4: Scheduler and threads
 
 - [x] Replace the fixed 16-task limit with a 64-task scheduler limit
-- [x] Add basic thread attributes and detached-state handling
+- [x] Add pthread attributes and joinable thread lifecycle
+  - [x] Configurable stack size via `pthread_attr_setstacksize` / `pthread_attr_getstacksize`
+  - [ ] Detached thread reaping (`pthread_detach` and `PTHREAD_CREATE_DETACHED` return `ENOTSUP`)
 - [x] Add scheduler priorities and aging
   - [x] Prioritas nice (-20..19) per proses/thread di `ScheduledProcess`, diwarisi anak `fork` dan thread baru
   - [x] Aging anti-starvasi: umur tunggu naik tiap pemilihan, boost maksimum 39 level, seri diputus umur terlama; uji host `scheduler_prefers_higher_nice_priority` dan `scheduler_aging_prevents_starvation`
@@ -248,3 +253,21 @@ No milestone is complete until:
 3. It is seeded into the runtime/VFS when required.
 4. It has a focused positive and negative test.
 5. Documentation records unsupported behavior explicitly.
+
+
+## Priority 9: Documentation and contributor workflow
+
+- [x] Add a central development guide with a map of the main kernel and userspace files
+- [x] Document the boot sequence and subsystem initialization order
+- [x] Document the clean build dependency order, including embedded userspace binaries and the `ld.lld` requirement
+- [x] Add a PCI driver tutorial covering BDF discovery, device-model matching, BAR/MMIO, DMA, interrupt handling, cleanup, and tests
+- [x] Add a USB driver tutorial separating PCI host-controller drivers from USB interface class drivers
+- [x] Link the development guide and driver tutorials from the documentation index and driver overview
+- [ ] Keep source maps synchronized as files/modules are added or renamed
+- [ ] Add focused automated QEMU coverage for pthread attributes, TSD, posix_spawn, dynamic loading, USB hotplug, and block I/O
+- [ ] Validate USB controller and class-driver behavior on physical hardware; QEMU smoke tests are not a substitute
+
+Documentation milestone means the instructions match the code that exists today.
+A tutorial or source-map entry does not imply that every device, controller,
+POSIX feature, or architecture has been validated on real hardware.
+

@@ -108,8 +108,11 @@ belum didukung. Saat `dlclose` melepas library, loader menjalankan
 `__cxa_finalize` untuk `__dso_handle` library itu agar destructor C++ ikut
 berjalan. Binary tetap harus menggunakan syscall dan runtime
 OCTAGRAM, bukan Linux ABI atau glibc.
-Pada build statis, `errno` dan allocator free-list memakai TLS per thread;
-`liboctagram.so` saat ini masih memakai `errno` global.
+Pada build statis, `errno`, `h_errno`, dan allocator free-list memakai TLS
+per thread. Shared libc menggunakan `__errno_location()` dan
+`__h_errno_location()` dengan tabel state per-TID, serta mengunci free-list
+allocator saat alokasi/pembebasan. Ini tidak mengimplementasikan ELF TLS untuk
+shared object; TLS umum pada shared library tetap belum didukung.
 
 ## Menyesuaikan aplikasi
 

@@ -49,15 +49,10 @@ int main(int argc, char **argv)
         return getuid() == geteuid() && getgid() == getegid() ? 0 : 1;
     }
     if (argc == 2 && strcmp(argv[1], "chdir-child") == 0) {
-        char cwd[64];
-        if (getcwd(cwd, sizeof(cwd)) == NULL) {
-            return 1;
-        }
-        return strcmp(cwd, "/tmp") == 0 ? 0 : 2;
+        char cwd[64]; return getcwd(cwd, sizeof(cwd)) != NULL && strcmp(cwd, "/tmp") == 0 ? 0 : 1;
     }
     if (argc == 2 && strcmp(argv[1], "setsid-child") == 0) {
-        pid_t pid = getpid();
-        return getsid(0) == pid && getpgid(0) == pid ? 0 : 1;
+        pid_t pid = getpid(); return getsid(0) == pid && getpgid(0) == pid ? 0 : 1;
     }
     if (argc == 2 && strcmp(argv[1], "sched-child") == 0) {
         struct sched_param param = {-1};
@@ -167,6 +162,9 @@ int main(int argc, char **argv)
         memcmp(buffer, action_message, sizeof(action_message) - 1) != 0) {
         return 15;
     }
+    if (posix_spawn_file_actions_destroy(&actions) != 0) {
+        return 15;
+    }
 
     /* File actions: adddup2 and addclose feed the child's stdout to a pipe. */
     int action_pipe[2];
@@ -195,13 +193,29 @@ int main(int argc, char **argv)
         wait_for_child(pipe_child) != 0) {
         return 20;
     }
+    if (posix_spawn_file_actions_destroy(&actions) != 0) {
+        return 20;
+    }
 
-    /* Negative cases: over-long open path and unsupported attributes. */
+    /* Dynamic file-action storage grows beyond the old fixed limit. */
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        return 21;
+    }
+    for (int action_index = 0; action_index < 12; ++action_index) {
+        if (posix_spawn_file_actions_adddup2(&actions, pipe_fds[0],
+                                             pipe_fds[0]) != 0) {
+            return 21;
+        }
+    }
+    if (posix_spawn_file_actions_destroy(&actions) != 0 ||
+        posix_spawn_file_actions_init(&actions) != 0) {
+        return 21;
+    }
+    /* Reject a path longer than the documented 4095-byte limit. */
     char long_path[OCTAGRAM_SPAWN_MAX_PATH + 2];
     memset(long_path, 'a', sizeof(long_path) - 1);
     long_path[sizeof(long_path) - 1] = '\0';
-    if (posix_spawn_file_actions_init(&actions) != 0 ||
-        posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, long_path,
+    if (posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, long_path,
                                          O_WRONLY, 0644) != ENAMETOOLONG) {
         return 21;
     }
@@ -266,42 +280,19 @@ int main(int argc, char **argv)
         return 24;
     }
 
-    /* File action: addchdir mengubah direktori kerja anak sebelum execve. */
-    if (posix_spawn_file_actions_init(&actions) != 0 ||
-        posix_spawn_file_actions_addchdir(&actions, "/tmp") != 0) {
-        return 39;
-    }
-    char *chdir_arguments[] = {argv[0], "chdir-child", NULL};
-    error = posix_spawn(&child_pid, argv[0], &actions, NULL, chdir_arguments,
-                        environment);
-    if (error != 0 || wait_for_child(child_pid) != 0) {
-        return 40;
-    }
+    /* addchdir and SETSID regression coverage. */
+    if (posix_spawn_file_actions_init(&actions) != 0 || posix_spawn_file_actions_addchdir(&actions, "/tmp") != 0) return 39;
+    char *chdir_args[] = {argv[0], "chdir-child", NULL};
+    error = posix_spawn(&child_pid, argv[0], &actions, NULL, chdir_args, environment);
+    if (error != 0 || wait_for_child(child_pid) != 0) return 40;
     posix_spawn_file_actions_destroy(&actions);
-
-    /* Attribute: POSIX_SPAWN_SETSID membuat sesi baru di anak lewat setsid(). */
-    if (posix_spawnattr_init(&attributes) != 0 ||
-        posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID) != 0) {
-        return 41;
-    }
-    char *setsid_arguments[] = {argv[0], "setsid-child", NULL};
-    error = posix_spawn(&child_pid, argv[0], NULL, &attributes, setsid_arguments,
-                        environment);
-    if (error != 0 || wait_for_child(child_pid) != 0) {
-        return 42;
-    }
-
-    /* Kasus negatif: SETSID dan SETPGROUP tidak boleh aktif bersamaan -> EINVAL. */
-    if (posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID |
-                                             POSIX_SPAWN_SETPGROUP) != 0 ||
-        posix_spawnattr_setpgroup(&attributes, 0) != 0) {
-        return 43;
-    }
-    error = posix_spawn(&child_pid, argv[0], NULL, &attributes, setsid_arguments,
-                        environment);
-    if (error != EINVAL) {
-        return 44;
-    }
+    if (posix_spawnattr_init(&attributes) != 0 || posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID) != 0) return 41;
+    char *setsid_args[] = {argv[0], "setsid-child", NULL};
+    error = posix_spawn(&child_pid, argv[0], NULL, &attributes, setsid_args, environment);
+    if (error != 0 || wait_for_child(child_pid) != 0) return 42;
+    if (posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID | POSIX_SPAWN_SETPGROUP) != 0 || posix_spawnattr_setpgroup(&attributes, 0) != 0) return 43;
+    error = posix_spawn(&child_pid, argv[0], NULL, &attributes, setsid_args, environment);
+    if (error != EINVAL) return 44;
     posix_spawnattr_destroy(&attributes);
 
     /* Attributes: SETSIGMASK and SETSIGDEF together with their getters. */

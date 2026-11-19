@@ -81,10 +81,25 @@ FILE *stdout = &standard_output;
 FILE *stderr = &standard_error;
 
 char **environ;
+#if defined(OCTAGRAM_SHARED)
+typedef struct OctRuntimeThreadState {
+    volatile uint64_t pid;
+    volatile uint64_t tid;
+    int errno_value;
+    int h_errno_value;
+    void *key_values[64];
+    uint64_t key_generations[64];
+} OctRuntimeThreadState;
+
+static OctRuntimeThreadState *oct_runtime_state_for_thread(void);
+#endif
+
+int *__errno_location(void);
+int *__h_errno_location(void);
 #if defined(OCTAGRAM_TLS_ERRNO) && !defined(OCTAGRAM_SHARED)
 __thread int errno;
 __thread int h_errno;
-#else
+#elif !defined(OCTAGRAM_SHARED)
 int errno;
 int h_errno;
 #endif
@@ -1569,15 +1584,21 @@ typedef struct ThreadStart {
     void *argument;
 } ThreadStart;
 
+static void oct_pthread_run_key_destructors(void);
+
 #define OCT_PTHREAD_STACK_SIZE (64u * 1024u)
 
 static void oct_pthread_start(void *opaque) __attribute__((noreturn));
 
 static void oct_pthread_start(void *opaque)
 {
+    /* Initialize shared-libc state before user code can observe errno. */
+    (void)__errno_location();
+    (void)__h_errno_location();
     ThreadStart start = *(ThreadStart *)opaque;
     free(opaque);
     void *result = start.function(start.argument);
+    oct_pthread_run_key_destructors();
     oct_thread_exit(result);
     for (;;) {
         __asm__ volatile ("pause");
@@ -1590,15 +1611,26 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
     if (thread == NULL || start_routine == NULL) {
         return EINVAL;
     }
+    size_t stack_size = OCT_PTHREAD_STACK_SIZE;
     if (attributes != NULL) {
-        return ENOTSUP;
+        if (attributes->opaque != PTHREAD_CREATE_JOINABLE) {
+            return ENOTSUP;
+        }
+        if (attributes->stack_size < PTHREAD_STACK_MIN) {
+            return EINVAL;
+        }
+        stack_size = attributes->stack_size;
     }
 
-    uintptr_t tls_aligned_size = oct_tls_aligned_size();
-    if (tls_aligned_size > SIZE_MAX - OCT_PTHREAD_STACK_SIZE - 4095) {
+    if (stack_size > SIZE_MAX - 4095) {
         return EINVAL;
     }
-    size_t mapping_size = OCT_PTHREAD_STACK_SIZE + (size_t)tls_aligned_size;
+    size_t stack_mapping_size = (stack_size + 4095) & ~(size_t)4095;
+    uintptr_t tls_aligned_size = oct_tls_aligned_size();
+    if (tls_aligned_size > SIZE_MAX - stack_mapping_size - 4095) {
+        return EINVAL;
+    }
+    size_t mapping_size = stack_mapping_size + (size_t)tls_aligned_size;
     mapping_size = (mapping_size + 4095) & ~(size_t)4095;
     void *mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -1617,7 +1649,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
             munmap(mapping, mapping_size);
             return EINVAL;
         }
-        void *tls_base = (unsigned char *)mapping + OCT_PTHREAD_STACK_SIZE;
+        void *tls_base = (unsigned char *)mapping + stack_mapping_size;
         oct_tls_copy(tls_base, filesz, tls_size);
         thread_pointer = (unsigned char *)tls_base + tls_aligned_size;
         oct_tls_initialize_tcb(thread_pointer);
@@ -1632,7 +1664,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
     start->argument = argument;
     int64_t result = oct_thread_create(
         oct_pthread_start, start,
-        (unsigned char *)mapping + OCT_PTHREAD_STACK_SIZE,
+        (unsigned char *)mapping + stack_mapping_size,
         thread_pointer, mapping, mapping_size);
     if (result < 0) {
         free(start);
@@ -1657,6 +1689,7 @@ pthread_t pthread_self(void)
 
 void pthread_exit(void *result)
 {
+    oct_pthread_run_key_destructors();
     oct_thread_exit(result);
     for (;;) {
         __asm__ volatile ("pause");
@@ -1695,6 +1728,13 @@ struct oct_robust_head {
 static struct oct_robust_head oct_robust_heads[OCT_MAX_ROBUST_HEADS];
 static volatile int oct_robust_head_lock;
 
+static void oct_robust_head_lock_acquire(void)
+{
+    while (__sync_lock_test_and_set(&oct_robust_head_lock, 1)) {
+        __asm__ volatile ("pause");
+    }
+}
+
 static struct oct_robust_head *oct_robust_head_for_self(void)
 {
     unsigned long tid = (unsigned long)pthread_self();
@@ -1707,9 +1747,7 @@ static struct oct_robust_head *oct_robust_head_for_self(void)
         }
     }
 
-    while (__sync_lock_test_and_set(&oct_robust_head_lock, 1)) {
-        /* putaran pendek; pemilik lock hanya mengisi satu slot */
-    }
+    oct_robust_head_lock_acquire();
     struct oct_robust_head *head = NULL;
     for (unsigned int i = 0; i < OCT_MAX_ROBUST_HEADS; ++i) {
         if (oct_robust_heads[i].tid == tid && oct_robust_heads[i].registered) {
@@ -2144,7 +2182,7 @@ int pthread_condattr_setclock(pthread_condattr_t *attributes, clockid_t clock)
 int pthread_detach(pthread_t thread)
 {
     (void)thread;
-    return 0;
+    return ENOTSUP;
 }
 
 int pthread_attr_init(pthread_attr_t *attributes)
@@ -2153,6 +2191,7 @@ int pthread_attr_init(pthread_attr_t *attributes)
         return EINVAL;
     }
     attributes->opaque = PTHREAD_CREATE_JOINABLE;
+    attributes->stack_size = OCT_PTHREAD_STACK_SIZE;
     return 0;
 }
 
@@ -2162,6 +2201,28 @@ int pthread_attr_destroy(pthread_attr_t *attributes)
         return EINVAL;
     }
     attributes->opaque = 0;
+    attributes->stack_size = 0;
+    return 0;
+}
+
+int pthread_attr_setstacksize(pthread_attr_t *attributes, size_t stack_size)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    if (stack_size < PTHREAD_STACK_MIN || stack_size > SIZE_MAX - 4095) {
+        return EINVAL;
+    }
+    attributes->stack_size = stack_size;
+    return 0;
+}
+
+int pthread_attr_getstacksize(const pthread_attr_t *attributes, size_t *stack_size)
+{
+    if (attributes == NULL || stack_size == NULL || attributes->stack_size == 0) {
+        return EINVAL;
+    }
+    *stack_size = attributes->stack_size;
     return 0;
 }
 
@@ -2186,40 +2247,162 @@ int pthread_attr_getdetachstate(const pthread_attr_t *attributes, int *state)
     return 0;
 }
 
-static unsigned int oct_next_pthread_key;
-static void *oct_pthread_key_values[64];
+ #define OCT_PTHREAD_KEYS_MAX 64u
+#define OCT_PTHREAD_DESTRUCTOR_ITERATIONS 4u
+
+typedef struct OctPthreadKey {
+    void (*destructor)(void *);
+    uint64_t generation;
+    int active;
+} OctPthreadKey;
+
+static OctPthreadKey oct_pthread_keys[OCT_PTHREAD_KEYS_MAX];
+static volatile int oct_pthread_key_lock;
+
+#if !defined(OCTAGRAM_SHARED)
+static __thread void *oct_pthread_key_values_static[OCT_PTHREAD_KEYS_MAX];
+static __thread uint64_t oct_pthread_key_generations_static[OCT_PTHREAD_KEYS_MAX];
+#endif
+
+static void oct_pthread_key_lock_acquire(void)
+{
+    while (__sync_lock_test_and_set(&oct_pthread_key_lock, 1)) {
+        __asm__ volatile ("pause");
+    }
+}
+
+static void oct_pthread_key_lock_release(void)
+{
+    __sync_lock_release(&oct_pthread_key_lock);
+}
+
+static void **oct_pthread_key_values_current(void)
+{
+#if defined(OCTAGRAM_SHARED)
+    return oct_runtime_state_for_thread()->key_values;
+#else
+    return oct_pthread_key_values_static;
+#endif
+}
+
+static uint64_t *oct_pthread_key_generations_current(void)
+{
+#if defined(OCTAGRAM_SHARED)
+    return oct_runtime_state_for_thread()->key_generations;
+#else
+    return oct_pthread_key_generations_static;
+#endif
+}
 
 int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
 {
-    (void)destructor;
-    if (key == NULL || oct_next_pthread_key >= 64) {
-        return EAGAIN;
+    if (key == NULL) {
+        return EINVAL;
     }
-    *key = oct_next_pthread_key++;
-    return 0;
+    oct_pthread_key_lock_acquire();
+    for (unsigned int index = 0; index < OCT_PTHREAD_KEYS_MAX; ++index) {
+        OctPthreadKey *entry = &oct_pthread_keys[index];
+        if (entry->active) {
+            continue;
+        }
+        ++entry->generation;
+        if (entry->generation == 0) {
+            ++entry->generation;
+        }
+        entry->destructor = destructor;
+        entry->active = 1;
+        *key = index;
+        oct_pthread_key_lock_release();
+        return 0;
+    }
+    oct_pthread_key_lock_release();
+    return EAGAIN;
 }
 
 int pthread_key_delete(pthread_key_t key)
 {
-    if (key >= 64) {
+    if (key >= OCT_PTHREAD_KEYS_MAX) {
         return EINVAL;
     }
-    oct_pthread_key_values[key] = NULL;
+    oct_pthread_key_lock_acquire();
+    if (!oct_pthread_keys[key].active) {
+        oct_pthread_key_lock_release();
+        return EINVAL;
+    }
+    oct_pthread_keys[key].active = 0;
+    oct_pthread_keys[key].destructor = NULL;
+    ++oct_pthread_keys[key].generation;
+    if (oct_pthread_keys[key].generation == 0) {
+        ++oct_pthread_keys[key].generation;
+    }
+    oct_pthread_key_lock_release();
     return 0;
 }
 
 void *pthread_getspecific(pthread_key_t key)
 {
-    return key < 64 ? oct_pthread_key_values[key] : NULL;
+    if (key >= OCT_PTHREAD_KEYS_MAX) {
+        return NULL;
+    }
+    oct_pthread_key_lock_acquire();
+    int active = oct_pthread_keys[key].active;
+    uint64_t generation = oct_pthread_keys[key].generation;
+    oct_pthread_key_lock_release();
+    if (!active) {
+        return NULL;
+    }
+    uint64_t *generations = oct_pthread_key_generations_current();
+    return generations[key] == generation
+        ? oct_pthread_key_values_current()[key] : NULL;
 }
 
 int pthread_setspecific(pthread_key_t key, const void *value)
 {
-    if (key >= 64) {
+    if (key >= OCT_PTHREAD_KEYS_MAX) {
         return EINVAL;
     }
-    oct_pthread_key_values[key] = (void *)value;
+    oct_pthread_key_lock_acquire();
+    if (!oct_pthread_keys[key].active) {
+        oct_pthread_key_lock_release();
+        return EINVAL;
+    }
+    uint64_t generation = oct_pthread_keys[key].generation;
+    void **values = oct_pthread_key_values_current();
+    uint64_t *generations = oct_pthread_key_generations_current();
+    values[key] = (void *)value;
+    generations[key] = generation;
+    oct_pthread_key_lock_release();
     return 0;
+}
+static void oct_pthread_run_key_destructors(void)
+{
+    void **values = oct_pthread_key_values_current();
+    for (unsigned int iteration = 0;
+         iteration < OCT_PTHREAD_DESTRUCTOR_ITERATIONS; ++iteration) {
+        int called = 0;
+        uint64_t *generations = oct_pthread_key_generations_current();
+        for (unsigned int key = 0; key < OCT_PTHREAD_KEYS_MAX; ++key) {
+            void *value = values[key];
+            if (value == NULL) {
+                continue;
+            }
+            oct_pthread_key_lock_acquire();
+            int valid = oct_pthread_keys[key].active &&
+                generations[key] == oct_pthread_keys[key].generation;
+            void (*destructor)(void *) = valid
+                ? oct_pthread_keys[key].destructor : NULL;
+            oct_pthread_key_lock_release();
+            values[key] = NULL;
+            generations[key] = 0;
+            if (destructor != NULL) {
+                called = 1;
+                destructor(value);
+            }
+        }
+        if (!called) {
+            break;
+        }
+    }
 }
 
 int sem_init(sem_t *semaphore, int shared, unsigned int value)
@@ -3979,7 +4162,8 @@ static int apply_spawn_file_actions(
         return 0;
     }
     if (file_actions->count < 0 ||
-        file_actions->count > OCTAGRAM_SPAWN_MAX_FILE_ACTIONS) {
+        (size_t)file_actions->count > file_actions->capacity ||
+        (file_actions->count != 0 && file_actions->actions == NULL)) {
         return EINVAL;
     }
     for (int index = 0; index < file_actions->count; ++index) {
@@ -4012,9 +4196,7 @@ static int apply_spawn_file_actions(
             break;
         }
         case OCTAGRAM_SPAWN_ACTION_CHDIR:
-            if (chdir(action->path) != 0) {
-                return errno;
-            }
+            if (chdir(action->path) != 0) return errno;
             break;
         default:
             return EINVAL;
@@ -4033,11 +4215,8 @@ static int apply_spawn_attributes(const posix_spawnattr_t *attributes)
         0) {
         return ENOTSUP;
     }
-    /* POSIX: SETPGROUP dan SETSID tidak boleh aktif bersamaan. */
     if ((attributes->flags & POSIX_SPAWN_SETPGROUP) != 0 &&
-        (attributes->flags & POSIX_SPAWN_SETSID) != 0) {
-        return EINVAL;
-    }
+        (attributes->flags & POSIX_SPAWN_SETSID) != 0) return EINVAL;
     if ((attributes->flags & POSIX_SPAWN_RESETIDS) != 0) {
         /* Turunkan group lebih dulu, lalu uid efektif ke id nyata. */
         if (setgid(getgid()) != 0) {
@@ -4047,11 +4226,7 @@ static int apply_spawn_attributes(const posix_spawnattr_t *attributes)
             return errno;
         }
     }
-    if ((attributes->flags & POSIX_SPAWN_SETSID) != 0) {
-        if (setsid() < 0) {
-            return errno;
-        }
-    }
+    if ((attributes->flags & POSIX_SPAWN_SETSID) != 0 && setsid() < 0) return errno;
     if ((attributes->flags & POSIX_SPAWN_SETPGROUP) != 0) {
         if (setpgid(0, attributes->pgroup) != 0) {
             return errno;
@@ -4101,7 +4276,8 @@ static int posix_spawn_impl(pid_t *pid, const char *path,
     }
     if (file_actions != NULL &&
         (file_actions->count < 0 ||
-         file_actions->count > OCTAGRAM_SPAWN_MAX_FILE_ACTIONS)) {
+         (size_t)file_actions->count > file_actions->capacity ||
+         (file_actions->count != 0 && file_actions->actions == NULL))) {
         return EINVAL;
     }
     if (attributes != NULL &&
@@ -4263,13 +4439,29 @@ int posix_spawnp(pid_t *restrict pid, const char *restrict file,
 static struct octagram_spawn_file_action *spawn_file_action_append(
     posix_spawn_file_actions_t *actions)
 {
-    if (actions->count >= OCTAGRAM_SPAWN_MAX_FILE_ACTIONS) {
+    if (actions == NULL || actions->count < 0 ||
+        (size_t)actions->count > actions->capacity) {
         return NULL;
     }
+    if ((size_t)actions->count == actions->capacity) {
+        size_t next_capacity = actions->capacity == 0
+            ? OCTAGRAM_SPAWN_INITIAL_FILE_ACTION_CAPACITY
+            : actions->capacity * 2;
+        if (next_capacity < actions->capacity ||
+            next_capacity > SIZE_MAX / sizeof(*actions->actions)) {
+            return NULL;
+        }
+        void *next = realloc(actions->actions,
+                             next_capacity * sizeof(*actions->actions));
+        if (next == NULL) {
+            return NULL;
+        }
+        actions->actions = next;
+        actions->capacity = next_capacity;
+    }
     struct octagram_spawn_file_action *action =
-        &actions->actions[actions->count];
+        &actions->actions[actions->count++];
     memset(action, 0, sizeof(*action));
-    ++actions->count;
     return action;
 }
 
@@ -4279,6 +4471,8 @@ int posix_spawn_file_actions_init(posix_spawn_file_actions_t *actions)
         return EINVAL;
     }
     actions->count = 0;
+    actions->capacity = 0;
+    actions->actions = NULL;
     return 0;
 }
 
@@ -4287,7 +4481,19 @@ int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *actions)
     if (actions == NULL) {
         return EINVAL;
     }
+    if (actions->count < 0 ||
+        (size_t)actions->count > actions->capacity ||
+        (actions->count != 0 && actions->actions == NULL)) {
+        return EINVAL;
+    }
+    for (int index = 0; index < actions->count; ++index) {
+        free(actions->actions[index].path);
+        actions->actions[index].path = NULL;
+    }
+    free(actions->actions);
+    actions->actions = NULL;
     actions->count = 0;
+    actions->capacity = 0;
     return 0;
 }
 
@@ -4335,9 +4541,15 @@ int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *actions,
     if (length >= OCTAGRAM_SPAWN_MAX_PATH) {
         return ENAMETOOLONG;
     }
+    char *path_copy = malloc(length + 1);
+    if (path_copy == NULL) {
+        return ENOMEM;
+    }
+    memcpy(path_copy, path, length + 1);
     struct octagram_spawn_file_action *action =
         spawn_file_action_append(actions);
     if (action == NULL) {
+        free(path_copy);
         return ENOMEM;
     }
     action->kind = OCTAGRAM_SPAWN_ACTION_OPEN;
@@ -4345,28 +4557,23 @@ int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *actions,
     action->target_fd = fd;
     action->flags = flags;
     action->mode = mode;
-    memcpy(action->path, path, length + 1);
+    action->path = path_copy;
     return 0;
 }
 
 int posix_spawn_file_actions_addchdir(posix_spawn_file_actions_t *actions,
                                       const char *path)
 {
-    if (actions == NULL || path == NULL || path[0] == '\0') {
-        return EINVAL;
-    }
+    if (actions == NULL || path == NULL || path[0] == '\0') return EINVAL;
     size_t length = strlen(path);
-    if (length >= OCTAGRAM_SPAWN_MAX_PATH) {
-        return ENAMETOOLONG;
-    }
-    struct octagram_spawn_file_action *action =
-        spawn_file_action_append(actions);
-    if (action == NULL) {
-        return ENOMEM;
-    }
-    memset(action, 0, sizeof(*action));
+    if (length >= OCTAGRAM_SPAWN_MAX_PATH) return ENAMETOOLONG;
+    char *copy = malloc(length + 1);
+    if (copy == NULL) return ENOMEM;
+    memcpy(copy, path, length + 1);
+    struct octagram_spawn_file_action *action = spawn_file_action_append(actions);
+    if (action == NULL) { free(copy); return ENOMEM; }
     action->kind = OCTAGRAM_SPAWN_ACTION_CHDIR;
-    memcpy(action->path, path, length + 1);
+    action->path = copy;
     return 0;
 }
 
@@ -6105,6 +6312,20 @@ int sprintf(char *buffer, const char *format, ...)
     return result;
 }
 
+static volatile int oct_allocator_lock;
+
+static void oct_allocator_lock_acquire(void)
+{
+    while (__sync_lock_test_and_set(&oct_allocator_lock, 1)) {
+        __asm__ volatile ("pause");
+    }
+}
+
+static void oct_allocator_lock_release(void)
+{
+    __sync_lock_release(&oct_allocator_lock);
+}
+
 void *malloc(size_t size)
 {
     if (size == 0) {
@@ -6117,46 +6338,51 @@ void *malloc(size_t size)
     size = (size + 15) & ~(size_t)15;
 
     for (;;) {
-    AllocationHeader **free_link = &free_list;
-    while (*free_link != NULL) {
-        AllocationHeader *header = *free_link;
-        if (header->size >= size) {
-            if (header->size - size >= sizeof(*header) + 16) {
-                AllocationHeader *remainder =
-                    (AllocationHeader *)((unsigned char *)(header + 1) + size);
-                remainder->size = header->size - size - sizeof(*header);
-                remainder->next_free = header->next_free;
-                *free_link = remainder;
-                header->size = size;
-            } else {
-                *free_link = header->next_free;
+        oct_allocator_lock_acquire();
+        AllocationHeader **free_link = &free_list;
+        while (*free_link != NULL) {
+            AllocationHeader *header = *free_link;
+            if (header->size >= size) {
+                if (header->size - size >= sizeof(*header) + 16) {
+                    AllocationHeader *remainder =
+                        (AllocationHeader *)((unsigned char *)(header + 1) + size);
+                    remainder->size = header->size - size - sizeof(*header);
+                    remainder->next_free = header->next_free;
+                    *free_link = remainder;
+                    header->size = size;
+                } else {
+                    *free_link = header->next_free;
+                }
+                header->next_free = NULL;
+                oct_allocator_lock_release();
+                return header + 1;
             }
-            header->next_free = NULL;
-            return header + 1;
-            }
-        free_link = &header->next_free;
+            free_link = &header->next_free;
         }
+        oct_allocator_lock_release();
 
-    if (size > SIZE_MAX - sizeof(AllocationHeader)) {
-        errno = ENOMEM;
-        return NULL;
-    }
-    size_t requested = size + sizeof(AllocationHeader);
-    size_t mapping_size = requested > 65536 ? requested : 65536;
-    if (mapping_size > SIZE_MAX - 4095) {
-        errno = ENOMEM;
-        return NULL;
-    }
-    mapping_size = (mapping_size + 4095) & ~(size_t)4095;
-    void *mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (mapping == MAP_FAILED) {
-        return NULL;
-    }
-    AllocationHeader *header = mapping;
-    header->size = mapping_size - sizeof(*header);
-    header->next_free = free_list;
-    free_list = header;
+        if (size > SIZE_MAX - sizeof(AllocationHeader)) {
+            errno = ENOMEM;
+            return NULL;
+        }
+        size_t requested = size + sizeof(AllocationHeader);
+        size_t mapping_size = requested > 65536 ? requested : 65536;
+        if (mapping_size > SIZE_MAX - 4095) {
+            errno = ENOMEM;
+            return NULL;
+        }
+        mapping_size = (mapping_size + 4095) & ~(size_t)4095;
+        void *mapping = mmap(NULL, mapping_size, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (mapping == MAP_FAILED) {
+            return NULL;
+        }
+        AllocationHeader *header = mapping;
+        header->size = mapping_size - sizeof(*header);
+        oct_allocator_lock_acquire();
+        header->next_free = free_list;
+        free_list = header;
+        oct_allocator_lock_release();
     }
 }
 
@@ -6189,8 +6415,10 @@ void free(void *pointer)
         return;
     }
     AllocationHeader *header = (AllocationHeader *)pointer - 1;
+    oct_allocator_lock_acquire();
     header->next_free = free_list;
     free_list = header;
+    oct_allocator_lock_release();
 }
 
 void *calloc(size_t count, size_t size)
@@ -6249,9 +6477,112 @@ void qsort(void *base, size_t count, size_t size,
     }
 }
 
+#if defined(OCTAGRAM_SHARED)
+#define OCT_MAX_RUNTIME_THREAD_STATES 128u
+
+static OctRuntimeThreadState oct_runtime_thread_states[OCT_MAX_RUNTIME_THREAD_STATES];
+static OctRuntimeThreadState oct_runtime_fallback_state;
+static volatile int oct_runtime_state_lock;
+
+static void oct_runtime_state_lock_acquire(void)
+{
+    while (__sync_lock_test_and_set(&oct_runtime_state_lock, 1)) {
+        __asm__ volatile ("pause");
+    }
+}
+
+static void oct_runtime_state_lock_release(void)
+{
+    __sync_lock_release(&oct_runtime_state_lock);
+}
+
+static OctRuntimeThreadState *oct_runtime_state_for_thread(void)
+{
+    int64_t current_tid = oct_thread_self();
+    if (current_tid <= 0) {
+        return &oct_runtime_fallback_state;
+    }
+    uint64_t tid = (uint64_t)current_tid;
+    int64_t current_pid = oct_getpid();
+    if (current_pid <= 0) {
+        return &oct_runtime_fallback_state;
+    }
+    uint64_t pid = (uint64_t)current_pid;
+
+    for (unsigned int i = 0; i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
+        if (oct_runtime_thread_states[i].pid == pid &&
+            oct_runtime_thread_states[i].tid == tid) {
+            return &oct_runtime_thread_states[i];
+        }
+    }
+
+    oct_runtime_state_lock_acquire();
+    OctRuntimeThreadState *slot = NULL;
+
+    for (unsigned int i = 0; i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
+        if (oct_runtime_thread_states[i].pid == pid &&
+            oct_runtime_thread_states[i].tid == tid) {
+            slot = &oct_runtime_thread_states[i];
+            break;
+        }
+    }
+
+    for (unsigned int i = 0; slot == NULL &&
+         i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
+        if (oct_runtime_thread_states[i].tid == 0 ||
+            oct_runtime_thread_states[i].pid != pid) {
+            slot = &oct_runtime_thread_states[i];
+        }
+    }
+
+    for (unsigned int i = 0; slot == NULL &&
+         i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
+        uint64_t other_tid = oct_runtime_thread_states[i].tid;
+        if (other_tid == 0) {
+            continue;
+        }
+        uint64_t robust_head = 0;
+        uint64_t robust_length = 0;
+        if (oct_get_robust_list(other_tid, &robust_head, &robust_length) == -ESRCH) {
+            slot = &oct_runtime_thread_states[i];
+        }
+    }
+
+    if (slot != NULL && (slot->pid != pid || slot->tid != tid)) {
+        slot->errno_value = 0;
+        slot->h_errno_value = 0;
+        for (unsigned int key = 0; key < 64; ++key) {
+            slot->key_values[key] = NULL;
+            slot->key_generations[key] = 0;
+        }
+        __sync_synchronize();
+        slot->pid = pid;
+        slot->tid = tid;
+    }
+    oct_runtime_state_lock_release();
+
+    /* The kernel scheduler limit is 64 tasks; PID tagging also lets a
+     * forked child reclaim entries copied from its parent address space. */
+    return slot != NULL ? slot : &oct_runtime_fallback_state;
+}
+#endif
+
 int *__errno_location(void)
 {
+#if defined(OCTAGRAM_SHARED)
+    return &oct_runtime_state_for_thread()->errno_value;
+#else
     return &errno;
+#endif
+}
+
+int *__h_errno_location(void)
+{
+#if defined(OCTAGRAM_SHARED)
+    return &oct_runtime_state_for_thread()->h_errno_value;
+#else
+    return &h_errno;
+#endif
 }
 
 void __assert_fail(const char *expression, const char *file, unsigned int line,
@@ -6591,7 +6922,22 @@ int execve(const char *path, char *const arguments[], char *const environment[])
 
 pid_t fork(void)
 {
-    return (pid_t)posix_result(oct_fork());
+    /* Serialize libc metadata before the kernel snapshots this address space.
+     * The child inherits these locks held and releases its private copies below. */
+    oct_allocator_lock_acquire();
+    oct_pthread_key_lock_acquire();
+    oct_robust_head_lock_acquire();
+#if defined(OCTAGRAM_SHARED)
+    oct_runtime_state_lock_acquire();
+#endif
+    int64_t raw_result = oct_fork();
+    __sync_lock_release(&oct_robust_head_lock);
+    __sync_lock_release(&oct_pthread_key_lock);
+    __sync_lock_release(&oct_allocator_lock);
+#if defined(OCTAGRAM_SHARED)
+    __sync_lock_release(&oct_runtime_state_lock);
+#endif
+    return (pid_t)posix_result(raw_result);
 }
 
 FILE *freopen(const char *path, const char *mode, FILE *stream)

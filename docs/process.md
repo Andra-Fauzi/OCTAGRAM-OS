@@ -234,3 +234,11 @@ terkunci (perilaku `PTHREAD_MUTEX_STALLED`).
 pencocokan bitset futex, `wait_target_matches`, tata letak stack, dan
 `signal_stack_top`. Perilaku runtime penuh hanya bisa dilihat dengan menjalankan
 OS di QEMU.
+
+
+## POSIX Core Stage 1 — tambahan libc
+
+- Thread-specific data memakai generation counter agar key yang dihapus lalu dipakai ulang tidak mewarisi nilai thread lama.
+- `pthread_attr_setstacksize()` mengatur ukuran stack thread joinable; detached thread belum didukung dan mengembalikan `ENOTSUP`.
+- `posix_spawn_file_actions` menggunakan array dinamis dan menyimpan salinan path; pengujian demo menambahkan lebih dari delapan aksi. Aksi `addchdir`/`addchdir_np` dan atribut `POSIX_SPAWN_SETSID` juga tersedia.
+- Sebelum `fork()`, libc menyinkronkan metadata allocator, TSD, robust-list, dan state runtime agar child tidak mewarisi spin lock sibling yang tertahan.

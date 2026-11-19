@@ -15,8 +15,10 @@
 #define POSIX_SPAWN_SETSCHEDULER 0x0080
 
 /* File actions are applied in the child after fork and before execve. */
-#define OCTAGRAM_SPAWN_MAX_FILE_ACTIONS 8
-#define OCTAGRAM_SPAWN_MAX_PATH 128
+#include <stddef.h>
+
+#define OCTAGRAM_SPAWN_INITIAL_FILE_ACTION_CAPACITY 4
+#define OCTAGRAM_SPAWN_MAX_PATH 4096
 
 enum octagram_spawn_action_kind {
     OCTAGRAM_SPAWN_ACTION_CLOSE = 1,
@@ -31,7 +33,7 @@ struct octagram_spawn_file_action {
     int target_fd;
     int flags;
     mode_t mode;
-    char path[OCTAGRAM_SPAWN_MAX_PATH];
+    char *path;
 };
 
 typedef struct octagram_posix_spawn_file_actions posix_spawn_file_actions_t;
@@ -39,7 +41,8 @@ typedef struct octagram_posix_spawn_attributes posix_spawnattr_t;
 
 struct octagram_posix_spawn_file_actions {
     int count;
-    struct octagram_spawn_file_action actions[OCTAGRAM_SPAWN_MAX_FILE_ACTIONS];
+    size_t capacity;
+    struct octagram_spawn_file_action *actions;
 };
 
 struct octagram_posix_spawn_attributes {

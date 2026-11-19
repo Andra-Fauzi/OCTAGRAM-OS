@@ -3,6 +3,9 @@
 
 #ifdef OCTAGRAM_TLS_ERRNO
 extern __thread int errno;
+#elif defined(OCTAGRAM_RUNTIME_ERRNO_ACCESSOR)
+int *__errno_location(void);
+#define errno (*__errno_location())
 #else
 extern int errno;
 #endif

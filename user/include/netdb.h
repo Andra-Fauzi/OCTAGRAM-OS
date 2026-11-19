@@ -48,6 +48,9 @@ struct addrinfo {
 
 #ifdef OCTAGRAM_TLS_ERRNO
 extern __thread int h_errno;
+#elif defined(OCTAGRAM_RUNTIME_ERRNO_ACCESSOR)
+int *__h_errno_location(void);
+#define h_errno (*__h_errno_location())
 #else
 extern int h_errno;
 #endif

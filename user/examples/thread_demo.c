@@ -34,11 +34,20 @@ int main(void)
 {
     WorkerArgument arguments[] = {{7}, {11}};
     pthread_t threads[2];
-    if (pthread_create(&threads[0], NULL, worker, &arguments[0]) != 0
-        || pthread_create(&threads[1], NULL, worker, &arguments[1]) != 0) {
+    pthread_attr_t attributes;
+    size_t configured_stack_size = 0;
+    if (pthread_attr_init(&attributes) != 0
+        || pthread_attr_setstacksize(&attributes, 96u * 1024u) != 0
+        || pthread_attr_getstacksize(&attributes, &configured_stack_size) != 0
+        || configured_stack_size != 96u * 1024u) {
+        return 1;
+    }
+    if (pthread_create(&threads[0], &attributes, worker, &arguments[0]) != 0
+        || pthread_create(&threads[1], &attributes, worker, &arguments[1]) != 0) {
         return 1;
     }
 
+    (void)pthread_attr_destroy(&attributes);
     void *first_result = NULL;
     void *second_result = NULL;
     if (pthread_join(threads[0], &first_result) != 0

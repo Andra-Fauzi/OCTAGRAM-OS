@@ -2,20 +2,40 @@
 
 ## Build kernel
 
-Gunakan Rust nightly sesuai `kernel/rust-toolchain.toml`:
+Gunakan Rust nightly sesuai `kernel/rust-toolchain.toml`. Pada Debian/
+Ubuntu/WSL, siapkan tool build:
 
 ```sh
-cargo +nightly fmt --manifest-path kernel/Cargo.toml --check
-make -C user/rust make
-cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
-make -C kernel KARCH=x86_64
+sudo apt update
+sudo apt install -y build-essential binutils nasm lld xorriso mtools gdisk qemu-system-x86 python3 curl git
+rustup toolchain install nightly --component rustfmt --target x86_64-unknown-none
 ```
 
-Program Rust user (`user/rust`) ditautkan dengan `ld.lld`; sediakan lewat paket
-`lld` atau symlink ke `ld.lld` bawaan toolchain Rust. `make -C kernel` membuat binary kernel; target root repository membuat ISO
-Limine dengan `make all` dan menjalankannya melalui QEMU dengan `make run`.
-Image memerlukan dependency yang dicantumkan di README utama, termasuk
-`xorriso` untuk ISO dan `qemu-system-x86_64` untuk menjalankan QEMU.
+Program Rust userspace (`user/rust`) ditautkan dengan `ld.lld`; paket `lld`
+menyediakan linker tersebut. Periksa dengan `command -v ld.lld` bila build
+mengeluh linker tidak ditemukan.
+
+**Urutan build dari clean checkout penting.** Kernel menyisipkan sejumlah
+binary userspace melalui `include_bytes!` di `kernel/src/fs/mod.rs`. Karena
+itu buat binary yang di-embed sebelum menjalankan `cargo test`:
+
+```sh
+make -C user/rust make
+make -C user
+make -C user dynamic
+cargo +nightly fmt --manifest-path kernel/Cargo.toml --check
+cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
+make -C kernel KARCH=x86_64
+make all
+```
+
+`make -C kernel` membuat binary kernel; target root `make all` membuat ISO
+Limine `OCTAGRAM-x86_64.iso`. `make run` membangun image lalu menjalankannya
+melalui QEMU. Build ISO memerlukan `xorriso`; QEMU memerlukan
+`qemu-system-x86_64`. HDD image juga memerlukan `gdisk` dan `mtools`.
+
+Untuk penjelasan setiap target, artefak yang dihasilkan, dan urutan dependensi,
+lihat [Panduan Pengembangan](development-guide.md).
 Log kernel juga dikirim ke COM1; tampilkan di host saat boot QEMU dengan
 `make run-bios QEMUFLAGS="-m 2G -serial stdio"`.
 
@@ -80,8 +100,11 @@ run /bin/thread-demo
 ```
 
 `<pthread.h>` menyediakan subset `pthread` dengan scheduler preemptive.
-Thread berbagi address space; atribut thread hanya mendukung default dan
-`pthread_mutex` memakai spin lock.
+Thread berbagi address space; thread joinable dapat memakai ukuran stack custom
+melalui `pthread_attr_setstacksize()`/`pthread_attr_getstacksize()`. Detached
+thread belum didukung (`pthread_detach()` dan `PTHREAD_CREATE_DETACHED`
+mengembalikan `ENOTSUP`). Sinkronisasi mutex/condition variable/semaphore
+menggunakan futex userspace-kernel; mutex robust dapat melaporkan `EOWNERDEAD`.
 
 ## Program Rust `no_std`
 
@@ -145,9 +168,10 @@ Wrapper POSIX dasar melalui `<fcntl.h>`, `<sys/stat.h>`, `<unistd.h>`,
 `st_mode` dan `st_size`; `mkdir` serta `open` dengan `O_CREAT` menerapkan
 permission setelah `umask`. Perubahan permission bergantung pada dukungan
 filesystem; FAT32 belum menyediakan `chmod`. `posix_spawn`/`posix_spawnp`
-serta `waitpid` tersedia untuk menjalankan dan menunggu ELF anak. Pada build statis,
-kesalahan wrapper syscall dikembalikan sebagai `-1` dan mengisi `errno` TLS
-per-thread; shared libc masih memakai `errno` global. Fungsi
+serta `waitpid` tersedia untuk menjalankan dan menunggu ELF anak. Pada build statis, kesalahan wrapper syscall dikembalikan sebagai `-1` dan
+mengisi `errno` TLS per-thread. Shared libc menyediakan `errno` dan
+`h_errno` per-thread melalui accessor per-TID; free-list allocator shared
+dilindungi spin lock. Fungsi
 `posix_spawn` mengembalikan nomor error langsung. File actions `posix_spawn`
 mendukung `addclose`, `adddup2`, dan `addopen` (maksimal 8 aksi dengan path
 127 byte); attributes mendukung `POSIX_SPAWN_SETPGROUP`,

@@ -1,0 +1,73 @@
+name: POSIX Core Stage 1
+
+on:
+  push:
+    branches:
+      - feature/posix-core-stage1
+  pull_request:
+    branches:
+      - trunk
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-build-and-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential binutils nasm xorriso mtools gdisk qemu-system-x86 python3 curl git
+
+      - name: Install Rust nightly
+        run: |
+          rustup toolchain install nightly --component rustfmt --target x86_64-unknown-none
+          rustup default nightly
+
+      - name: Check formatting
+        run: cargo +nightly fmt --manifest-path kernel/Cargo.toml --check
+
+      - name: Run kernel host tests
+        run: cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
+
+      - name: Build user programs
+        run: make -C user
+
+      - name: Build dynamic userland
+        run: make -C user dynamic
+
+      - name: Run libc host tests
+        run: |
+          make -C user scanf-test
+          make -C user cxa-test
+          make -C user resolv-test
+          make -C user ipv6-test
+
+      - name: Build kernel
+        run: make -C kernel KARCH=x86_64
+
+      - name: Build bootable ISO
+        run: make all
+
+      - name: QEMU syscall compatibility smoke test
+        shell: bash
+        run: |
+          rm -f /tmp/serial.log /tmp/mon.sock
+          qemu-system-x86_64 \
+            -M q35 \
+            -cdrom OCTAGRAM-x86_64.iso \
+            -boot d \
+            -m 2G \
+            -display none \
+            -serial file:/tmp/serial.log \
+            -monitor unix:/tmp/mon.sock,server,nowait \
+            -no-reboot -no-shutdown \
+            >/tmp/qemu.stderr 2>&1 &
+          qemu_pid=$!
+          trap 'kill "$qemu_pid" 2>/dev/null || true' EXIT
+          python3 tools/qemu_syscall_test.py

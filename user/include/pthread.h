@@ -37,6 +37,8 @@ typedef struct {
 
 #define PTHREAD_MUTEX_STALLED 0
 #define PTHREAD_MUTEX_ROBUST 1
+#define PTHREAD_KEYS_MAX 64
+#define PTHREAD_DESTRUCTOR_ITERATIONS 4
 
 int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
                    void *(*start_routine)(void *), void *argument);

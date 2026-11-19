@@ -32,6 +32,15 @@ def wait_for(text, timeout):
     return False
 
 
+def wait_for_after(text, offset, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if text in serial_text()[offset:]:
+            return True
+        time.sleep(0.25)
+    return False
+
+
 def main():
     if not wait_for("octagram:", 240):
         print("BOOT-FAIL: shell prompt never appeared")
@@ -75,14 +84,16 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
+    output_offset = len(serial_text())
     send_line("make -C /share/octagram -n")
-    if not wait_for("tcc hello.c -o hello.elf", 30):
+    if not wait_for_after("tcc hello.c -o hello.elf", output_offset, 30):
         print("MAKE-DRY-RUN-FAIL: native make did not expand the selfhost recipe")
         print(serial_text()[-5000:])
         return 1
 
+    output_offset = len(serial_text())
     send_line("make -C /share/octagram -j1 -n")
-    if not wait_for("tcc hello.c -o hello.elf", 30):
+    if not wait_for_after("tcc hello.c -o hello.elf", output_offset, 30):
         print("MAKE-SERIAL-FAIL: native make rejected -j1")
         print(serial_text()[-5000:])
         return 1

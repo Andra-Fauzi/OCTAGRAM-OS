@@ -140,6 +140,23 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     let (efi_partition, root_partition) =
         partition::create_octagram_gpt(device.as_ref())
             .map_err(|error| format!("GPT partitioning failed: {error:?}"))?;
+    let written_partitions = partition::read_gpt_partitions(device.as_ref())
+        .map_err(|error| format!("GPT read-back failed: {error:?}"))?;
+    let efi_verified = written_partitions.iter().any(|part| {
+        part.index == efi_partition.index
+            && part.type_guid == efi_partition.type_guid
+            && part.first_lba == efi_partition.first_lba
+            && part.last_lba == efi_partition.last_lba
+    });
+    let root_verified = written_partitions.iter().any(|part| {
+        part.index == root_partition.index
+            && part.type_guid == root_partition.type_guid
+            && part.first_lba == root_partition.first_lba
+            && part.last_lba == root_partition.last_lba
+    });
+    if !efi_verified || !root_verified {
+        return Err(String::from("GPT verification did not find the expected ESP and root partitions"));
+    }
 
     let efi_device: BlockDeviceRef = Arc::new(
         PartitionDevice::new(

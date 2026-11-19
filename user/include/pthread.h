@@ -19,6 +19,7 @@ typedef struct {
 } pthread_mutex_t;
 typedef struct {
     uintptr_t opaque;
+    size_t stack_size;
 } pthread_attr_t;
 typedef struct {
     volatile unsigned int sequence;
@@ -81,7 +82,10 @@ int pthread_attr_init(pthread_attr_t *attributes);
 int pthread_attr_destroy(pthread_attr_t *attributes);
 int pthread_attr_setdetachstate(pthread_attr_t *attributes, int state);
 int pthread_attr_getdetachstate(const pthread_attr_t *attributes, int *state);
+int pthread_attr_setstacksize(pthread_attr_t *attributes, size_t stack_size);
+int pthread_attr_getstacksize(const pthread_attr_t *attributes, size_t *stack_size);
 #define PTHREAD_CREATE_JOINABLE 0
 #define PTHREAD_CREATE_DETACHED 1
+#define PTHREAD_STACK_MIN 16384
 
 #endif

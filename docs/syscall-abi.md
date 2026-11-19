@@ -113,8 +113,8 @@ menyediakan inline wrappers.
 | 108 | `sysconf` | `RDI=nama _SC_*` | Nilai atau -1 |
 | 109 | `getrlimit` | `RDI=resource`, `RSI=struct rlimit*` | 0; selalu tak terbatas |
 | 110 | `setrlimit` | `RDI=resource`, `RSI=struct rlimit*` | 0; diabaikan |
-| 111 | `getrusage` | `RDI=who`, `RSI=struct rusage*` | 0; nilai nol |
-| 112 | `times` | `RDI=struct tms*` (0 untuk abaikan) | 0; nilai nol |
+| 111 | `getrusage` | `RDI=who`, `RSI=struct rusage*` | 0; `ru_utime` dari waktu CPU task (detik + mikrodetik), `ru_stime` 0 |
+| 112 | `times` | `RDI=struct tms*` (0 untuk abaikan) | Jumlah tick CPU task (`CLK_TCK` 100) sebagai `clock_t`; `tms_utime` diisi |
 | 113 | `sigreturn` | frame di `RSP` | Memulihkan seluruh register dan mask |
 | 114 | `sigpending` | `RDI=set*` | 0, mask sinyal tertunda yang terblokir |
 | 115 | `sigsuspend` | `RDI=mask*` | 0 setelah ada sinyal atau batas tunggu |

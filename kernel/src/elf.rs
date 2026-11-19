@@ -1478,6 +1478,8 @@ struct ScheduledProcess {
     capabilities: u64,
     /// Berapa kali proses runnable ini dilewati scheduler (aging anti-starvasi).
     age: u32,
+    /// Akuntansi waktu CPU dan waktu tunggu task ini.
+    runtime: TaskRuntime,
     reaped: bool,
 }
 
@@ -1494,6 +1496,10 @@ struct UserScheduler {
     active: bool,
     next_pid: u64,
     next_tid: u64,
+    /// Waktu nyata tick timer terakhir; 0 berarti belum pernah ada tick.
+    last_tick_ms: u64,
+    /// Waktu nyata saat akuntansi mulai, untuk menghitung persentase CPU.
+    runtime_started_ms: u64,
 }
 
 impl UserScheduler {
@@ -1505,6 +1511,8 @@ impl UserScheduler {
             active: false,
             next_pid: 1,
             next_tid: 1,
+            last_tick_ms: 0,
+            runtime_started_ms: 0,
         }
     }
 }
@@ -2066,6 +2074,7 @@ fn run_loaded_processes(
             egid: 0,
             capabilities: capabilities_for_uid(0),
             age: 0,
+            runtime: TaskRuntime::default(),
             reaped: false,
         });
     }
@@ -2577,6 +2586,19 @@ fn handle_timer_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     if !scheduler.active || scheduler.processes.is_empty() {
         return frame_pointer;
     }
+
+    // Akuntansi waktu nyata: satu slot per tick timer.
+    let now = crate::arch::x86_64::monotonic_milliseconds();
+    let elapsed = if scheduler.last_tick_ms == 0 {
+        0
+    } else {
+        now.saturating_sub(scheduler.last_tick_ms).min(1000)
+    };
+    scheduler.last_tick_ms = now;
+    if scheduler.runtime_started_ms == 0 {
+        scheduler.runtime_started_ms = now;
+    }
+    account_runtime(&mut scheduler, elapsed);
 
     let current = scheduler.current;
     if current >= scheduler.processes.len() {
@@ -3145,6 +3167,7 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         egid: inherited_credentials.3,
         capabilities: inherited_credentials.4,
         age: 0,
+        runtime: TaskRuntime::default(),
         reaped: false,
     });
     frame.rax = tid;
@@ -3477,6 +3500,7 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
         egid: inherited_credentials.3,
         capabilities: inherited_credentials.4,
         age: 0,
+        runtime: TaskRuntime::default(),
         reaped: false,
     });
     Ok(child_pid)
@@ -8028,17 +8052,26 @@ fn syscall_getrusage(_who: u64, addr: u64) -> Result<u64, i32> {
     if addr == 0 { return Err(EFAULT); }
     paging::validate_user_range(addr, core::mem::size_of::<Rusage>(), true)
         .map_err(|_| EFAULT)?;
-    unsafe { (addr as *mut Rusage).write_unaligned(Rusage::default()) };
+    let cpu = current_cpu_milliseconds();
+    let mut usage = Rusage::default();
+    usage.ru_utime = [
+        i64::try_from(cpu / 1000).unwrap_or(i64::MAX),
+        i64::try_from((cpu % 1000) * 1000).unwrap_or(0),
+    ];
+    unsafe { (addr as *mut Rusage).write_unaligned(usage) };
     Ok(0)
 }
 
 fn syscall_times(addr: u64) -> Result<u64, i32> {
+    let ticks = clock_ticks_from_milliseconds(current_cpu_milliseconds());
     if addr != 0 {
         paging::validate_user_range(addr, core::mem::size_of::<Tms>(), true)
             .map_err(|_| EFAULT)?;
-        unsafe { (addr as *mut Tms).write_unaligned(Tms::default()) };
+        let mut times = Tms::default();
+        times.tms_utime = ticks;
+        unsafe { (addr as *mut Tms).write_unaligned(times) };
     }
-    Ok(0)
+    Ok(ticks as u64)
 }
 
 fn resolve_process_path(path: &str) -> Result<String, i32> {
@@ -8254,6 +8287,59 @@ fn starvation_watchdog_trips(age: u32) -> bool {
     age >= STARVATION_WATCHDOG_AGE
 }
 
+/// Ambang starvasi berbasis waktu nyata (ms): task runnable yang menunggu
+/// selama ini dianggap berpotensi kelaparan.
+const STARVATION_WATCHDOG_MILLISECONDS: u64 = 500;
+/// `CLK_TCK` yang dipakai `times()`/`getrusage()` (jam 100 Hz).
+const CLOCK_TICKS_PER_SECOND: u64 = 100;
+
+/// True bila task runnable sudah menunggu cukup lama dalam waktu nyata.
+fn starvation_watchdog_trips_wall_clock(wait_milliseconds: u64) -> bool {
+    wait_milliseconds >= STARVATION_WATCHDOG_MILLISECONDS
+}
+
+/// Ubah milidetik menjadi `clock_t` (`CLK_TCK` = 100).
+fn clock_ticks_from_milliseconds(milliseconds: u64) -> i64 {
+    let ticks = milliseconds.saturating_mul(CLOCK_TICKS_PER_SECOND) / 1000;
+    i64::try_from(ticks).unwrap_or(i64::MAX)
+}
+
+/// Akuntansi waktu per task: waktu CPU saat dijadwalkan dan waktu tunggu saat
+/// runnable tetapi tidak dipilih.
+#[derive(Default, Clone, Copy)]
+struct TaskRuntime {
+    cpu_milliseconds: u64,
+    wait_milliseconds: u64,
+}
+
+impl TaskRuntime {
+    /// Tambahkan satu slot waktu timer ke task ini.
+    fn account_tick(&mut self, elapsed_milliseconds: u64, running: bool) {
+        if running {
+            self.cpu_milliseconds = self
+                .cpu_milliseconds
+                .saturating_add(elapsed_milliseconds);
+        } else {
+            self.wait_milliseconds = self
+                .wait_milliseconds
+                .saturating_add(elapsed_milliseconds);
+        }
+    }
+
+    /// Dipilih scheduler: waktu tunggu saat ini selesai.
+    fn on_selected(&mut self) {
+        self.wait_milliseconds = 0;
+    }
+
+    /// Persentase waktu CPU terhadap lama scheduler berjalan.
+    fn cpu_percent(&self, elapsed_milliseconds: u64) -> u32 {
+        if elapsed_milliseconds == 0 {
+            return 0;
+        }
+        ((self.cpu_milliseconds.saturating_mul(100) / elapsed_milliseconds).min(100)) as u32
+    }
+}
+
 fn clamp_priority(priority: i32) -> i32 {
     priority.clamp(PRIORITY_MIN, PRIORITY_MAX)
 }
@@ -8363,6 +8449,7 @@ fn schedule_next_rotating(scheduler: &mut UserScheduler, force_rotate: bool) -> 
         if chosen != current || force_rotate {
             scheduler.processes[chosen].rt_slice = RT_RR_QUANTUM_TICKS;
         }
+        scheduler.processes[chosen].runtime.on_selected();
         for (index, process) in scheduler.processes.iter_mut().enumerate() {
             if index == chosen || !is_process_runnable(process) {
                 process.age = 0;
@@ -8378,6 +8465,23 @@ fn is_process_runnable(process: &ScheduledProcess) -> bool {
     process.exit_status.is_none() && process.waiting_for.is_none()
 }
 
+/// Bagikan waktu tick terakhir: waktu CPU untuk task yang berjalan, waktu
+/// tunggu untuk task runnable lain (task yang memblokir tidak dihitung).
+fn account_runtime(scheduler: &mut UserScheduler, elapsed_milliseconds: u64) {
+    if elapsed_milliseconds == 0 {
+        return;
+    }
+    let current = scheduler.current;
+    for (index, process) in scheduler.processes.iter_mut().enumerate() {
+        if process.exit_status.is_some() || process.waiting_for.is_some() {
+            continue;
+        }
+        process
+            .runtime
+            .account_tick(elapsed_milliseconds, index == current);
+    }
+}
+
 /// Snapshot scheduler untuk shell `sched` dan pengawasan watchdog.
 pub(crate) struct SchedulerStatus {
     pub pid: u64,
@@ -8386,6 +8490,9 @@ pub(crate) struct SchedulerStatus {
     pub policy: u32,
     pub rt_priority: i32,
     pub age: u32,
+    pub cpu_milliseconds: u64,
+    pub cpu_percent: u32,
+    pub wait_milliseconds: u64,
     pub waiting: bool,
     pub exited: bool,
     pub is_thread: bool,
@@ -8398,6 +8505,8 @@ pub(crate) fn scheduler_status() -> Vec<SchedulerStatus> {
     if entries.try_reserve(scheduler.processes.len()).is_err() {
         return entries;
     }
+    let now = crate::arch::x86_64::monotonic_milliseconds();
+    let elapsed = now.saturating_sub(scheduler.runtime_started_ms);
     for process in &scheduler.processes {
         entries.push(SchedulerStatus {
             pid: process.pid,
@@ -8406,6 +8515,9 @@ pub(crate) fn scheduler_status() -> Vec<SchedulerStatus> {
             policy: process.policy,
             rt_priority: process.rt_priority,
             age: process.age,
+            cpu_milliseconds: process.runtime.cpu_milliseconds,
+            cpu_percent: process.runtime.cpu_percent(elapsed),
+            wait_milliseconds: process.runtime.wait_milliseconds,
             waiting: process.waiting_for.is_some(),
             exited: process.exit_status.is_some(),
             is_thread: process.is_thread,
@@ -8416,6 +8528,21 @@ pub(crate) fn scheduler_status() -> Vec<SchedulerStatus> {
 
 pub(crate) fn scheduler_watchdog_tripped(age: u32) -> bool {
     starvation_watchdog_trips(age)
+}
+
+pub(crate) fn scheduler_watchdog_tripped_wall_clock(wait_milliseconds: u64) -> bool {
+    starvation_watchdog_trips_wall_clock(wait_milliseconds)
+}
+
+/// Waktu CPU task saat ini dalam milidetik (dipakai `times()`/`getrusage()`).
+fn current_cpu_milliseconds() -> u64 {
+    let scheduler = USER_SCHEDULER.lock();
+    scheduler
+        .processes
+        .get(scheduler.current)
+        .filter(|_| scheduler.active)
+        .map(|process| process.runtime.cpu_milliseconds)
+        .unwrap_or(0)
 }
 
 pub fn terminate_user(frame: &mut InterruptFrame, status: u64) -> *mut InterruptFrame {
@@ -8826,8 +8953,10 @@ mod tests {
         validate_user_mapping_range,
         CAP_ALL, capabilities_for_uid, credential_change_allowed, effective_priority,
         MAX_AGING_BOOST, RT_PRIORITY_MAX, SCHED_FIFO, SCHED_RR, STARVATION_WATCHDOG_AGE,
-        sched_policy_change_allowed, sched_priority_for, scheduler_policy_supported,
-        scheduling_key, starvation_watchdog_trips,
+        STARVATION_WATCHDOG_MILLISECONDS, TaskRuntime, clock_ticks_from_milliseconds,
+        sched_policy_change_allowed,
+        sched_priority_for, scheduler_policy_supported, scheduling_key,
+        starvation_watchdog_trips, starvation_watchdog_trips_wall_clock,
         validate_mapping_range, wait_target_matches, futex_bitset_matches,
         FBIOGET_VSCREENINFO, FbFixScreeninfo, FbVarScreeninfo, SYSCALL_IOCTL, Winsize,
     };
@@ -9500,6 +9629,43 @@ mod tests {
         assert!(!starvation_watchdog_trips(STARVATION_WATCHDOG_AGE - 1));
         assert!(starvation_watchdog_trips(STARVATION_WATCHDOG_AGE));
         assert!(starvation_watchdog_trips(u32::MAX));
+    }
+
+    #[test]
+    fn cpu_accounting_tracks_running_and_waiting_time() {
+        let mut runtime = TaskRuntime::default();
+        runtime.account_tick(10, true);
+        runtime.account_tick(5, false);
+        assert_eq!(runtime.cpu_milliseconds, 10);
+        assert_eq!(runtime.wait_milliseconds, 5);
+        // Terpilih: hitungan tunggu dimulai ulang, waktu CPU tetap.
+        runtime.on_selected();
+        assert_eq!(runtime.wait_milliseconds, 0);
+        assert_eq!(runtime.cpu_milliseconds, 10);
+        assert_eq!(runtime.cpu_percent(20), 50);
+        assert_eq!(runtime.cpu_percent(5), 100);
+        assert_eq!(runtime.cpu_percent(0), 0);
+        runtime.account_tick(u64::MAX, true);
+        assert_eq!(runtime.cpu_milliseconds, u64::MAX);
+    }
+
+    #[test]
+    fn wall_clock_watchdog_and_clock_ticks_follow_the_thresholds() {
+        assert!(!starvation_watchdog_trips_wall_clock(
+            STARVATION_WATCHDOG_MILLISECONDS - 1
+        ));
+        assert!(starvation_watchdog_trips_wall_clock(
+            STARVATION_WATCHDOG_MILLISECONDS
+        ));
+        assert_eq!(clock_ticks_from_milliseconds(0), 0);
+        assert_eq!(clock_ticks_from_milliseconds(10), 1);
+        assert_eq!(clock_ticks_from_milliseconds(999), 99);
+        assert_eq!(clock_ticks_from_milliseconds(1000), 100);
+        // Perkalian dijenuhkan lebih dulu, jadi hasil maksimum adalah MAX/1000.
+        assert_eq!(
+            clock_ticks_from_milliseconds(u64::MAX),
+            (u64::MAX / 1000) as i64
+        );
     }
 
     #[test]

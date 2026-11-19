@@ -21,8 +21,10 @@ didukung. Status per item ada di [ROADMAP.md](../ROADMAP.md).
 ## Proses dan scheduler
 
 - Prioritas nice, aging, watchdog starvasi/idle, `PRIO_PGRP`/`PRIO_USER`, dan
-  `SCHED_FIFO`/`SCHED_RR` (prioritas RT 1..99) tersedia. Belum ada deadline atau
-  period scheduling, `sched_rr_get_interval`, dan akuntansi waktu CPU per task.
+  `SCHED_FIFO`/`SCHED_RR` (prioritas RT 1..99) tersedia, begitu pula akuntansi
+  waktu CPU/waktu tunggu per task (`times()`/`getrusage()` dan kolom `CPUms`
+  pada shell `sched`). Belum ada deadline atau period scheduling,
+  `sched_rr_get_interval`, dan pemisahan waktu kernel (`ru_stime`).
 - Tanpa SMP; hanya satu CPU.
 - `read()` console dan `read()` dari tty yang dibuka lewat path
   (`/dev/stdin`, `/dev/tty*`, `/dev/console`) sama-sama scheduler-aware; tidak

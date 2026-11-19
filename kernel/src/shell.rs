@@ -158,7 +158,7 @@ fn show_scheduler_status() {
         crate::println!("sched: no user processes");
         return;
     }
-    crate::println!("  PID  TID   NICE POLICY  RTPRI  AGE  STATE");
+    crate::println!("  PID  TID   NICE POLICY  RTPRI  AGE   CPUms  CPU%  WAITms  STATE");
     for entry in entries {
         let policy = match entry.policy {
             1 => "fifo",
@@ -172,20 +172,25 @@ fn show_scheduler_status() {
         } else {
             "runnable"
         };
-        let watchdog = if crate::elf::scheduler_watchdog_tripped(entry.age) {
+        let watchdog = if crate::elf::scheduler_watchdog_tripped(entry.age)
+            || crate::elf::scheduler_watchdog_tripped_wall_clock(entry.wait_milliseconds)
+        {
             " WATCHDOG"
         } else {
             ""
         };
         let kind = if entry.is_thread { " t" } else { "" };
         crate::println!(
-            "{:>5} {:>4} {:>6} {:>6} {:>5} {:>5}  {}{}{}",
+            "{:>5} {:>4} {:>6} {:>6} {:>5} {:>4} {:>7} {:>5} {:>7}  {}{}{}",
             entry.pid,
             entry.tid,
             entry.priority,
             policy,
             entry.rt_priority,
             entry.age,
+            entry.cpu_milliseconds,
+            entry.cpu_percent,
+            entry.wait_milliseconds,
             state,
             kind,
             watchdog

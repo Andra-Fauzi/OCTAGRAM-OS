@@ -142,7 +142,10 @@ services, and a package/application ecosystem.
   - [x] Snapshot `scheduler_status()` dan shell `sched` menampilkan PID/TID, nice, policy, `AGE`, serta status runnable/waiting/exited
   - [x] Penanda starvasi `WATCHDOG` bila `age` ≥ 78 (`starvation_watchdog_trips`, uji host `starvation_watchdog_trips_after_the_aging_budget`)
   - [x] Watchdog idle: peringatan `[sched] watchdog: idle wakeup delayed ...` bila `hlt` terlambat > 250 ms
-  - [ ] Akuntansi waktu CPU per task dan watchdog berbasis runtime nyata
+  - [x] Akuntansi waktu CPU per task dan watchdog berbasis runtime nyata
+    - [x] `TaskRuntime` menambah `cpu_milliseconds`/`wait_milliseconds` dari selisih `monotonic_milliseconds()` tiap tick timer; hitungan tunggu dimulai ulang saat task dipilih
+    - [x] Shell `sched` menampilkan `CPUms`, `CPU%`, `WAITms`, dan watchdog starvasi berbasis waktu nyata (`wait ≥ 500 ms`, uji host `wall_clock_watchdog_and_clock_ticks_follow_the_thresholds`)
+    - [x] `times()` (112) dan `getrusage()` (111) memakai waktu CPU task, bukan nilai nol
 
 ## Priority 5: Networking
 

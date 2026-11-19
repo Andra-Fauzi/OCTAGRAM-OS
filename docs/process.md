@@ -56,13 +56,22 @@ untuk euid sendiri dan hanya menurunkan prioritas (nice membesar), selain itu
 tertinggi) di antara task yang cocok. `nice()` di libc memakai kedua syscall
 tersebut dan menjepit hasilnya ke rentang -20..19.
 
-Pengawasan scheduler: shell `sched` mencetak PID/TID, nice, policy, `AGE`, dan
-status setiap task (`scheduler_status()` menyalin snapshot dengan
-`try_reserve`). Umur tunggu runnable ≥ 78 (dua kali boost aging) ditandai
-`WATCHDOG` lewat `starvation_watchdog_trips()`. Selain itu watchdog idle di loop
-scheduler mencetak `[sched] watchdog: idle wakeup delayed ...` bila `hlt` baru
-bangun lebih dari 250 ms (indikasi interrupt macet) saat hanya satu proses
-runnable. Belum ada akuntansi waktu CPU per task.
+Pengawasan scheduler: shell `sched` mencetak PID/TID, nice, policy, `RTPRI`,
+`AGE`, `CPUms`, `CPU%`, `WAITms`, dan status setiap task (`scheduler_status()`
+menyalin snapshot dengan `try_reserve`). Setiap tick timer dari user menambah
+waktu nyata (dari `monotonic_milliseconds`, maksimum 1000 ms per tick) ke
+`TaskRuntime`: task yang berjalan mendapat `cpu_milliseconds`, task runnable
+lain mendapat `wait_milliseconds` (task yang memblokir tidak dihitung), dan
+hitungan tunggu dimulai ulang setiap kali task dipilih. `CPU%` adalah rasio
+waktu CPU terhadap lama scheduler berjalan. Task ditandai `WATCHDOG` bila umur
+tunggu runnable ≥ 78 (dua kali boost aging) **atau** `wait_milliseconds` ≥ 500
+(`starvation_watchdog_trips_wall_clock()`), jadi kelaparan juga terdeteksi dari
+waktu nyata, bukan hanya dari jumlah putaran pemilihan. Watchdog idle di loop
+scheduler tetap mencetak `[sched] watchdog: idle wakeup delayed ...` bila `hlt`
+baru bangun lebih dari 250 ms (indikasi interrupt macet) saat hanya satu proses
+runnable. Akuntansi yang sama mengisi `times()` (112, `tms_utime` dalam tick
+`CLK_TCK` 100) dan `getrusage()` (111, `ru_utime`); `ru_stime` masih 0 karena
+waktu kernel tidak dipisahkan.
 
 Kebijakan penjadwalan tersedia lewat `sched_setscheduler`/`sched_getscheduler`
 (136/137) dan `sched_setparam`/`sched_getparam` (138/139), ditambah `sched.h`

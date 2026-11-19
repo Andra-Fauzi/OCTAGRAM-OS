@@ -1424,13 +1424,16 @@ fn format_ext2_device(arguments: &str) {
         .saturating_mul(block::SECTOR_SIZE as u64)
         / (1024 * 1024);
     crate::println!("Formatting {target_name} as EXT2 ({size_mib} MiB, 4 KiB blocks)...");
-    let mut last_reported_bytes = 0u64;
+    let mut last_reported_bytes = None;
     let result = Ext2::format_with_progress(format_device.as_ref(), |written, total| {
         const REPORT_INTERVAL: u64 = 1024 * 1024;
-        if written.saturating_sub(last_reported_bytes) < REPORT_INTERVAL && written < total {
+        if let Some(last_reported) = last_reported_bytes
+            && written.saturating_sub(last_reported) < REPORT_INTERVAL
+            && written < total
+        {
             return;
         }
-        last_reported_bytes = written;
+        last_reported_bytes = Some(written);
 
         let percent = if total == 0 {
             100

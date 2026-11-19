@@ -815,15 +815,28 @@ impl FileSystem for Fat32 {
                 len: 0,
                 permissions: 0o755,
             }),
-            Some(record) => Ok(Metadata {
-                node_type: if record.attributes & 0x10 != 0 {
-                    NodeType::Directory
-                } else {
-                    NodeType::File
-                },
-                len: record.size as usize,
-                permissions: record_permissions(&record),
-            }),
+            Some(record) => {
+                let is_directory = record.attributes & 0x10 != 0;
+                let mut permissions = record_permissions(&record);
+                // FAT32 has no POSIX execute bit. Treat regular files in the
+                // standard executable directories as executable so embedded
+                // tools such as /bin/make and /bin/tcc remain runnable.
+                let parent = path.rsplit_once('/').map(|(parent, _)| parent);
+                if !is_directory
+                    && matches!(parent, Some("/bin") | Some("/usr/bin") | Some("/usr/local/bin"))
+                {
+                    permissions |= 0o111;
+                }
+                Ok(Metadata {
+                    node_type: if is_directory {
+                        NodeType::Directory
+                    } else {
+                        NodeType::File
+                    },
+                    len: record.size as usize,
+                    permissions,
+                })
+            }
         }
     }
 
@@ -1465,6 +1478,18 @@ mod tests {
         assert_eq!(record_permissions(&record("program.elf", 0x20)), 0o755);
         assert_eq!(record_permissions(&record("read-only.ELF", 0x21)), 0o555);
         assert_eq!(record_permissions(&record("notes.txt", 0x20)), 0o644);
+    }
+
+    #[test]
+    fn extensionless_tools_in_bin_are_executable_on_fat32() {
+        let disk = test_disk();
+        let mut filesystem = Fat32::mount(disk).unwrap();
+        filesystem.create_dir("/bin").unwrap();
+        filesystem.create_file("/bin/make").unwrap();
+        filesystem.write("/bin/make", 0, b"\\x7FELF").unwrap();
+
+        let metadata = filesystem.metadata("/bin/make").unwrap();
+        assert_ne!(metadata.permissions & 0o111, 0);
     }
 
     #[test]

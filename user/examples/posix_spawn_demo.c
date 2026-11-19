@@ -185,12 +185,25 @@ int main(int argc, char **argv)
         return 20;
     }
 
-    /* Negative cases: over-long open path and unsupported attributes. */
+    /* Dynamic file-action storage grows beyond the old fixed limit. */
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        return 21;
+    }
+    for (int action_index = 0; action_index < 12; ++action_index) {
+        if (posix_spawn_file_actions_adddup2(&actions, pipe_fds[0],
+                                             pipe_fds[0]) != 0) {
+            return 21;
+        }
+    }
+    if (posix_spawn_file_actions_destroy(&actions) != 0 ||
+        posix_spawn_file_actions_init(&actions) != 0) {
+        return 21;
+    }
+    /* Reject a path longer than the documented 4095-byte limit. */
     char long_path[OCTAGRAM_SPAWN_MAX_PATH + 2];
     memset(long_path, 'a', sizeof(long_path) - 1);
     long_path[sizeof(long_path) - 1] = '\0';
-    if (posix_spawn_file_actions_init(&actions) != 0 ||
-        posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, long_path,
+    if (posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, long_path,
                                          O_WRONLY, 0644) != ENAMETOOLONG) {
         return 21;
     }

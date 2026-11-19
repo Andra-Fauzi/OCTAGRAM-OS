@@ -729,7 +729,7 @@ pub fn init() {
     GLOBAL_VFS.call_once(|| {
         let mut vfs = Vfs::new();
         let mut root: Box<dyn FileSystem> = match persistent_root {
-            Some((_device_name, filesystem)) => Box::new(filesystem),
+            Some((_device_name, filesystem)) => filesystem,
             None => {
                 crate::println!(
                     "[rootfs] WARNING: no installed SATA root found; using volatile RAMFS"

@@ -6456,6 +6456,7 @@ static OctRuntimeThreadState *oct_runtime_state_for_thread(void)
         slot->h_errno_value = 0;
         for (unsigned int key = 0; key < 64; ++key) {
             slot->key_values[key] = NULL;
+            slot->key_generations[key] = 0;
         }
         __sync_synchronize();
         slot->pid = pid;

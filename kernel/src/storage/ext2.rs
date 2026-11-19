@@ -147,7 +147,7 @@ impl Ext2 {
                 .ok_or(FsError::Unsupported)?;
             let reserved_blocks = metadata_end - group_start;
             let root_block = if group == 0 { Some(metadata_end) } else { None };
-            let blocks_used = reserved_blocks + u32::from(root_block.is_some());
+            let blocks_used = reserved_blocks + if root_block.is_some() { 1 } else { 0 };
             if blocks_used >= valid_blocks {
                 return Err(FsError::Unsupported);
             }
@@ -2208,6 +2208,28 @@ mod tests {
         block[offset + 6] = name.len() as u8;
         block[offset + 7] = 2;
         block[offset + 8..offset + 8 + name.len()].copy_from_slice(name);
+    }
+
+    #[test]
+    fn formats_ext2_and_persists_files_after_remount() {
+        let disk = Arc::new(MemoryDisk {
+            bytes: Mutex::new(vec![0; 64 * 1024 * 1024]),
+        });
+
+        Ext2::format(disk.as_ref()).unwrap();
+        let mut filesystem = Ext2::mount(disk.clone()).unwrap();
+        assert_eq!(filesystem.metadata("/").unwrap().node_type, NodeType::Directory);
+        filesystem.create_dir("/etc").unwrap();
+        filesystem.create_file("/etc/octagram-root").unwrap();
+        let marker = b"OCTAGRAM-OS persistent root v1\\nfilesystem=ext2\\n";
+        assert_eq!(filesystem.write("/etc/octagram-root", 0, marker).unwrap(), marker.len());
+        drop(filesystem);
+
+        let remounted = Ext2::mount(disk).unwrap();
+        let mut actual = vec![0; marker.len()];
+        assert_eq!(remounted.read("/etc/octagram-root", 0, &mut actual).unwrap(), marker.len());
+        assert_eq!(actual, marker);
+        assert_eq!(remounted.metadata("/etc").unwrap().node_type, NodeType::Directory);
     }
 
     #[test]

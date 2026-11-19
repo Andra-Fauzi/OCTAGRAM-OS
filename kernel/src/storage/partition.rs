@@ -226,9 +226,10 @@ pub fn create_octagram_gpt(
     if root_first >= last_usable || last_usable - root_first < 1024 * 1024 {
         return Err(BlockError::Unsupported);
     }
-    // EXT2 uses 32-bit block numbers. The formatter uses 4 KiB blocks and
-    // refuses any filesystem whose block count exceeds the EXT2 limit.
-    let ext2_max_last = root_first.saturating_add(u32::MAX as u64 * 8 - 1);
+    // This EXT2 implementation supports up to MAX_GROUPS groups of 32,768
+    // 4 KiB blocks. Leave any excess capacity unallocated on very large disks.
+    let ext2_max_blocks = 65_536u64 * 32_768u64;
+    let ext2_max_last = root_first.saturating_add(ext2_max_blocks * 8 - 1);
     let root_last = last_usable.min(ext2_max_last);
 
     let seed = unique_seed(total);

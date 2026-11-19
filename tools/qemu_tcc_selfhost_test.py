@@ -75,6 +75,18 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
+    send_line("make -C /share/octagram -n")
+    if not wait_for("tcc hello.c -o hello.elf", 30):
+        print("MAKE-DRY-RUN-FAIL: native make did not expand the selfhost recipe")
+        print(serial_text()[-5000:])
+        return 1
+
+    send_line("make -C /share/octagram -j1 -n")
+    if not wait_for("tcc hello.c -o hello.elf", 30):
+        print("MAKE-SERIAL-FAIL: native make rejected -j1")
+        print(serial_text()[-5000:])
+        return 1
+
     print("TCC-SELFHOST-PASS: native TinyCC compiled and ran a guest ELF")
     print(serial_text()[-3000:])
     return 0

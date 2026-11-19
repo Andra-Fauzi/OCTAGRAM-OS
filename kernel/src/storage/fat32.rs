@@ -1486,7 +1486,7 @@ mod tests {
         let mut filesystem = Fat32::mount(disk).unwrap();
         filesystem.create_dir("/bin").unwrap();
         filesystem.create_file("/bin/make").unwrap();
-        filesystem.write("/bin/make", 0, b"\\x7FELF").unwrap();
+        filesystem.write("/bin/make", 0, b"\x7FELF").unwrap();
 
         let metadata = filesystem.metadata("/bin/make").unwrap();
         assert_ne!(metadata.permissions & 0o111, 0);

@@ -4,7 +4,7 @@ This repository will demonstrate how to set up a basic kernel in Rust using Limi
 
 ## Instalasi ke hard disk
 
-Untuk memasang OCTAGRAM-OS langsung ke disk internal SATA/AHCI (UEFI + GPT + EXT2), ikuti [panduan instalasi hard disk](docs/install-to-disk.md). Installer menghapus seluruh isi disk target setelah konfirmasi eksplisit; backup data terlebih dahulu.
+Untuk memasang dari dalam Live OCTAGRAM-OS, boot flashdisk lalu jalankan `installer` di shell. Lihat [panduan instalasi hard disk](docs/install-to-disk.md). Target internal saat ini SATA/AHCI dengan UEFI; installer menghapus seluruh isi disk setelah konfirmasi eksplisit.
 
 ## Kernel layout
 

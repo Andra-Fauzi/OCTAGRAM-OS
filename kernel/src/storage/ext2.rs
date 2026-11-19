@@ -86,7 +86,7 @@ impl Ext2 {
         let remainder = available_blocks % BLOCKS_PER_GROUP as u64;
 
         let mut group_count = full_groups.max(1);
-        let candidate_groups = group_count.saturating_add(u64::from(remainder != 0));
+        let candidate_groups = group_count.saturating_add(if remainder > 0 { 1 } else { 0 });
         let candidate_gdt_blocks = (candidate_groups * EXT2_GROUP_DESC_SIZE as u64)
             .div_ceil(BLOCK_SIZE as u64);
         let candidate_group_index = full_groups.min(u32::MAX as u64) as u32;
@@ -173,7 +173,7 @@ impl Ext2 {
             write_u16(
                 &mut group_descriptors,
                 descriptor_offset + 16,
-                u16::from(group == 0),
+                if group == 0 { 1 } else { 0 },
             )?;
 
             let mut block_map = vec![0u8; BLOCK_SIZE];
@@ -251,7 +251,7 @@ impl Ext2 {
         write_u32(&mut superblock, 96, EXT2_FILETYPE_FEATURE)?;
         write_u32(&mut superblock, 100, 0x0001)?; // sparse_super only
         superblock[104..120].copy_from_slice(b"OCTAGRAM-EXT2-01");
-        superblock[120..132].copy_from_slice(b"OCTAGRAM ROOT");
+        superblock[120..133].copy_from_slice(b"OCTAGRAM ROOT");
 
         // Write the primary and sparse backup superblocks. For 4 KiB EXT2,
         // the superblock occupies bytes 1024..2048 of the group's first block.

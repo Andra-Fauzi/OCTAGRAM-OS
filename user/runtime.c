@@ -6263,7 +6263,6 @@ int sprintf(char *buffer, const char *format, ...)
     return result;
 }
 
-#if defined(OCTAGRAM_SHARED)
 static volatile int oct_allocator_lock;
 
 static void oct_allocator_lock_acquire(void)
@@ -6277,7 +6276,6 @@ static void oct_allocator_lock_release(void)
 {
     __sync_lock_release(&oct_allocator_lock);
 }
-#endif
 
 void *malloc(size_t size)
 {
@@ -6291,9 +6289,7 @@ void *malloc(size_t size)
     size = (size + 15) & ~(size_t)15;
 
     for (;;) {
-#if defined(OCTAGRAM_SHARED)
         oct_allocator_lock_acquire();
-#endif
         AllocationHeader **free_link = &free_list;
         while (*free_link != NULL) {
             AllocationHeader *header = *free_link;
@@ -6316,9 +6312,7 @@ void *malloc(size_t size)
             }
             free_link = &header->next_free;
         }
-#if defined(OCTAGRAM_SHARED)
         oct_allocator_lock_release();
-#endif
 
         if (size > SIZE_MAX - sizeof(AllocationHeader)) {
             errno = ENOMEM;
@@ -6338,14 +6332,10 @@ void *malloc(size_t size)
         }
         AllocationHeader *header = mapping;
         header->size = mapping_size - sizeof(*header);
-#if defined(OCTAGRAM_SHARED)
         oct_allocator_lock_acquire();
-#endif
         header->next_free = free_list;
         free_list = header;
-#if defined(OCTAGRAM_SHARED)
         oct_allocator_lock_release();
-#endif
     }
 }
 
@@ -6898,7 +6888,18 @@ int execve(const char *path, char *const arguments[], char *const environment[])
 
 pid_t fork(void)
 {
-    return (pid_t)posix_result(oct_fork());
+    pid_t result = (pid_t)posix_result(oct_fork());
+    if (result == 0) {
+        /* Only the calling thread survives in the child. Do not inherit a
+         * userspace spin lock held by a suspended sibling thread. */
+        __sync_lock_release(&oct_allocator_lock);
+        __sync_lock_release(&oct_pthread_key_lock);
+        __sync_lock_release(&oct_robust_head_lock);
+#if defined(OCTAGRAM_SHARED)
+        __sync_lock_release(&oct_runtime_state_lock);
+#endif
+    }
+    return result;
 }
 
 FILE *freopen(const char *path, const char *mode, FILE *stream)

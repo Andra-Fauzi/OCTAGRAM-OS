@@ -1,9 +1,10 @@
+import os
 import socket
 import sys
 import time
 
-MON = "/tmp/mon.sock"
-SERIAL = "/tmp/serial-tcc.log"
+MON = os.environ.get("MON", "/tmp/mon-tcc.sock")
+SERIAL = os.environ.get("SERIAL", "/tmp/serial-tcc.log")
 
 KEY_NAMES = {
     "/": "slash",

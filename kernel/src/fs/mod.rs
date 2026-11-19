@@ -722,8 +722,8 @@ fn ensure_root_directory(root: &mut dyn FileSystem, path: &str) {
     }
 }
 
-/// Initialize the global VFS. An installed EXT2 partition becomes '/' when
-/// present; RAMFS remains only as a development/rescue fallback.
+/// Initialize the global VFS. A marked EXT2 or FAT32 partition on an internal
+/// SATA disk becomes '/'; RAMFS remains as a development/rescue fallback.
 pub fn init() {
     let persistent_root = discover_persistent_root();
     GLOBAL_VFS.call_once(|| {

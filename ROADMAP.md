@@ -194,8 +194,9 @@ services, and a package/application ecosystem.
   - [x] `df` mount reporting
   - [x] `persist <mount>` home setup
   - [x] GPT reader/writer and bounded partition block devices
-  - [x] Live shell installer for SATA/AHCI + UEFI (FAT32 root)
-  - [x] Boot-time EXT2/FAT32 root selection via `/etc/octagram-root`
+  - [x] Native EXT2 formatter (4 KiB blocks, sparse superblocks, no journal)
+  - [x] Live shell installer for SATA/AHCI + UEFI (FAT32 EFI + EXT2 root)
+  - [x] Boot-time EXT2 root selection via `/etc/octagram-root` (legacy FAT32 detection retained)
   - [ ] Installer integration test in QEMU and real hardware
 - [ ] Journaling/recovery for mutation failures
 - [ ] Ext3/ext4 read support or focused write support

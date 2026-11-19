@@ -2,6 +2,10 @@
 
 This repository will demonstrate how to set up a basic kernel in Rust using Limine.
 
+## Instalasi ke hard disk
+
+Untuk memasang OCTAGRAM-OS langsung ke disk internal SATA/AHCI (UEFI + GPT + EXT2), ikuti [panduan instalasi hard disk](docs/install-to-disk.md). Installer menghapus seluruh isi disk target setelah konfirmasi eksplisit; backup data terlebih dahulu.
+
 ## Kernel layout
 
 The kernel is organized by responsibility so new hardware and platform support

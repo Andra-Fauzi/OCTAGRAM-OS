@@ -87,8 +87,10 @@ unsafe extern "C" fn kmain() -> ! {
 
     unsafe { asm!("sti") };
     memory::init();
-    fs::init();
+    // Storage drivers must register internal SATA block devices before the
+    // VFS chooses between an installed EXT2 root and the RAMFS rescue fallback.
     unsafe { drivers::initialize() };
+    fs::init();
     network::restore_saved_lease();
 
     let lapic = arch::x86_64::apic::LAPIC

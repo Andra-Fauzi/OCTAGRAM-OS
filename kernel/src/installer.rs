@@ -101,6 +101,11 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     let device = block::get(device_name)
         .ok_or_else(|| format!("storage device {device_name} was not found; run devices"))?;
 
+    if !boot_source_identity_available() {
+        return Err(String::from(
+            "Limine did not report the source disk identity; refusing a destructive install because the Live boot disk cannot be protected",
+        ));
+    }
     if is_boot_source_device(device.as_ref()) {
         return Err(String::from(
             "refusing to erase the disk from which Limine loaded this kernel",
@@ -155,7 +160,7 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
         .map_err(|error| format!("root partition view failed: {error:?}"))?,
     );
 
-    if root_device.sector_count() * 512 < MINIMUM_ROOT_BYTES {
+    if (root_device.sector_count() as u128) * 512 < MINIMUM_ROOT_BYTES as u128 {
         return Err(String::from("root partition is too small"));
     }
 
@@ -329,6 +334,15 @@ fn live_boot_files() -> Option<(&'static [u8], &'static [u8])> {
         }
     }
     Some((kernel, loader?))
+}
+
+fn boot_source_identity_available() -> bool {
+    crate::EXECUTABLE_FILE_REQUEST
+        .get_response()
+        .is_some_and(|response| {
+            let file = response.file();
+            file.gpt_disk_id().is_some() || file.mbr_disk_id().is_some()
+        })
 }
 
 fn is_boot_source_device(device: &dyn BlockDevice) -> bool {

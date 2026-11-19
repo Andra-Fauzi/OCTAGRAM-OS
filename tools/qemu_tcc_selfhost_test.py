@@ -58,9 +58,9 @@ def main():
     def send_line(command):
         for character in command:
             key = KEY_NAMES.get(character, character)
-            monitor.sendall(("sendkey %s\\n" % key).encode())
+            monitor.sendall(("sendkey %s\n" % key).encode())
             time.sleep(0.06)
-        monitor.sendall(b"sendkey ret\\n")
+        monitor.sendall(b"sendkey ret\n")
         time.sleep(0.5)
 
     send_line("tcc /tmp/tcc.c -o /tmp/tcc-selfhost-smoke.elf")

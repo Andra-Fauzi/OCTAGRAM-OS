@@ -432,10 +432,8 @@ impl XHCI {
                                 BULK_IN_LENGTH.store(residual_length, Ordering::SeqCst);
                                 BULK_IN_PENDING.store(true, Ordering::SeqCst);
                             } else {
-                                println!(
-                                    "EVENT: Transfer Event, code={} residual={}",
-                                    completion_code, residual_length
-                                );
+                                // Simpan status completion untuk waiter transfer tanpa
+                                // mencetak event normal berulang ke terminal.
                                 TRANSFER_COMPLETION_CODE.store(completion_code, Ordering::SeqCst);
                                 TRANSFER_COMPLETION_LENGTH.store(residual_length, Ordering::SeqCst);
                                 TRANSFER_COMPLETION_SLOT.store(event_slot_id, Ordering::SeqCst);

@@ -40,9 +40,9 @@ sebelum siap.
 7. `sti`, lalu `memory::init()` (frame allocator + heap global).
 8. `drivers::initialize()` — ACPI, registrasi driver AHCI/USB, scan PCI,
    registrasi perangkat storage.
-9. `fs::init()` — pilih EXT2 atau FAT32 persisten pada partisi GPT disk
-   `sataN` dengan marker `/etc/octagram-root`; gunakan RAMFS hanya sebagai
-   fallback rescue.
+9. `fs::init()` — pilih EXT2 persisten pada partisi GPT disk `sataN` dengan
+   marker `/etc/octagram-root` (FAT32 tetap dikenali untuk kompatibilitas
+   instalasi lama); gunakan RAMFS hanya sebagai fallback rescue.
 10. Timer periodik LAPIC (`TIMER_VECTOR`) untuk preemption user mode.
 11. `task::spawn` untuk task kernel penanda executor siap.
 12. Empat shell: `shell::run(terminal)` untuk `tty0`..`tty3`, masing-masing
@@ -54,7 +54,8 @@ sebelum siap.
 `installer` berjalan langsung dari shell. Limine memuat file kernel melalui
 `ExecutableFileRequest` dan `BOOTX64.EFI` melalui `ModuleRequest`; installer
 menyalinnya ke ESP disk target. `kernel/src/storage/partition.rs` menulis GPT
-serta menyediakan block-device view terbatas untuk setiap partisi. Detail
+serta menyediakan block-device view terbatas untuk setiap partisi. Installer
+memformat ESP sebagai FAT32 dan root sebagai EXT2 melalui `Ext2::format()`. Detail
 perintah dan batas dukungan ada di [install-to-disk.md](install-to-disk.md).
 
 ## Idle loop

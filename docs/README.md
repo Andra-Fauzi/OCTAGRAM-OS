@@ -18,13 +18,18 @@ kompatibilitas Linux/POSIX; batasan yang belum didukung dicatat eksplisit di
 | Boot dan inisialisasi | [boot.md](boot.md) | Limine, urutan `kmain`, APIC, timer, idle loop |
 | Memori | [memory.md](memory.md) | Frame allocator, heap, paging, pemetaan user, ASLR |
 | Proses, thread, sinyal | [process.md](process.md) | Executor kernel, scheduler user, `fork`/`execve`, sinyal, futex |
+| Autentikasi dan keamanan | [auth.md](auth.md) | Kredensial `uid`/`gid`, kapabilitas proses, basis data `/etc/passwd`, `/etc/shadow`, SHA-256, `passwd`/`login` |
 | Filesystem dan VFS | [filesystem.md](filesystem.md) | Router mount, RAMFS, devfs, path, descriptor |
 | Block device dan on-disk FS | [storage.md](storage.md) | Block layer, FAT32, ext2, mount/umount |
 | Jaringan | [networking.md](networking.md) | Link layer, ARP, IPv4, UDP, TCP, DHCP, DNS, HTTP, socket |
 | Driver | [drivers.md](drivers.md) | PCI, AHCI, USB (xHCI/EHCI/OHCI), HID, RTC, serial, ACPI |
+| ACPI dan manajemen daya | [acpi-power.md](acpi-power.md) | Penemuan tabel ACPI, parser AML, power resources PCI, S5 `shutdown`, reset/`reboot` FADT |
+| Kernel logging & diagnostik | [logging.md](logging.md) | Dual-stage buffer `klog`, output serial COM1, perintah `savelog`, diagnosa `sched`/`devices` |
 | Grafis dan terminal | [graphics-terminal.md](graphics-terminal.md) | Framebuffer, font, empat virtual console, input keyboard |
 | Shell | [shell.md](shell.md) | Perintah bawaan, PATH, `run`/`runp`, `pkg`, `mount` |
+| Paket dan aplikasi | [packages.md](packages.md) | Manajemen paket `pkg`, format `.pkg`, registry, direktori `/apps`, app launcher `apps` |
 | Program user dan libc | [userspace.md](userspace.md) | ABI user, `crt0`, struktur runtime, daftar program contoh |
+| Userspace Rust | [rust-userspace.md](rust-userspace.md) | Pengembangan aplikasi no-std Rust, runtime `octagram-runtime`, Makefile, `alloc` |
 | Dynamic linker | [dynamic-linker.md](dynamic-linker.md) | `ld-octagram.so`, relokasi, versi simbol, `dlopen`/`dlclose`, TLS |
 | Toolchain native | [toolchain.md](toolchain.md) | `as`, `ld`, `cc` bawaan kernel dan TinyCC |
 | Build | [building.md](building.md) | Dependency host, target build, ISO/HDD, menjalankan QEMU |

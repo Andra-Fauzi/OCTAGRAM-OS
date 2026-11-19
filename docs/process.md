@@ -125,7 +125,14 @@ tidak pernah terbangun oleh timeout yang sudah basi.
 
 - `fork` menyalin halaman user secara eager (tanpa copy-on-write). Kunci memori
   tidak diwarisi: `mlockall` (`lock_future_mappings`) dimatikan dan setiap
-  `MappingPage.locked` hasil klon di-reset sesuai POSIX.
+  `MappingPage.locked` hasil klon di-reset sesuai POSIX. Halaman `MAP_SHARED`
+  dan pemetaan perangkat (`is_device`) dibagikan ke page table anak tanpa
+  alokasi frame fisik baru, sehingga frame perangkat tidak bocor.
+- `posix_spawn` mendukung file actions `addopen`, `addclose`, `adddup2`, dan
+  `addchdir`/`addchdir_np`, serta atribut `POSIX_SPAWN_RESETIDS`,
+  `POSIX_SPAWN_SETPGROUP`, `POSIX_SPAWN_SETSID` (membuat sesi baru di anak),
+  `POSIX_SPAWN_SETSIGDEF`, `POSIX_SPAWN_SETSIGMASK`, `POSIX_SPAWN_SETSCHEDPARAM`,
+  dan `POSIX_SPAWN_SETSCHEDULER`.
 - `execve`/`execvp` memakai address space yang benar-benar baru (hanya cwd,
   terminal, pid, umask, grup/sesi, dan descriptor non-`CLOEXEC` yang diwarisi);
   stack baru diberi entropi, signal handler di-reset sesuai aturan `exec`.
@@ -163,13 +170,17 @@ Kemampuan yang didefinisikan: `CAP_VFS_WRITE`, `CAP_NETWORK`, `CAP_SYS_ADMIN`,
 `CAP_SCHED_NICE`. `capget` (144) membaca bitmask, `capset` (145) menulisnya dan
 membutuhkan `CAP_SYS_ADMIN`; bit di luar `CAP_ALL` ditolak `EINVAL`.
 
-Penegakan baru sebagian: `CAP_VFS_WRITE` diperlukan untuk `open` dengan niat tulis
+Penegakan kapabilitas: `CAP_VFS_WRITE` diperlukan untuk `open` dengan niat tulis
 (`O_WRONLY`/`O_RDWR`/`O_CREAT`/`O_TRUNC`/`O_APPEND`), `write` ke file biasa,
 `mkdir`, `unlink`, `rmdir`, `unlinkat`, `rename`, `symlink`, `chmod`, dan
 `ftruncate`; `CAP_NETWORK` diperlukan untuk `socket()` AF_INET; `CAP_SCHED_NICE`
-untuk menaikkan prioritas task lain. Pelanggaran mengembalikan `EPERM`. Yang belum
-diperiksa: mount/device, akses console, dan descriptor yang sudah terbuka sebelum
-uid diturunkan. Header userspace-nya `sys/capability.h`, contoh `credential_demo`.
+untuk menaikkan prioritas task lain atau memakai penjadwalan real-time;
+`CAP_SYS_ADMIN` diperlukan untuk mengakses perangkat raw (`/dev/fb0`), memodifikasi
+framebuffer via `ioctl`/`mmap`, atau membuka konsol virtual milik terminal lain
+(`/dev/tty0..3`). Descriptor yang dibuka sebelum uid diturunkan diperiksa ulang saat
+penulisan, sehingga pencabutan kapabilitas tetap efektif. Pelanggaran mengembalikan `EPERM`.
+Header userspace-nya `sys/capability.h`, contoh `credential_demo`.
+Dokumentasi lengkap model kredensial, kapabilitas, dan basis data autentikasi ada di [auth.md](auth.md).
 
 ## Sinkronisasi dan futex
 
@@ -187,16 +198,6 @@ Saat task keluar, `release_robust_list()` menelusuri daftar (maksimum 64 entri,
 melewati `list_op_pending`) dan untuk setiap futex yang TID-nya masih dimiliki
 task itu menulis `FUTEX_OWNER_DIED`, mempertahankan `FUTEX_WAITERS`, melepas TID,
 lalu membangunkan waiter pada alamat tersebut.
-
-Thread-specific data POSIX disediakan oleh `pthread_key_create`,
-`pthread_key_delete`, `pthread_getspecific`, dan `pthread_setspecific`.
-Setiap thread memiliki 64 slot nilai yang terpisah (TLS statis pada executable,
-tabel PID/TID pada shared libc). Destructor key dijalankan saat thread keluar, maksimum empat putaran.
-Key yang dihapus dapat didaur ulang dengan generation counter sehingga nilai
-lama pada thread lain tidak terbaca sebagai nilai key baru. Maksimum 64 key
-aktif per proses. `pthread_attr_setstacksize`/`getstacksize` mengatur stack
-thread joinable (minimum 16 KiB); detached thread belum didukung dan
-`pthread_detach`/pembuatan thread detached mengembalikan `ENOTSUP`.
 
 Di sisi libc, `pthread_mutex_t` menyimpan kata futex di offset 8 dan tautan
 `robust_list_head` di offset 0 (`futex_offset` = 8). Setiap thread mendaftarkan
@@ -233,3 +234,11 @@ terkunci (perilaku `PTHREAD_MUTEX_STALLED`).
 pencocokan bitset futex, `wait_target_matches`, tata letak stack, dan
 `signal_stack_top`. Perilaku runtime penuh hanya bisa dilihat dengan menjalankan
 OS di QEMU.
+
+
+## POSIX Core Stage 1 — tambahan libc
+
+- Thread-specific data memakai generation counter agar key yang dihapus lalu dipakai ulang tidak mewarisi nilai thread lama.
+- `pthread_attr_setstacksize()` mengatur ukuran stack thread joinable; detached thread belum didukung dan mengembalikan `ENOTSUP`.
+- `posix_spawn_file_actions` menggunakan array dinamis dan menyimpan salinan path; pengujian demo menambahkan lebih dari delapan aksi. Aksi `addchdir`/`addchdir_np` dan atribut `POSIX_SPAWN_SETSID` juga tersedia.
+- Sebelum `fork()`, libc menyinkronkan metadata allocator, TSD, robust-list, dan state runtime agar child tidak mewarisi spin lock sibling yang tertahan.

@@ -837,6 +837,39 @@ fn current_capabilities() -> Result<u64, i32> {
         .ok_or(EINTR)
 }
 
+/// User ID efektif proses yang sedang berjalan.
+fn current_euid() -> Result<u32, i32> {
+    let scheduler = USER_SCHEDULER.lock();
+    scheduler
+        .processes
+        .get(scheduler.current)
+        .map(|process| process.euid)
+        .ok_or(EINTR)
+}
+
+/// Pemeriksaan izin akses perangkat (/dev/fb0) dan console (/dev/ttyX) berdasarkan kredensial.
+/// Root dan proses dengan `CAP_SYS_ADMIN` diizinkan penuh; non-root dibatasi hanya pada
+/// terminal miliknya sendiri dan dilarang mengakses framebuffer mentah atau konsol terminal lain.
+pub(crate) fn device_access_allowed(
+    path: &str,
+    current_terminal: usize,
+    euid: u32,
+    capabilities: u64,
+) -> bool {
+    if euid == 0 || capabilities & CAP_SYS_ADMIN != 0 {
+        return true;
+    }
+    if fs::is_fb_path(path) {
+        return false;
+    }
+    if let Some(target_term) = fs::tty_path_terminal(path) {
+        if target_term != current_terminal {
+            return false;
+        }
+    }
+    true
+}
+
 fn read_user_u64(address: u64) -> Result<u64, i32> {
     paging::validate_user_range(address, core::mem::size_of::<u64>(), false)
         .map_err(|_| EFAULT)?;
@@ -2668,6 +2701,7 @@ fn syscall_ioctl(fd: u64, request: u64, arg: u64) -> Result<u64, i32> {
     if !process.active {
         return Err(EINTR);
     }
+    let terminal = process.terminal;
     let descriptor = process
         .descriptors
         .get(fd)
@@ -2679,8 +2713,14 @@ fn syscall_ioctl(fd: u64, request: u64, arg: u64) -> Result<u64, i32> {
             let path = file.lock().path.clone();
             drop(process);
             if fs::is_fb_path(&path) {
+                if !device_access_allowed(&path, terminal, current_euid()?, current_capabilities()?) {
+                    return Err(EPERM);
+                }
                 handle_fb_ioctl(request, arg)
             } else if fs::is_tty_path(&path) {
+                if !device_access_allowed(&path, terminal, current_euid()?, current_capabilities()?) {
+                    return Err(EPERM);
+                }
                 handle_tty_ioctl(request, arg)
             } else {
                 Err(ENOTTY)
@@ -3415,7 +3455,7 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
         user_pages.extend(mmap_pages.iter().map(|page| page.address));
         let shared_pages: Vec<u64> = mmap_pages
             .iter()
-            .filter(|page| page.shared_backing.is_some())
+            .filter(|page| page.shared_backing.is_some() || page.is_device)
             .map(|page| page.address)
             .collect();
         drop(mmap_pages);
@@ -4799,6 +4839,9 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
             if !file.writable {
                 return Err(EBADF);
             }
+            if !device_access_allowed(&file.path, terminal, current_euid()?, caller_capabilities) {
+                return Err(EPERM);
+            }
             if fs::is_tty_path(&file.path) {
                 return fs::with_vfs(|vfs| vfs.write(&file.path, 0, bytes))
                     .map_err(errno_from_fs)?
@@ -5743,6 +5786,9 @@ fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32
     ) {
         path = alloc::format!("/dev/tty{process_terminal}");
     }
+    if !device_access_allowed(&path, process_terminal, current_euid()?, current_capabilities()?) {
+        return Err(EPERM);
+    }
     if let Some((device_readable, device_writable)) = fs::device_access(&path)
         && (readable && !device_readable || writable && !device_writable)
     {
@@ -6420,8 +6466,12 @@ fn syscall_mmap(
         let path = file.path.clone();
         let can_write = !shared || file.writable;
         let is_device = fs::is_fb_path(&path);
+        let process_terminal = process.terminal;
         drop(file);
         drop(process);
+        if is_device && !device_access_allowed(&path, process_terminal, current_euid()?, current_capabilities()?) {
+            return Err(EPERM);
+        }
         let metadata = fs::with_vfs(|vfs| vfs.metadata(&path))
             .map_err(errno_from_fs)?
             .map_err(errno_from_fs)?;
@@ -8938,7 +8988,7 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, ElfError> {
 mod tests {
     use super::{
         EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPERM,
-        CAP_NETWORK, CAP_VFS_WRITE, EPIPE, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
+        CAP_NETWORK, CAP_VFS_WRITE, CAP_SYS_ADMIN, device_access_allowed, EPIPE, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
         ProcessWait, capability_present, is_poll_wait, robust_word_after_exit,
         FUTEX_OWNER_DIED, FUTEX_WAITERS,
         effective_priority_target, priority_change_allowed, priority_target_matches,
@@ -9612,6 +9662,47 @@ mod tests {
     }
 
     #[test]
+    fn fork_shared_pages_filter_includes_shared_backings_and_device_mappings() {
+        let pages = [
+            MappingPage {
+                address: 0x40_0000,
+                shared_backing: None,
+                locked: false,
+                can_write: true,
+                anonymous: true,
+                is_device: false,
+            },
+            MappingPage {
+                address: 0x50_0000,
+                shared_backing: Some(alloc::sync::Arc::new(super::SharedMmapPage {
+                    physical: 0x1000,
+                    path: spin::Mutex::new(None),
+                    file_offset: 0,
+                    file_length: core::sync::atomic::AtomicU64::new(0),
+                })),
+                locked: false,
+                can_write: true,
+                anonymous: true,
+                is_device: false,
+            },
+            MappingPage {
+                address: 0x60_0000,
+                shared_backing: None,
+                locked: false,
+                can_write: true,
+                anonymous: false,
+                is_device: true,
+            },
+        ];
+        let shared: alloc::vec::Vec<u64> = pages
+            .iter()
+            .filter(|page| page.shared_backing.is_some() || page.is_device)
+            .map(|page| page.address)
+            .collect();
+        assert_eq!(shared, alloc::vec![0x50_0000, 0x60_0000]);
+    }
+
+    #[test]
     fn credentials_and_capabilities_follow_uid_rules() {
         assert_eq!(capabilities_for_uid(0), CAP_ALL);
         assert_eq!(capabilities_for_uid(1000), 0);
@@ -9621,6 +9712,27 @@ mod tests {
         assert!(credential_change_allowed(1000, [1000, 1001], 1000));
         assert!(credential_change_allowed(1000, [1000, 1001], 1001));
         assert!(!credential_change_allowed(1000, [1000, 1001], 0));
+    }
+
+    #[test]
+    fn device_and_console_access_respects_credentials_and_capabilities() {
+        // Root (euid == 0) bebas mengakses framebuffer dan terminal manapun.
+        assert!(device_access_allowed("/dev/fb0", 0, 0, 0));
+        assert!(device_access_allowed("/dev/tty2", 0, 0, 0));
+
+        // Proses dengan CAP_SYS_ADMIN bebas mengakses perangkat dan terminal manapun.
+        assert!(device_access_allowed("/dev/fb0", 0, 1000, CAP_SYS_ADMIN));
+        assert!(device_access_allowed("/dev/tty2", 0, 1000, CAP_SYS_ADMIN));
+
+        // Non-root (euid == 1000) tanpa CAP_SYS_ADMIN boleh mengakses terminalnya sendiri.
+        assert!(device_access_allowed("/dev/tty0", 0, 1000, 0));
+        assert!(device_access_allowed("/dev/tty1", 1, 1000, 0));
+
+        // Non-root tanpa CAP_SYS_ADMIN DITOLAK mengakses framebuffer dan terminal lain.
+        assert!(!device_access_allowed("/dev/fb0", 0, 1000, 0));
+        assert!(!device_access_allowed("/dev/fb", 0, 1000, 0));
+        assert!(!device_access_allowed("/dev/tty2", 0, 1000, 0));
+        assert!(!device_access_allowed("/dev/tty3", 1, 1000, 0));
     }
 
     #[test]

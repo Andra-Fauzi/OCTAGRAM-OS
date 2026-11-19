@@ -10,12 +10,7 @@ libc OCTAGRAM (`user/runtime.c`) — bukan glibc.
   `RDI, RSI, RDX, R10, R8, R9` (stub di `user/include/octagram.h`).
 - Nilai balik negatif adalah `-errno`; libc mengubahnya menjadi `-1` + `errno`.
 - Nomor syscall, nilai balik, dan batas buffer: [syscall-abi.md](syscall-abi.md).
-- Pada executable statis, `errno` dan `h_errno` memakai TLS statis
-  (`-DOCTAGRAM_TLS_ERRNO`). Shared libc memakai accessor
-  `__errno_location()`/`__h_errno_location()` dengan slot per-TID. Allocator
-  melindungi free-list dari akses bersamaan pada build statis maupun shared.
-  `fork()` mengunci metadata allocator/TSD/robust-list sebelum snapshot address
-  space agar child tidak mewarisi spin lock sibling yang sedang ditahan.
+- `errno` disimpan per thread lewat TLS statis (`-DOCTAGRAM_TLS_ERRNO`).
 
 ## Entry point dan exit
 
@@ -44,8 +39,7 @@ syscall `int $0x80` langsung.
 - socket (`socket`, `bind`, `connect`, `sendmsg`/`recvmsg`, `poll`, `select`,
   `epoll`), resolver (`getaddrinfo`, `gethostbyname`, A/AAAA/PTR);
 - `pthread` (mutex termasuk mutex robust dengan `EOWNERDEAD`, condvar,
-  semaphore) di atas futex; thread-specific data memakai slot per-thread
-  dengan destructor hingga `PTHREAD_DESTRUCTOR_ITERATIONS` putaran;
+  semaphore) di atas futex;
 - dynamic loading (`dlopen`, `dlsym`, `dlclose`, `dlerror`);
 - locale/multibyte UTF-8, termios, `time`, `setjmp`, `stdatomic`.
 
@@ -80,6 +74,10 @@ Selain itu dibangun `dynamic_demo`, `copy_reloc_demo`, `versioned_demo`,
 `dlopen_demo`, `aslr_demo`, `ld-octagram.so`, `liboctagram.so`,
 `libdyn_demo.so`, serta `tcc.elf` dan `libc.a` untuk TinyCC.
 
+Pengembangan aplikasi userspace dengan bahasa Rust (tanpa pustaka C) didukung
+melalui workspace `user/rust/` dengan crate `octagram-runtime`; panduan lengkap
+ada di [rust-userspace.md](rust-userspace.md).
+
 ## Menjalankan di OS
 
 Salin ELF ke image atau filesystem yang bisa diakses OS, lalu dari shell:
@@ -98,3 +96,11 @@ PATH default (`/bin`) membuat `hello.elf` bisa dijalankan sebagai `hello.elf`.
 - Tanpa `mmap` file umum, tanpa `mprotect` granular, tanpa `mremap`.
 - Tanpa NSS, `iconv`, atau locale database; hanya konversi UTF-8 bawaan.
 - Tanpa `/proc`, `/sys`, atau `sysconf` dinamis.
+
+
+## POSIX Core Stage 1
+
+- TSD key generation mencegah nilai thread lama muncul kembali setelah key dihapus dan ID-nya dipakai ulang.
+- Pthread attributes mendukung ukuran stack custom untuk thread joinable. Detached threads belum didukung (`ENOTSUP`).
+- File actions `posix_spawn` memakai kapasitas dinamis, menyimpan path secara terpisah, dan tidak dibatasi delapan aksi/127 byte path; demo menguji lebih dari delapan aksi dan batas path.
+- `fork()` mengunci metadata libc yang relevan sebelum membuat snapshot agar child tidak mewarisi lock yang sedang dipegang thread lain.

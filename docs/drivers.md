@@ -55,13 +55,10 @@ deadlock spin-lock. `XHCI_ENABLED` bisa dimatikan sementara lewat konstanta di
 ## Input dan console
 
 - `drivers/keyboard.rs`: keyboard PS/2 (IRQ) dengan waker per terminal.
-- `drivers/serial.rs`: COM1 untuk log kernel (`early_init`).
+- `drivers/serial.rs`: COM1 untuk log kernel (`early_init`); detail subsistem logging ada di [logging.md](logging.md).
 - `drivers/rtc.rs`: RTC CMOS, dipakai `date` dan `CLOCK_REALTIME` (resolusi
   satu detik).
-- `drivers/acpi/`: parser ACPI/AML dan power management; `shutdown` meminta S5
-  dan memerlukan tabel firmware dengan PM1 control legacy. `reboot` menulis
-  `RESET_REG`/`RESET_VALUE` dari FADT (I/O port atau MMIO), lalu fallback pulsa
-  reset 8042 dan triple fault bila register tidak ada.
+- `drivers/acpi/`: parser ACPI/AML, evaluasi power resources `_PR0`/`_PS0` untuk perangkat PCI, serta power management (`shutdown` meminta S5 dan `reboot` memakai FADT `RESET_REG` dengan fallback 8042 dan triple fault); detail lengkap di [acpi-power.md](acpi-power.md).
 
 ## Wi-Fi QCA9377
 

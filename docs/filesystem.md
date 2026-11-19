@@ -34,16 +34,21 @@ sendiri, sedangkan daftar mount bersifat global.
 /            root RAMFS
 /dev         devfs
 /bin         program bawaan
+/apps        biner aplikasi paket (lihat packages.md)
 /lib         library
 /lib/tcc     header dan libc untuk TinyCC
 /share/octagram
 /include     header C untuk program yang dikompilasi di dalam OS
 /include/sys
+/etc         konfigurasi sistem (/etc/passwd, /etc/shadow, /etc/group, /etc/resolv.conf)
+/var/lib/octagram/packages  metadata dan registry paket (lihat packages.md)
 /tmp         berkas sementara
 ```
 
 Karena root adalah RAMFS, semua isi hilang saat reboot kecuali volume persisten
-dipasang dan diisi ulang.
+dipasang dan diisi ulang. Pengaturan identitas dan kata sandi di `/etc/shadow`
+dijelaskan di [auth.md](auth.md); pengelolaan direktori `/apps` dijelaskan di
+[packages.md](packages.md).
 
 ## devfs
 

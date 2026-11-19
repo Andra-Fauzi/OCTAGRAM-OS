@@ -4136,8 +4136,8 @@ static int count_spawn_arguments(char *const arguments[], size_t *count)
 
 #define OCTAGRAM_SPAWN_SUPPORTED_FLAGS                                          \
     (POSIX_SPAWN_RESETIDS | POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF       \
-     | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSCHEDPARAM                       \
-     | POSIX_SPAWN_SETSCHEDULER)
+     | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSID                              \
+     | POSIX_SPAWN_SETSCHEDPARAM | POSIX_SPAWN_SETSCHEDULER)
 
 /* Runs in the forked child before execve; failures are reported to the parent. */
 static int apply_spawn_file_actions(
@@ -4180,6 +4180,9 @@ static int apply_spawn_file_actions(
             }
             break;
         }
+        case OCTAGRAM_SPAWN_ACTION_CHDIR:
+            if (chdir(action->path) != 0) return errno;
+            break;
         default:
             return EINVAL;
         }
@@ -4197,6 +4200,8 @@ static int apply_spawn_attributes(const posix_spawnattr_t *attributes)
         0) {
         return ENOTSUP;
     }
+    if ((attributes->flags & POSIX_SPAWN_SETPGROUP) != 0 &&
+        (attributes->flags & POSIX_SPAWN_SETSID) != 0) return EINVAL;
     if ((attributes->flags & POSIX_SPAWN_RESETIDS) != 0) {
         /* Turunkan group lebih dulu, lalu uid efektif ke id nyata. */
         if (setgid(getgid()) != 0) {
@@ -4206,6 +4211,7 @@ static int apply_spawn_attributes(const posix_spawnattr_t *attributes)
             return errno;
         }
     }
+    if ((attributes->flags & POSIX_SPAWN_SETSID) != 0 && setsid() < 0) return errno;
     if ((attributes->flags & POSIX_SPAWN_SETPGROUP) != 0) {
         if (setpgid(0, attributes->pgroup) != 0) {
             return errno;
@@ -4538,6 +4544,28 @@ int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *actions,
     action->mode = mode;
     action->path = path_copy;
     return 0;
+}
+
+int posix_spawn_file_actions_addchdir(posix_spawn_file_actions_t *actions,
+                                      const char *path)
+{
+    if (actions == NULL || path == NULL || path[0] == '\0') return EINVAL;
+    size_t length = strlen(path);
+    if (length >= OCTAGRAM_SPAWN_MAX_PATH) return ENAMETOOLONG;
+    char *copy = malloc(length + 1);
+    if (copy == NULL) return ENOMEM;
+    memcpy(copy, path, length + 1);
+    struct octagram_spawn_file_action *action = spawn_file_action_append(actions);
+    if (action == NULL) { free(copy); return ENOMEM; }
+    action->kind = OCTAGRAM_SPAWN_ACTION_CHDIR;
+    action->path = copy;
+    return 0;
+}
+
+int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t *actions,
+                                         const char *path)
+{
+    return posix_spawn_file_actions_addchdir(actions, path);
 }
 
 int posix_spawnattr_init(posix_spawnattr_t *attributes)

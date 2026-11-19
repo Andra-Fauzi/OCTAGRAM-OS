@@ -31,7 +31,8 @@ TCC_CFLAGS := $(CFLAGS) -w -DONE_SOURCE=0 -DCONFIG_TCC_STATIC \
 	-DCONFIG_SYSROOT=\"\" -DCONFIG_TCCDIR=\"/lib/tcc\" \
 	-DCONFIG_TCC_CRTPREFIX=\"/lib/tcc\" -DCONFIG_TCC_LIBPATHS=\"{B}\" \
 	-DCONFIG_TCC_SYSINCLUDEPATHS=\"/include\"
-PIC_CFLAGS := $(filter-out -fno-pic -fno-pie -DOCTAGRAM_TLS_ERRNO,$(CFLAGS)) -fPIC
+PIC_CFLAGS := $(filter-out -fno-pic -fno-pie -DOCTAGRAM_TLS_ERRNO,$(CFLAGS)) -fPIC \
+	-DOCTAGRAM_RUNTIME_ERRNO_ACCESSOR
 RUNTIME_PIC_CFLAGS := $(PIC_CFLAGS) -DOCTAGRAM_SHARED
 TCC_SETJMP := build/setjmp.o
 TCC_SUPPORT_SOURCES := libtcc1 stdatomic builtin va_list dsohandle
@@ -49,6 +50,7 @@ COPY_DEMO := build/copy_reloc_demo.elf
 VERSIONED_DEMO := build/versioned_demo.elf
 DLOPEN_DEMO := build/dlopen_demo.elf
 ASLR_DEMO := build/aslr_demo.elf
+SHARED_ERRNO_DEMO := build/shared_errno_demo.elf
 DYNLIB_VERSIONS := ldso/dynlib.versions
 DYNAMIC_LIBRARY := build/libdyn_demo.so
 SHARED_LIBC := build/liboctagram.so
@@ -59,7 +61,7 @@ all: $(BINARIES) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEM
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
 
-dynamic: $(LDSO_ELF) $(SHARED_LIBC) $(DYNAMIC_LIBRARY) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
+dynamic: $(LDSO_ELF) $(SHARED_LIBC) $(DYNAMIC_LIBRARY) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO) $(SHARED_ERRNO_DEMO)
 
 scanf-test: build/scanf_runtime_test
 	./build/scanf_runtime_test
@@ -192,6 +194,14 @@ $(ASLR_DEMO): build/aslr_demo.o build/crt0.pic.o $(SHARED_LIBC) $(DYNAMIC_LIBRAR
 		-dynamic-linker /lib/ld-octagram.so -e _start \
 		-o $@ build/crt0.pic.o build/aslr_demo.o \
 		-Lbuild -loctagram -ldyn_demo
+
+build/shared_errno_demo.o: examples/shared_errno_demo.c $(HEADERS) | build
+	$(CC) $(PIC_CFLAGS) -c -o $@ $<
+
+$(SHARED_ERRNO_DEMO): build/shared_errno_demo.o build/crt0.pic.o $(SHARED_LIBC)
+	$(LD) -m elf_x86_64 -pie --hash-style=gnu -z now \
+		-dynamic-linker /lib/ld-octagram.so -e _start \
+		-o $@ build/crt0.pic.o build/shared_errno_demo.o -Lbuild -loctagram
 
 build/%.elf: build/%.o build/crt0.o build/runtime.o linker.ld
 	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o $<

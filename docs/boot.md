@@ -36,9 +36,10 @@ sebelum siap.
 5. `gdt::load_gdt()` lalu `idt::load_idt()`.
 6. `rsdp::test_rsdp()`, `apic::disable_pic()`, `init_lapic()`, `init_ioapic()`.
 7. `sti`, lalu `memory::init()` (frame allocator + heap global).
-8. `fs::init()` (VFS RAMFS dengan direktori awal).
-9. `drivers::initialize()` — ACPI, registrasi driver AHCI/USB, scan PCI,
-   registrasi perangkat.
+8. `drivers::initialize()` — ACPI, registrasi driver AHCI/USB, scan PCI,
+   registrasi perangkat storage.
+9. `fs::init()` — pilih EXT2 persisten pada disk `sataN` dengan marker
+   `/etc/octagram-root`; gunakan RAMFS hanya sebagai fallback rescue.
 10. Timer periodik LAPIC (`TIMER_VECTOR`) untuk preemption user mode.
 11. `task::spawn` untuk task kernel penanda executor siap.
 12. Empat shell: `shell::run(terminal)` untuk `tty0`..`tty3`, masing-masing

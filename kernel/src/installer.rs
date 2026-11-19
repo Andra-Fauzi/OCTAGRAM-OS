@@ -310,14 +310,14 @@ fn write_file(
 
 fn live_boot_files() -> Option<(&'static [u8], &'static [u8])> {
     let executable_response = crate::EXECUTABLE_FILE_REQUEST.get_response()?;
-    let executable = executable_response.executable_file();
+    let executable = executable_response.file();
     let kernel_size = usize::try_from(executable.size()).ok()?;
     if executable.addr().is_null() || kernel_size == 0 {
         return None;
     }
     let kernel = unsafe { core::slice::from_raw_parts(executable.addr(), kernel_size) };
 
-    let modules_response = crate::INSTALLER_MODULES_REQUEST.get_response()?;
+    let modules_response = crate::INSTALLER_MODULE_REQUEST.get_response()?;
     let mut loader = None;
     for module in modules_response.modules() {
         if module.path().to_bytes().ends_with(b"/BOOTX64.EFI") {
@@ -335,7 +335,7 @@ fn is_boot_source_device(device: &dyn BlockDevice) -> bool {
     let Some(response) = crate::EXECUTABLE_FILE_REQUEST.get_response() else {
         return false;
     };
-    let file = response.executable_file();
+    let file = response.file();
 
     if let Some(source_guid) = file.gpt_disk_id() {
         let mut header = [0u8; 512];

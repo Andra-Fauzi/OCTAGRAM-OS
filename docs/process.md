@@ -194,7 +194,9 @@ Setiap thread memiliki 64 slot nilai yang terpisah (TLS statis pada executable,
 tabel PID/TID pada shared libc). Destructor key dijalankan saat thread keluar, maksimum empat putaran.
 Key yang dihapus dapat didaur ulang dengan generation counter sehingga nilai
 lama pada thread lain tidak terbaca sebagai nilai key baru. Maksimum 64 key
-aktif per proses.
+aktif per proses. `pthread_attr_setstacksize`/`getstacksize` mengatur stack
+thread joinable (minimum 16 KiB); detached thread belum didukung dan
+`pthread_detach`/pembuatan thread detached mengembalikan `ENOTSUP`.
 
 Di sisi libc, `pthread_mutex_t` menyimpan kata futex di offset 8 dan tautan
 `robust_list_head` di offset 0 (`futex_offset` = 8). Setiap thread mendaftarkan

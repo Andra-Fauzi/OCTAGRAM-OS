@@ -2196,15 +2196,16 @@ int pthread_attr_getdetachstate(const pthread_attr_t *attributes, int *state)
 
 typedef struct OctPthreadKey {
     void (*destructor)(void *);
+    uint64_t generation;
     int active;
 } OctPthreadKey;
 
-static unsigned int oct_next_pthread_key;
 static OctPthreadKey oct_pthread_keys[OCT_PTHREAD_KEYS_MAX];
 static volatile int oct_pthread_key_lock;
 
 #if !defined(OCTAGRAM_SHARED)
 static __thread void *oct_pthread_key_values_static[OCT_PTHREAD_KEYS_MAX];
+static __thread uint64_t oct_pthread_key_generations_static[OCT_PTHREAD_KEYS_MAX];
 #endif
 
 static void oct_pthread_key_lock_acquire(void)
@@ -2228,22 +2229,38 @@ static void **oct_pthread_key_values_current(void)
 #endif
 }
 
+static uint64_t *oct_pthread_key_generations_current(void)
+{
+#if defined(OCTAGRAM_SHARED)
+    return oct_runtime_state_for_thread()->key_generations;
+#else
+    return oct_pthread_key_generations_static;
+#endif
+}
+
 int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
 {
     if (key == NULL) {
         return EINVAL;
     }
     oct_pthread_key_lock_acquire();
-    if (oct_next_pthread_key >= OCT_PTHREAD_KEYS_MAX) {
+    for (unsigned int index = 0; index < OCT_PTHREAD_KEYS_MAX; ++index) {
+        OctPthreadKey *entry = &oct_pthread_keys[index];
+        if (entry->active) {
+            continue;
+        }
+        ++entry->generation;
+        if (entry->generation == 0) {
+            ++entry->generation;
+        }
+        entry->destructor = destructor;
+        entry->active = 1;
+        *key = index;
         oct_pthread_key_lock_release();
-        return EAGAIN;
+        return 0;
     }
-    unsigned int index = oct_next_pthread_key++;
-    oct_pthread_keys[index].destructor = destructor;
-    oct_pthread_keys[index].active = 1;
-    *key = index;
     oct_pthread_key_lock_release();
-    return 0;
+    return EAGAIN;
 }
 
 int pthread_key_delete(pthread_key_t key)
@@ -2258,6 +2275,10 @@ int pthread_key_delete(pthread_key_t key)
     }
     oct_pthread_keys[key].active = 0;
     oct_pthread_keys[key].destructor = NULL;
+    ++oct_pthread_keys[key].generation;
+    if (oct_pthread_keys[key].generation == 0) {
+        ++oct_pthread_keys[key].generation;
+    }
     oct_pthread_key_lock_release();
     return 0;
 }
@@ -2269,8 +2290,14 @@ void *pthread_getspecific(pthread_key_t key)
     }
     oct_pthread_key_lock_acquire();
     int active = oct_pthread_keys[key].active;
+    uint64_t generation = oct_pthread_keys[key].generation;
     oct_pthread_key_lock_release();
-    return active ? oct_pthread_key_values_current()[key] : NULL;
+    if (!active) {
+        return NULL;
+    }
+    uint64_t *generations = oct_pthread_key_generations_current();
+    return generations[key] == generation
+        ? oct_pthread_key_values_current()[key] : NULL;
 }
 
 int pthread_setspecific(pthread_key_t key, const void *value)
@@ -2279,30 +2306,38 @@ int pthread_setspecific(pthread_key_t key, const void *value)
         return EINVAL;
     }
     oct_pthread_key_lock_acquire();
-    int active = oct_pthread_keys[key].active;
-    if (active) {
-        oct_pthread_key_values_current()[key] = (void *)value;
+    if (!oct_pthread_keys[key].active) {
+        oct_pthread_key_lock_release();
+        return EINVAL;
     }
+    uint64_t generation = oct_pthread_keys[key].generation;
+    void **values = oct_pthread_key_values_current();
+    uint64_t *generations = oct_pthread_key_generations_current();
+    values[key] = (void *)value;
+    generations[key] = generation;
     oct_pthread_key_lock_release();
-    return active ? 0 : EINVAL;
+    return 0;
 }
-
 static void oct_pthread_run_key_destructors(void)
 {
     void **values = oct_pthread_key_values_current();
     for (unsigned int iteration = 0;
          iteration < OCT_PTHREAD_DESTRUCTOR_ITERATIONS; ++iteration) {
         int called = 0;
+        uint64_t *generations = oct_pthread_key_generations_current();
         for (unsigned int key = 0; key < OCT_PTHREAD_KEYS_MAX; ++key) {
             void *value = values[key];
             if (value == NULL) {
                 continue;
             }
             oct_pthread_key_lock_acquire();
-            void (*destructor)(void *) = oct_pthread_keys[key].active
+            int valid = oct_pthread_keys[key].active &&
+                generations[key] == oct_pthread_keys[key].generation;
+            void (*destructor)(void *) = valid
                 ? oct_pthread_keys[key].destructor : NULL;
             oct_pthread_key_lock_release();
             values[key] = NULL;
+            generations[key] = 0;
             if (destructor != NULL) {
                 called = 1;
                 destructor(value);
@@ -6345,6 +6380,7 @@ typedef struct OctRuntimeThreadState {
     int errno_value;
     int h_errno_value;
     void *key_values[64];
+    uint64_t key_generations[64];
 } OctRuntimeThreadState;
 
 static OctRuntimeThreadState oct_runtime_thread_states[OCT_MAX_RUNTIME_THREAD_STATES];

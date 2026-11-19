@@ -1426,9 +1426,10 @@ fn format_ext2_device(arguments: &str) {
     crate::println!("Formatting {target_name} as EXT2 ({size_mib} MiB, 4 KiB blocks)...");
     let mut last_reported_bytes = None;
     let result = Ext2::format_with_progress(format_device.as_ref(), |written, total| {
-        const REPORT_INTERVAL: u64 = 1024 * 1024;
+        // Keep redraws bounded even when formatting multi-terabyte filesystems.
+        let report_interval = (total / 100).max(1024 * 1024);
         if let Some(last_reported) = last_reported_bytes
-            && written.saturating_sub(last_reported) < REPORT_INTERVAL
+            && written.saturating_sub(last_reported) < report_interval
             && written < total
         {
             return;

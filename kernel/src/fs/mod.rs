@@ -18,7 +18,13 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
-use crate::storage::{block, ext2::Ext2};
+use crate::storage::{
+    block,
+    ext2::Ext2,
+    fat32::Fat32,
+    partition::{self, PartitionDevice, LINUX_FILESYSTEM_GUID},
+};
+use alloc::sync::Arc;
 
 const MAKE_ELF: &[u8] = include_bytes!("../../../user/rust/build/make.elf");
 const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
@@ -630,13 +636,17 @@ fn is_below(path: &str, mount_point: &str) -> bool {
 
 static GLOBAL_VFS: Once<Mutex<Vfs>> = Once::new();
 
-/// Select the installed root filesystem from an AHCI SATA disk.
-///
-/// The installer creates /etc/octagram-root on the EXT2 root partition. This
-/// marker prevents an arbitrary EXT2 data disk from accidentally becoming '/'.
-/// USB storage is intentionally excluded: the installed system must boot from
-/// the internal SATA disk, not depend on an installer flash drive.
-fn discover_persistent_root() -> Option<(String, Ext2)> {
+/// Name of the internal block device currently providing the persistent root.
+static PERSISTENT_ROOT_DEVICE: Once<String> = Once::new();
+
+pub fn persistent_root_device() -> Option<String> {
+    PERSISTENT_ROOT_DEVICE.get().cloned()
+}
+
+/// Select a marked EXT2 or FAT32 root partition from an internal SATA disk.
+/// USB devices are excluded so the Live installer flash drive can never become
+/// the installed root by accident.
+fn discover_persistent_root() -> Option<(String, Box<dyn FileSystem>)> {
     for info in block::list() {
         if !info.name.starts_with("sata") {
             continue;
@@ -644,26 +654,58 @@ fn discover_persistent_root() -> Option<(String, Ext2)> {
         let Some(device) = block::get(&info.name) else {
             continue;
         };
-        match Ext2::mount(device) {
-            Ok(filesystem) => {
-                if filesystem.metadata("/etc/octagram-root").is_ok() {
-                    crate::println!(
-                        "[rootfs] persistent EXT2 root selected from {} ({} sectors)",
-                        info.name,
-                        info.sectors
-                    );
-                    return Some((info.name, filesystem));
+
+        if let Ok(partitions) = partition::read_gpt_partitions(device.as_ref()) {
+            for part in partitions {
+                if part.type_guid != LINUX_FILESYSTEM_GUID {
+                    continue;
                 }
-                crate::println!(
-                    "[rootfs] {} has EXT2 but no /etc/octagram-root marker; skipping",
-                    info.name
-                );
+                let part_name = alloc::format!("{}p{}", info.name, part.index);
+                let Ok(partition_device) = PartitionDevice::new(
+                    device.clone(),
+                    part_name.clone(),
+                    part.first_lba,
+                    part.sector_count(),
+                ) else {
+                    continue;
+                };
+                let partition_ref = Arc::new(partition_device);
+                if let Ok(filesystem) = Ext2::mount(partition_ref.clone())
+                    && filesystem.metadata("/etc/octagram-root").is_ok()
+                {
+                    crate::println!("[rootfs] persistent EXT2 root selected from {part_name}");
+                    let root_name = info.name.clone();
+                    let _ = PERSISTENT_ROOT_DEVICE.call_once(|| root_name);
+                    return Some((info.name, Box::new(filesystem)));
+                }
+                if let Ok(filesystem) = Fat32::mount(partition_ref)
+                    && filesystem.metadata("/etc/octagram-root").is_ok()
+                {
+                    crate::println!("[rootfs] persistent FAT32 root selected from {part_name}");
+                    let root_name = info.name.clone();
+                    let _ = PERSISTENT_ROOT_DEVICE.call_once(|| root_name);
+                    return Some((info.name, Box::new(filesystem)));
+                }
             }
-            Err(error) => crate::println!(
-                "[rootfs] {} is not a supported EXT2 root: {:?}",
-                info.name,
-                error
-            ),
+            continue;
+        }
+
+        // Compatibility with older MBR/superfloppy EXT2 installations.
+        if let Ok(filesystem) = Ext2::mount(device.clone())
+            && filesystem.metadata("/etc/octagram-root").is_ok()
+        {
+            crate::println!("[rootfs] persistent EXT2 root selected from {}", info.name);
+            let root_name = info.name.clone();
+            let _ = PERSISTENT_ROOT_DEVICE.call_once(|| root_name);
+            return Some((info.name, Box::new(filesystem)));
+        }
+        if let Ok(filesystem) = Fat32::mount(device)
+            && filesystem.metadata("/etc/octagram-root").is_ok()
+        {
+            crate::println!("[rootfs] persistent FAT32 root selected from {}", info.name);
+            let root_name = info.name.clone();
+            let _ = PERSISTENT_ROOT_DEVICE.call_once(|| root_name);
+            return Some((info.name, Box::new(filesystem)));
         }
     }
     None
@@ -823,8 +865,10 @@ fn seed_file(vfs: &mut Vfs, path: &str, contents: &[u8], permissions: u16) {
         .write(path, 0, contents)
         .unwrap_or_else(|error| panic!("writing boot file {path} failed: {error:?}"));
     assert_eq!(written, contents.len(), "boot file {path} must be complete");
-    vfs.set_permissions(path, permissions)
-        .unwrap_or_else(|error| panic!("setting boot file permissions for {path} failed: {error:?}"));
+    match vfs.set_permissions(path, permissions) {
+        Ok(()) | Err(FsError::Unsupported) => {}
+        Err(error) => panic!("setting boot file permissions for {path} failed: {error:?}"),
+    }
 }
 
 /// Run an operation while holding the global VFS lock.

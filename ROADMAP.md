@@ -42,9 +42,9 @@ services, and a package/application ecosystem.
 - [x] Add `shared_errno_demo` regression program (QEMU runtime verification pending)
 - [x] Basic file and directory operations
 - [x] Process fork, execve, waitpid, pipes, and threads
-- [ ] Complete POSIX thread-specific data lifecycle
+- [x] POSIX thread-specific data lifecycle
   - [x] Per-thread values and up to four destructor iterations
-  - [ ] Recycle deleted key IDs safely across all live threads
+  - [x] Recycle deleted key IDs safely using per-thread generation counters
 - [x] Signals, poll, select, epoll, sockets, eventfd, and timerfd
 - [x] pread/pwrite/readv/writev and resource APIs
 - [x] Implement `realpath`

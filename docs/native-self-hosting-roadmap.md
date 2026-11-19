@@ -139,7 +139,7 @@ dan diproses beberapa executable native dengan exit status benar.
 Tujuan: mengubah TinyCC dari compiler yang sekadar ada di image menjadi
 toolchain native yang teruji.
 
-- [ ] Uji `tcc` dari shell: compile C -> ELF OCTAGRAM -> execute.
+- [ ] Uji `tcc` dari shell: compile C -> ELF OCTAGRAM -> execute. (QEMU smoke test ditambahkan; menunggu hasil CI.)
 - [ ] Uji include header, libc statis, relocation, argv/envp, file I/O, dan
   error diagnostics.
 - [x] Tambahkan command wrapper `tcc` pada shell untuk menjalankan `/bin/tcc.elf`;

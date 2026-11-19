@@ -150,7 +150,7 @@ async fn execute(
         "cc" => run_toolchain_command("cc", current_dir, arguments),
         "tcc" => run_external_program(
             current_dir,
-            "tcc.elf",
+            "tcc",
             arguments,
             program_path,
             environment,

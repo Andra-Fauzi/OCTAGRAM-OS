@@ -42,6 +42,8 @@ services, and a package/application ecosystem.
 - [x] Add `shared_errno_demo` regression program (QEMU runtime verification pending)
 - [x] Basic file and directory operations
 - [x] Process fork, execve, waitpid, pipes, and threads
+- [x] POSIX thread-specific data (`pthread_key_*`/`getspecific`/`setspecific`)
+  with per-thread storage and destructor iterations
 - [x] Signals, poll, select, epoll, sockets, eventfd, and timerfd
 - [x] pread/pwrite/readv/writev and resource APIs
 - [x] Implement `realpath`

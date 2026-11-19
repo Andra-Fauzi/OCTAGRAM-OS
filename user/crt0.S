@@ -2,6 +2,8 @@
 .global _start
 .type _start,@function
 .weak __oct_tls_initialize
+.weak __errno_location
+.weak __h_errno_location
 .weak exit
 _start:
     xor %rbp, %rbp
@@ -20,6 +22,17 @@ _start:
     test %eax, %eax
     jnz .Lstartup_failure
 .Ltls_ready:
+    /* Initialize shared-libc per-thread error state before main(). */
+    mov __errno_location@GOTPCREL(%rip), %rax
+    test %rax, %rax
+    jz .Lerrno_ready
+    call *%rax
+.Lerrno_ready:
+    mov __h_errno_location@GOTPCREL(%rip), %rax
+    test %rax, %rax
+    jz .Lh_errno_ready
+    call *%rax
+.Lh_errno_ready:
     pop %rsi
     pop %rdi
     call main

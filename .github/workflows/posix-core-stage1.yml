@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/posix-core-stage1
+      - feature/persistent-root-install
   pull_request:
     branches:
       - trunk

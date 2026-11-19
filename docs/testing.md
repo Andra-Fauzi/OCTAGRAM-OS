@@ -91,3 +91,31 @@ cakupan uji kernel.
 - Tanpa uji otomatis boot QEMU di CI.
 - Tanpa fuzzing untuk parser FAT32/ext2/DHCP/DNS.
 - Tanpa pengukuran performa atau regression benchmark.
+
+
+## Shared libc thread-state regression
+
+Build the dynamically linked userland examples:
+
+```sh
+make -C user dynamic
+```
+
+Copy `shared_errno_demo.elf`, `ld-octagram.so`, and `liboctagram.so` into
+the target image (the executable expects `/lib/ld-octagram.so` and
+`/lib/liboctagram.so`). Run:
+
+```text
+run /bin/shared_errno_demo.elf
+```
+
+Expected output:
+
+```text
+shared errno/h_errno + allocator: PASS
+```
+
+This QEMU/runtime test checks independent `errno` and `h_errno` values for
+two threads while the shared allocator services concurrent allocations and
+frees. It must be run on OCTAGRAM because the accessors use the OCTAGRAM
+thread/process ID syscalls.

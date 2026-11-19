@@ -81,6 +81,21 @@ FILE *stdout = &standard_output;
 FILE *stderr = &standard_error;
 
 char **environ;
+#if defined(OCTAGRAM_SHARED)
+typedef struct OctRuntimeThreadState {
+    volatile uint64_t pid;
+    volatile uint64_t tid;
+    int errno_value;
+    int h_errno_value;
+    void *key_values[64];
+    uint64_t key_generations[64];
+} OctRuntimeThreadState;
+
+static OctRuntimeThreadState *oct_runtime_state_for_thread(void);
+#endif
+
+int *__errno_location(void);
+int *__h_errno_location(void);
 #if defined(OCTAGRAM_TLS_ERRNO) && !defined(OCTAGRAM_SHARED)
 __thread int errno;
 __thread int h_errno;
@@ -6464,15 +6479,6 @@ void qsort(void *base, size_t count, size_t size,
 
 #if defined(OCTAGRAM_SHARED)
 #define OCT_MAX_RUNTIME_THREAD_STATES 128u
-
-typedef struct OctRuntimeThreadState {
-    volatile uint64_t pid;
-    volatile uint64_t tid;
-    int errno_value;
-    int h_errno_value;
-    void *key_values[64];
-    uint64_t key_generations[64];
-} OctRuntimeThreadState;
 
 static OctRuntimeThreadState oct_runtime_thread_states[OCT_MAX_RUNTIME_THREAD_STATES];
 static OctRuntimeThreadState oct_runtime_fallback_state;

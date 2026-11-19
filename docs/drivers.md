@@ -14,7 +14,9 @@ diproses dari idle loop lewat `drivers::poll_deferred()`.
 - daftar isi registry bisa dilihat dari shell dengan `lsdev` dan `drivers`.
 
 Driver baru sebaiknya mengikuti pola ini agar hotplug dan urutan probe konsisten.
-Panduan lengkap: [writing-drivers.md](writing-drivers.md).
+Mulai dengan [Panduan Pengembangan](development-guide.md), lalu lihat
+[kontrak umum driver](writing-drivers.md), [tutorial PCI](pci-driver-tutorial.md),
+dan [tutorial USB](usb-driver-tutorial.md).
 
 ## PCI
 
@@ -22,7 +24,8 @@ Panduan lengkap: [writing-drivers.md](writing-drivers.md).
 
 - `config.rs` — akses ruang konfigurasi PCI (I/O port 0xCF8/0xCFC);
 - `enumeration.rs` — scan bus/devices/functions;
-- `bar.rs` — pembacaan dan pemetaan BAR (MMIO atau I/O port);
+- `bar.rs` — enable PCI function, pembacaan BAR memory dan bus mastering;
+  helper `get_bar()` saat ini mengasumsikan memory BAR, bukan I/O BAR;
 - `capability.rs` — traversal capability list (MSI/MSI-X, power management).
 
 ## Storage
@@ -80,4 +83,5 @@ percobaan ada di [wifi-qca9377.md](wifi-qca9377.md).
 
 Uji host mencakup parser deskriptor, perhitungan alamat BAR, dan helper murni
 lain. Driver nyata memerlukan QEMU dengan perangkat yang sesuai atau hardware
-fisik.
+fisik. Ikuti langkah di [tutorial PCI](pci-driver-tutorial.md),
+[tutorial USB](usb-driver-tutorial.md), dan [testing](testing.md).

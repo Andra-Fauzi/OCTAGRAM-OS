@@ -2,16 +2,26 @@
 
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use spin::Mutex;
 
 use crate::drivers::keyboard;
 use crate::fs::{FsError, Metadata, NodeType, Vfs};
-use crate::storage::{block, ext2::Ext2, fat32::Fat32};
+use crate::storage::{
+    block::{self, BlockDevice, BlockDeviceRef},
+    ext2::Ext2,
+    fat32::Fat32,
+    partition::{self, PartitionDevice, LINUX_FILESYSTEM_GUID},
+};
 
 const MAX_COMMAND_LENGTH: usize = 256;
 const MAX_FILE_OPERATION: usize = 64 * 1024;
 const MAX_TOOLCHAIN_FILE: usize = 4 * 1024 * 1024;
 const DEFAULT_PROGRAM_PATH: &[&str] = &["/bin", "/usr/bin", "/usr/local/bin"];
+
+// Track mounts created by the shell so mkfs commands cannot format an active volume.
+static MOUNTED_BLOCK_DEVICES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 pub async fn run(terminal: usize) {
     crate::terminal::set_output_terminal(terminal);
@@ -134,6 +144,7 @@ async fn execute(
         "session" => crate::println!("session user={current_user} tty=tty{terminal}"),
         "sched" => show_scheduler_status(),
         "mkfs.fat" => format_fat32_device(arguments),
+        "mkfs.ext2" => format_ext2_device(arguments),
         "as" => run_toolchain_command("as", current_dir, arguments),
         "ld" => run_toolchain_command("ld", current_dir, arguments),
         "cc" => run_toolchain_command("cc", current_dir, arguments),
@@ -245,6 +256,7 @@ const HELP_ENTRIES: &[&str] = &[
     "whoami                 show current session user",
     "session                show current session",
     "mkfs.fat <device> --yes  format a FAT32 superfloppy (erases data)",
+    "mkfs.ext2 <device|diskpN> --yes  format EXT2 on a disk or GPT Linux partition",
     "as <input.s> -o <out.o> assemble supported x86_64 source",
     "ld <input.o> -o <out.elf> link a native toolchain object",
     "cc <input.c> -o <out.elf> compile the kernel C subset",
@@ -1310,6 +1322,114 @@ fn list_kernel_devices() {
     }
 }
 
+fn split_partition_device_name(name: &str) -> Option<(&str, u32)> {
+    let (disk_name, suffix) = name.rsplit_once('p')?;
+    if disk_name.is_empty() || suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let partition_index = suffix.parse::<u32>().ok()?;
+    (partition_index > 0).then_some((disk_name, partition_index))
+}
+
+fn resolve_ext2_format_target(
+    target_name: &str,
+) -> Result<(BlockDeviceRef, BlockDeviceRef, String), String> {
+    if let Some(disk) = block::get(target_name) {
+        let mut mbr = [0u8; block::SECTOR_SIZE];
+        disk.read_sectors(0, &mut mbr)
+            .map_err(|error| format!("cannot inspect {target_name}: {error:?}"))?;
+
+        let mut gpt_header = [0u8; block::SECTOR_SIZE];
+        let has_gpt = if disk.sector_count() > 1 {
+            disk.read_sectors(1, &mut gpt_header)
+                .map_err(|error| format!("cannot inspect {target_name} GPT header: {error:?}"))?;
+            &gpt_header[..8] == b"EFI PART"
+        } else {
+            false
+        };
+        if has_gpt || mbr[510..512] == [0x55, 0xAA] {
+            return Err(format!(
+                "{target_name} contains a partition table; choose a GPT Linux filesystem partition such as {target_name}p2"
+            ));
+        }
+        return Ok((disk.clone(), disk, String::from(target_name)));
+    }
+
+    let Some((disk_name, partition_index)) = split_partition_device_name(target_name) else {
+        return Err(format!("storage device {target_name} not found (try devices)"));
+    };
+    let disk = block::get(disk_name)
+        .ok_or_else(|| format!("parent disk {disk_name} was not found"))?;
+    let partitions = partition::read_gpt_partitions(disk.as_ref())
+        .map_err(|error| format!("cannot read GPT on {disk_name}: {error:?}"))?;
+    let partition = partitions
+        .into_iter()
+        .find(|partition| partition.index == partition_index)
+        .ok_or_else(|| format!("GPT partition {disk_name}p{partition_index} was not found"))?;
+    if partition.type_guid != LINUX_FILESYSTEM_GUID {
+        return Err(format!(
+            "{target_name} is not marked as a GPT Linux filesystem partition; refusing to format it as EXT2"
+        ));
+    }
+
+    let view = PartitionDevice::new(
+        disk.clone(),
+        String::from(target_name),
+        partition.first_lba,
+        partition.sector_count(),
+    )
+    .map_err(|error| format!("cannot create partition view for {target_name}: {error:?}"))?;
+    let format_device: BlockDeviceRef = Arc::new(view);
+    Ok((disk, format_device, String::from(disk_name)))
+}
+
+fn format_ext2_device(arguments: &str) {
+    let mut parts = arguments.split_whitespace();
+    let (Some(target_name), Some(confirmation), None) =
+        (parts.next(), parts.next(), parts.next())
+    else {
+        crate::println!("usage: mkfs.ext2 <device|diskpN> --yes");
+        crate::println!("examples: mkfs.ext2 usb0 --yes; mkfs.ext2 sata0p2 --yes");
+        return;
+    };
+    if confirmation != "--yes" {
+        crate::println!("mkfs.ext2: formatting erases all data on the selected device or partition");
+        crate::println!("rerun with mkfs.ext2 {target_name} --yes to confirm");
+        return;
+    }
+
+    let (disk, format_device, disk_name) = match resolve_ext2_format_target(target_name) {
+        Ok(target) => target,
+        Err(error) => {
+            crate::println!("mkfs.ext2: {error}");
+            return;
+        }
+    };
+
+    if crate::fs::persistent_root_device().as_deref() == Some(disk_name.as_str()) {
+        crate::println!("mkfs.ext2: refusing to format the disk that currently contains /");
+        return;
+    }
+    if is_block_device_mounted(&disk_name) {
+        crate::println!("mkfs.ext2: {disk_name} has a mounted filesystem; run umount first");
+        return;
+    }
+    if let Err(error) = crate::installer::ensure_safe_format_target(disk.as_ref()) {
+        crate::println!("mkfs.ext2: {error}");
+        return;
+    }
+
+    let size_mib = format_device
+        .sector_count()
+        .saturating_mul(block::SECTOR_SIZE as u64)
+        / (1024 * 1024);
+    crate::println!("Formatting {target_name} as EXT2 ({size_mib} MiB, 4 KiB blocks)...");
+    match Ext2::format(format_device.as_ref()) {
+        Ok(()) => crate::println!("Formatted {target_name} as EXT2"),
+        Err(error) => crate::println!("mkfs.ext2: {target_name}: {error:?}"),
+    }
+}
+
 fn format_fat32_device(arguments: &str) {
     let mut parts = arguments.split_whitespace();
     let (Some(device_name), Some(confirmation), None) = (parts.next(), parts.next(), parts.next())
@@ -1368,6 +1488,7 @@ fn mount_device(current_dir: &str, arguments: &str) {
         match Ext2::mount(device) {
             Ok(filesystem) => match with_vfs(|vfs| vfs.mount(&mountpoint, filesystem)) {
                 Ok(()) => {
+                    remember_mounted_device(&mountpoint, device_name);
                     crate::println!("mounted {device_name} at {mountpoint} (ext2, read-write)")
                 }
                 Err(error) => crate::println!("mount: {mountpoint}: {error:?}"),
@@ -1378,6 +1499,7 @@ fn mount_device(current_dir: &str, arguments: &str) {
         match Fat32::mount(device) {
             Ok(filesystem) => match with_vfs(|vfs| vfs.mount(&mountpoint, filesystem)) {
                 Ok(()) => {
+                    remember_mounted_device(&mountpoint, device_name);
                     crate::println!("mounted {device_name} at {mountpoint} (FAT32, read-write)")
                 }
                 Err(error) => crate::println!("mount: {mountpoint}: {error:?}"),
@@ -1398,9 +1520,31 @@ fn unmount_device(current_dir: &str, arguments: &str) {
         return;
     };
     match with_vfs(|vfs| vfs.unmount(&path)) {
-        Ok(()) => crate::println!("unmounted {path}"),
+        Ok(()) => {
+            forget_mounted_device(&path);
+            crate::println!("unmounted {path}");
+        }
         Err(error) => crate::println!("umount: {path}: {error:?}"),
     }
+}
+
+fn remember_mounted_device(mountpoint: &str, device_name: &str) {
+    MOUNTED_BLOCK_DEVICES
+        .lock()
+        .push((String::from(mountpoint), String::from(device_name)));
+}
+
+fn forget_mounted_device(mountpoint: &str) {
+    MOUNTED_BLOCK_DEVICES
+        .lock()
+        .retain(|(mounted_at, _)| mounted_at != mountpoint);
+}
+
+fn is_block_device_mounted(device_name: &str) -> bool {
+    MOUNTED_BLOCK_DEVICES
+        .lock()
+        .iter()
+        .any(|(_, mounted_device)| mounted_device == device_name)
 }
 
 fn list_mounts() {
@@ -2341,10 +2485,21 @@ mod tests {
     use super::{
         EditorViewport, editor_cursor_position, editor_display_character, insert_editor_text,
         matching_lines, move_vertical, next_char_boundary, parse_grep_arguments,
+        split_partition_device_name,
         parse_ipv4_address, parse_line_selection_arguments, previous_char_boundary,
         program_candidates, resolve_path, selected_line_range, split_shell_words, text_counts,
         update_editor_viewport,
     };
+
+    #[test]
+    fn parses_gpt_partition_device_names_for_mkfs() {
+        assert_eq!(split_partition_device_name("sata0p2"), Some(("sata0", 2)));
+        assert_eq!(split_partition_device_name("usb12p7"), Some(("usb12", 7)));
+        assert_eq!(split_partition_device_name("sata0p0"), None);
+        assert_eq!(split_partition_device_name("sata0p"), None);
+        assert_eq!(split_partition_device_name("sata0"), None);
+        assert_eq!(split_partition_device_name("sata0p2x"), None);
+    }
 
     #[test]
     fn resolves_relative_and_absolute_paths_from_current_directory() {

@@ -10,6 +10,7 @@ use alloc::sync::Arc;
 use crate::fs::{FileSystem, FsError};
 use crate::storage::{
     block::{self, BlockDevice, BlockDeviceRef},
+    ext2::Ext2,
     fat32::Fat32,
     partition::{self, PartitionDevice},
 };
@@ -184,13 +185,13 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     crate::println!("Formatting EFI partition as FAT32...");
     Fat32::format(efi_device.as_ref())
         .map_err(|error| format!("EFI FAT32 format failed: {error:?}"))?;
-    crate::println!("Formatting root partition as FAT32...");
-    Fat32::format(root_device.as_ref())
-        .map_err(|error| format!("root FAT32 format failed: {error:?}"))?;
+    crate::println!("Formatting root partition as EXT2...");
+    Ext2::format(root_device.as_ref())
+        .map_err(|error| format!("root EXT2 format failed: {error:?}"))?;
 
     let mut efi = Fat32::mount(efi_device)
         .map_err(|error| format!("cannot mount formatted EFI partition: {error:?}"))?;
-    let mut root = Fat32::mount(root_device)
+    let mut root = Ext2::mount(root_device)
         .map_err(|error| format!("cannot mount formatted root partition: {error:?}"))?;
 
     for directory in ["/EFI", "/EFI/BOOT", "/boot", "/boot/limine"] {
@@ -242,7 +243,7 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     write_file(
         &mut root,
         "/etc/octagram-root",
-        b"OCTAGRAM-OS persistent root v1\nfilesystem=fat32\n",
+        b"OCTAGRAM-OS persistent root v1\nfilesystem=ext2\n",
     )
     .map_err(|error| format!("writing root marker failed: {error:?}"))?;
     write_file(

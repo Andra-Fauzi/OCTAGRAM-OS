@@ -35,7 +35,8 @@ sebagian API tersedia; lihat [batasan](limitations.md).
 | Userspace Rust | [rust-userspace.md](rust-userspace.md) | Aplikasi Rust no-std dan octagram-runtime |
 | Toolchain | [toolchain.md](toolchain.md) | Assembler, linker, compiler dan TinyCC |
 | Build | [building.md](building.md) | Dependencies, target build, ISO dan QEMU |
-| Native self-hosting | [native-self-hosting-roadmap.md](native-self-hosting-roadmap.md) | Audit, bootstrap, native toolchain, kernel build, image builder dan safe update |
+| Self-hosting (roadmap utama) | [roadmap-self-hosting.md](roadmap-self-hosting.md) | Milestone, dependency, status, acceptance gates, dan bukti menuju full self-hosting |
+| Self-hosting (audit teknis) | [native-self-hosting-roadmap.md](native-self-hosting-roadmap.md) | Audit baseline dan temuan teknis terdahulu |
 | Pengujian | [testing.md](testing.md) | Unit test, tes userspace/POSIX dan runtime |
 | Batasan | [limitations.md](limitations.md) | Fitur yang belum tersedia dan dampaknya |
 

@@ -315,3 +315,34 @@ Jangan tandai milestone selesai hanya karena CI build berhasil.
   setelah correctness.
 - Instalasi: selalu build ke target disk/slot terpisah. Jangan pernah
   overwrite root yang sedang menjalankan compiler/build.
+
+## 9. Audit lanjutan branch native-self-hosting (20 November 2026)
+
+Audit source dan CI terbaru menemukan beberapa hal yang mengubah urutan kerja:
+
+- ABI syscall sudah menyediakan `stat` (6), `fstat` (29), `lstat` (38), dan
+  `fstatat` (41). Header `user/include/sys/stat.h` dan wrapper di
+  `user/runtime.c` juga sudah ada. Jadi M3 tidak boleh menambahkan syscall
+  metadata duplikat.
+- Representasi `struct oct_stat` saat ini hanya membawa `size` dan `mode`;
+  `fs::Metadata` hanya membawa `node_type`, `len`, dan `permissions`.
+  Timestamp modifikasi belum tersedia melalui metadata VFS yang dipakai
+  syscall. Karena itu incremental Make belum aman untuk diimplementasikan
+  hanya dengan membandingkan waktu file.
+- CI run `44591453041` berhasil pada formatting diagnostic, build utility,
+  build user programs, dynamic userland, 371 kernel host tests, libc host tests,
+  kernel build, dan ISO build. Namun QEMU native TinyCC compile/run gagal:
+  proses `tcc /tmp/tcc.c -o /tmp/tcc-selfhost-smoke.elf` mendapat exception
+  vector 6 (invalid opcode) pada RIP `0x402a2e`. Langkah QEMU syscall
+  compatibility dilewati karena langkah sebelumnya gagal.
+- Workflow menambahkan disassembly diagnostic di sekitar alamat tersebut
+  untuk run berikutnya. Sampai instruksi penyebab diketahui dan diperbaiki,
+  M2 native TinyCC tetap berstatus implemented/build-tested tetapi belum
+  QEMU-tested. Jangan menganggap Make dry-run QEMU test lulus karena test
+  tersebut berada setelah compile/run TinyCC.
+
+Urutan kerja yang benar setelah diagnosis: perbaiki instruksi/ABI penyebab
+invalid opcode; buktikan TinyCC compile dan hasil ELF berjalan di QEMU; baru
+perluas VFS metadata (termasuk mtime dari EXT2 dan perilaku filesystem yang
+belum memiliki timestamp) lalu aktifkan incremental Make dengan test perubahan
+prerequisite/target. 

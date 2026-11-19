@@ -142,8 +142,10 @@ toolchain native yang teruji.
 - [ ] Uji `tcc` dari shell: compile C -> ELF OCTAGRAM -> execute.
 - [ ] Uji include header, libc statis, relocation, argv/envp, file I/O, dan
   error diagnostics.
-- [ ] Tambahkan command wrapper `cc`/ `tcc` yang konsisten; dokumentasikan
-  satu sintaks canonical.
+- [x] Tambahkan command wrapper `tcc` pada shell untuk menjalankan `/bin/tcc.elf`;
+  `cc` tetap compiler C-subset kernel dan `as`/`ld` tetap toolchain mini.
+- [ ] Satukan antarmuka compiler/assembler/linker menjadi toolchain ELF native
+  yang konsisten; dokumentasikan satu sintaks canonical.
 - [ ] Tambahkan assembler dan linker yang mampu menangani object ELF yang
   dihasilkan compiler; toolchain mini tetap diberi label terbatas.
 - [ ] Bangun program multi-file dengan beberapa object dan static library.

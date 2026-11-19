@@ -1424,7 +1424,36 @@ fn format_ext2_device(arguments: &str) {
         .saturating_mul(block::SECTOR_SIZE as u64)
         / (1024 * 1024);
     crate::println!("Formatting {target_name} as EXT2 ({size_mib} MiB, 4 KiB blocks)...");
-    match Ext2::format(format_device.as_ref()) {
+    let mut last_reported_bytes = 0u64;
+    let result = Ext2::format_with_progress(format_device.as_ref(), |written, total| {
+        const REPORT_INTERVAL: u64 = 1024 * 1024;
+        if written.saturating_sub(last_reported_bytes) < REPORT_INTERVAL && written < total {
+            return;
+        }
+        last_reported_bytes = written;
+
+        let percent = if total == 0 {
+            100
+        } else {
+            written.saturating_mul(100).checked_div(total).unwrap_or(100).min(100)
+        };
+        let bar_width = 20usize;
+        let filled = (percent as usize * bar_width) / 100;
+        let bar = alloc::format!(
+            "{}{}",
+            "#".repeat(filled),
+            ".".repeat(bar_width - filled)
+        );
+        let written_mib = written / (1024 * 1024);
+        let total_mib = total.div_ceil(1024 * 1024);
+        crate::terminal::terminal_replace_current_line(&alloc::format!(
+            "EXT2 [{bar}] {written_mib}/{total_mib} MiB ({percent}%)"
+        ));
+    });
+
+    // Move below the progress row before printing the result or any error.
+    crate::println!("");
+    match result {
         Ok(()) => crate::println!("Formatted {target_name} as EXT2"),
         Err(error) => crate::println!("mkfs.ext2: {target_name}: {error:?}"),
     }

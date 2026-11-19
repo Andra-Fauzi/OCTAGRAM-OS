@@ -107,6 +107,18 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
         ));
     }
 
+    // Validate all source assets before changing the partition table.
+    let (kernel, efi_loader) = live_boot_files()
+        .ok_or_else(|| String::from(
+            "Limine did not provide the running kernel and BOOTX64.EFI module; rebuild the Live image with the updated limine.conf",
+        ))?;
+    if kernel.len() < 4 || &kernel[..4] != b"\x7FELF" {
+        return Err(String::from("loaded executable is not an ELF kernel image"));
+    }
+    if efi_loader.len() < 512 || &efi_loader[..2] != b"MZ" {
+        return Err(String::from("preloaded BOOTX64.EFI is missing or invalid"));
+    }
+
     let size_bytes = device.sector_count() as u128 * 512;
     if size_bytes < 16 * 1024 * 1024 * 1024u128 {
         return Err(String::from("target disk must be at least 16 GiB"));
@@ -190,18 +202,6 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     ] {
         ensure_directory(&mut root, directory)
             .map_err(|error| format!("creating root directory {directory}: {error:?}"))?;
-    }
-
-    let (kernel, efi_loader) = live_boot_files()
-        .ok_or_else(|| String::from(
-            "Limine did not provide the running kernel and BOOTX64.EFI module; rebuild the Live image with the updated limine.conf",
-        ))?;
-
-    if kernel.len() < 4 || &kernel[..4] != b"\x7FELF" {
-        return Err(String::from("loaded executable is not an ELF kernel image"));
-    }
-    if efi_loader.len() < 512 || &efi_loader[..2] != b"MZ" {
-        return Err(String::from("preloaded BOOTX64.EFI is missing or invalid"));
     }
 
     crate::println!("Copying kernel ({} bytes)...", kernel.len());
@@ -345,7 +345,7 @@ fn is_boot_source_device(device: &dyn BlockDevice) -> bool {
             guid[4..6].copy_from_slice(&source_guid.b.to_le_bytes());
             guid[6..8].copy_from_slice(&source_guid.c.to_le_bytes());
             guid[8..16].copy_from_slice(&source_guid.d);
-            if header[56..72] == guid {
+            if &header[56..72] == &guid[..] {
                 return true;
             }
         }

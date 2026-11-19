@@ -18,8 +18,8 @@ have a clear place:
 - `kernel/src/memory/`, `graphics/`, and `terminal/` contain shared kernel
   services.
 - `kernel/src/fs/` contains the VFS, and `kernel/src/storage/` contains block
-  devices and on-disk filesystems. Boot mounts a volatile RAM root filesystem;
-  persistent volumes can be mounted from the shell.
+  devices, GPT partition handling, and on-disk filesystems. An installed system
+  selects a marked FAT32/EXT2 disk root at boot; RAMFS remains the rescue fallback.
 
 Keep hardware-specific instructions in `arch/`, and build reusable device
 logic in `drivers/`. When adding a subsystem, expose its module through the

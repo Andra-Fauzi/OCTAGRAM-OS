@@ -4142,7 +4142,8 @@ static int apply_spawn_file_actions(
         return 0;
     }
     if (file_actions->count < 0 ||
-        file_actions->count > OCTAGRAM_SPAWN_MAX_FILE_ACTIONS) {
+        (size_t)file_actions->count > file_actions->capacity ||
+        (file_actions->count != 0 && file_actions->actions == NULL)) {
         return EINVAL;
     }
     for (int index = 0; index < file_actions->count; ++index) {
@@ -4411,13 +4412,29 @@ int posix_spawnp(pid_t *restrict pid, const char *restrict file,
 static struct octagram_spawn_file_action *spawn_file_action_append(
     posix_spawn_file_actions_t *actions)
 {
-    if (actions->count >= OCTAGRAM_SPAWN_MAX_FILE_ACTIONS) {
+    if (actions == NULL || actions->count < 0 ||
+        (size_t)actions->count > actions->capacity) {
         return NULL;
     }
+    if ((size_t)actions->count == actions->capacity) {
+        size_t next_capacity = actions->capacity == 0
+            ? OCTAGRAM_SPAWN_INITIAL_FILE_ACTION_CAPACITY
+            : actions->capacity * 2;
+        if (next_capacity < actions->capacity ||
+            next_capacity > SIZE_MAX / sizeof(*actions->actions)) {
+            return NULL;
+        }
+        void *next = realloc(actions->actions,
+                             next_capacity * sizeof(*actions->actions));
+        if (next == NULL) {
+            return NULL;
+        }
+        actions->actions = next;
+        actions->capacity = next_capacity;
+    }
     struct octagram_spawn_file_action *action =
-        &actions->actions[actions->count];
+        &actions->actions[actions->count++];
     memset(action, 0, sizeof(*action));
-    ++actions->count;
     return action;
 }
 
@@ -4427,6 +4444,8 @@ int posix_spawn_file_actions_init(posix_spawn_file_actions_t *actions)
         return EINVAL;
     }
     actions->count = 0;
+    actions->capacity = 0;
+    actions->actions = NULL;
     return 0;
 }
 
@@ -4435,7 +4454,19 @@ int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *actions)
     if (actions == NULL) {
         return EINVAL;
     }
+    if (actions->count < 0 ||
+        (size_t)actions->count > actions->capacity ||
+        (actions->count != 0 && actions->actions == NULL)) {
+        return EINVAL;
+    }
+    for (int index = 0; index < actions->count; ++index) {
+        free(actions->actions[index].path);
+        actions->actions[index].path = NULL;
+    }
+    free(actions->actions);
+    actions->actions = NULL;
     actions->count = 0;
+    actions->capacity = 0;
     return 0;
 }
 
@@ -4483,9 +4514,15 @@ int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *actions,
     if (length >= OCTAGRAM_SPAWN_MAX_PATH) {
         return ENAMETOOLONG;
     }
+    char *path_copy = malloc(length + 1);
+    if (path_copy == NULL) {
+        return ENOMEM;
+    }
+    memcpy(path_copy, path, length + 1);
     struct octagram_spawn_file_action *action =
         spawn_file_action_append(actions);
     if (action == NULL) {
+        free(path_copy);
         return ENOMEM;
     }
     action->kind = OCTAGRAM_SPAWN_ACTION_OPEN;
@@ -4493,7 +4530,7 @@ int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *actions,
     action->target_fd = fd;
     action->flags = flags;
     action->mode = mode;
-    memcpy(action->path, path, length + 1);
+    action->path = path_copy;
     return 0;
 }
 

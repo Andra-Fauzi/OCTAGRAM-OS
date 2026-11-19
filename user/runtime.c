@@ -6251,6 +6251,7 @@ void qsort(void *base, size_t count, size_t size,
 #define OCT_MAX_RUNTIME_THREAD_STATES 128u
 
 typedef struct OctRuntimeThreadState {
+    volatile uint64_t pid;
     volatile uint64_t tid;
     int errno_value;
     int h_errno_value;
@@ -6279,9 +6280,15 @@ static OctRuntimeThreadState *oct_runtime_state_for_thread(void)
         return &oct_runtime_fallback_state;
     }
     uint64_t tid = (uint64_t)current_tid;
+    int64_t current_pid = oct_getpid();
+    if (current_pid <= 0) {
+        return &oct_runtime_fallback_state;
+    }
+    uint64_t pid = (uint64_t)current_pid;
 
     for (unsigned int i = 0; i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
-        if (oct_runtime_thread_states[i].tid == tid) {
+        if (oct_runtime_thread_states[i].pid == pid &&
+            oct_runtime_thread_states[i].tid == tid) {
             return &oct_runtime_thread_states[i];
         }
     }
@@ -6290,7 +6297,8 @@ static OctRuntimeThreadState *oct_runtime_state_for_thread(void)
     OctRuntimeThreadState *slot = NULL;
 
     for (unsigned int i = 0; i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
-        if (oct_runtime_thread_states[i].tid == tid) {
+        if (oct_runtime_thread_states[i].pid == pid &&
+            oct_runtime_thread_states[i].tid == tid) {
             slot = &oct_runtime_thread_states[i];
             break;
         }
@@ -6298,7 +6306,8 @@ static OctRuntimeThreadState *oct_runtime_state_for_thread(void)
 
     for (unsigned int i = 0; slot == NULL &&
          i < OCT_MAX_RUNTIME_THREAD_STATES; ++i) {
-        if (oct_runtime_thread_states[i].tid == 0) {
+        if (oct_runtime_thread_states[i].tid == 0 ||
+            oct_runtime_thread_states[i].pid != pid) {
             slot = &oct_runtime_thread_states[i];
         }
     }
@@ -6316,16 +6325,17 @@ static OctRuntimeThreadState *oct_runtime_state_for_thread(void)
         }
     }
 
-    if (slot != NULL && slot->tid != tid) {
+    if (slot != NULL && (slot->pid != pid || slot->tid != tid)) {
         slot->errno_value = 0;
         slot->h_errno_value = 0;
         __sync_synchronize();
+        slot->pid = pid;
         slot->tid = tid;
     }
     oct_runtime_state_lock_release();
 
-    /* The kernel scheduler limit is 64 tasks; spare entries cover stale IDs
-     * and state inherited by a forked address space. */
+    /* The kernel scheduler limit is 64 tasks; PID tagging also lets a
+     * forked child reclaim entries copied from its parent address space. */
     return slot != NULL ? slot : &oct_runtime_fallback_state;
 }
 #endif

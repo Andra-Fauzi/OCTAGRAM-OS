@@ -1,81 +1,97 @@
-# Instalasi langsung ke hard disk (UEFI + EXT2)
+# Instalasi OCTAGRAM-OS ke hard disk
 
-OCTAGRAM-OS dapat dipasang ke disk internal SATA yang diekspos firmware sebagai
-AHCI. Layout instalasi adalah:
+OCTAGRAM-OS menyediakan dua jalur instalasi untuk perangkat x86_64 dengan
+controller SATA yang berjalan dalam mode AHCI. Jalur yang disarankan adalah
+menjalankan installer **dari dalam Live OCTAGRAM-OS**, langsung dari flashdisk.
+Tidak perlu keluar ke Linux/WSL pada laptop target.
 
-| Partisi | Ukuran | Format | Fungsi |
-| --- | ---: | --- | --- |
-| 1 | 512 MiB | FAT32 / EFI System Partition | Limine UEFI dan kernel |
-| 2 | Sisa disk | EXT2 | Root filesystem permanen `/` |
+## A. Instalasi langsung dari Live OCTAGRAM-OS
 
-Kernel mencari filesystem EXT2 pada perangkat `sataN` yang memiliki marker
-`/etc/octagram-root`. Perangkat USB tidak pernah dipilih otomatis sebagai root.
-Jika marker tidak ditemukan, sistem tetap boot menggunakan RAMFS rescue dan
-mencetak peringatan bahwa root tidak persisten.
+### 1. Siapkan flashdisk Live
 
-## 1. Persiapan build di Linux/WSL
-
-Ikuti [building.md](building.md) untuk memasang Rust nightly dan dependensi.
-Dari root repository:
+Build ISO dari host pengembangan mengikuti [building.md](building.md):
 
 ```sh
 make -C user/rust make
 make -C user
 make -C user dynamic
-make -C kernel KARCH=x86_64
-make limine/limine
+make all
 ```
 
-Hasil yang dibutuhkan:
-- `kernel/kernel`
-- `limine/BOOTX64.EFI`
-- `limine.conf`
+Tulis `OCTAGRAM-x86_64.iso` ke flashdisk sebagai media boot, lalu boot laptop
+dalam mode UEFI. ISO Live harus dibangun dari branch yang memuat permintaan
+Limine `ExecutableFileRequest`, `ModuleRequest`, dan
+`module_path: boot():/EFI/BOOT/BOOTX64.EFI` agar kernel bisa menyalin kernel
+yang sedang berjalan dan loader UEFI dari memori bootloader.
 
-## 2. Identifikasi disk dengan teliti
+### 2. Lihat disk dari shell OCTAGRAM
 
-Colok/siapkan disk internal target, lalu:
-
-```sh
-lsblk -o NAME,SIZE,MODEL,TYPE,MOUNTPOINTS
-```
-
-Pilih **whole disk** seperti `/dev/sda`, bukan partisi seperti `/dev/sda1`.
-Installer akan menghapus seluruh tabel partisi dan data pada disk target. Backup
-semua data penting terlebih dahulu. Jangan jalankan pada disk Windows atau disk
-yang berisi data yang ingin dipertahankan.
-
-## 3. Jalankan installer
-
-```sh
-sudo tools/install-disk.sh /dev/sdX
-```
-
-Ganti `/dev/sdX` dengan disk yang benar. Script meminta konfirmasi dengan
-mengetik persis `ERASE-/dev/sdX`. Script membuat GPT, ESP FAT32, EXT2 root,
-menyalin kernel dan Limine UEFI, serta menulis marker root.
-
-Untuk disk NVMe, jangan gunakan installer ini: kernel saat ini belum memiliki
-driver NVMe. Dukungan SATA/AHCI diperlukan agar root terdeteksi sebagai `sataN`.
-
-## 4. Boot dari hard disk
-
-1. Matikan laptop setelah installer selesai.
-2. Lepaskan flashdisk installer (jika digunakan).
-3. Buka firmware setup / boot menu.
-4. Pastikan mode UEFI aktif dan pilih disk OCTAGRAM.
-5. Boot OCTAGRAM-OS.
-
-Di log awal kernel, instalasi yang benar harus menampilkan:
+Jalankan:
 
 ```text
-[rootfs] persistent EXT2 root selected from sata0 ...
+installer
 ```
 
-Jika muncul `using volatile RAMFS`, disk tidak ditemukan, controller tidak
-berjalan dalam AHCI, marker root tidak ada, atau driver AHCI gagal. Dalam kondisi
-itu sistem belum berjalan dari root permanen.
+atau:
 
-## 5. Verifikasi dari shell OCTAGRAM
+```text
+installer list
+```
+
+Shell menampilkan nama device, kapasitas, dan status perlindungan. Untuk saat
+ini hanya disk internal yang terdeteksi sebagai `sataN` (SATA/AHCI) yang dapat
+dipilih. Perangkat USB tidak ditawarkan sebagai target. Disk yang menjalankan
+root terpasang dan disk yang identitasnya cocok dengan sumber kernel Limine
+ditolak sebagai target.
+
+### 3. Instal ke disk internal
+
+Contoh bila disk internal ditampilkan sebagai `sata0`:
+
+```text
+installer sata0 INSTALL-OCTAGRAM-ERASE
+```
+
+Perintah ini **menghapus seluruh tabel partisi dan data pada sata0**. Pastikan
+nama device dan kapasitasnya benar sebelum menjalankan konfirmasi. Jangan pilih
+disk Windows, disk data, atau flashdisk Live.
+
+Installer akan membuat layout:
+
+| Partisi | Ukuran | Format | Fungsi |
+| --- | ---: | --- | --- |
+| 1 | 512 MiB | FAT32 / EFI System Partition | Limine UEFI dan kernel |
+| 2 | Sisa sampai batas FAT32 | FAT32 | Root filesystem permanen `/` |
+
+Installer menyalin `BOOTX64.EFI`, kernel ELF yang sedang berjalan, dan
+`limine.conf` ke ESP. Ia juga membuat direktori sistem awal dan marker
+`/etc/octagram-root` pada partisi root. Saat boot pertama, kernel mengisi
+program bawaan, header, dan library yang belum ada tanpa menimpa file yang
+sudah tersimpan.
+
+Setelah pesan `OCTAGRAM-OS installation completed` muncul, lakukan shutdown
+atau restart.
+
+### 4. Boot dari hard disk
+
+1. Restart laptop.
+2. Lepaskan flashdisk Live.
+3. Buka firmware boot menu.
+4. Pastikan UEFI aktif dan pilih disk OCTAGRAM.
+
+Di log kernel, instalasi sukses harus menampilkan salah satu pesan berikut:
+
+```text
+[rootfs] persistent FAT32 root selected from sata0p2
+```
+
+Jika muncul `using volatile RAMFS`, sistem belum menggunakan root permanen.
+Periksa apakah disk terdeteksi sebagai `sataN`, controller berjalan dalam mode
+AHCI, GPT dapat dibaca, dan marker root tersedia.
+
+### 5. Verifikasi persistensi
+
+Dari shell:
 
 ```text
 df
@@ -84,24 +100,42 @@ touch /home/octagram/persistence-test.txt
 echo persistent > /home/octagram/persistence-test.txt
 ```
 
-Restart komputer, lalu jalankan:
+Restart tanpa flashdisk, lalu:
 
 ```text
 cat /home/octagram/persistence-test.txt
 ```
 
-Jika isinya tetap ada setelah reboot dan log menunjukkan persistent EXT2 root,
-root filesystem berjalan langsung dari hard disk. `/tmp` juga berada di EXT2
-untuk saat ini; tmpfs terpisah belum disediakan.
+Jika isi file tetap ada dan log menunjukkan persistent FAT32 root, root
+filesystem dijalankan dari disk internal.
 
-## Batasan penting
+## B. Instalasi dari Linux/WSL (jalur pengembang)
 
-- Driver disk internal saat ini mendukung SATA/AHCI. NVMe belum didukung.
-- Root EXT2 belum memiliki journaling; shutdown paksa saat penulisan dapat
-  merusak filesystem. Lakukan shutdown dengan benar dan simpan backup.
-- Kernel dan bootloader berada di ESP FAT32; file sistem, home, konfigurasi,
-  aplikasi, dan data berada di EXT2 root.
-- Ini installer UEFI. Boot BIOS/Legacy tidak dikonfigurasi oleh script ini.
-- Installer hanya menyiapkan struktur root dan marker; kernel akan mengisi
-  program bawaan/header yang belum ada saat boot pertama. File yang sudah ada
-  tidak ditimpa saat boot agar data pengguna tidak hilang.
+Script host tetap tersedia bila ingin menyiapkan disk dari Linux:
+
+```sh
+sudo tools/install-disk.sh /dev/sdX
+```
+
+Ganti `/dev/sdX` dengan **whole disk** yang benar, bukan partisi. Script host
+membuat ESP FAT32 dan root EXT2. Kernel mendeteksi marker root pada kedua tipe
+filesystem tersebut.
+
+Jalur host memerlukan Linux/WSL; jalur A tidak.
+
+## Batasan saat ini
+
+- **SATA/AHCI saja.** Driver NVMe belum tersedia. Banyak laptop modern memakai
+  SSD NVMe; disk yang tidak muncul di perintah `devices` belum bisa dipasang
+  oleh installer internal.
+- **UEFI saja** untuk layout installer internal. Instalasi BIOS/Legacy belum
+  disediakan.
+- Root internal installer memakai FAT32. FAT32 tidak memiliki journaling,
+  symlink, atau permission POSIX penuh; fitur filesystem tersebut memiliki
+  keterbatasan dibanding EXT2.
+- FAT32 memiliki batas ukuran volume/file 32-bit; pada disk yang sangat besar
+  ruang root dipotong ke batas yang didukung dan sisa disk dibiarkan kosong.
+- Root EXT2 dari jalur host juga belum memiliki journaling. Shutdown paksa
+  ketika ada penulisan dapat merusak metadata filesystem.
+- Sebelum mencoba pada hardware, uji terlebih dahulu di QEMU dengan disk virtual
+  kosong. Jangan gunakan disk yang berisi data penting.

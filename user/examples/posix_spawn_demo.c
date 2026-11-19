@@ -156,6 +156,9 @@ int main(int argc, char **argv)
         memcmp(buffer, action_message, sizeof(action_message) - 1) != 0) {
         return 15;
     }
+    if (posix_spawn_file_actions_destroy(&actions) != 0) {
+        return 15;
+    }
 
     /* File actions: adddup2 and addclose feed the child's stdout to a pipe. */
     int action_pipe[2];
@@ -182,6 +185,9 @@ int main(int argc, char **argv)
     if (count != (ssize_t)(sizeof(action_message) - 1) ||
         memcmp(buffer, action_message, sizeof(action_message) - 1) != 0 ||
         wait_for_child(pipe_child) != 0) {
+        return 20;
+    }
+    if (posix_spawn_file_actions_destroy(&actions) != 0) {
         return 20;
     }
 

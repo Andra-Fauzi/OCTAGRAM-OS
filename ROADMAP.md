@@ -49,8 +49,8 @@ services, and a package/application ecosystem.
 - [x] pread/pwrite/readv/writev and resource APIs
 - [x] Implement `realpath`
 - [x] Implement `execvp`
-- [ ] Implement complete `posix_spawn` file actions and attributes
-  - [x] File actions `addclose`, `adddup2`, and `addopen` (8 actions, 127-byte paths)
+- [x] Implement POSIX `posix_spawn` file actions and supported attributes
+  - [x] File actions `addclose`, `adddup2`, and `addopen` (dynamic action list, paths up to 4095 bytes)
   - [x] Attributes `POSIX_SPAWN_SETPGROUP`, `SETSIGDEF`, and `SETSIGMASK`
   - [x] `posix_spawn_demo` covers file/pipe redirection, process group, mask/default signal attributes, and failures
   - [x] `POSIX_SPAWN_RESETIDS` (`setgid`/`setuid` ke id nyata di anak)

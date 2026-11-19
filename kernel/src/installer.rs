@@ -297,7 +297,7 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
 
     crate::println!("EFI: 512 MiB FAT32 at LBA {}", efi_partition.first_lba);
     crate::println!(
-        "Root: FAT32 at LBA {} ({} sectors)",
+        "Root: EXT2 at LBA {} ({} sectors)",
         root_partition.first_lba,
         root_partition.sector_count()
     );

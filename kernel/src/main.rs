@@ -5,7 +5,7 @@ use core::arch::asm;
 
 use limine::BaseRevision;
 use limine::request::{
-    ExecutableFileRequest, ModulesRequest, RequestsEndMarker, RequestsStartMarker,
+    ExecutableFileRequest, ModuleRequest, RequestsEndMarker, RequestsStartMarker,
     StackSizeRequest,
 };
 
@@ -30,7 +30,7 @@ pub static EXECUTABLE_FILE_REQUEST: ExecutableFileRequest = ExecutableFileReques
 /// destination EFI System Partition without needing to mount the Live medium.
 #[used]
 #[unsafe(link_section = ".requests")]
-pub static INSTALLER_MODULES_REQUEST: ModulesRequest = ModulesRequest::new();
+pub static INSTALLER_MODULE_REQUEST: ModuleRequest = ModuleRequest::new();
 
 /// Define the stand and end markers for Limine requests.
 #[used]

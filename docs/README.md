@@ -1,72 +1,81 @@
 # Dokumentasi OCTAGRAM-OS
 
-Dokumentasi ini menjelaskan OCTAGRAM-OS apa adanya: kernel x86_64 Rust yang
-boot lewat Limine, runtime libc sendiri, dynamic linker, driver perangkat, dan
-shell interaktif. Setiap bagian punya berkasnya sendiri, dan berkas ini adalah
-indeksnya.
+Dokumentasi ini menjelaskan implementasi OCTAGRAM-OS apa adanya: kernel
+x86_64 Rust yang boot lewat Limine, runtime libc sendiri, dynamic linker,
+driver perangkat, dan shell interaktif. Ini adalah indeks utama dokumentasi.
 
-Mulai dari [arsitektur](architecture.md) bila baru mengenal proyek, lalu buka
-bagian yang relevan. Dokumentasi mencerminkan implementasi sekarang, bukan janji
-kompatibilitas Linux/POSIX; batasan yang belum didukung dicatat eksplisit di
-[batasan](limitations.md).
+Mulai dari [arsitektur](architecture.md), lanjutkan ke
+[panduan pengembangan](development-guide.md), lalu gunakan topik spesifik
+sesuai pekerjaan. Dokumentasi harus membedakan fitur yang benar-benar
+diimplementasikan, fitur yang baru berupa rancangan, dan fitur yang sudah
+diuji. Jangan menganggap kompatibilitas POSIX/Linux lengkap hanya karena
+sebagian API tersedia; lihat [batasan](limitations.md).
 
-## Gambaran umum
+## Panduan utama
 
-| Bagian | Berkas | Isi |
+| Area | Dokumen | Cakupan |
 | --- | --- | --- |
-| Arsitektur | [architecture.md](architecture.md) | Peta modul, alur boot ringkas, batas isolasi, model task dan proses |
-| Panduan pengembangan | [development-guide.md](development-guide.md) | Peta file kernel/userspace, boot, build dependency order, debugging dan workflow kontribusi |
-| Boot dan inisialisasi | [boot.md](boot.md) | Limine, urutan `kmain`, APIC, timer, idle loop |
-| Memori | [memory.md](memory.md) | Frame allocator, heap, paging, pemetaan user, ASLR |
-| Proses, thread, sinyal | [process.md](process.md) | Executor kernel, scheduler user, `fork`/`execve`, sinyal, futex |
-| Autentikasi dan keamanan | [auth.md](auth.md) | Kredensial `uid`/`gid`, kapabilitas proses, basis data `/etc/passwd`, `/etc/shadow`, SHA-256, `passwd`/`login` |
-| Filesystem dan VFS | [filesystem.md](filesystem.md) | Router mount, RAMFS, devfs, path, descriptor |
-| Block device dan on-disk FS | [storage.md](storage.md) | Block layer, FAT32, ext2, mount/umount |
-| Jaringan | [networking.md](networking.md) | Link layer, ARP, IPv4, UDP, TCP, DHCP, DNS, HTTP, socket |
-| Driver | [drivers.md](drivers.md) | PCI, AHCI, USB (xHCI/EHCI/OHCI), HID, RTC, serial, ACPI |
-| ACPI dan manajemen daya | [acpi-power.md](acpi-power.md) | Penemuan tabel ACPI, parser AML, power resources PCI, S5 `shutdown`, reset/`reboot` FADT |
-| Kernel logging & diagnostik | [logging.md](logging.md) | Dual-stage buffer `klog`, output serial COM1, perintah `savelog`, diagnosa `sched`/`devices` |
-| Grafis dan terminal | [graphics-terminal.md](graphics-terminal.md) | Framebuffer, font, empat virtual console, input keyboard |
-| Shell | [shell.md](shell.md) | Perintah bawaan, PATH, `run`/`runp`, `pkg`, `mount` |
-| Paket dan aplikasi | [packages.md](packages.md) | Manajemen paket `pkg`, format `.pkg`, registry, direktori `/apps`, app launcher `apps` |
-| Program user dan libc | [userspace.md](userspace.md) | ABI user, `crt0`, struktur runtime, daftar program contoh |
-| Userspace Rust | [rust-userspace.md](rust-userspace.md) | Pengembangan aplikasi no-std Rust, runtime `octagram-runtime`, Makefile, `alloc` |
-| Dynamic linker | [dynamic-linker.md](dynamic-linker.md) | `ld-octagram.so`, relokasi, versi simbol, `dlopen`/`dlclose`, TLS |
-| Toolchain native | [toolchain.md](toolchain.md) | `as`, `ld`, `cc` bawaan kernel dan TinyCC |
-| Build | [building.md](building.md) | Dependency host, target build, ISO/HDD, menjalankan QEMU |
-| ABI syscall | [syscall-abi.md](syscall-abi.md) | Nomor syscall, register, nilai balik, error, descriptor |
-| Pengujian | [testing.md](testing.md) | Uji host kernel, uji host user, uji POSIX, yang belum tercakup |
-| Batasan | [limitations.md](limitations.md) | Fitur yang sengaja belum ada dan konsekuensinya |
+| Orientasi proyek | [architecture.md](architecture.md) | Arsitektur, subsistem, alur data dan batas isolasi |
+| Mulai mengembangkan | [development-guide.md](development-guide.md) | Peta repository/file, alur boot, build, debug dan workflow perubahan |
+| Boot | [boot.md](boot.md) | Limine, urutan inisialisasi kernel, APIC dan idle loop |
+| Memori | [memory.md](memory.md) | Frame allocator, heap, paging dan pemetaan memori |
+| Proses dan thread | [process.md](process.md) | Proses, thread, fork/exec, sinyal dan futex |
+| ABI syscall | [syscall-abi.md](syscall-abi.md) | Nomor syscall, register, return value dan error |
+| Userspace/libc | [userspace.md](userspace.md) | ABI program, crt0, runtime, libc dan demo |
+| Dynamic linker | [dynamic-linker.md](dynamic-linker.md) | Relokasi, shared object, dlopen/dlclose dan TLS |
+| Filesystem | [filesystem.md](filesystem.md) | VFS, mount, RAMFS, devfs dan path |
+| Storage | [storage.md](storage.md) | Block layer, FAT32, ext2 dan mount |
+| Networking | [networking.md](networking.md) | Ethernet, ARP, IP, UDP/TCP, DHCP, DNS dan socket |
+| Driver | [drivers.md](drivers.md) | Inventaris driver dan status dukungan |
+| ACPI/power | [acpi-power.md](acpi-power.md) | ACPI, resource PCI, shutdown dan reboot |
+| Logging | [logging.md](logging.md) | Kernel log, serial output dan diagnostik |
+| Grafis/terminal | [graphics-terminal.md](graphics-terminal.md) | Framebuffer, console dan input |
+| Shell | [shell.md](shell.md) | Perintah shell, PATH, run, pkg dan mount |
+| Paket | [packages.md](packages.md) | Format paket, registry dan app launcher |
+| Userspace Rust | [rust-userspace.md](rust-userspace.md) | Aplikasi Rust no-std dan octagram-runtime |
+| Toolchain | [toolchain.md](toolchain.md) | Assembler, linker, compiler dan TinyCC |
+| Build | [building.md](building.md) | Dependencies, target build, ISO dan QEMU |
+| Pengujian | [testing.md](testing.md) | Unit test, tes userspace/POSIX dan runtime |
+| Batasan | [limitations.md](limitations.md) | Fitur yang belum tersedia dan dampaknya |
 
-## Panduan dan catatan hardware
+## Membuat dan mengembangkan driver
 
-| Berkas | Isi |
+Urutan yang disarankan:
+
+1. Baca [writing-drivers.md](writing-drivers.md) untuk kontrak umum, ownership,
+   resource, interrupt, DMA dan cleanup.
+2. Ikuti [pci-driver-tutorial.md](pci-driver-tutorial.md) untuk perangkat PCI,
+   BAR/MMIO, DMA, interrupt dan device model.
+3. Ikuti [usb-driver-tutorial.md](usb-driver-tutorial.md) untuk host controller
+   dan USB class driver.
+4. Baca catatan controller atau class tertentu di bagian referensi lanjutan.
+
+| Dokumen | Kegunaan |
 | --- | --- |
-| [writing-drivers.md](writing-drivers.md) | Kontrak umum driver: PCI, interrupt, DMA, block device |
-| [pci-driver-tutorial.md](pci-driver-tutorial.md) | Tutorial membuat driver PCI: BDF, device model, BAR/MMIO, DMA, interrupt, pengujian |
-| [usb-driver-tutorial.md](usb-driver-tutorial.md) | Tutorial host controller dan class driver USB: descriptor, endpoint, HID, Mass Storage, hotplug |
-| [CARA-BIKIN-DRIVER.md](CARA-BIKIN-DRIVER.md) | Alur kerja driver dari nol |
-| [CARA-BIKIN-DRIVER-DRIVER-PENTING.md](CARA-BIKIN-DRIVER-DRIVER-PENTING.md) | Driver yang paling penting untuk dibangun lebih dulu |
-| [CARA-BIKIN-DRIVER-USB.md](CARA-BIKIN-DRIVER-USB.md) | Driver USB umum |
-| [CARA-BIKIN-DRIVER-HID-USB.md](CARA-BIKIN-DRIVER-HID-USB.md) | Driver HID di atas USB |
-| [PANDUAN-DRIVER-USB-GENERIK.md](PANDUAN-DRIVER-USB-GENERIK.md) | Driver USB generik dan kelas perangkat |
-| [DOKUMENTASI-XHCI.md](DOKUMENTASI-XHCI.md) | Catatan implementasi xHCI |
-| [DOKUMENTASI-EHCI.md](DOKUMENTASI-EHCI.md) | Catatan implementasi EHCI |
-| [DOKUMENTASI-OHCI.md](DOKUMENTASI-OHCI.md) | Catatan implementasi OHCI |
-| [wifi-qca9377.md](wifi-qca9377.md) | Status bring-up Qualcomm QCA9377 |
-| [android-usb-tethering.md](android-usb-tethering.md) | RNDIS/NCM untuk tethering Android |
+| [CARA-BIKIN-DRIVER.md](CARA-BIKIN-DRIVER.md) | Catatan resep tambahan untuk UART, RTC, timer, storage dan network; ide di dalamnya harus diverifikasi terhadap source terkini sebelum dipakai |
+| [CARA-BIKIN-DRIVER-HID-USB.md](CARA-BIKIN-DRIVER-HID-USB.md) | Detail HID boot protocol, report keyboard/mouse dan re-arm transfer |
+| [PANDUAN-DRIVER-USB-GENERIK.md](PANDUAN-DRIVER-USB-GENERIK.md) | Batas generik vs class-specific, descriptor, endpoint dan Mass Storage BOT |
+| [DOKUMENTASI-XHCI.md](DOKUMENTASI-XHCI.md) | Detail struktur ring, TRB, event, enumerasi dan riwayat bug xHCI |
+| [DOKUMENTASI-EHCI.md](DOKUMENTASI-EHCI.md) | Status implementasi, jalur transfer dan keterbatasan EHCI |
+| [DOKUMENTASI-OHCI.md](DOKUMENTASI-OHCI.md) | Status implementasi dan keterbatasan OHCI |
+| [wifi-qca9377.md](wifi-qca9377.md) | Status bring-up driver Qualcomm QCA9377 |
+| [android-usb-tethering.md](android-usb-tethering.md) | Catatan RNDIS/NCM untuk tethering Android |
 
-## Porting
+## Porting aplikasi
 
-| Berkas | Isi |
+| Dokumen | Kegunaan |
 | --- | --- |
-| [porting-apps.md](porting-apps.md) | Menyesuaikan program C kecil dengan runtime dan ABI OCTAGRAM |
-| [porting-python.md](porting-python.md) | Target port CPython 3.11/3.12 dan API libc yang masih kurang |
+| [porting-apps.md](porting-apps.md) | Porting aplikasi C kecil ke ABI dan libc OCTAGRAM |
+| [porting-python.md](porting-python.md) | Catatan target CPython dan API yang masih perlu dilengkapi |
 
 ## Konvensi dokumentasi
 
-- Bahasa Indonesia, istilah teknis dibiarkan dalam bentuk aslinya.
-- Setiap klaim perilaku merujuk modul yang mengimplementasikannya; bila sesuatu
-  belum ada, tulis belum ada.
-- Item roadmap yang selesai harus punya uji atau demo yang bisa dijalankan,
+- Gunakan Bahasa Indonesia; istilah teknis boleh tetap dalam bahasa aslinya.
+- Jelaskan fungsi file berdasarkan source aktual, bukan nama atau asumsi.
+- Tandai contoh konseptual dan placeholder secara eksplisit; jangan tampilkan
+  nama fungsi placeholder seolah-olah API yang sudah tersedia.
+- Pisahkan status implementasi dari status pengujian. Sebutkan lingkungan uji
+  (host, QEMU, atau hardware fisik) dan hasil yang benar-benar diamati.
+- Saat file dipindah/dihapus/ditambahkan, perbarui indeks ini.
+- Item roadmap yang selesai harus memiliki uji atau demo yang dapat dijalankan,
   sesuai aturan penerimaan di [ROADMAP.md](../ROADMAP.md).

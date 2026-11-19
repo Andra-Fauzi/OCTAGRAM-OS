@@ -35,14 +35,19 @@ jobs:
         continue-on-error: true
         run: cargo +nightly fmt --manifest-path kernel/Cargo.toml --check
 
-      - name: Run kernel host tests
-        run: cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
+      # kernel/src/fs/mod.rs embeds these artifacts with include_bytes!,
+      # so create them before invoking cargo test or compilation fails early.
+      - name: Build embedded Rust utility
+        run: make -C user/rust make
 
       - name: Build user programs
         run: make -C user
 
       - name: Build dynamic userland
         run: make -C user dynamic
+
+      - name: Run kernel host tests
+        run: cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
 
       - name: Run libc host tests
         run: |

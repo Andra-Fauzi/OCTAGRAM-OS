@@ -137,12 +137,11 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
         gib_tenths % 10
     );
     crate::println!("Creating GPT, EFI System Partition and persistent root...");
-    crate::terminal::terminal_show_task_progress("Create GPT", 0, 1);
-
     let (efi_partition, root_partition) =
-        partition::create_octagram_gpt(device.as_ref())
-            .map_err(|error| format!("GPT partitioning failed: {error:?}"))?;
-    crate::terminal::terminal_show_task_progress("Create GPT", 1, 1);
+        partition::create_octagram_gpt_with_progress(device.as_ref(), |completed, total| {
+            crate::terminal::terminal_show_task_progress("Write GPT", completed, total);
+        })
+        .map_err(|error| format!("GPT partitioning failed: {error:?}"))?;
     crate::println!("");
     crate::terminal::terminal_show_task_progress("Verify GPT", 0, 2);
     let written_partitions = partition::read_gpt_partitions(device.as_ref())

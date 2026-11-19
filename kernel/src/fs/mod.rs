@@ -18,6 +18,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
+use crate::storage::{block, ext2::Ext2};
 
 const MAKE_ELF: &[u8] = include_bytes!("../../../user/rust/build/make.elf");
 const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
@@ -320,6 +321,16 @@ impl Vfs {
         mount_point: &str,
         filesystem: F,
     ) -> Result<(), FsError> {
+        self.mount_boxed(mount_point, Box::new(filesystem))
+    }
+
+    /// Mount an already boxed filesystem. This is used by boot when the root
+    /// filesystem is selected dynamically from an installed disk.
+    pub fn mount_boxed(
+        &mut self,
+        mount_point: &str,
+        filesystem: Box<dyn FileSystem>,
+    ) -> Result<(), FsError> {
         let mount_point = normalize_path(mount_point)?;
         if self
             .mounts
@@ -343,7 +354,7 @@ impl Vfs {
 
         self.mounts.push(Mount {
             mount_point,
-            filesystem: Box::new(filesystem),
+            filesystem,
         });
         Ok(())
     }
@@ -619,30 +630,81 @@ fn is_below(path: &str, mount_point: &str) -> bool {
 
 static GLOBAL_VFS: Once<Mutex<Vfs>> = Once::new();
 
-/// Initialize the global VFS with a volatile RAM filesystem mounted at `/`.
+/// Select the installed root filesystem from an AHCI SATA disk.
+///
+/// The installer creates /etc/octagram-root on the EXT2 root partition. This
+/// marker prevents an arbitrary EXT2 data disk from accidentally becoming '/'.
+/// USB storage is intentionally excluded: the installed system must boot from
+/// the internal SATA disk, not depend on an installer flash drive.
+fn discover_persistent_root() -> Option<(String, Ext2)> {
+    for info in block::list() {
+        if !info.name.starts_with("sata") {
+            continue;
+        }
+        let Some(device) = block::get(&info.name) else {
+            continue;
+        };
+        match Ext2::mount(device) {
+            Ok(filesystem) => {
+                if filesystem.metadata("/etc/octagram-root").is_ok() {
+                    crate::println!(
+                        "[rootfs] persistent EXT2 root selected from {} ({} sectors)",
+                        info.name,
+                        info.sectors
+                    );
+                    return Some((info.name, filesystem));
+                }
+                crate::println!(
+                    "[rootfs] {} has EXT2 but no /etc/octagram-root marker; skipping",
+                    info.name
+                );
+            }
+            Err(error) => crate::println!(
+                "[rootfs] {} is not a supported EXT2 root: {:?}",
+                info.name,
+                error
+            ),
+        }
+    }
+    None
+}
+
+fn ensure_root_directory(root: &mut dyn FileSystem, path: &str) {
+    match root.metadata(path) {
+        Ok(metadata) if metadata.node_type == NodeType::Directory => {}
+        Ok(_) => panic!("root path {path} exists but is not a directory"),
+        Err(FsError::NotFound) => root
+            .create_dir(path)
+            .unwrap_or_else(|error| panic!("creating root directory {path} failed: {error:?}")),
+        Err(error) => panic!("checking root directory {path} failed: {error:?}"),
+    }
+}
+
+/// Initialize the global VFS. An installed EXT2 partition becomes '/' when
+/// present; RAMFS remains only as a development/rescue fallback.
 pub fn init() {
+    let persistent_root = discover_persistent_root();
     GLOBAL_VFS.call_once(|| {
         let mut vfs = Vfs::new();
-        let mut root = RamFs::new();
-        root.create_dir("/dev")
-            .expect("creating the initial /dev directory must succeed");
-        root.create_dir("/bin")
-            .expect("creating the initial /bin directory must succeed");
-        root.create_dir("/lib")
-            .expect("creating the initial /lib directory must succeed");
-        root.create_dir("/lib/tcc")
-            .expect("creating the initial /lib/tcc directory must succeed");
-        root.create_dir("/share")
-            .expect("creating the initial /share directory must succeed");
-        root.create_dir("/share/octagram")
-            .expect("creating the initial /share/octagram directory must succeed");
-        root.create_dir("/include")
-            .expect("creating the initial /include directory must succeed");
-        root.create_dir("/include/sys")
-            .expect("creating the initial /include/sys directory must succeed");
-        root.create_dir("/tmp")
-            .expect("creating the initial /tmp directory must succeed");
+        let mut root: Box<dyn FileSystem> = match persistent_root {
+            Some((_device_name, filesystem)) => Box::new(filesystem),
+            None => {
+                crate::println!(
+                    "[rootfs] WARNING: no installed SATA root found; using volatile RAMFS"
+                );
+                Box::new(RamFs::new())
+            }
+        };
         for directory in [
+            "/dev",
+            "/bin",
+            "/lib",
+            "/lib/tcc",
+            "/share",
+            "/share/octagram",
+            "/include",
+            "/include/sys",
+            "/tmp",
             "/home",
             "/home/octagram",
             "/etc",
@@ -659,11 +721,10 @@ pub fn init() {
             "/usr/local/bin",
             "/mnt",
         ] {
-            root.create_dir(directory)
-                .unwrap_or_else(|_| panic!("creating initial {} directory must succeed", directory));
+            ensure_root_directory(root.as_mut(), directory);
         }
-        vfs.mount("/", root)
-            .expect("mounting the initial root filesystem must succeed");
+        vfs.mount_boxed("/", root)
+            .expect("mounting the selected root filesystem must succeed");
         vfs.mount("/dev", DevFs::new())
             .expect("mounting the device filesystem must succeed");
         seed_file(&mut vfs, "/bin/make", MAKE_ELF, 0o755);
@@ -749,14 +810,21 @@ pub fn init() {
 }
 
 fn seed_file(vfs: &mut Vfs, path: &str, contents: &[u8], permissions: u16) {
+    // Seed only missing files. Existing files on an installed root belong to
+    // the user and must survive subsequent boots and kernel upgrades.
+    match vfs.metadata(path) {
+        Ok(_) => return,
+        Err(FsError::NotFound) => {}
+        Err(error) => panic!("checking boot file {path} failed: {error:?}"),
+    }
     vfs.create_file(path)
-        .unwrap_or_else(|_| panic!("creating boot file {path} must succeed"));
+        .unwrap_or_else(|error| panic!("creating boot file {path} failed: {error:?}"));
     let written = vfs
         .write(path, 0, contents)
-        .unwrap_or_else(|_| panic!("writing boot file {path} must succeed"));
+        .unwrap_or_else(|error| panic!("writing boot file {path} failed: {error:?}"));
     assert_eq!(written, contents.len(), "boot file {path} must be complete");
     vfs.set_permissions(path, permissions)
-        .unwrap_or_else(|_| panic!("setting boot file permissions for {path} must succeed"));
+        .unwrap_or_else(|error| panic!("setting boot file permissions for {path} failed: {error:?}"));
 }
 
 /// Run an operation while holding the global VFS lock.

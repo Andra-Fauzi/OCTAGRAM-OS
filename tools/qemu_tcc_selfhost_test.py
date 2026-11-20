@@ -96,6 +96,17 @@ def main():
         return 1
 
     output_offset = len(serial_text())
+    send_line("run /tmp/tcc-selfhost-full.elf")
+    if not wait_for_after("TCC runs on OCTAGRAM: 24 24", output_offset, 120):
+        print("TCC-FULL-RUN-FAIL: extended libc smoke ELF did not reach its success output")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("TCC-FULL-RUN-FAIL: extended libc smoke ELF did not exit with status 0")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
     send_line("make -C /share/octagram -n")
     if not wait_for_after("tcc hello.o libmessage.a -o hello.elf", output_offset, 30):
         print("MAKE-DRY-RUN-FAIL: native make did not expand the object-file link recipe")

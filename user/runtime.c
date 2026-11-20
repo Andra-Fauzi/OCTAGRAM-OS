@@ -129,30 +129,164 @@ static int64_t posix_result(int64_t result)
     return result;
 }
 
-static int oct_tls_layout(uintptr_t *filesz, uintptr_t *size,
-                          uintptr_t *alignment, uintptr_t *aligned_size)
+/*
+ * ELF64 program headers are also present in the initial auxiliary vector.
+ * GNU ld builds use the __oct_tls_* symbols emitted by user/linker.ld, while
+ * TinyCC's built-in linker emits the standard PT_TLS program header instead.
+ */
+typedef struct OctElf64ProgramHeader {
+    uint32_t type;
+    uint32_t flags;
+    uint64_t offset;
+    uint64_t virtual_address;
+    uint64_t physical_address;
+    uint64_t file_size;
+    uint64_t memory_size;
+    uint64_t alignment;
+} OctElf64ProgramHeader;
+
+enum {
+    OCT_AT_NULL = 0,
+    OCT_AT_PHDR = 3,
+    OCT_AT_PHENT = 4,
+    OCT_AT_PHNUM = 5,
+    OCT_PT_TLS = 7
+};
+
+static int oct_tls_from_auxiliary_vector(uintptr_t *template_start,
+                                         uintptr_t *filesz,
+                                         uintptr_t *size,
+                                         uintptr_t *alignment,
+                                         uintptr_t *aligned_size)
 {
-    *size = __oct_tls_size == NULL ? 0 : *__oct_tls_size;
-    *filesz = __oct_tls_filesz == NULL ? 0 : *__oct_tls_filesz;
-    *alignment = __oct_tls_align == NULL ? 0 : *__oct_tls_align;
-    if (*size == 0) {
-        *aligned_size = 0;
+    if (environ == NULL) {
         return 0;
     }
-    if (__oct_tls_start == NULL || *filesz > *size
-        || *alignment == 0 || *alignment > 4096
-        || (*alignment & (*alignment - 1)) != 0
-        || *size > SIZE_MAX - (*alignment - 1)) {
-        return -1;
+
+    /* The kernel lays out envp, its NULL terminator, then the auxiliary vector. */
+    char **environment_end = environ;
+    unsigned int environment_count = 0;
+    while (environment_count < 65 && environment_end[environment_count] != NULL) {
+        ++environment_count;
     }
-    *aligned_size = (*size + *alignment - 1) & ~(*alignment - 1);
+    if (environment_count == 65) {
+        return 0;
+    }
+
+    const uintptr_t *auxiliary = (const uintptr_t *)(environment_end
+                                      + environment_count + 1);
+    uintptr_t program_headers = 0;
+    uintptr_t program_header_size = 0;
+    uintptr_t program_header_count = 0;
+    for (unsigned int index = 0; index < 128; ++index) {
+        uintptr_t type = auxiliary[index * 2];
+        uintptr_t value = auxiliary[index * 2 + 1];
+        if (type == OCT_AT_NULL) {
+            break;
+        }
+        switch (type) {
+        case OCT_AT_PHDR:
+            program_headers = value;
+            break;
+        case OCT_AT_PHENT:
+            program_header_size = value;
+            break;
+        case OCT_AT_PHNUM:
+            program_header_count = value;
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (program_headers == 0
+        || program_header_size != sizeof(OctElf64ProgramHeader)
+        || program_header_count == 0 || program_header_count > 128
+        || program_headers > UINTPTR_MAX
+             - program_header_count * sizeof(OctElf64ProgramHeader)) {
+        return 0;
+    }
+
+    for (uintptr_t index = 0; index < program_header_count; ++index) {
+        const OctElf64ProgramHeader *header =
+            (const OctElf64ProgramHeader *)(program_headers
+                + index * sizeof(OctElf64ProgramHeader));
+        if (header->type != OCT_PT_TLS) {
+            continue;
+        }
+
+        uintptr_t tls_filesz = (uintptr_t)header->file_size;
+        uintptr_t tls_size = (uintptr_t)header->memory_size;
+        uintptr_t tls_alignment = (uintptr_t)header->alignment;
+        uintptr_t tls_start = (uintptr_t)header->virtual_address;
+
+        if (header->file_size > UINTPTR_MAX
+            || header->memory_size > UINTPTR_MAX
+            || header->alignment > 4096
+            || tls_filesz > tls_size
+            || (tls_filesz != 0 && tls_start == 0)
+            || tls_start > UINTPTR_MAX - tls_filesz) {
+            return -1;
+        }
+
+        /* The TCB is pointer-aligned even when PT_TLS requests weaker alignment. */
+        if (tls_alignment < sizeof(uintptr_t)) {
+            tls_alignment = sizeof(uintptr_t);
+        }
+        if (tls_alignment == 0 || (tls_alignment & (tls_alignment - 1)) != 0
+            || tls_size > SIZE_MAX - (tls_alignment - 1)) {
+            return -1;
+        }
+
+        *template_start = tls_start;
+        *filesz = tls_filesz;
+        *size = tls_size;
+        *alignment = tls_alignment;
+        *aligned_size = (tls_size + tls_alignment - 1) & ~(tls_alignment - 1);
+        return 1;
+    }
+
     return 0;
 }
 
-static void oct_tls_copy(void *destination, uintptr_t filesz, uintptr_t size)
+static int oct_tls_layout(uintptr_t *template_start, uintptr_t *filesz,
+                          uintptr_t *size, uintptr_t *alignment,
+                          uintptr_t *aligned_size)
+{
+    *template_start = 0;
+    *size = __oct_tls_size == NULL ? 0 : *__oct_tls_size;
+    *filesz = __oct_tls_filesz == NULL ? 0 : *__oct_tls_filesz;
+    *alignment = __oct_tls_align == NULL ? 0 : *__oct_tls_align;
+
+    if (*size != 0) {
+        if (__oct_tls_start == NULL || *filesz > *size
+            || *alignment == 0 || *alignment > 4096
+            || (*alignment & (*alignment - 1)) != 0
+            || *size > SIZE_MAX - (*alignment - 1)) {
+            return -1;
+        }
+        *template_start = (uintptr_t)__oct_tls_start;
+        *aligned_size = (*size + *alignment - 1) & ~(*alignment - 1);
+        return 0;
+    }
+
+    int result = oct_tls_from_auxiliary_vector(
+        template_start, filesz, size, alignment, aligned_size);
+    if (result <= 0) {
+        *template_start = 0;
+        *filesz = 0;
+        *size = 0;
+        *alignment = 0;
+        *aligned_size = 0;
+    }
+    return result < 0 ? -1 : 0;
+}
+
+static void oct_tls_copy(void *destination, uintptr_t template_start,
+                         uintptr_t filesz, uintptr_t size)
 {
     if (filesz != 0) {
-        memcpy(destination, __oct_tls_start, filesz);
+        memcpy(destination, (const void *)template_start, filesz);
     }
     if (size > filesz) {
         memset((unsigned char *)destination + filesz, 0, size - filesz);
@@ -1515,12 +1649,13 @@ static void oct_tls_initialize_tcb(void *thread_pointer)
 
 static void *oct_tls_allocate(void)
 {
+    uintptr_t template_start;
     uintptr_t filesz;
     uintptr_t size;
     uintptr_t alignment;
     uintptr_t aligned_size;
-    if (oct_tls_layout(&filesz, &size, &alignment, &aligned_size) != 0
-        || aligned_size == 0) {
+    if (oct_tls_layout(&template_start, &filesz, &size, &alignment,
+                       &aligned_size) != 0 || aligned_size == 0) {
         return NULL;
     }
 
@@ -1535,7 +1670,7 @@ static void *oct_tls_allocate(void)
         oct_syscall2(17, (uint64_t)(uintptr_t)base, aligned_size);
         return NULL;
     }
-    oct_tls_copy(base, filesz, size);
+    oct_tls_copy(base, template_start, filesz, size);
     void *thread_pointer = (unsigned char *)base + aligned_size;
     oct_tls_initialize_tcb(thread_pointer);
     return thread_pointer;
@@ -1543,11 +1678,13 @@ static void *oct_tls_allocate(void)
 
 static uintptr_t oct_tls_aligned_size(void)
 {
+    uintptr_t template_start;
     uintptr_t filesz;
     uintptr_t size;
     uintptr_t alignment;
     uintptr_t aligned_size;
-    if (oct_tls_layout(&filesz, &size, &alignment, &aligned_size) != 0) {
+    if (oct_tls_layout(&template_start, &filesz, &size, &alignment,
+                       &aligned_size) != 0) {
         return 0;
     }
     (void)filesz;

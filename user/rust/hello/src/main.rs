@@ -6,8 +6,9 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::alloc::Layout;
+use core::ffi::CStr;
 use core::panic::PanicInfo;
-use octagram_runtime::{exit, write_all, STDOUT};
+use octagram_runtime::{close, exit, open, read, stat_path, write_all, O_RDONLY, STDOUT};
 
 #[no_mangle]
 pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
@@ -19,6 +20,31 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     }
     if write_all(STDOUT, b"Rust no_std + alloc runs in OCTAGRAM!\n").is_err() {
         return 1;
+    }
+
+    // Exercise the Rust runtime's file/stat syscall ABI against a seeded VFS
+    // source file, not just stdout and the allocator.
+    let path = match CStr::from_bytes_with_nul(b"/share/octagram/message.c\\0") {
+        Ok(path) => path,
+        Err(_) => return 2,
+    };
+    let metadata = match stat_path(path) {
+        Ok(metadata) if metadata.size > 0 => metadata,
+        _ => return 3,
+    };
+    let fd = match open(path, O_RDONLY) {
+        Ok(fd) => fd,
+        Err(_) => return 4,
+    };
+    let mut sample = [0u8; 32];
+    let read_result = read(fd, &mut sample);
+    let close_result = close(fd);
+    match (read_result, close_result) {
+        (Ok(count), Ok(())) if count > 0 && metadata.size >= count as u64 => {}
+        _ => return 5,
+    }
+    if write_all(STDOUT, b"Rust runtime file/stat: PASS\\n").is_err() {
+        return 6;
     }
     0
 }

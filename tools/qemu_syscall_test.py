@@ -111,7 +111,7 @@ def main():
     guest_tests = (
         ("/bin/mmap-demo", "mmap POSIX demo: PASS", "M4-ABI-MMAP"),
         ("/bin/tls-demo", "static TLS initialized", "M4-ABI-TLS"),
-        ("/bin/thread-demo", "preemptive threads and TLS passed", "M4-ABI-THREADS"),
+        ("/bin/thread-demo", "preemptive threads, TLS, and SSE context passed", "M4-ABI-THREADS"),
     )
     for command, marker, label in guest_tests:
         output_offset = len(serial_text())

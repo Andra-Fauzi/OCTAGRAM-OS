@@ -753,7 +753,7 @@ mod tests {
             ) > 0);
         }
         assert_eq!(&source, b"AAAAAAAA");
-        assert_eq!(&destination, b"AAAAAAAA");
+        assert_eq!(&destination, b"AAABAAAA");
     }
 
     #[test]

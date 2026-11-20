@@ -222,9 +222,12 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                 let rip = frame.stack_frame.instruction_pointer;
                 let mut instruction = [0u8; 8];
                 for (offset, byte) in instruction.iter_mut().enumerate() {
-                    *byte = unsafe {
-                        core::ptr::read_volatile((rip as *const u8).add(offset))
-                    };
+                    let address = rip.saturating_add(offset as u64);
+                    if crate::memory::paging::translate(address).is_ok() {
+                        *byte = unsafe {
+                            core::ptr::read_volatile(address as *const u8)
+                        };
+                    }
                 }
                 crate::println!(
                     "User page fault error_code={:#x} rip={:#x} address={:#x} fs_base={:#x} bytes={:02x?}",

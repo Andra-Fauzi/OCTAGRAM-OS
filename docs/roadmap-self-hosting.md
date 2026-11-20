@@ -64,7 +64,7 @@ selesai jika bukti sesuai tersedia.
 | Kernel/proses/ELF | Kernel x86_64, ELF loader, proses dan syscall sudah tersedia | Fondasi ada |
 | Filesystem | VFS, EXT2, FAT32, mount dan instalasi persisten tersedia | Perlu validasi workflow source |
 | Editor | Perintah editor native tersedia | Perlu uji edit file besar dan persistensi |
-| C compiler | TinyCC dibangun untuk ABI OCTAGRAM dan masuk image | QEMU runtime masih gagal |
+| C compiler | TinyCC dibangun untuk ABI OCTAGRAM dan masuk image; perbaikan runtime PT_TLS sudah di-commit | Menunggu CI/QEMU |
 | Mini toolchain | Compiler C-subset, assembler/linker mini tersedia | Terbatas, bukan GNU toolchain |
 | Native Make | Utility Rust no_std; dukungan target, variable, automatic variable, `-n`, `-s`, `-j1` | Implemented; QEMU test belum terbukti lulus |
 | Rust application | Workspace Rust no_std dapat di-cross-compile dari host | Bukan Rust compiler native |
@@ -104,11 +104,11 @@ diperbaiki hanya karena kernel build berhasil.
 - `docs/toolchain.md` menjelaskan alasan baseline ISA: kernel belum memiliki
   kontrak XSAVE/XCR0 dan penyimpanan state AVX yang lengkap.
 
-**Hasil CI berikutnya:** TinyCC berhasil dikompilasi dan command compile di
-guest mengembalikan status 0, tetapi program hasil kompilasi mengalami page
-fault saat dijalankan: `error_code=0x4, RIP=0x413c84, address=0x0`. Ini adalah
-masalah baru setelah blocker invalid-opcode dan harus dianalisis terpisah;
-belum ada bukti bahwa program C hasil TinyCC berjalan benar.
+**Hasil diagnostik lanjutan:** compile TinyCC di guest mengembalikan status
+0, tetapi ELF hasilnya mengalami user read page fault pada
+`RIP=0x413104`, `address=0x0`, `FS_BASE=0`. Byte instruksi yang ditangkap
+adalah `64 48 8b 04 25 00 00 00` (`mov %fs:0x0,%rax`). Ini membuktikan
+fault terjadi saat akses TLS/TCB melalui FS, bukan lagi instruksi AVX.
 
 **Tindakan isolasi terbaru:** smoke test dipisah menjadi dua sumber:
 
@@ -120,8 +120,26 @@ belum ada bukti bahwa program C hasil TinyCC berjalan benar.
 Sumber minimal dipasang sebagai `/tmp/tcc.c` dan sumber luas sebagai
 `/tmp/tcc-full.c`. CI juga memeriksa byte prefix VEX/EVEX pada instruksi
 yang didisassembly, bukan mencari semua mnemonic yang diawali huruf `v`.
-**Status verifikasi:** source isolasi sudah di-commit; tunggu hasil workflow
-terbaru sebelum menyatakan TinyCC guest runtime lulus.
+
+**Perbaikan TLS yang sedang diverifikasi:**
+
+- Runtime sebelumnya hanya membaca simbol `__oct_tls_*` yang dihasilkan oleh
+  linker script GNU. TinyCC memakai linker internal dan menyediakan metadata
+  TLS melalui program header ELF standar `PT_TLS`.
+- `user/runtime.c` kini mempertahankan jalur simbol GNU dan memiliki fallback
+  untuk membaca `AT_PHDR`, `AT_PHENT`, `AT_PHNUM` dari auxiliary vector,
+  menemukan `PT_TLS`, lalu menyalin `p_filesz`, mengosongkan sisa hingga
+  `p_memsz`, dan menempatkan TCB di ujung blok TLS yang sudah disejajarkan.
+- Jalur `pthread_create` juga memakai template TLS yang sama untuk membuat
+  TLS masing-masing thread.
+- Commit implementasi: `44d6961e`, `0f977148`, dan
+  `b7bcd2ed`. Dua run awal menemukan pemanggil lama di
+  `pthread_create` yang masih memakai signature sebelumnya; itu sudah
+  diperbaiki pada `b7bcd2ed`.
+
+**Status verifikasi:** implementasi sudah di-commit, tetapi belum lulus build
+atau QEMU. Jangan menganggap TinyCC runtime sudah berjalan sampai CI terbaru
+menunjukkan output smoke test dan exit status 0.
 
 ---
 
@@ -200,10 +218,11 @@ setelah reboot, dan diproses oleh beberapa executable native.
 **Tujuan:** TinyCC benar-benar bisa dipakai dari dalam OCTAGRAM untuk membangun
 program C native.
 
-- [ ] Diagnosis exception vector 6 pada TinyCC.
-- [ ] Tetapkan baseline ISA x86_64 yang didukung oleh kernel dan QEMU.
-- [ ] Hilangkan instruksi AVX dari TinyCC build, atau aktifkan AVX secara
-      lengkap dan benar di kernel serta konfigurasi guest.
+- [x] Diagnosis exception vector 6: instruksi VEX/AVX telah dihilangkan
+      dari TinyCC build dengan baseline x86-64.
+- [x] Tetapkan baseline ISA x86_64 yang didukung oleh kernel dan QEMU.
+- [x] Hilangkan instruksi AVX dari TinyCC build; AVX kernel tidak diaktifkan.
+- [ ] Verifikasi runtime TLS lewat `PT_TLS` dan auxiliary vector pada QEMU.
 - [ ] Uji command `tcc source.c -o program.elf` dari shell.
 - [ ] Jalankan hasil ELF dari shell dan periksa output serta exit status.
 - [ ] Uji argv, envp, file I/O, malloc, TLS, errno, signal, dan stack alignment.
@@ -439,27 +458,21 @@ Jangan menyebut build host sebagai native runtime test.
 
 ## 8. Next actions — urutan kerja terdekat
 
-1. **M2.1 — baseline ISA:** build TinyCC dengan target x86-64 baseline dan
-   tanpa AVX/AVX2/AVX-512. CI memeriksa mnemonic hasil decoding pada section
-   `.text`; pemeriksaan ini sudah lulus pada commit `f80c0694`.
-2. **M2.2 — runtime TinyCC:** TinyCC berhasil dikompilasi di guest dan
-   menghasilkan ELF. Namun executable minimal gagal saat dijalankan di QEMU:
-   user page fault `error_code=0x4`, RIP `0x413104`, alamat `0x0`, dan
-   `FS_BASE=0`. Jadi M2 belum lulus.
-3. **M2.3 — diagnosis fault:** commit `dfdd14ad` menambahkan pencatatan byte
-   instruksi dan general-purpose register saat user page fault. Commit
-   `522b1c3e` membatasi pembacaan byte dengan pemeriksaan mapping agar
-   diagnostik tidak memicu fault kedua ketika melewati batas halaman.
-4. **M2.4:** gunakan byte instruksi/register dari serial QEMU untuk
-   mengidentifikasi apakah fault berasal dari TLS/FS-relative access, startup
-   runtime, atau jalur lain. Jangan mengubah loader atau TLS sebelum bukti
-   instruksi tersedia.
-5. **M2.5:** setelah program minimal berhasil berjalan, jalankan executable
-   smoke yang lebih lengkap dan verifikasi output serta exit status.
-6. **M3.1:** setelah TinyCC runtime lulus, jalankan Make `-n`, `-s`, dan
+1. **M2.1 — baseline ISA:** sudah diterapkan dan guard disassembly
+   `.text` tidak menemukan instruksi AVX/VEX.
+2. **M2.2 — runtime TLS:** fault teridentifikasi sebagai
+   `mov %fs:0x0,%rax` dengan `FS_BASE=0`; runtime kini membaca `PT_TLS`
+   dari auxiliary vector saat simbol khusus GNU tidak tersedia.
+3. **M2.3 — kompilasi:** pastikan seluruh pemanggil `oct_tls_layout` dan
+   `oct_tls_copy` sudah memakai signature baru; commit terakhir
+   `b7bcd2ed` memperbarui jalur `pthread_create`.
+4. **M2.4 — verifikasi QEMU:** jalankan workflow terbaru. Gate pertama adalah
+   compile dan execute `/tmp/tcc-selfhost-minimal.elf`; setelah itu uji
+   executable smoke lebih lengkap, errno, TLS, dan thread.
+5. **M3.1:** setelah TinyCC runtime lulus, jalankan Make `-n`, `-s`, dan
    `-j1` pada guest; kemudian implementasikan timestamp-based incremental
    build secara backward-compatible dengan metadata VFS yang tersedia.
-7. **M4.1:** mulai desain bootstrap rustc secara paralel: versi, target triple,
+6. **M4.1:** mulai desain bootstrap rustc secara paralel: versi, target triple,
    sysroot, backend, dependensi OS, dan strategi Stage 0.
 
 Jangan lanjut ke M6 sebagai prioritas sebelum jalur native compiler dan build

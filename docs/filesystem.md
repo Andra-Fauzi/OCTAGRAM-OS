@@ -18,7 +18,10 @@ pub trait FileSystem: Send {
 
 - `NodeType`: file, direktori, symlink, device, pipe, socket (sesuai yang
   dikembalikan tiap filesystem).
-- `Metadata`: tipe node, ukuran, mode, dan waktu sebisanya.
+- `Metadata`: tipe node, ukuran, mode, dan `modified: Option<u64>`
+  (Unix seconds). EXT2 membaca/menulis inode mtime; RAMFS memperbarui waktu
+  saat file dibuat/diubah; FAT32 dan devfs melaporkan `None` hingga timestamp
+  mereka ditangani dengan benar. Resolusi EXT2 saat ini satu detik.
 - Path dinormalisasi (`normalize_path`) dan dilacak relatif terhadap cwd proses.
 - Router memilih mount point **terpanjang** yang cocok, sehingga `/mnt/data`
   mengalahkan `/`.

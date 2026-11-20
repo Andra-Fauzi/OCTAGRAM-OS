@@ -425,3 +425,38 @@ Langkah berikut M4:
 Karena itu M4–M7 tetap belum selesai. Fokus berikutnya adalah riset dan
 bootstrap `rustc`, bukan memperluas installer atau mengklaim self-hosting
 penuh dari keberhasilan TinyCC.
+
+
+## 11. M4.1 — Experimental Rust host target scaffold (20 November 2026)
+
+Branch `feature/native-self-hosting` menambahkan:
+- `user/rust/targets/x86_64-unknown-octagram.json`: target identity
+  scaffold dengan cfg `target_os=octagram`, x86_64, static executable,
+  static relocation, panic abort, dan SSE/SSE2.
+- `tools/check_octagram_rust_target.py`: menjalankan
+  `rustc +nightly --print cfg` dan memeriksa identitas target.
+- CI step `Validate experimental OCTAGRAM Rust host target`.
+
+Dokumen detail: [rust-native-bootstrap.md](rust-native-bootstrap.md),
+bagian 3.4.
+
+**Batas penting:** LLVM backend triple masih `x86_64-unknown-none`; target
+JSON hanya menyiapkan identitas/cfg untuk eksperimen `no_std`. Rust `std`,
+libc port, dynamic loader, dan executable rustc/Cargo untuk OCTAGRAM belum
+tersedia. Jangan menandai M4 selesai.
+
+Audit juga mengonfirmasi kernel memiliki FPU save/restore (`fxsave64` /
+`fxrstor64`) dan state FPU pada setiap scheduled process. Ini fondasi SSE2,
+tetapi guest test khusus preservasi register FPU lintas preemption, fork, dan
+thread switch masih perlu ditambahkan sebelum mengandalkan SSE2 untuk compiler
+host. TLS FS base juga disimpan/dipulihkan, sedangkan TLS pada shared object
+belum didukung.
+
+Commit implementasi:
+- `7362afa5` — target JSON.
+- `cd100765` — target validator.
+- `b3387092` — CI validation step.
+- `0b3c92df` — dokumentasi bootstrap dan ABI gates.
+
+M4.1 masih **in progress**: target identity scaffold tersedia, tetapi ABI host
+lengkap dan conformance tests belum selesai.

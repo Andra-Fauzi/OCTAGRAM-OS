@@ -1490,6 +1490,9 @@ struct ScheduledProcess {
     parent_pid: Option<u64>,
     is_thread: bool,
     tid: u64,
+    /// Immutable TLS base supplied when this scheduled task was created.
+    /// Used to distinguish a bad create argument from later state corruption.
+    initial_thread_pointer: u64,
     thread_mapping: Option<(u64, u64)>,
     waiting_for: Option<ProcessWait>,
     wait_deadline: Option<u64>,

@@ -28,7 +28,7 @@ jobs:
 
       - name: Install Rust nightly
         run: |
-          rustup toolchain install nightly --component rustfmt --target x86_64-unknown-none
+          rustup toolchain install nightly --component rustfmt --component rust-src --target x86_64-unknown-none
           rustup default nightly
 
       - name: Check formatting
@@ -39,6 +39,14 @@ jobs:
 
       - name: Validate experimental OCTAGRAM Rust host target
         run: python3 tools/check_octagram_rust_target.py
+
+      - name: Compile no_std runtime for experimental OCTAGRAM host target
+        run: |
+          cargo +nightly -Z build-std=core build --offline \
+            --manifest-path user/rust/Cargo.toml \
+            --package octagram-runtime \
+            --release \
+            --target user/rust/targets/x86_64-unknown-octagram.json
 
       # kernel/src/fs/mod.rs embeds these artifacts with include_bytes!,
       # so create them before invoking cargo test or compilation fails early.

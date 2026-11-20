@@ -2221,6 +2221,13 @@ fn run_loaded_processes(
                 wake_console_waiters(crate::fs::pump_console_input());
                 continue;
             };
+            {
+                let scheduler = USER_SCHEDULER.lock();
+                let process = USER_PROCESS.lock();
+                if let Some(task) = scheduler.processes.get(scheduler.current) {
+                    record_first_tls_mismatch(TLS_SITE_KERNEL_RESUME, task, &process);
+                }
+            }
             thread_pointer::write(thread_pointer_value);
             restore_current_user_fpu();
             let _last_status = unsafe { gdt::resume_user_frame(frame_pointer as *mut u8) };
@@ -2529,7 +2536,7 @@ pub fn handle_syscall(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         (*next_frame).stack_frame.code_segment & 3 == 3
     };
     if returns_to_user {
-        restore_current_thread_pointer();
+        restore_current_thread_pointer(TLS_SITE_SYSCALL_RETURN);
         restore_current_user_fpu();
     }
     next_frame
@@ -2622,7 +2629,7 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     }
     let next_frame = handle_timer_inner(frame);
     if from_user {
-        restore_current_thread_pointer();
+        restore_current_thread_pointer(TLS_SITE_TIMER_RETURN);
         restore_current_user_fpu();
     }
     next_frame
@@ -4649,6 +4656,48 @@ fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProces
 /// Snapshot the active scheduled task's TLS identity for fatal user-fault
 /// diagnostics. This is deliberately called only after a fault, not in the
 /// scheduler hot path.
+const TLS_SITE_SYSCALL_RETURN: u64 = 1;
+const TLS_SITE_TIMER_RETURN: u64 = 2;
+const TLS_SITE_KERNEL_RESUME: u64 = 3;
+
+static FIRST_TLS_MISMATCH_CLAIMED: AtomicBool = AtomicBool::new(false);
+static FIRST_TLS_MISMATCH_READY: AtomicBool = AtomicBool::new(false);
+static FIRST_TLS_MISMATCH_SITE: AtomicU64 = AtomicU64::new(0);
+static FIRST_TLS_MISMATCH_TID: AtomicU64 = AtomicU64::new(0);
+static FIRST_TLS_MISMATCH_INITIAL: AtomicU64 = AtomicU64::new(0);
+static FIRST_TLS_MISMATCH_SAVED: AtomicU64 = AtomicU64::new(0);
+static FIRST_TLS_MISMATCH_FS: AtomicU64 = AtomicU64::new(0);
+
+fn record_first_tls_mismatch(site: u64, task: &ScheduledProcess, process: &UserProcess) {
+    if !task.is_thread || task.initial_thread_pointer == 0 || process.thread_pointer != 0 {
+        return;
+    }
+    if FIRST_TLS_MISMATCH_CLAIMED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+    {
+        FIRST_TLS_MISMATCH_SITE.store(site, Ordering::Relaxed);
+        FIRST_TLS_MISMATCH_TID.store(task.tid, Ordering::Relaxed);
+        FIRST_TLS_MISMATCH_INITIAL.store(task.initial_thread_pointer, Ordering::Relaxed);
+        FIRST_TLS_MISMATCH_SAVED.store(process.thread_pointer, Ordering::Relaxed);
+        FIRST_TLS_MISMATCH_FS.store(thread_pointer::read(), Ordering::Relaxed);
+        FIRST_TLS_MISMATCH_READY.store(true, Ordering::Release);
+    }
+}
+
+pub fn first_tls_mismatch_debug() -> Option<(u64, u64, u64, u64, u64)> {
+    if !FIRST_TLS_MISMATCH_READY.load(Ordering::Acquire) {
+        return None;
+    }
+    Some((
+        FIRST_TLS_MISMATCH_SITE.load(Ordering::Relaxed),
+        FIRST_TLS_MISMATCH_TID.load(Ordering::Relaxed),
+        FIRST_TLS_MISMATCH_INITIAL.load(Ordering::Relaxed),
+        FIRST_TLS_MISMATCH_SAVED.load(Ordering::Relaxed),
+        FIRST_TLS_MISMATCH_FS.load(Ordering::Relaxed),
+    ))
+}
+
 pub fn current_user_tls_debug() -> (u64, u64, bool, u64, u64, u64) {
     let scheduler = USER_SCHEDULER.lock();
     let process = USER_PROCESS.lock();
@@ -4712,13 +4761,20 @@ fn save_current_thread_pointer() {
     }
 }
 
-fn restore_current_thread_pointer() {
+fn restore_current_thread_pointer(site: u64) {
+    let scheduler = USER_SCHEDULER.lock();
     let process = USER_PROCESS.lock();
-    thread_pointer::write(if process.active {
+    if let Some(task) = scheduler.processes.get(scheduler.current) {
+        record_first_tls_mismatch(site, task, &process);
+    }
+    let value = if process.active {
         process.thread_pointer
     } else {
         0
-    });
+    };
+    drop(process);
+    drop(scheduler);
+    thread_pointer::write(value);
 }
 
 fn try_clone_strings(values: &[String]) -> Result<Vec<String>, ElfError> {

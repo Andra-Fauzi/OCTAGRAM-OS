@@ -18,6 +18,8 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
+#[cfg(test)]
+use core::sync::atomic::{AtomicU64, Ordering};
 use crate::storage::{
     block,
     ext2::Ext2,
@@ -254,6 +256,25 @@ pub struct Metadata {
     pub node_type: NodeType,
     pub len: usize,
     pub permissions: u16,
+    /// Unix modification time in seconds since the epoch, when available.
+    pub modified: Option<u64>,
+}
+
+/// Return the best available wall-clock timestamp for filesystem mutations.
+/// EXT2's classic inode stores timestamps as whole Unix seconds.
+#[cfg(test)]
+static TEST_TIMESTAMP: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(test)]
+pub(crate) fn current_timestamp() -> Option<u64> {
+    Some(TEST_TIMESTAMP.fetch_add(1, Ordering::Relaxed))
+}
+
+#[cfg(not(test))]
+pub(crate) fn current_timestamp() -> Option<u64> {
+    crate::drivers::rtc::unix_seconds()
+        .ok()
+        .and_then(|seconds| u64::try_from(seconds).ok())
 }
 
 /// One direct child returned by [`FileSystem::read_dir`].
@@ -1050,11 +1071,7 @@ mod tests {
             filesystem.read_dir("/tmp").unwrap(),
             alloc::vec![DirectoryEntry {
                 name: alloc::string::String::from("data"),
-                metadata: super::Metadata {
-                    node_type: NodeType::File,
-                    len: 5,
-                    permissions: 0o644,
-                },
+                metadata: filesystem.metadata("/tmp/data").unwrap(),
             }]
         );
         assert_eq!(filesystem.remove("/tmp"), Err(FsError::DirectoryNotEmpty));

@@ -6269,7 +6269,10 @@ fn syscall_stat_path(
     let stat = UserStat {
         size: metadata.len as u64,
         mode: stat_mode(&path, metadata.node_type, metadata.permissions),
-        reserved: 0,
+        modified_seconds: metadata
+            .modified
+            .and_then(|seconds| u32::try_from(seconds).ok())
+            .unwrap_or(0),
     };
     unsafe {
         core::ptr::write_unaligned(stat_address as *mut UserStat, stat);

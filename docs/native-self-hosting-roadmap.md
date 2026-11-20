@@ -105,13 +105,21 @@ ditutupi oleh milestone self-hosting.
 Tujuan: memastikan baseline dapat direproduksi dan menentukan artefak yang
 harus dibangun.
 
-- [ ] Simpan daftar target build host saat ini dan semua dependency input.
-- [ ] Pisahkan status build host, QEMU, dan hardware dalam CI.
-- [ ] Perbaiki atau isolasi kegagalan QEMU smoke test baseline (vector 6 pada
-  `syscall-compat-demo`).
-- [ ] Tambahkan manifest artefak: kernel, init/userland, library, boot files,
-  filesystem image, checksum.
-- [ ] Dokumentasikan perintah clean build dan dependency graph.
+- [x] Simpan daftar target build host saat ini dan semua dependency input
+  (`docs/building.md`, bagian "Clean build, dependency graph, dan manifest
+  artefak": tabel input host, tabel target, dan graph dependensi).
+- [x] Pisahkan status build host, QEMU, dan hardware dalam CI: job
+  `host-build-and-tests`, job `qemu-smoke-tests` (mengunduh ISO dari artefak),
+  dan job `status-summary` yang melaporkan ketiga tingkat status termasuk
+  `hardware=not-run`.
+- [x] Perbaiki kegagalan QEMU smoke test baseline: lihat bagian 14 (TLS
+  context restore, desinkronisasi switch task, deadlock lock scheduler di jalur
+  interrupt). Empat boot berturut-turut lulus tanpa fault.
+- [x] Tambahkan manifest artefak: `tools/build_manifest.py` menulis
+  `build/manifest.json` (kernel, ISO, userspace, target Rust, file boot; ukuran
+  dan SHA-256) dan `make manifest-check` memverifikasinya.
+- [x] Dokumentasikan perintah clean build dan dependency graph
+  (`docs/building.md`).
 
 Gate: clean host build menghasilkan ISO; smoke test mempunyai hasil yang
 terdiagnosis; semua artefak mempunyai manifest.
@@ -623,3 +631,52 @@ python3 tools/qemu_syscall_test.py
 Bila sistem macet, tanyakan monitor QEMU (`info registers`) untuk melihat RIP
 dan flag interrupt; CPU berputar di `spin_loop_hint` dengan `RFL` tanpa bit
 `0x200` berarti deadlock spinlock di dalam kernel, bukan program user.
+
+## 15. M0 selesai — kontrak build, manifest artefak, dan status CI terpisah (20 November 2026)
+
+Gate M0: clean host build menghasilkan ISO; smoke test mempunyai hasil yang
+terdiagnosis; semua artefak mempunyai manifest. Ketiganya kini terpenuhi.
+
+### Manifest artefak
+
+- `tools/build_manifest.py` memindai artefak build dan menulis
+  `build/manifest.json` (di-ignore git): `path`, `kind`, `size`, `sha256` per
+  artefak, serta metadata `git` (commit, branch, dirty), `host`, `targets`, dan
+  `toolchain` (`rustc`, `cargo`, `cc`, `ld.lld`, `nasm`, `xorriso`, Python).
+- Kind yang dicatat: `kernel`, `boot-image` (ISO), `userland` (`user/build/*.elf`),
+  `rust-target` (`user/rust/build/*.elf`), dan `boot` (`limine.conf`,
+  `limine-bios.sys`, `limine-bios-cd.bin`, `limine-uefi-cd.bin`).
+- Integrasi build: `make all` membangun ISO lalu menjalankan target `manifest`;
+  `make manifest-check` memverifikasi ulang (gagal bila artefak hilang, berubah
+  ukuran/SHA-256, atau ada artefak tak tercatat).
+- Bukti lokal: 48 artefak, 116.226.643 byte,
+  `MANIFEST-PASS: 48 artefak cocok dengan manifest`. Jalur gagal juga diuji
+  dengan manifest yang SHA-256-nya dirusak: `MANIFEST-FAIL: sha256 berubah`.
+
+### Pemisahan status CI
+
+`.github/workflows/posix-core-stage1.yml` sekarang terdiri dari tiga job:
+
+1. `host-build-and-tests` — kompilasi target Rust kustom, unit test host,
+   build kernel/ISO, pemeriksaan manifest, lalu mengunggah ISO sebagai artefak.
+2. `qemu-smoke-tests` — mengunduh ISO hasil job 1 dan menjalankan dua smoke
+   test guest (TinyCC self-host dan syscall/thread compatibility). Kegagalan
+   guest test tidak lagi menyembunyikan status build host dan sebaliknya.
+3. `status-summary` — melaporkan `build-host`, `qemu`, `hardware` (eksplisit
+   `not-run`, karena runner CI tidak punya mesin fisik), dan `manifest`.
+
+### Higiene clean checkout
+
+Symlink yang dulu ikut ter-commit dan menunjuk
+`/tmp/octagram-tinycc-upstream/` dihapus: `Makefile` di root (file build root
+adalah `GNUmakefile`), serta `tests/Makefile`, `tests/pp/Makefile`, dan
+`tests/tests2/Makefile` (sisa suite upstream TinyCC yang tidak dapat dipakai
+pada clean checkout). `/iso_root/` ditambahkan ke `.gitignore` karena
+merupakan direktori kerja pembuatan ISO.
+
+### Status
+
+M0 selesai. M1–M7 tetap belum selesai: tidak ada editor native (M1), tidak ada
+assembler/linker native lengkap (M2), orchestrator build native (M3), `rustc`
+atau Cargo native (M4), build kernel dari dalam OCTAGRAM (M5), image builder
+native (M6), maupun A/B update/rollback (M7).

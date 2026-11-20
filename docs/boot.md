@@ -82,9 +82,9 @@ Target yang tersedia antara lain `all`, `all-hdd`, `run`, `run-hdd`,
 Detail dependency host, toolchain Rust nightly, dan cara menjalankan QEMU ada di
 [building.md](building.md).
 
-Catatan: berkas `Makefile` di root serta `tests/Makefile` pada checkout ini
-adalah symlink ke direktori `/tmp/octagram-tinycc-upstream/`. GNU Make memilih
-`GNUmakefile` lebih dulu, jadi build normal tetap memakai `GNUmakefile`.
+Catatan: berkas build root adalah `GNUmakefile`. Symlink `Makefile` lama (di
+root dan di `tests/`) yang menunjuk direktori sementara TinyCC sudah dihapus
+agar clean checkout tidak memuat path yang tidak ada.
 
 ## Selanjutnya
 

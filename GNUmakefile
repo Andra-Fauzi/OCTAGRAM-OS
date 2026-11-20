@@ -17,7 +17,7 @@ override IMAGE_NAME := OCTAGRAM-$(KARCH)
 ATH10K_FIRMWARE_DIR ?= firmware/ath10k/QCA9377/hw1.0
 
 .PHONY: all
-all: $(IMAGE_NAME).iso
+all: $(IMAGE_NAME).iso manifest
 
 .PHONY: all-hdd
 all-hdd: $(IMAGE_NAME).hdd
@@ -252,10 +252,20 @@ ifeq ($(KARCH),loongarch64)
 	mcopy -i $(IMAGE_NAME).hdd@@2M limine/BOOTLOONGARCH64.EFI ::/EFI/BOOT
 endif
 
+# Manifest artefak build (kernel, ISO, userspace, target Rust, file boot) beserta
+# ukuran dan SHA-256. `make manifest-check` memverifikasi ulang isinya.
+.PHONY: manifest
+manifest: $(IMAGE_NAME).iso
+	python3 tools/build_manifest.py
+
+.PHONY: manifest-check
+manifest-check:
+	python3 tools/build_manifest.py --check
+
 .PHONY: clean
 clean:
 	$(MAKE) -C kernel clean
-	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd
+	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd build
 
 .PHONY: distclean
 distclean: clean

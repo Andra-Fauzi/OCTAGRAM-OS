@@ -87,10 +87,12 @@ allocator nyata.
 
 ## Direktori `tests/`
 
-`tests/pp` dan `tests/tests2` berisi symlink `Makefile` ke
-`/tmp/octagram-tinycc-upstream/` pada checkout ini; isinya adalah suite uji
-upstream TinyCC, bukan suite milik OCTAGRAM. Jangan menganggapnya sebagai
-cakupan uji kernel.
+Direktori `tests/` (symlink `Makefile` ke direktori TinyCC sementara) sudah
+dihapus dari repo karena menunjuk path `/tmp` yang tidak ada pada clean
+checkout. Suite uji yang berlaku untuk OCTAGRAM adalah unit test kernel/libc,
+`tools/qemu_*_test.py`, dan workflow CI di
+`.github/workflows/posix-core-stage1.yml`; jangan menganggap suite uji upstream
+TinyCC sebagai cakupan uji kernel.
 
 ## Yang belum tercakup
 

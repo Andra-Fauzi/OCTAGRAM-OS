@@ -288,7 +288,7 @@ Rencana teknis dan audit baseline rinci berada di
 [Native Self-Hosting Roadmap](docs/native-self-hosting-roadmap.md).
 Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate.
 
-- [ ] M0: baseline build/test dan manifest artefak yang reproducible
+- [x] M0: baseline build/test dan manifest artefak yang reproducible (`make manifest`, lihat dokumen roadmap bagian 15)
 - [ ] M1: native developer substrate, editor terminal, source tree persisten
 - [ ] M2: native C toolchain (TinyCC + assembler/linker) teruji end-to-end
 - [ ] M3: native build orchestrator dengan dependency dan incremental rebuild

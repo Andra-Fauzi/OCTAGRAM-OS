@@ -543,3 +543,86 @@ untuk batasan aplikasi.
 
 Untuk driver jaringan tethering Android via USB RNDIS dan batasan stack
 jaringannya, lihat [Android USB tethering](android-usb-tethering.md).
+
+## Clean build, dependency graph, dan manifest artefak
+
+### Perintah clean build
+
+Dari clean checkout, urutan berikut harus dijalankan apa adanya:
+
+```sh
+make -C user/rust make          # runtime + utilitas Rust yang di-embed kernel
+make -C user                    # program userspace statis
+make -C user dynamic            # program userspace dinamis
+make -C user/rust all
+make -C user/rust build-octagram
+make -C kernel KARCH=x86_64     # kernel x86_64-unknown-none
+make all                        # ISO bootable + build/manifest.json
+```
+
+`make all` menjalankan target `manifest` setelah ISO selesai. Untuk memeriksa
+ulang isi manifest tanpa membangun apa pun:
+
+```sh
+make manifest-check
+```
+
+Perintah itu mencetak `MANIFEST-PASS: <n> artefak cocok dengan manifest`, atau
+`MANIFEST-FAIL` bila ada artefak yang hilang, berubah ukuran, berubah SHA-256,
+atau muncul di direktori artefak tanpa tercatat di manifest.
+
+### Input build yang harus tersedia di host
+
+| Kategori | Input | Dipakai oleh |
+| --- | --- | --- |
+| Paket host | `build-essential`, `binutils`, `nasm`, `lld`, `xorriso`, `mtools`, `gdisk`, `python3`, `curl`, `git` | linker userland (`ld.lld`), kernel, pembuatan ISO/HDD, tool uji |
+| Rust | nightly + `rustfmt`, `rust-src`, target `x86_64-unknown-none` | kernel dan `-Z build-std` untuk target OCTAGRAM |
+| Boot | `limine` diunduh oleh target `limine/limine` | ISO dan HDD image |
+| Opsional | `firmware/ath10k/QCA9377/hw1.0/*` | hanya bila blob firmware Wi-Fi disediakan lokal |
+| Uji | `qemu-system-x86_64` | `make run`, `tools/qemu_*_test.py` |
+
+### Dependency graph
+
+```text
+kernel/src/fs/mod.rs (include_bytes!)
+        ^
+        |  butuh artefak userspace sudah ada
+user/rust (core, alloc, runtime, utilitas) --> user/build/*.elf
+user (program C + libc statis)            --> user/build/*.elf
+user/rust build-octagram                  --> user/rust/build/*.elf
+
+user/build/*.elf + user/rust/build/*.elf + kernel sources
+        --> kernel/kernel (x86_64-unknown-none)
+
+kernel/kernel + limine/limine + limine.conf
+        --> OCTAGRAM-x86_64.iso
+
+kernel, ISO, userspace, file boot
+        --> build/manifest.json
+```
+
+Karena kernel menyisipkan binary userspace lewat `include_bytes!`, menjalankan
+`cargo test` atau `make -C kernel` sebelum `make -C user` akan gagal. Itu alasan
+urutan build di atas tidak boleh diubah.
+
+### Target build
+
+| Artefak | Triple/format | Catatan |
+| --- | --- | --- |
+| Kernel | `x86_64-unknown-none` | freestanding, release |
+| Userspace C | ELF64 statis OCTAGRAM | di-load `elf.rs`, TLS model local-exec |
+| Userspace Rust | target kustom `x86_64-unknown-octagram` (`-Z build-std=core,alloc`) | bukan `std` |
+| Boot image | ISO9660 hybrid (BIOS + UEFI) | dibangun `xorriso` |
+
+### Manifest artefak
+
+`build/manifest.json` (di-ignore git) mencatat untuk setiap artefak: `path`,
+`kind` (`kernel`, `boot-image`, `userland`, `rust-target`, `boot`), `size`, dan
+`sha256`, ditambah metadata `git` (commit/branch/dirty), `host`, `targets`, dan
+`toolchain` (`rustc`, `cargo`, `cc`, `ld.lld`, `nasm`, `xorriso`, versi Python).
+Skripnya `tools/build_manifest.py`; `--stdout` mencetak manifest tanpa menulis
+file dan `--check` memverifikasi disk.
+
+Catatan: file build root adalah `GNUmakefile`. Symlink `Makefile` lama yang
+menunjuk direktori sementara TinyCC sudah dihapus agar clean checkout tidak
+memuat path yang tidak ada.

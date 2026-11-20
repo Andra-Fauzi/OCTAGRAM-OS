@@ -6,4 +6,4 @@
 /user/rust/build/
 /user/rust/target/
 /build/
-qemu.log
+qemu.log/iso_root/

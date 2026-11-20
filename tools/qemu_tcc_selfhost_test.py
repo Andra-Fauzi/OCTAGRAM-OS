@@ -162,6 +162,41 @@ def main():
             return 1
 
     output_offset = len(serial_text())
+    send_line("make -C /share/octagram order-only-check-run")
+    for command in (
+        "tcc -c message.c -o order-only-dep",
+        "tcc -c message.c -o order-only-check",
+    ):
+        if not wait_for_after(command, output_offset, 30):
+            print("MAKE-ORDER-ONLY-FAIL: initial order-only dependency build failed")
+            print(serial_text()[-5000:])
+            return 1
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("MAKE-ORDER-ONLY-FAIL: initial order-only target build failed")
+        print(serial_text()[-5000:])
+        return 1
+
+    time.sleep(1.2)
+    touch_offset = len(serial_text())
+    send_line("touch /share/octagram/order-only-dep")
+    if not wait_for_after("octagram:/ $", touch_offset, 15):
+        print("MAKE-ORDER-ONLY-FAIL: could not make order-only prerequisite newer")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("make -C /share/octagram order-only-check-run")
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("MAKE-ORDER-ONLY-FAIL: second order-only target invocation failed")
+        print(serial_text()[-5000:])
+        return 1
+    order_only_output = serial_text()[output_offset:]
+    if "tcc -c message.c -o order-only-check" in order_only_output:
+        print("MAKE-ORDER-ONLY-FAIL: newer order-only prerequisite incorrectly rebuilt target")
+        print(order_only_output[-3000:])
+        return 1
+
+    output_offset = len(serial_text())
     send_line("make -C /share/octagram")
     if not wait_for_after("program exited with status 0", output_offset, 30):
         print("MAKE-INCREMENTAL-FAIL: second Make invocation did not exit successfully")

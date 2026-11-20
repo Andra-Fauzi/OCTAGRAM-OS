@@ -49,9 +49,22 @@ class RustOctagramElfVerifierTests(unittest.TestCase):
         self.assertEqual(size, self.elf.stat().st_size)
         self.assertEqual(len(digest), 64)
 
-    def test_rejects_undefined_symbols(self) -> None:
+    def test_allows_only_known_optional_weak_symbols(self) -> None:
+        self.responses[("nm", "-u")] = (
+            "                 w __errno_location\n"
+            "                 w __h_errno_location\n"
+            "                 w __oct_tls_initialize\n"
+        )
+        self.run_verifier()
+
+    def test_rejects_strong_undefined_symbols(self) -> None:
         self.responses[("nm", "-u")] = "                 U memcpy\n"
-        with self.assertRaisesRegex(VERIFIER.ValidationError, "undefined symbols"):
+        with self.assertRaisesRegex(VERIFIER.ValidationError, "non-optional undefined"):
+            self.run_verifier()
+
+    def test_rejects_unknown_weak_undefined_symbols(self) -> None:
+        self.responses[("nm", "-u")] = "                 w unknown_runtime_hook\n"
+        with self.assertRaisesRegex(VERIFIER.ValidationError, "non-optional undefined"):
             self.run_verifier()
 
     def test_rejects_dynamic_interpreter(self) -> None:

@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 
 DEFAULT_ELF = Path("user/rust/build/rust_hello_octagram.elf")
+ALLOWED_WEAK_UNDEFINED = {
+    "__errno_location",
+    "__h_errno_location",
+    "__oct_tls_initialize",
+}
 
 
 class ValidationError(Exception):
@@ -25,6 +30,17 @@ def output(*args: str) -> str:
         detail = (error.stderr or error.stdout or str(error)).strip()
         raise ValidationError(f"{args[0]} failed: {detail}") from error
     return completed.stdout
+
+
+def validate_undefined_symbols(undefined_output: str) -> None:
+    for line in undefined_output.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        if len(fields) >= 2 and fields[-2] in {"w", "v"} and fields[-1] in ALLOWED_WEAK_UNDEFINED:
+            # crt0.S checks these weak optional hooks for NULL before calling them.
+            continue
+        raise ValidationError("ELF contains a non-optional undefined symbol: " + line.strip())
 
 
 def validate_elf(path: Path) -> tuple[int, str]:
@@ -47,9 +63,8 @@ def validate_elf(path: Path) -> tuple[int, str]:
     if re.search(r"(?m)^\s*INTERP\s", program_headers):
         raise ValidationError("freestanding guest unexpectedly requests a dynamic interpreter")
 
-    undefined = output("nm", "-u", str(path)).strip()
-    if undefined:
-        raise ValidationError("ELF contains undefined symbols:\n" + undefined)
+    undefined = output("nm", "-u", str(path))
+    validate_undefined_symbols(undefined)
 
     symbols = output("nm", "-n", "--defined-only", str(path))
     start_match = re.search(

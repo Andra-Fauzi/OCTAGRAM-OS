@@ -87,6 +87,31 @@ def main():
         print(serial_text()[-4000:])
         return 1
 
+    # Rust host bootstrap depends on these OS services. These binaries were
+    # already part of the image, but compiling them on the host is not enough:
+    # execute them in the guest and require their success markers and exit code.
+    guest_tests = (
+        ("/bin/mmap-demo", "mmap POSIX demo: PASS", "M4-ABI-MMAP"),
+        ("/bin/tls-demo", "static TLS initialized", "M4-ABI-TLS"),
+        ("/bin/thread-demo", "preemptive threads and TLS passed", "M4-ABI-THREADS"),
+    )
+    for command, marker, label in guest_tests:
+        output_offset = len(serial_text())
+        send_line("run " + command)
+        if not wait_for(marker, 120) or marker not in serial_text()[output_offset:]:
+            print(label + "-FAIL: guest program did not emit its success marker")
+            print(serial_text()[-5000:])
+            return 1
+        if not wait_for("program exited with status 0", 120) or "program exited with status 0" not in serial_text()[output_offset:]:
+            print(label + "-FAIL: guest program did not exit with status 0")
+            print(serial_text()[-5000:])
+            return 1
+        if not wait_prompt(30):
+            print(label + "-FAIL: shell did not return after guest program")
+            print(serial_text()[-5000:])
+            return 1
+        print(label + "-PASS")
+
     time.sleep(1)
     print("=== TEST OUTPUT ===")
     text = serial_text()

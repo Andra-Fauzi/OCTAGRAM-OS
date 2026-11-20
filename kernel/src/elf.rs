@@ -19,6 +19,22 @@ use crate::memory::{
     physical_to_virtual,
 };
 
+struct SerialTraceWriter;
+
+impl core::fmt::Write for SerialTraceWriter {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        crate::drivers::serial::write_str(text);
+        Ok(())
+    }
+}
+
+fn serial_trace(arguments: core::fmt::Arguments<'_>) {
+    use core::fmt::Write;
+    let mut writer = SerialTraceWriter;
+    let _ = writer.write_fmt(arguments);
+    crate::drivers::serial::write_str("\n");
+}
+
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const MAX_PROGRAM_HEADERS: usize = 128;
@@ -2191,6 +2207,12 @@ fn run_loaded_processes(
                     // state into USER_PROCESS. After the swap, scheduler.processes[next].state
                     // contains the previously active task, not the task being resumed.
                     let thread_pointer_value = scheduler.processes[next].state.thread_pointer;
+                    if thread_pointer_value != 0 {
+                        serial_trace(format_args!(
+                            "[sched-tls] kernel resume tid={} tls={thread_pointer_value:#x}",
+                            scheduler.processes[next].tid
+                        ));
+                    }
                     if let Some(context) = scheduler.processes[next].resume_context.take() {
                         let frame = unsafe { &mut *(frame_pointer as *mut InterruptFrame) };
                         frame.rax = context.accumulator;
@@ -2601,6 +2623,14 @@ fn yield_user_to_kernel(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         &mut *active_process,
         &mut scheduler.processes[current].state,
     );
+    let saved_thread_pointer = scheduler.processes[current].state.thread_pointer;
+    if saved_thread_pointer != 0 {
+        serial_trace(format_args!(
+            "[sched-tls] kernel_yield tid={} saved_tls={saved_thread_pointer:#x} fs={:#x}",
+            scheduler.processes[current].tid,
+            thread_pointer::read()
+        ));
+    }
 
     frame.rax = 0;
     frame.stack_frame.instruction_pointer = gdt::user_exit_address();
@@ -2633,9 +2663,11 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
                 (tid, process.thread_pointer)
             };
             let actual_thread_pointer = thread_pointer::read();
-            crate::println!(
-                "[sched-tls] timer selected tid={tid} expected={expected_thread_pointer:#x} fs={actual_thread_pointer:#x}"
-            );
+            if expected_thread_pointer != 0 || actual_thread_pointer != 0 {
+                serial_trace(format_args!(
+                    "[sched-tls] timer selected tid={tid} expected={expected_thread_pointer:#x} fs={actual_thread_pointer:#x}"
+                ));
+            }
         }
     }
     next_frame
@@ -3183,10 +3215,12 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     };
     state.fpu_state = FpuState::new();
     state.thread_pointer = thread_pointer;
-    crate::println!(
-        "[sched-tls] create tid={} tls={thread_pointer:#x} mapping={mapping_base:#x}+{mapping_length:#x}",
-        scheduler.next_tid
-    );
+    if thread_pointer != 0 {
+        serial_trace(format_args!(
+            "[sched-tls] create tid={} tls={thread_pointer:#x} mapping={mapping_base:#x}+{mapping_length:#x}",
+            scheduler.next_tid
+        ));
+    }
     let kernel_stack = match ProcessKernelStack::new() {
         Ok(stack) => stack,
         Err(error) => {

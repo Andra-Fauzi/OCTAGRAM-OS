@@ -33,6 +33,15 @@ def wait_for(text, timeout):
     return False
 
 
+def wait_for_after(text, offset, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if text in serial_text()[offset:]:
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def wait_prompt(timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -98,11 +107,11 @@ def main():
     for command, marker, label in guest_tests:
         output_offset = len(serial_text())
         send_line("run " + command)
-        if not wait_for(marker, 120) or marker not in serial_text()[output_offset:]:
+        if not wait_for_after(marker, output_offset, 120):
             print(label + "-FAIL: guest program did not emit its success marker")
             print(serial_text()[-5000:])
             return 1
-        if not wait_for("program exited with status 0", 120) or "program exited with status 0" not in serial_text()[output_offset:]:
+        if not wait_for_after("program exited with status 0", output_offset, 120):
             print(label + "-FAIL: guest program did not exit with status 0")
             print(serial_text()[-5000:])
             return 1

@@ -2649,8 +2649,6 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     }
     let next_frame = handle_timer_inner(frame);
     if from_user {
-        restore_current_thread_pointer();
-        restore_current_user_fpu();
         if next_frame != frame as *mut InterruptFrame {
             let (tid, expected_thread_pointer) = {
                 let scheduler = USER_SCHEDULER.lock();
@@ -2662,13 +2660,20 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
                 let process = USER_PROCESS.lock();
                 (tid, process.thread_pointer)
             };
+            // Install the selected task's FS base before tracing. Keep the
+            // FPU restore last: formatting/serial output is kernel code and
+            // must not overwrite the user SIMD state just restored for iretq.
+            restore_current_thread_pointer();
             let actual_thread_pointer = thread_pointer::read();
             if expected_thread_pointer != 0 || actual_thread_pointer != 0 {
                 serial_trace(format_args!(
                     "[sched-tls] timer selected tid={tid} expected={expected_thread_pointer:#x} fs={actual_thread_pointer:#x}"
                 ));
             }
+        } else {
+            restore_current_thread_pointer();
         }
+        restore_current_user_fpu();
     }
     next_frame
 }

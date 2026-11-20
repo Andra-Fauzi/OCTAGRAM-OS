@@ -139,7 +139,7 @@ dan diproses beberapa executable native dengan exit status benar.
 Tujuan: mengubah TinyCC dari compiler yang sekadar ada di image menjadi
 toolchain native yang teruji.
 
-- [ ] Uji `tcc` dari shell: compile C -> ELF OCTAGRAM -> execute. (QEMU smoke test compile/run ditambahkan; menunggu hasil CI.)
+- [x] Uji `tcc` dari shell: compile C -> ELF OCTAGRAM -> execute (QEMU-tested; CI run 44693171534).
 - [ ] Uji include header, libc statis, relocation, argv/envp, file I/O, dan
   error diagnostics.
 - [x] Tambahkan command wrapper `tcc` pada shell untuk menjalankan `/bin/tcc.elf`;
@@ -148,7 +148,7 @@ toolchain native yang teruji.
   yang konsisten; dokumentasikan satu sintaks canonical.
 - [ ] Tambahkan assembler dan linker yang mampu menangani object ELF yang
   dihasilkan compiler; toolchain mini tetap diberi label terbatas.
-- [ ] Bangun program multi-file dengan beberapa object dan static library.
+- [x] Bangun program multi-file dengan beberapa object dan static library (QEMU-tested melalui TinyCC dan native Make).
 - [ ] Tambahkan test positif dan negatif untuk compiler/linker.
 
 Gate: proyek C multi-file dibangun sepenuhnya di OCTAGRAM dan hasilnya
@@ -164,7 +164,7 @@ Tujuan: build system native yang cukup kuat untuk membangun proyek OS.
 - [ ] Tambahkan recipe exit code, quoting, environment, cwd, dan log.
 - [ ] Tambahkan parallel build hanya setelah dependency graph dan locking aman.
 - [x] Implementasikan mode `-n`/`--dry-run`, `-s`/`--silent`, dan `-j1` pada native `make`.
-- [ ] Tambahkan build log, dan validasi opsi tersebut di QEMU.
+- [x] Validasi native Make di QEMU: `-n`, `-j1 -n`, target phony/order-only, incremental rebuild saat prerequisite berubah, dan `-B`.
 - [ ] Buat build manifest agar hasil build dapat direproduksi.
 
 Gate: build proyek C multi-directory dan dependency graph bertingkat di
@@ -346,3 +346,82 @@ invalid opcode; buktikan TinyCC compile dan hasil ELF berjalan di QEMU; baru
 perluas VFS metadata (termasuk mtime dari EXT2 dan perilaku filesystem yang
 belum memiliki timestamp) lalu aktifkan incremental Make dengan test perubahan
 prerequisite/target. 
+
+
+## 10. Hasil implementasi dan validasi lanjutan (20 November 2026)
+
+Branch saat audit: `feature/native-self-hosting`
+Commit validasi: `c99bd185b40f624915b386914ccb08b0038d9897`
+GitHub Actions: [POSIX Core Stage 1 run 44693171534](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44693171534)
+Hasil: **success** (build host, kernel tests, userland, ISO, dan dua smoke test QEMU).
+
+### Perbaikan regresi Rust guest
+
+Run sebelumnya `44692132324` gagal di QEMU syscall smoke test, bukan karena
+kernel file syscall: program `rust-hello` mengembalikan exit status 2 sebelum
+memanggil `stat/open/read/close`. Penyebabnya adalah byte string path memakai
+`\\\\0` (karakter backslash dan angka nol), bukan terminator NUL Rust
+`\\0`. Marker PASS juga memakai escape newline ganda. Keduanya diperbaiki
+di `user/rust/hello/src/main.rs` pada commit `c99bd185`.
+
+Run `44693171534` kemudian membuktikan:
+- `Rust no_std + alloc` berjalan sebagai ELF OCTAGRAM native.
+- Runtime Rust berhasil melakukan `stat`, `open`, `read`, dan `close`
+  pada `/share/octagram/message.c`, lalu mencetak
+  `Rust runtime file/stat: PASS` dan keluar dengan status 0.
+- Guest mmap, static TLS, dan preemptive threads mengeluarkan marker lulus.
+- QEMU syscall compatibility test berakhir dengan `SYSCALL-TEST: PASS`.
+
+### M2 — Native C toolchain
+
+Status: **QEMU-tested untuk jalur TinyCC compile/link/run yang diuji**.
+CI mencatat `TCC-SELFHOST-PASS`: TinyCC mengompilasi source menjadi ELF,
+menjalankan hasilnya, membangun program multi-file dengan static archive,
+dan mengembalikan exit status 0. Ini belum berarti semua fitur TinyCC,
+header, relocation, atau diagnostics sudah kompatibel penuh.
+
+### M3 — Native Make
+
+Status: **QEMU-tested untuk subset build graph yang diuji**.
+CI mencatat keberhasilan:
+- `make -n` dan `make -j1 -n`;
+- build dan eksekusi target;
+- skip ketika target masih up-to-date;
+- rebuild setelah prerequisite diperbarui;
+- rebuild paksa dengan `make -B`;
+- target phony dan order-only prerequisite.
+
+Belum dianggap sebagai implementasi GNU Make penuh. Pattern rules, include,
+variable expansion lengkap, quoting/shell semantics, parallel execution,
+locking, dan reproducible build manifest masih perlu ditangani sesuai
+kebutuhan proyek.
+
+### M4 — Rust native bootstrap
+
+Status: **runtime ABI groundwork QEMU-tested; rustc/Cargo native belum ada**.
+Bukti baru adalah aplikasi `no_std + alloc` yang di-cross-compile pada host
+kemudian dijalankan sebagai ELF native OCTAGRAM. Ini membuktikan sebagian
+jalur runtime (allocator/mmap, file syscall, TLS, dan thread guest demos),
+bukan compiler Rust yang berjalan di OCTAGRAM.
+
+Langkah berikut M4:
+1. Audit ABI dan dependency runtime yang dibutuhkan executable host Rust
+   (`rustc` dan komponen LLVM/backend).
+2. Tentukan Stage 0 yang benar-benar dapat dieksekusi pada ABI OCTAGRAM.
+3. Bangun dependency minimum untuk menjalankan toolchain bootstrap native;
+   pisahkan kebutuhan `rustc` dari kebutuhan Cargo.
+4. Lanjutkan API process, filesystem, memory mapping, thread, TLS, time,
+   environment, dynamic loading, dan subprocess sesuai hasil audit.
+5. Pertahankan target pertama x86_64 dan workflow offline.
+
+### Batas status yang tidak boleh dilewati
+
+- **Tidak** ada bukti bahwa `rustc` berjalan native di OCTAGRAM.
+- **Tidak** ada bukti bahwa Cargo berjalan native atau membangun workspace.
+- **Tidak** ada bukti bahwa kernel Rust dibangun dari dalam OCTAGRAM.
+- **Tidak** ada bukti bahwa ISO/disk image dibuat native.
+- **Tidak** ada bukti self-update A/B atau rollback.
+
+Karena itu M4–M7 tetap belum selesai. Fokus berikutnya adalah riset dan
+bootstrap `rustc`, bukan memperluas installer atau mengklaim self-hosting
+penuh dari keberhasilan TinyCC.

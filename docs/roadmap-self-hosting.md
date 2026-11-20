@@ -64,7 +64,7 @@ selesai jika bukti sesuai tersedia.
 | Kernel/proses/ELF | Kernel x86_64, ELF loader, proses dan syscall sudah tersedia | Fondasi ada |
 | Filesystem | VFS, EXT2, FAT32, mount dan instalasi persisten tersedia | Perlu validasi workflow source |
 | Editor | Perintah editor native tersedia | Perlu uji edit file besar dan persistensi |
-| C compiler | TinyCC dibangun untuk ABI OCTAGRAM dan masuk image; perbaikan runtime PT_TLS sudah di-commit | Menunggu CI/QEMU |
+| C compiler | TinyCC compile dan minimal ELF hasilnya sudah dijalankan di QEMU; extended C smoke compile lulus | Make QEMU smoke perlu dijalankan ulang setelah perbaikan input harness |
 | Mini toolchain | Compiler C-subset, assembler/linker mini tersedia | Terbatas, bukan GNU toolchain |
 | Native Make | Utility Rust no_std; dukungan target, variable, automatic variable, `-n`, `-s`, `-j1` | Implemented; QEMU test belum terbukti lulus |
 | Rust application | Workspace Rust no_std dapat di-cross-compile dari host | Bukan Rust compiler native |
@@ -137,9 +137,23 @@ yang didisassembly, bukan mencari semua mnemonic yang diawali huruf `v`.
   `pthread_create` yang masih memakai signature sebelumnya; itu sudah
   diperbaiki pada `b7bcd2ed`.
 
-**Status verifikasi:** implementasi sudah di-commit, tetapi belum lulus build
-atau QEMU. Jangan menganggap TinyCC runtime sudah berjalan sampai CI terbaru
-menunjukkan output smoke test dan exit status 0.
+**Hasil QEMU run `44671112721`:**
+
+- `tcc /tmp/tcc.c -o /tmp/tcc-selfhost-minimal.elf` selesai dengan exit
+  status 0.
+- `run /tmp/tcc-selfhost-minimal.elf` menampilkan
+  `TCC runs on OCTAGRAM: 24 24` dan exit status 0. Ini membuktikan program
+  minimal hasil TinyCC dapat dieksekusi; fault `FS_BASE=0` tidak muncul lagi.
+- `tcc /tmp/tcc-full.c -o /tmp/tcc-selfhost-full.elf` juga selesai dengan
+  exit status 0, tetapi ELF extended tersebut belum dieksekusi.
+- Workflow gagal pada tes Make karena skrip QEMU mengetik huruf kapital C
+  sebagai `C`, sehingga shell menerima `make - /share/octagram -n`.
+  Perbaikan harness memetakan `C` menjadi `shift-c` pada commit
+  `570f8c39`; perlu rerun untuk membuktikan native Make.
+
+**Status verifikasi:** gate compile-run minimal TinyCC lulus di QEMU. M2
+belum selesai: extended ELF perlu dieksekusi, Make guest tests perlu lulus,
+dan multi-file/archive/link belum dibuktikan.
 
 ---
 
@@ -222,7 +236,7 @@ program C native.
       dari TinyCC build dengan baseline x86-64.
 - [x] Tetapkan baseline ISA x86_64 yang didukung oleh kernel dan QEMU.
 - [x] Hilangkan instruksi AVX dari TinyCC build; AVX kernel tidak diaktifkan.
-- [ ] Verifikasi runtime TLS lewat `PT_TLS` dan auxiliary vector pada QEMU.
+- [x] Verifikasi runtime TLS lewat `PT_TLS` dan auxiliary vector pada QEMU untuk executable minimal.
 - [ ] Uji command `tcc source.c -o program.elf` dari shell.
 - [ ] Jalankan hasil ELF dari shell dan periksa output serta exit status.
 - [ ] Uji argv, envp, file I/O, malloc, TLS, errno, signal, dan stack alignment.
@@ -460,18 +474,18 @@ Jangan menyebut build host sebagai native runtime test.
 
 1. **M2.1 — baseline ISA:** sudah diterapkan dan guard disassembly
    `.text` tidak menemukan instruksi AVX/VEX.
-2. **M2.2 — runtime TLS:** fault teridentifikasi sebagai
-   `mov %fs:0x0,%rax` dengan `FS_BASE=0`; runtime kini membaca `PT_TLS`
-   dari auxiliary vector saat simbol khusus GNU tidak tersedia.
-3. **M2.3 — kompilasi:** pastikan seluruh pemanggil `oct_tls_layout` dan
-   `oct_tls_copy` sudah memakai signature baru; commit terakhir
-   `b7bcd2ed` memperbarui jalur `pthread_create`.
-4. **M2.4 — verifikasi QEMU:** jalankan workflow terbaru. Gate pertama adalah
-   compile dan execute `/tmp/tcc-selfhost-minimal.elf`; setelah itu uji
-   executable smoke lebih lengkap, errno, TLS, dan thread.
-5. **M3.1:** setelah TinyCC runtime lulus, jalankan Make `-n`, `-s`, dan
-   `-j1` pada guest; kemudian implementasikan timestamp-based incremental
-   build secara backward-compatible dengan metadata VFS yang tersedia.
+2. **M2.2 — runtime TLS:** fault `mov %fs:0x0,%rax` dengan
+   `FS_BASE=0` telah diperbaiki melalui fallback ELF `PT_TLS`; executable
+   minimal hasil TinyCC kini lulus compile dan run di QEMU.
+3. **M2.3 — extended smoke:** executable C yang lebih lengkap telah berhasil
+   dikompilasi, tetapi belum dieksekusi. Tambahkan eksekusi dan verifikasi
+   errno, TLS, file I/O, serta thread secara bertahap.
+4. **M2.4 — native Make:** run `44671112721` gagal karena QEMU test harness
+   kehilangan huruf kapital pada opsi `-C`. Commit `570f8c39` memetakan
+   tombol itu ke `shift-c`; jalankan ulang tes `-n` dan `-j1`.
+5. **M3.1:** setelah Make guest smoke lulus, implementasikan timestamp-based
+   incremental build secara backward-compatible dengan metadata VFS yang
+   tersedia.
 6. **M4.1:** mulai desain bootstrap rustc secara paralel: versi, target triple,
    sysroot, backend, dependensi OS, dan strategi Stage 0.
 

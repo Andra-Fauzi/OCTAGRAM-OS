@@ -16,6 +16,8 @@ def main() -> int:
     command = [
         "rustc",
         "+nightly",
+        "-Z",
+        "unstable-options",
         "--print",
         "cfg",
         "--target",

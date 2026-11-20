@@ -70,9 +70,11 @@ fn run(argc: i32, argv: *const *const u8) -> Result<i32, String> {
                 write_all(
                     STDOUT,
                     b"usage: make [-B] [-n] [-s] [-j1] [-C directory] [-f file] [NAME=value] [target...]\n\
-Supported Makefile features: explicit dependencies, recipes, variables, and $@/$</$^.\n\
-Targets rebuild when missing or older than prerequisites; -B forces a rebuild.\n\
-Shell operators and implicit rules are unsupported.\n",
+Supported Makefile features: includes, explicit dependencies, single-stem pattern rules,\\n\\
+variables, $@/$</$^/$*, .PHONY, and timestamp-based incremental rebuilds.\\n\\
+Targets rebuild when missing or older than prerequisites; -B forces a rebuild.\\n\\
+Shell operators, wildcards, and multi-stem pattern rules are unsupported.\\n\\
+",
                 )
                 .map_err(|error| format!("write failed ({error})"))?;
                 return Ok(0);

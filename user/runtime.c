@@ -1775,17 +1775,19 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
 
     void *thread_pointer = NULL;
     if (tls_aligned_size != 0) {
+        uintptr_t template_start;
         uintptr_t filesz;
         uintptr_t tls_size;
         uintptr_t alignment;
         uintptr_t checked_size;
-        if (oct_tls_layout(&filesz, &tls_size, &alignment, &checked_size) != 0
+        if (oct_tls_layout(&template_start, &filesz, &tls_size, &alignment,
+                           &checked_size) != 0
             || checked_size != tls_aligned_size) {
             munmap(mapping, mapping_size);
             return EINVAL;
         }
         void *tls_base = (unsigned char *)mapping + stack_mapping_size;
-        oct_tls_copy(tls_base, filesz, tls_size);
+        oct_tls_copy(tls_base, template_start, filesz, tls_size);
         thread_pointer = (unsigned char *)tls_base + tls_aligned_size;
         oct_tls_initialize_tcb(thread_pointer);
     }

@@ -42,15 +42,6 @@ def wait_for_after(text, offset, timeout):
     return False
 
 
-def wait_for_after(text, offset, timeout):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if text in serial_text()[offset:]:
-            return True
-        time.sleep(0.5)
-    return False
-
-
 def wait_prompt(timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -133,12 +124,7 @@ def main():
     # This binary is Rust no_std + alloc, cross-compiled on the host but
     # executed as a native OCTAGRAM ELF. It is not rustc-host self-hosting.
     output_offset = len(serial_text())
-    monitor.sendall(b"sendkey r\n")
-    for character in "un /bin/rust-hello":
-        key = KEY_NAMES.get(character, character)
-        monitor.sendall(("sendkey %s\n" % key).encode())
-        time.sleep(0.06)
-    monitor.sendall(b"sendkey ret\n")
+    send_line("run /bin/rust-hello")
     if not wait_for_after("Rust no_std + alloc runs in OCTAGRAM!", output_offset, 120):
         print("RUST-NOSTD-FAIL: Rust no_std + alloc program did not emit its marker")
         print(serial_text()[-5000:])

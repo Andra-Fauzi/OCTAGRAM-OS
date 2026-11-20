@@ -10,11 +10,60 @@ typedef struct WorkerArgument {
     int value;
 } WorkerArgument;
 
+/*
+ * Keep an SSE2 register live across an OCTAGRAM syscall.  This intentionally
+ * uses int 0x80 rather than a C function call so the compiler cannot apply the
+ * SysV caller-saved XMM register rule to the value being checked.
+ */
+static int verify_xmm_across_kernel_yield(uint64_t pattern)
+{
+    uint64_t observed;
+    __asm__ volatile(
+        "movq %1, %%xmm15\\n\\t"
+        "mov $65, %%eax\\n\\t"
+        "int $0x80\\n\\t"
+        "movq %%xmm15, %0\\n\\t"
+        : "=&r"(observed)
+        : "r"(pattern)
+        : "rax", "rcx", "r11", "xmm15", "cc", "memory");
+    return observed == pattern;
+}
+
+/*
+ * Keep XMM15 live for long enough that the timer should preempt this worker
+ * while another pthread is runnable.  The other worker uses a different
+ * pattern, so a missing per-thread FPU save/restore is observable.
+ */
+static int verify_xmm_across_preemption(uint64_t pattern)
+{
+    uint64_t observed;
+    const uint32_t spins = 30000000u;
+    __asm__ volatile(
+        "movq %1, %%xmm15\\n\\t"
+        "movl %2, %%ecx\\n\\t"
+        "1: pause\\n\\t"
+        "decl %%ecx\\n\\t"
+        "jnz 1b\\n\\t"
+        "movq %%xmm15, %0\\n\\t"
+        : "=&r"(observed)
+        : "r"(pattern), "r"(spins)
+        : "rcx", "xmm15", "cc", "memory");
+    return observed == pattern;
+}
+
 static void *worker(void *opaque)
 {
     const WorkerArgument *argument = opaque;
     if (tls_value != 41) {
         return (void *)(uintptr_t)1;
+    }
+
+    const uint64_t xmm_pattern = UINT64_C(0x4f43544147524100) | (uint64_t)argument->value;
+    if (!verify_xmm_across_kernel_yield(xmm_pattern)) {
+        return (void *)(uintptr_t)4;
+    }
+    if (!verify_xmm_across_preemption(xmm_pattern)) {
+        return (void *)(uintptr_t)5;
     }
 
     tls_value = argument->value;
@@ -62,6 +111,6 @@ int main(void)
         return 3;
     }
 
-    puts("preemptive threads and TLS passed");
+    puts("preemptive threads, TLS, and SSE context passed");
     return 0;
 }

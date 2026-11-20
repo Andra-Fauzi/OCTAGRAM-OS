@@ -42,7 +42,7 @@ char *getenv(const char *name);
 struct oct_stat {
     uint64_t size;
     uint32_t mode;
-    uint32_t reserved;
+    uint32_t modified_seconds;
 };
 
 static inline int64_t oct_syscall0(uint64_t number)

@@ -64,7 +64,7 @@ selesai jika bukti sesuai tersedia.
 | Kernel/proses/ELF | Kernel x86_64, ELF loader, proses dan syscall sudah tersedia | Fondasi ada |
 | Filesystem | VFS, EXT2, FAT32, mount dan instalasi persisten tersedia | Perlu validasi workflow source |
 | Editor | Perintah editor native tersedia | Perlu uji edit file besar dan persistensi |
-| C compiler | TinyCC mengompilasi beberapa source menjadi object terpisah, melakukan link ELF, lalu executable berjalan di QEMU | QEMU guest-tested untuk multi-file object + link; archive belum diuji |
+| C compiler | TinyCC mengompilasi source terpisah menjadi object, membuat static archive, link ELF dari object + archive, lalu executable berjalan di QEMU | QEMU guest-tested untuk object, archive, link, dan eksekusi |
 | Mini toolchain | Compiler C-subset, assembler/linker mini tersedia | Terbatas, bukan GNU toolchain |
 | Native Make | Rust no_std; explicit graph, variables, `-n`, `-s`, `-j1`, mtime incremental, `-B` | QEMU-tested: build, skip, newer prerequisite, forced rebuild |
 | Rust application | Workspace Rust no_std dapat di-cross-compile dari host | Bukan Rust compiler native |
@@ -247,7 +247,7 @@ program C native.
 - [ ] Uji argv, envp, file I/O, malloc, TLS, errno, signal, dan stack alignment.
 - [ ] Uji include header OCTAGRAM, static libc, relocation, dan diagnostics.
 - [x] Uji proyek C multi-file: compile beberapa object (`tcc -c`), link object menjadi ELF, dan jalankan hasilnya di QEMU.
-- [ ] Uji pembuatan dan penggunaan static archive (`.a`).
+- [x] Uji pembuatan static archive (`.a`) dengan `tcc -ar rcs`, link terhadap archive, dan jalankan ELF hasilnya di QEMU.
 - [ ] Sediakan antarmuka compiler/assembler/linker yang konsisten.
 - [ ] Tegaskan perbedaan `cc` (compiler C-subset kernel) dengan `tcc`
       (TinyCC userspace).
@@ -286,7 +286,7 @@ dan rebuild yang benar.
 - [x] Buktikan `-B` menjalankan ulang semua recipe.
 - [x] Uji prerequisite yang lebih baru: hanya object terkait dan executable final yang dibangun ulang.
 - [x] Uji pipeline `source.c -> object.o -> executable.elf` dengan dua source file terpisah.
-- [ ] Uji archive `.a` sebagai input linker dan dependency Make.
+- [x] Uji archive `.a` sebagai input linker dan dependency Make; perubahan `message.c` membangun ulang `message.o`, archive, dan ELF, tanpa membangun ulang `hello.o`.
 - [ ] Tambahkan `include`, pattern rules, dan implicit rules yang diperlukan.
 - [ ] Perbaiki quoting dan argument parsing recipe.
 - [ ] Pastikan recipe berjalan di shell dengan cwd dan environment yang benar.
@@ -500,8 +500,8 @@ Jangan menyebut build host sebagai native runtime test.
 2. **M2.2 — runtime TLS:** selesai; fallback ELF `PT_TLS` membuat executable minimal hasil TinyCC lulus compile dan run di QEMU.
 3. **M2.3 — multi-file object pipeline:** selesai diuji di QEMU pada run [44679567500](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44679567500), branch `feature/native-self-hosting`, commit `ef044d21fcda30ac1faa216dd9c56772093f6df6`. Native Make menjalankan `tcc -c` untuk `hello.c` dan `message.c`, link `hello.o message.o` menjadi ELF, lalu menjalankan ELF dengan exit status 0.
 4. **M3.1 — incremental object graph:** selesai diuji: build kedua melewati semua recipe; setelah `hello.c` disentuh, hanya `hello.o` dan link final yang dibangun ulang; `make -B` membangun ulang kedua object dan executable.
-5. **M2.4 — static archive:** verifikasi dukungan `ar`/`tcc -ar`, lalu uji membuat `.a`, link terhadap archive, dan jalankan hasilnya.
-6. **M3.2 — Make compatibility:** tambahkan pattern rules/implicit rules dan `.PHONY` sungguhan setelah kasus object/archive stabil.
+5. **M2.4 — static archive:** selesai diuji pada run [44680578458](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44680578458), commit `bdec3b79c4f9264c172ec6169b8cef85d7c6081d`. `tcc -ar rcs` membuat `libmessage.a`; linker mengambil simbol dari archive dan ELF berjalan.
+6. **M3.2 — Make compatibility:** implementasikan semantik `.PHONY` yang benar, lalu pattern rules/implicit rules dan include Makefile.
 7. **M4.1 — Rust bootstrap:** lanjutkan inventaris rustc, target triple, sysroot, backend, dependensi OS, dan strategi Stage 0 secara paralel.
 
 Jangan lanjut ke M6 sebagai prioritas sebelum native compiler dan native kernel build dapat dibuktikan. Image builder tidak menyelesaikan blocker compiler.

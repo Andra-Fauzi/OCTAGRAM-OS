@@ -144,6 +144,59 @@ loader -> syscall runtime -> alloc -> eksekusi guest** untuk satu program
 kecil. Compiler masih berjalan di host; Cargo juga masih berjalan di host.
 Ini bukan rustc native dan bukan bukti kompatibilitas `std`.
 
+## 3.4. Target identity scaffold untuk host OCTAGRAM (2026-11-20)
+
+Branch `feature/native-self-hosting` sekarang memiliki:
+
+- `user/rust/targets/x86_64-unknown-octagram.json`
+- `tools/check_octagram_rust_target.py`
+- CI step `Validate experimental OCTAGRAM Rust host target`
+
+Target JSON ini menetapkan identitas Rust cfg `target_arch=x86_64`,
+`target_os=octagram`, pointer 64-bit, little-endian, linker LLD, static
+relocation, panic abort, no red zone, static executable, dan SSE/SSE2.
+LLVM backend triple sementara tetap `x86_64-unknown-none`; target spec
+mengubah identitas target Rust, tetapi **belum** menyediakan Rust `std`,
+libc, dynamic loader, atau compiler executable yang berjalan di OCTAGRAM.
+
+Validasi `rustc --print cfg --target ...` hanya membuktikan bahwa nightly
+rustc dapat membaca target JSON dan menghasilkan cfg yang diharapkan. Ia
+bukan compile test untuk `std`, bukan bukti binary target bisa dijalankan,
+dan bukan bukti rustc native. Target ini sengaja dipisahkan dari target
+freestanding yang sekarang dipakai kernel dan aplikasi `no_std`.
+
+### ABI decisions dan blocker yang ditemukan
+
+- ELF userspace saat ini memakai static executable; dynamic linking belum
+  boleh diasumsikan tersedia untuk rustc/LLVM.
+- Kernel memiliki `fxsave64/fxrstor64` dan `UserProcess.fpu_state`.
+  State disimpan sebelum/selama syscall dan timer preemption, serta dipulihkan
+  ketika proses dilanjutkan. Ini memberi fondasi untuk SSE2 pada userspace.
+- Thread/process scheduler menyimpan `UserProcess` per scheduled task;
+  validasi FPU harus tetap mencakup isolasi antar-thread, bukan hanya satu
+  proses.
+- TLS FS base disimpan/dipulihkan oleh scheduler, tetapi dukungan TLS pada
+  shared object/dynamic loader masih belum ada. Static TLS dan TLS dynamic
+  loader adalah dua kontrak berbeda.
+- `sendmsg`/`recvmsg` masih `ENOSYS`; Rust/Cargo mungkin memerlukan
+  operasi socket tersebut atau implementasi alternatif di libc.
+- `clock_gettime`, `getrandom`, `pipe`, `dup2`, `fork`, `execve`,
+  `waitpid`, `mmap`, `mprotect`, `futex`, dan thread API tercantum di
+  syscall ABI, tetapi keberadaan nomor syscall bukan bukti semantic
+  compatibility dengan Rust `std` atau LLVM.
+
+### Gate sebelum mengklaim host target usable
+
+1. Jalankan validator target JSON di CI dan pastikan cfg OCTAGRAM benar.
+2. Tambahkan guest tests untuk FPU/SSE register preservation lintas timer
+   preemption, fork, dan thread switch.
+3. Tetapkan libc ABI, errno mapping, process/thread semantics, TLS model,
+   clock/entropy contract, serta executable/linker policy.
+4. Port libc dan Rust `std` untuk host target, atau buktikan subset runtime
+   statis yang dibutuhkan rustc/LLVM.
+5. Bangun satu executable native kecil untuk target OCTAGRAM dan jalankan
+   dari shell; baru setelah itu mulai port rustc/LLVM.
+
 ## 4. Urutan bootstrap yang direkomendasikan
 
 ### M4.1 — Host ABI dan target specification

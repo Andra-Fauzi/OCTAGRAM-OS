@@ -66,7 +66,7 @@ selesai jika bukti sesuai tersedia.
 | Editor | Perintah editor native tersedia | Perlu uji edit file besar dan persistensi |
 | C compiler | TinyCC mengompilasi source terpisah menjadi object, membuat static archive, link ELF dari object + archive, lalu executable berjalan di QEMU | QEMU guest-tested untuk object, archive, link, dan eksekusi |
 | Mini toolchain | Compiler C-subset, assembler/linker mini tersedia | Terbatas, bukan GNU toolchain |
-| Native Make | Rust no_std; explicit graph, variables, `$@`, `$<`, `$^`, `$*`, `.PHONY`, single-stem pattern rules, `-n`, `-s`, `-j1`, mtime incremental, `-B` | QEMU-tested: object/archive/link, pattern compilation, automatic stem, skip, dependency rebuild, force, `.PHONY` |
+| Native Make | Rust no_std; explicit graph, variables, `$@`, `$<`, `$^`, `$*`, `.PHONY`, `include`, single-stem pattern rules, `-n`, `-s`, `-j1`, mtime incremental, `-B` | QEMU-tested: included pattern rules, object/archive/link, skip, dependency rebuild, force, `.PHONY` |
 | Rust application | Workspace Rust no_std dapat di-cross-compile dari host | Bukan Rust compiler native |
 | rustc | Belum terbukti berjalan di OCTAGRAM | Belum tersedia |
 | Cargo | Belum terbukti berjalan di OCTAGRAM | Belum tersedia |
@@ -501,7 +501,7 @@ Jangan menyebut build host sebagai native runtime test.
 3. **M2.3 — multi-file object pipeline:** selesai diuji di QEMU pada run [44679567500](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44679567500), branch `feature/native-self-hosting`, commit `ef044d21fcda30ac1faa216dd9c56772093f6df6`. Native Make menjalankan `tcc -c` untuk `hello.c` dan `message.c`, link `hello.o message.o` menjadi ELF, lalu menjalankan ELF dengan exit status 0.
 4. **M3.1 — incremental object graph:** selesai diuji: build kedua melewati semua recipe; setelah `hello.c` disentuh, hanya `hello.o` dan link final yang dibangun ulang; `make -B` membangun ulang kedua object dan executable.
 5. **M2.4 — static archive:** selesai diuji pada run [44680578458](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44680578458), commit `bdec3b79c4f9264c172ec6169b8cef85d7c6081d`. `tcc -ar rcs` membuat `libmessage.a`; linker mengambil simbol dari archive dan ELF berjalan.
-6. **M3.2 — Make compatibility:** `.PHONY`, pattern rule satu stem (`%.o: %.c`), dan automatic variable `$*` sudah lulus QEMU pada run [44683142059](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44683142059), commit `ae66086ef0ba1f2d0a21a78e9dcb47d68b56a69b`. Berikutnya implementasikan include Makefile dan aturan implicit yang lebih lengkap.
-7. **M4.1 — Rust bootstrap:** lanjutkan inventaris rustc, target triple, sysroot, backend, dependensi OS, dan strategi Stage 0 secara paralel.
+6. **M3.2 — Make compatibility:** `.PHONY`, pattern rule satu stem (`%.o: %.c`), `$*`, dan `include` Makefile sudah lulus seluruh CI/QEMU pada run [44684584050](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44684584050), commit `bde1645ed39ebbbb8b9f1487435d6e815ba24889`. Batas saat ini: include memakai path relatif ke working directory; wildcard dan multi-stem pattern rules belum didukung.
+7. **M4.1 — Rust bootstrap:** audit rinci dan urutan port host target, runtime, `std`, linker/backend, rustc Stage 0, Cargo, dan bootstrap berulang tersedia di [rust-native-bootstrap.md](rust-native-bootstrap.md). Implementasi native compiler belum dimulai; kebutuhan OS harus dikontrak dan diuji satu per satu.
 
 Jangan lanjut ke M6 sebagai prioritas sebelum native compiler dan native kernel build dapat dibuktikan. Image builder tidak menyelesaikan blocker compiler.

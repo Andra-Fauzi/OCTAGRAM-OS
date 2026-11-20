@@ -2,7 +2,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::fs::{DirectoryEntry, FileSystem, FsError, Metadata, NodeType, normalize_path};
+use crate::fs::{current_timestamp, DirectoryEntry, FileSystem, FsError, Metadata, NodeType, normalize_path};
 
 use super::block::{BlockDevice, BlockDeviceRef, SECTOR_SIZE};
 
@@ -1391,6 +1391,7 @@ impl FileSystem for Ext2 {
             len: usize::try_from(inode.size(self.superblock.feature_ro_compat)?)
                 .map_err(|_| FsError::InvalidData)?,
             permissions: inode.mode() & 0o777,
+            modified: Some(u64::from(inode.modified_time())),
         })
     }
 
@@ -1446,6 +1447,7 @@ impl FileSystem for Ext2 {
             self.write_zero_range(&mut inode, old_size, offset - old_size)?;
         }
         self.write_file_range(&mut inode, offset, data)?;
+        inode.set_modified_time(current_timestamp().unwrap_or(0))?;
         if end > old_size {
             inode.set_size(end as u64, self.superblock.feature_ro_compat)?;
         }
@@ -1482,6 +1484,7 @@ impl FileSystem for Ext2 {
             }
         }
         inode.set_size(length as u64, self.superblock.feature_ro_compat)?;
+        inode.set_modified_time(current_timestamp().unwrap_or(0))?;
         self.write_inode(inode_number, &inode)
     }
 
@@ -1500,6 +1503,7 @@ impl FileSystem for Ext2 {
         let mut inode = Inode::new(self.superblock.inode_size);
         inode.set_mode(0x8000 | 0o644);
         inode.set_links(1);
+        inode.set_modified_time(current_timestamp().unwrap_or(0))?;
         if let Err(error) = self.write_inode(inode_number, &inode).and_then(|_| {
             self.insert_directory_entry(parent_number, &name, inode_number, EXT2_FT_REG_FILE)
         }) {
@@ -1515,6 +1519,7 @@ impl FileSystem for Ext2 {
         let mut inode = Inode::new(self.superblock.inode_size);
         inode.set_mode(0x4000 | 0o755);
         inode.set_links(2);
+        inode.set_modified_time(current_timestamp().unwrap_or(0))?;
         let data_block = match self.allocate_block() {
             Ok(block) => block,
             Err(error) => {
@@ -1561,6 +1566,7 @@ impl FileSystem for Ext2 {
         }
         let mut parent = self.read_inode(parent_number)?;
         parent.set_links(parent.links().checked_add(1).ok_or(FsError::NoSpace)?);
+        parent.set_modified_time(current_timestamp().unwrap_or(0))?;
         self.write_inode(parent_number, &parent)
     }
 
@@ -1573,6 +1579,7 @@ impl FileSystem for Ext2 {
         let mut inode = Inode::new(self.superblock.inode_size);
         inode.set_mode(0xA000 | 0o777);
         inode.set_links(1);
+        inode.set_modified_time(current_timestamp().unwrap_or(0))?;
         inode.set_size(target.len() as u64, self.superblock.feature_ro_compat)?;
         let result = if target.len() <= 60 {
             inode.bytes[EXT2_INODE_POINTERS_OFFSET..EXT2_INODE_POINTERS_OFFSET + target.len()]
@@ -1658,6 +1665,7 @@ impl FileSystem for Ext2 {
                     node_type,
                     len,
                     permissions: child.mode() & 0o777,
+                    modified: Some(u64::from(child.modified_time())),
                 },
             });
         }
@@ -1674,6 +1682,16 @@ impl Inode {
 
     fn clear(&mut self) {
         self.bytes.fill(0);
+    }
+
+    fn modified_time(&self) -> u32 {
+        u32::from_le_bytes(self.bytes[16..20].try_into().unwrap())
+    }
+
+    fn set_modified_time(&mut self, seconds: u64) -> Result<(), FsError> {
+        let seconds = u32::try_from(seconds).map_err(|_| FsError::NoSpace)?;
+        self.bytes[16..20].copy_from_slice(&seconds.to_le_bytes());
+        Ok(())
     }
 
     fn mode(&self) -> u16 {

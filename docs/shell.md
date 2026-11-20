@@ -11,7 +11,12 @@ aktif dan dapat dipindah dengan Ctrl+Alt+F1..F4.
 - Perintah bawaan dijalankan langsung di task shell; program user dijalankan
   lewat `run` (satu program, menunggu selesai) atau `runp` (beberapa program,
   round-robin).
-- Redirection `>` dan `>>` didukung untuk perintah yang menulis berkas.
+- Pipeline `a | b | c` dan redirection `>`/`>>` didukung untuk perintah teks
+  bawaan (`cat`, `head`, `tail`, `wc`, `grep`, `echo`); stage terakhir boleh
+  menulis ke berkas. Operator di dalam tanda kutip tidak dianggap operator.
+- `mv` memakai jalur VFS `rename`: pada EXT2 berkas dan symlink dapat dipindah
+  antar direktori, direktori hanya dapat dipindah dalam parent yang sama, dan
+  nama tujuan yang sudah ada ditolak (tidak menimpa).
 - `export NAMA=nilai` menyimpan variabel lingkungan shell; program menerimanya
   sebagai environment saat `execve`.
 
@@ -20,7 +25,7 @@ aktif dan dapat dipindah dengan Ctrl+Alt+F1..F4.
 **Navigasi dan teks**
 `help`, `clear`, `pwd`, `path`, `cd`, `echo`, `export`, `ls`, `cat`, `head`,
 `tail`, `wc`, `grep`, `touch`, `mkdir`, `ln`, `rm`, `chmod`, `stat`, `cp`,
-`edit`.
+`mv`, `edit`.
 
 **Sistem**
 `date`, `shutdown`, `reboot`, `sched`, `devices`, `lsdev`, `drivers`, `savelog`.
@@ -64,9 +69,30 @@ Program lain dapat dijalankan dengan menyebut namanya jika ada di `PATH`
 - `wc` menghitung newline, kata, dan byte; `grep` mencari teks literal dan
   mendukung `-n` untuk nomor baris.
 - `edit` adalah editor layar sederhana berbasis terminal, bukan `vi`.
-- Tanpa pipe antar perintah, tanpa job control, tanpa background job, tanpa
-  globbing, dan tanpa `~` expansion.
+- Pipeline hanya berlaku untuk perintah teks bawaan; program ELF tidak dapat
+  dirangkai dengan `|`, dan input redirection `<` belum tersedia.
+- Redirection stage terakhir hanya pada lintasan pipeline; perintah di luar
+  daftar teks ditolak dengan pesan kesalahan, bukan diabaikan.
+- Tanpa job control, background job, globbing, dan `~` expansion.
+- `edit` memuat seluruh berkas ke memori dengan batas `MAX_EDITOR_FILE` = 256
+  KiB dan menyediakan pencarian literal, bukan regex.
 - Tanpa `man`; bantuan ada di `help` dan folder `docs/`.
+
+## Editor terminal
+
+`edit <path>` membuka editor layar penuh; berkas dibuat bila belum ada.
+
+| Tombol | Fungsi |
+| --- | --- |
+| Ctrl+S | simpan |
+| Ctrl+Q | keluar (dua kali bila ada perubahan yang belum disimpan) |
+| Ctrl+F | mulai pencarian literal; Enter mencari dari kursor, Esc membatalkan |
+| Ctrl+G | cari kemunculan berikutnya dari pencarian terakhir |
+| Tab | sisipkan tab |
+| Panah | navigasi kursor; viewport ikut bergulir |
+
+Pencarian membungkus ke awal berkas dan status di baris bawah menampilkan
+`Found:` atau `Not found:`. Berkas yang bukan UTF-8 valid ditolak.
 
 ## PATH dan program
 

@@ -73,6 +73,15 @@ Debian/Ubuntu: `lld`).
 - `make run` / `make run-hdd` menjalankan image dengan QEMU (x86_64 default).
 - `tools/qemu_syscall_test.py` mengotomatiskan interaksi shell lewat serial
   monitor (`/tmp/mon.sock`) dan menunggu teks tertentu di `/tmp/serial.log`.
+- `tools/qemu_ext2_persistence_test.py` menguji penyimpanan source di EXT2:
+  format disk kedua dengan `mkfs.ext2` native, mount, tulis berkas, pipeline,
+  redirection, `mv`, unmount, `system_reset` lewat monitor, lalu mount ulang
+  dan membaca kembali isi berkas yang sama. Jalankan QEMU dengan disk kedua
+  dan monitor socket, misalnya
+  `-drive file=/tmp/ext2-test.img,if=none,id=ext2,format=raw
+  -device ide-hd,drive=ext2,bus=ide.1 -monitor unix:/tmp/mon-ext2.sock,server,nowait`,
+  lalu `DISK=sata1 python3 tools/qemu_ext2_persistence_test.py` (sesuaikan
+  `DISK` dan `MON`/`SERIAL` dengan konfigurasi QEMU).
 - `tools/cpython_port.py` membantu workflow port CPython.
 
 Uji di QEMU memerlukan image, OVMF, dan perangkat yang sesuai; perilaku driver

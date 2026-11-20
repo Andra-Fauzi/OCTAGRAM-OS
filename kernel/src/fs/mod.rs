@@ -14,19 +14,19 @@ pub(crate) use devfs::{
 };
 pub use ramfs::RamFs;
 
-use alloc::boxed::Box;
-use alloc::string::String;
-use alloc::vec::Vec;
-use spin::{Mutex, Once};
-#[cfg(test)]
-use core::sync::atomic::{AtomicU64, Ordering};
 use crate::storage::{
     block,
     ext2::Ext2,
     fat32::Fat32,
-    partition::{self, PartitionDevice, LINUX_FILESYSTEM_GUID},
+    partition::{self, LINUX_FILESYSTEM_GUID, PartitionDevice},
 };
+use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+#[cfg(test)]
+use core::sync::atomic::{AtomicU64, Ordering};
+use spin::{Mutex, Once};
 
 const MAKE_ELF: &[u8] = include_bytes!("../../../user/rust/build/make.elf");
 const RUST_HELLO_ELF: &[u8] = include_bytes!("../../../user/rust/build/rust_hello.elf");
@@ -776,8 +776,14 @@ pub fn init() {
             "/home",
             "/home/octagram",
             "/etc",
+            "/src",
+            "/build",
+            "/toolchain",
             "/var",
             "/var/log",
+            "/var/log/build",
+            "/var/cache",
+            "/var/cache/build",
             "/var/lib",
             "/var/lib/octagram",
             "/var/lib/octagram/packages",
@@ -950,10 +956,7 @@ mod tests {
             let rust_hello_octagram = vfs.metadata("/bin/rust-hello-octagram").unwrap();
             assert_eq!(rust_hello_octagram.permissions, 0o755);
             assert!(rust_hello_octagram.len > 0);
-            assert_eq!(
-                vfs.read("/bin/rust-hello-octagram", 0, &mut magic),
-                Ok(4)
-            );
+            assert_eq!(vfs.read("/bin/rust-hello-octagram", 0, &mut magic), Ok(4));
             assert_eq!(&magic, b"\x7FELF");
 
             for path in ["/bin/gcc", "/bin/rustc", "/bin/chibicc"] {

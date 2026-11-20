@@ -2,7 +2,9 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::fs::{current_timestamp, DirectoryEntry, FileSystem, FsError, Metadata, NodeType, normalize_path};
+use crate::fs::{
+    DirectoryEntry, FileSystem, FsError, Metadata, NodeType, current_timestamp, normalize_path,
+};
 
 use super::block::{BlockDevice, BlockDeviceRef, SECTOR_SIZE};
 
@@ -99,8 +101,8 @@ impl Ext2 {
         } else {
             full_groups.saturating_add(if remainder > 0 { 1 } else { 0 })
         };
-        let candidate_gdt_blocks = (candidate_groups * EXT2_GROUP_DESC_SIZE as u64)
-            .div_ceil(BLOCK_SIZE as u64);
+        let candidate_gdt_blocks =
+            (candidate_groups * EXT2_GROUP_DESC_SIZE as u64).div_ceil(BLOCK_SIZE as u64);
         let candidate_group_index = full_groups.min(u32::MAX as u64) as u32;
         let candidate_prefix = if format_has_backup_superblock(candidate_group_index) {
             1 + candidate_gdt_blocks
@@ -120,9 +122,7 @@ impl Ext2 {
         } else {
             full_groups * BLOCKS_PER_GROUP as u64
         };
-        if group_count == 0
-            || group_count > MAX_GROUPS as u64
-            || blocks_count_u64 > u32::MAX as u64
+        if group_count == 0 || group_count > MAX_GROUPS as u64 || blocks_count_u64 > u32::MAX as u64
         {
             return Err(FsError::Unsupported);
         }
@@ -1185,6 +1185,14 @@ impl Ext2 {
         self.write_inode(parent_number, &parent)
     }
 
+    /// Best-effort undo of a partially applied rename so a failure cannot make
+    /// the same inode reachable from two names.
+    fn rollback_rename_entry(&self, parent_number: u32, name: &str) {
+        if let Ok(parent) = self.read_inode(parent_number) {
+            let _ = self.remove_directory_entry(&parent, name);
+        }
+    }
+
     fn remove_directory_entry(&self, parent: &Inode, name: &str) -> Result<u32, FsError> {
         for record in self.directory_records(parent)? {
             if record.name != name {
@@ -1642,6 +1650,56 @@ impl FileSystem for Ext2 {
         }
     }
 
+    fn rename(&mut self, source: &str, target: &str) -> Result<(), FsError> {
+        let source = normalize_path(source)?;
+        let target = normalize_path(target)?;
+        if source == target {
+            return Ok(());
+        }
+        let (source_parent_number, _, source_name) = self.parent_and_name(&source)?;
+        let (target_parent_number, _, target_name) = self.parent_and_name(&target)?;
+        let (source_inode_number, source_inode) = self.lookup_inode(&source)?;
+        let node_type = source_inode.node_type()?;
+        // A directory moved to another parent would keep a stale `..` entry, so
+        // refuse that move instead of corrupting the tree.
+        if node_type == NodeType::Directory && source_parent_number != target_parent_number {
+            return Err(FsError::Unsupported);
+        }
+        // Replacing an existing name is refused: the caller must remove it first.
+        if self.lookup_inode(&target).is_ok() {
+            return Err(FsError::AlreadyExists);
+        }
+        let file_type = match node_type {
+            NodeType::File => EXT2_FT_REG_FILE,
+            NodeType::Directory => EXT2_FT_DIR,
+            NodeType::Symlink => EXT2_FT_SYMLINK,
+        };
+        self.insert_directory_entry(
+            target_parent_number,
+            &target_name,
+            source_inode_number,
+            file_type,
+        )?;
+        let source_parent = match self.read_inode(source_parent_number) {
+            Ok(inode) => inode,
+            Err(error) => {
+                self.rollback_rename_entry(target_parent_number, &target_name);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.remove_directory_entry(&source_parent, &source_name) {
+            self.rollback_rename_entry(target_parent_number, &target_name);
+            return Err(error);
+        }
+        let timestamp = current_timestamp().unwrap_or(0);
+        for parent_number in [source_parent_number, target_parent_number] {
+            let mut parent = self.read_inode(parent_number)?;
+            parent.set_modified_time(timestamp)?;
+            self.write_inode(parent_number, &parent)?;
+        }
+        Ok(())
+    }
+
     fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>, FsError> {
         let (_, inode) = self.lookup_inode(path)?;
         let records = self.directory_records(&inode)?;
@@ -1789,49 +1847,104 @@ fn locate_superblock(
     device: &dyn BlockDevice,
 ) -> Result<(u64, u64, [u8; EXT2_SUPERBLOCK_SIZE]), FsError> {
     let total_sectors = device.sector_count();
-    if total_sectors < 4 { return Err(FsError::InvalidData); }
+    if total_sectors < 4 {
+        return Err(FsError::InvalidData);
+    }
     let mut mbr = [0; SECTOR_SIZE];
-    device.read_sectors(0, &mut mbr).map_err(|_| FsError::IoError)?;
+    device
+        .read_sectors(0, &mut mbr)
+        .map_err(|_| FsError::IoError)?;
     if mbr[510..512] == [0x55, 0xAA] && mbr[450] == 0xEE {
-        if let Some(root) = locate_gpt_ext2(device, total_sectors)? { return Ok(root); }
+        if let Some(root) = locate_gpt_ext2(device, total_sectors)? {
+            return Ok(root);
+        }
     }
     if mbr[510..512] == [0x55, 0xAA] {
         for index in 0..4 {
             let offset = 446 + index * 16;
-            if mbr[offset + 4] != 0x83 { continue; }
+            if mbr[offset + 4] != 0x83 {
+                continue;
+            }
             let start = read_u32(&mbr, offset + 8)? as u64;
             let sectors = read_u32(&mbr, offset + 12)? as u64;
-            if sectors == 0 || start.checked_add(sectors).is_none_or(|end| end > total_sectors) { continue; }
-            if let Some(superblock) = read_superblock(device, start, sectors)? { return Ok((start, sectors, superblock)); }
+            if sectors == 0
+                || start
+                    .checked_add(sectors)
+                    .is_none_or(|end| end > total_sectors)
+            {
+                continue;
+            }
+            if let Some(superblock) = read_superblock(device, start, sectors)? {
+                return Ok((start, sectors, superblock));
+            }
         }
     }
-    if let Some(superblock) = read_superblock(device, 0, total_sectors)? { return Ok((0, total_sectors, superblock)); }
+    if let Some(superblock) = read_superblock(device, 0, total_sectors)? {
+        return Ok((0, total_sectors, superblock));
+    }
     Err(FsError::InvalidData)
 }
 
-fn locate_gpt_ext2(device: &dyn BlockDevice, total_sectors: u64) -> Result<Option<(u64, u64, [u8; EXT2_SUPERBLOCK_SIZE])>, FsError> {
-    const LINUX_FS_GUID: [u8; 16] = [0xAF,0x3D,0xC6,0x0F,0x83,0x84,0x72,0x47,0x8E,0x79,0x3D,0x69,0xD8,0x47,0x7D,0xE4];
+fn locate_gpt_ext2(
+    device: &dyn BlockDevice,
+    total_sectors: u64,
+) -> Result<Option<(u64, u64, [u8; EXT2_SUPERBLOCK_SIZE])>, FsError> {
+    const LINUX_FS_GUID: [u8; 16] = [
+        0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 0x47, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D,
+        0xE4,
+    ];
     let mut header = [0; SECTOR_SIZE];
-    device.read_sectors(1, &mut header).map_err(|_| FsError::IoError)?;
-    if &header[..8] != b"EFI PART" { return Ok(None); }
+    device
+        .read_sectors(1, &mut header)
+        .map_err(|_| FsError::IoError)?;
+    if &header[..8] != b"EFI PART" {
+        return Ok(None);
+    }
     let entries_lba = u64::from_le_bytes(header[72..80].try_into().unwrap());
     let count = u32::from_le_bytes(header[80..84].try_into().unwrap()).min(4096);
     let size = u32::from_le_bytes(header[84..88].try_into().unwrap());
-    if !(128..=512).contains(&size) || size % 8 != 0 { return Err(FsError::InvalidData); }
-    let bytes = (count as u64).checked_mul(size as u64).ok_or(FsError::InvalidData)?;
+    if !(128..=512).contains(&size) || size % 8 != 0 {
+        return Err(FsError::InvalidData);
+    }
+    let bytes = (count as u64)
+        .checked_mul(size as u64)
+        .ok_or(FsError::InvalidData)?;
     let sectors = bytes.div_ceil(SECTOR_SIZE as u64);
-    if bytes > 2 * 1024 * 1024 || entries_lba == 0 || entries_lba.checked_add(sectors).is_none_or(|end| end > total_sectors) { return Err(FsError::InvalidData); }
+    if bytes > 2 * 1024 * 1024
+        || entries_lba == 0
+        || entries_lba
+            .checked_add(sectors)
+            .is_none_or(|end| end > total_sectors)
+    {
+        return Err(FsError::InvalidData);
+    }
     let mut entries = alloc::vec![0u8; sectors as usize * SECTOR_SIZE];
-    if !entries.is_empty() { device.read_sectors(entries_lba, &mut entries).map_err(|_| FsError::IoError)?; }
+    if !entries.is_empty() {
+        device
+            .read_sectors(entries_lba, &mut entries)
+            .map_err(|_| FsError::IoError)?;
+    }
     for index in 0..count as usize {
         let off = index * size as usize;
         let entry = &entries[off..off + size as usize];
-        if entry[..16] != LINUX_FS_GUID { continue; }
+        if entry[..16] != LINUX_FS_GUID {
+            continue;
+        }
         let start = u64::from_le_bytes(entry[32..40].try_into().unwrap());
         let last = u64::from_le_bytes(entry[40..48].try_into().unwrap());
-        let Some(length) = last.checked_sub(start).and_then(|n| n.checked_add(1)) else { continue; };
-        if length == 0 || start.checked_add(length).is_none_or(|end| end > total_sectors) { continue; }
-        if let Some(superblock) = read_superblock(device, start, length)? { return Ok(Some((start, length, superblock))); }
+        let Some(length) = last.checked_sub(start).and_then(|n| n.checked_add(1)) else {
+            continue;
+        };
+        if length == 0
+            || start
+                .checked_add(length)
+                .is_none_or(|end| end > total_sectors)
+        {
+            continue;
+        }
+        if let Some(superblock) = read_superblock(device, start, length)? {
+            return Ok(Some((start, length, superblock)));
+        }
     }
     Ok(None)
 }
@@ -1861,7 +1974,6 @@ fn read_superblock(
         Ok(None)
     }
 }
-
 
 fn format_has_backup_superblock(group: u32) -> bool {
     group == 0 || group == 1 || [3, 5, 7].iter().any(|base| is_power_of(group, *base))
@@ -1913,7 +2025,8 @@ fn write_format_block(
     data: &[u8],
     progress: &mut FormatProgress<'_>,
 ) -> Result<(), FsError> {
-    if data.len() != block_size || block >= blocks_count || !block_size.is_multiple_of(SECTOR_SIZE) {
+    if data.len() != block_size || block >= blocks_count || !block_size.is_multiple_of(SECTOR_SIZE)
+    {
         return Err(FsError::InvalidData);
     }
     let sectors_per_block = (block_size / SECTOR_SIZE) as u64;
@@ -1946,9 +2059,7 @@ fn write_format_zero_blocks(
     let mut written = 0u32;
     while written < count {
         let chunk_blocks = (count - written).min(blocks_per_chunk as u32);
-        let block = first_block
-            .checked_add(written)
-            .ok_or(FsError::IoError)?;
+        let block = first_block.checked_add(written).ok_or(FsError::IoError)?;
         if block
             .checked_add(chunk_blocks)
             .is_none_or(|end| end > blocks_count)
@@ -2321,25 +2432,46 @@ mod tests {
         })
         .unwrap();
         assert!(!progress_updates.is_empty());
-        assert_eq!(progress_updates.first().copied(), Some((0, progress_updates[0].1)));
-        assert!(progress_updates.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+        assert_eq!(
+            progress_updates.first().copied(),
+            Some((0, progress_updates[0].1))
+        );
+        assert!(
+            progress_updates
+                .windows(2)
+                .all(|pair| pair[0].0 <= pair[1].0)
+        );
         let (written, total) = *progress_updates.last().unwrap();
         assert_eq!(written, total);
         assert!(total > 0);
 
         let mut filesystem = Ext2::mount(disk.clone()).unwrap();
-        assert_eq!(filesystem.metadata("/").unwrap().node_type, NodeType::Directory);
+        assert_eq!(
+            filesystem.metadata("/").unwrap().node_type,
+            NodeType::Directory
+        );
         filesystem.create_dir("/etc").unwrap();
         filesystem.create_file("/etc/octagram-root").unwrap();
         let marker = b"OCTAGRAM-OS persistent root v1\nfilesystem=ext2\n";
-        assert_eq!(filesystem.write("/etc/octagram-root", 0, marker).unwrap(), marker.len());
+        assert_eq!(
+            filesystem.write("/etc/octagram-root", 0, marker).unwrap(),
+            marker.len()
+        );
         drop(filesystem);
 
         let remounted = Ext2::mount(disk).unwrap();
         let mut actual = vec![0; marker.len()];
-        assert_eq!(remounted.read("/etc/octagram-root", 0, &mut actual).unwrap(), marker.len());
+        assert_eq!(
+            remounted
+                .read("/etc/octagram-root", 0, &mut actual)
+                .unwrap(),
+            marker.len()
+        );
         assert_eq!(actual, marker);
-        assert_eq!(remounted.metadata("/etc").unwrap().node_type, NodeType::Directory);
+        assert_eq!(
+            remounted.metadata("/etc").unwrap().node_type,
+            NodeType::Directory
+        );
     }
 
     #[test]
@@ -2363,7 +2495,60 @@ mod tests {
         drop(filesystem);
 
         let remounted = Ext2::mount(disk).unwrap();
-        assert_eq!(remounted.metadata("/mtime").unwrap().modified, Some(written));
+        assert_eq!(
+            remounted.metadata("/mtime").unwrap().modified,
+            Some(written)
+        );
+    }
+
+    #[test]
+    fn renames_files_and_refuses_unsafe_directory_moves() {
+        let disk = test_disk();
+        let mut filesystem = Ext2::mount(disk.clone()).unwrap();
+        filesystem.create_dir("/src").unwrap();
+        filesystem.create_dir("/build").unwrap();
+        filesystem.create_file("/src/main.c").unwrap();
+        let source = b"int main(void){return 0;}\n";
+        assert_eq!(
+            filesystem.write("/src/main.c", 0, source).unwrap(),
+            source.len()
+        );
+
+        filesystem.rename("/src/main.c", "/src/program.c").unwrap();
+        assert!(filesystem.metadata("/src/main.c").is_err());
+        let mut data = [0u8; 26];
+        assert_eq!(filesystem.read("/src/program.c", 0, &mut data).unwrap(), 26);
+        assert_eq!(&data, source);
+
+        filesystem
+            .rename("/src/program.c", "/build/program.c")
+            .unwrap();
+        assert!(filesystem.metadata("/src/program.c").is_err());
+        assert_eq!(filesystem.metadata("/build/program.c").unwrap().len, 26);
+
+        filesystem.create_file("/build/other.c").unwrap();
+        assert_eq!(
+            filesystem.rename("/build/program.c", "/build/other.c"),
+            Err(FsError::AlreadyExists)
+        );
+        assert_eq!(
+            filesystem.rename("/src", "/build/src"),
+            Err(FsError::Unsupported)
+        );
+        filesystem.rename("/src", "/source").unwrap();
+        drop(filesystem);
+
+        let remounted = Ext2::mount(disk).unwrap();
+        assert_eq!(
+            remounted.metadata("/source").unwrap().node_type,
+            NodeType::Directory
+        );
+        let mut data = [0u8; 26];
+        assert_eq!(
+            remounted.read("/build/program.c", 0, &mut data).unwrap(),
+            26
+        );
+        assert_eq!(&data, source);
     }
 
     #[test]

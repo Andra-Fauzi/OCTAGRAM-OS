@@ -12,12 +12,14 @@ use crate::storage::{
     block::{self, BlockDevice, BlockDeviceRef},
     ext2::Ext2,
     fat32::Fat32,
-    partition::{self, PartitionDevice, LINUX_FILESYSTEM_GUID},
+    partition::{self, LINUX_FILESYSTEM_GUID, PartitionDevice},
 };
 
 const MAX_COMMAND_LENGTH: usize = 256;
 const MAX_FILE_OPERATION: usize = 64 * 1024;
 const MAX_TOOLCHAIN_FILE: usize = 4 * 1024 * 1024;
+const MAX_EDITOR_FILE: usize = 256 * 1024;
+const MAX_EDITOR_SEARCH: usize = 64;
 const DEFAULT_PROGRAM_PATH: &[&str] = &["/bin", "/usr/bin", "/usr/local/bin"];
 
 // Track mounts created by the shell so mkfs commands cannot format an active volume.
@@ -91,6 +93,10 @@ async fn execute(
     terminal: usize,
 ) {
     let line = line.trim_start();
+    if has_unquoted_operator(line) {
+        execute_text_pipeline(line, current_dir);
+        return;
+    }
     let mut parts = line.splitn(2, char::is_whitespace);
     let command = parts.next().unwrap_or("");
     let arguments = parts.next().unwrap_or("").trim();
@@ -119,6 +125,7 @@ async fn execute(
         "chmod" => change_permissions(current_dir, arguments),
         "stat" => show_metadata(current_dir, arguments),
         "cp" => copy_file(current_dir, arguments),
+        "mv" => move_node(current_dir, arguments),
         "edit" => edit_file(current_dir, arguments, terminal).await,
         "date" => show_date(),
         "shutdown" => shutdown(),
@@ -238,7 +245,10 @@ const HELP_ENTRIES: &[&str] = &[
     "chmod <mode> <path>    set RAMFS permissions (e.g. +x, 755)",
     "stat <path>            show file metadata",
     "cp <source> <target>   copy a file",
-    "edit <path>            edit a UTF-8 file",
+    "mv <source> <target>   rename or move a file or directory",
+    "edit <path>            edit a UTF-8 file (Ctrl+S save, Ctrl+Q quit, Ctrl+F find)",
+    "<command> | <command>  pipeline for cat/head/tail/wc/grep/echo",
+    "<command> > | >> <file>  redirect text command output into a file",
     "date                   show date and time from the RTC",
     "shutdown               power off using ACPI",
     "reboot                 reset using the ACPI reset register",
@@ -348,7 +358,9 @@ fn run_network_command(arguments: &str) {
         Some("tcp") => run_network_tcp_command(arguments),
         Some("udp") => run_network_udp_command(arguments),
         Some("wifi") => run_wifi_command(arguments),
-        Some(_) => crate::println!("usage: net [status|dhcp|dns <host>|tcp <IPv4|host> <port> <text>|udp <IPv4> <port> <text>|wifi <scan|connect <ssid>>]"),
+        Some(_) => crate::println!(
+            "usage: net [status|dhcp|dns <host>|tcp <IPv4|host> <port> <text>|udp <IPv4> <port> <text>|wifi <scan|connect <ssid>>]"
+        ),
     }
 }
 
@@ -367,8 +379,12 @@ fn run_wifi_command(arguments: &str) {
             crate::println!("  net wifi scan              - scan all 2.4 GHz channels");
             crate::println!("  net wifi connect <ssid>    - connect to AP by SSID");
             crate::println!("  net wifi status            - show current link state");
-            crate::println!("  net wifi bmi               - re-run BMI and dump host-interest words");
-            crate::println!("  net wifi retry             - restart the driver after a failed bring-up");
+            crate::println!(
+                "  net wifi bmi               - re-run BMI and dump host-interest words"
+            );
+            crate::println!(
+                "  net wifi retry             - restart the driver after a failed bring-up"
+            );
         }
         Some("retry") => {
             if crate::drivers::qca9377::is_initialized() {
@@ -464,11 +480,21 @@ fn run_network_tcp_command(arguments: &str) {
         },
     };
 
-    crate::println!("Connecting to {}.{}.{}.{}:{}...", ip[0], ip[1], ip[2], ip[3], port);
+    crate::println!(
+        "Connecting to {}.{}.{}.{}:{}...",
+        ip[0],
+        ip[1],
+        ip[2],
+        ip[3],
+        port
+    );
     match crate::network::tcp_exchange(ip, port, payload.as_bytes(), 5000) {
         Ok(resp) => {
             if resp.is_empty() {
-                crate::println!("TCP: sent {} bytes, connection closed without response", payload.len());
+                crate::println!(
+                    "TCP: sent {} bytes, connection closed without response",
+                    payload.len()
+                );
             } else {
                 crate::println!("TCP response ({} bytes):", resp.len());
                 if let Ok(text) = core::str::from_utf8(&resp) {
@@ -490,7 +516,13 @@ fn run_dns_command(arguments: &str) {
     }
     match crate::network::dns_resolve(hostname) {
         Ok(ip) => {
-            crate::println!("{hostname} has address {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+            crate::println!(
+                "{hostname} has address {}.{}.{}.{}",
+                ip[0],
+                ip[1],
+                ip[2],
+                ip[3]
+            );
         }
         Err(err) => {
             crate::println!("dns: cannot resolve '{hostname}': {err}");
@@ -620,7 +652,9 @@ fn save_log(current_dir: &str, arguments: &str) {
         Ok(offset)
     });
     match result {
-        Ok(bytes) => crate::println!("savelog: wrote {bytes} bytes to {path} (run umount before removing the USB stick)"),
+        Ok(bytes) => crate::println!(
+            "savelog: wrote {bytes} bytes to {path} (run umount before removing the USB stick)"
+        ),
         Err(error) => print_fs_error("savelog", &path, error),
     }
 }
@@ -652,30 +686,345 @@ fn echo_command(current_dir: &str, arguments: &str) {
     }
     line.push_str(text);
     line.push('\n');
-    let result = with_vfs(|vfs| -> Result<(), FsError> {
-        let offset = match vfs.metadata(&path) {
+    if let Err(error) = write_text_output(&path, &line, append) {
+        print_fs_error("echo", &path, error);
+    }
+}
+
+fn write_text_output(path: &str, text: &str, append: bool) -> Result<(), FsError> {
+    with_vfs(|vfs| {
+        let offset = match vfs.metadata(path) {
             Ok(metadata) if metadata.node_type == NodeType::File => {
                 if append {
                     metadata.len
                 } else {
-                    vfs.truncate(&path, 0)?;
+                    vfs.truncate(path, 0)?;
                     0
                 }
             }
             Ok(_) => return Err(FsError::IsDirectory),
             Err(FsError::NotFound) => {
-                vfs.create_file(&path)?;
+                vfs.create_file(path)?;
                 0
             }
             Err(error) => return Err(error),
         };
-        if vfs.write(&path, offset, line.as_bytes())? != line.len() {
+        if !text.is_empty() && vfs.write(path, offset, text.as_bytes())? != text.len() {
             return Err(FsError::NoSpace);
         }
         Ok(())
-    });
-    if let Err(error) = result {
-        print_fs_error("echo", &path, error);
+    })
+}
+
+/// True when the line contains an unquoted `|` or `>` operator, which means it
+/// must be handled by the pipeline/redirection path instead of the command
+/// dispatcher.
+fn has_unquoted_operator(line: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for character in line.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if quote != Some('\'') => escaped = true,
+            '\'' | '"' => {
+                if quote == Some(character) {
+                    quote = None;
+                } else if quote.is_none() {
+                    quote = Some(character);
+                }
+            }
+            '|' | '>' if quote.is_none() => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Split a shell line into pipeline stages, honoring single and double quotes.
+/// Returns None when a quote or escape is left open or a stage is empty.
+fn split_shell_pipeline(line: &str) -> Option<Vec<String>> {
+    let mut stages = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for character in line.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if quote != Some('\'') => {
+                current.push(character);
+                escaped = true;
+            }
+            '\'' | '"' => {
+                if quote == Some(character) {
+                    quote = None;
+                } else if quote.is_none() {
+                    quote = Some(character);
+                }
+                current.push(character);
+            }
+            '|' if quote.is_none() => {
+                if current.trim().is_empty() {
+                    return None;
+                }
+                stages.push(String::from(current.trim()));
+                current.clear();
+            }
+            _ => current.push(character),
+        }
+    }
+    if quote.is_some() || escaped || current.trim().is_empty() {
+        return None;
+    }
+    stages.push(String::from(current.trim()));
+    Some(stages)
+}
+
+/// Split `command > file` / `command >> file` at the last unquoted `>`.
+/// Returns None when the redirection has no target file name.
+fn split_output_redirection(stage: &str) -> Option<(String, Option<(bool, String)>)> {
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut operator: Option<(usize, usize)> = None;
+    let characters = stage.char_indices().collect::<Vec<_>>();
+    for (position, (index, character)) in characters.iter().enumerate() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if quote != Some('\'') => escaped = true,
+            '\'' | '"' => {
+                if quote == Some(*character) {
+                    quote = None;
+                } else if quote.is_none() {
+                    quote = Some(*character);
+                }
+            }
+            '>' if quote.is_none() => {
+                // The second character of `>>` is part of the same operator.
+                if operator.is_some_and(|(previous, length)| length == 2 && *index == previous + 1)
+                {
+                    continue;
+                }
+                let append = characters
+                    .get(position + 1)
+                    .is_some_and(|(_, next)| *next == '>');
+                operator = Some((*index, if append { 2 } else { 1 }));
+            }
+            _ => {}
+        }
+    }
+    let Some((index, length)) = operator else {
+        return Some((String::from(stage.trim()), None));
+    };
+    let command = String::from(stage[..index].trim());
+    let target = String::from(stage[index + length..].trim());
+    if command.is_empty() || target.is_empty() {
+        return None;
+    }
+    Some((command, Some((length == 2, target))))
+}
+
+/// Run `a | b | c > file` for the text commands the build workflow needs.
+fn execute_text_pipeline(line: &str, current_dir: &str) {
+    let Some(stages) = split_shell_pipeline(line) else {
+        crate::println!("shell: unmatched quote, escape, or empty pipeline stage");
+        return;
+    };
+    let last_stage = stages.len() - 1;
+    let mut input: Option<String> = None;
+    let mut redirect: Option<(bool, String)> = None;
+    for (index, stage) in stages.iter().enumerate() {
+        let Some((command, stage_redirect)) = split_output_redirection(stage) else {
+            crate::println!("shell: redirection needs a command and a target file");
+            return;
+        };
+        if stage_redirect.is_some() {
+            if index != last_stage {
+                crate::println!("shell: output redirection is only supported on the last stage");
+                return;
+            }
+            redirect = stage_redirect;
+        }
+        match text_stage_output(current_dir, &command, input.as_deref()) {
+            Ok(output) => input = Some(output),
+            Err(message) => {
+                crate::println!("{message}");
+                return;
+            }
+        }
+    }
+    let output = input.unwrap_or_default();
+    match redirect {
+        Some((append, target)) => {
+            let Some(path) = resolve_path(current_dir, &target) else {
+                crate::println!("shell: invalid redirection path");
+                return;
+            };
+            if let Err(error) = write_text_output(&path, &output, append) {
+                print_fs_error("shell", &path, error);
+            }
+        }
+        None => crate::print!("{output}"),
+    }
+}
+
+fn parse_pipeline_line_count(words: &[String]) -> Result<usize, ()> {
+    match words {
+        [] => Ok(10),
+        [option, count] if option == "-n" => count.parse::<usize>().map_err(|_| ()),
+        _ => Err(()),
+    }
+}
+
+fn read_text_output(command: &str, path: &str) -> Result<String, String> {
+    match with_vfs(|vfs| read_file(vfs, path)) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map_err(|_| alloc::format!("{command}: {path}: file is not valid UTF-8")),
+        Err(error) => Err(alloc::format!("{command}: {path}: {error:?}")),
+    }
+}
+
+/// Produce the stdout text of one pipeline stage. `input` is the previous
+/// stage's output, or None for the first stage.
+fn text_stage_output(
+    current_dir: &str,
+    stage: &str,
+    input: Option<&str>,
+) -> Result<String, String> {
+    let stage = stage.trim_start();
+    let mut parts = stage.splitn(2, char::is_whitespace);
+    let command = parts.next().unwrap_or("");
+    let arguments = parts.next().unwrap_or("").trim();
+    match command {
+        "" => Err(String::from("shell: empty pipeline stage")),
+        "echo" => {
+            let mut text = arguments;
+            for quote in ['"', '\''] {
+                if text.len() >= 2 && text.starts_with(quote) && text.ends_with(quote) {
+                    text = &text[1..text.len() - 1];
+                    break;
+                }
+            }
+            Ok(alloc::format!("{text}\n"))
+        }
+        "cat" => match input {
+            Some(input) => Ok(String::from(input)),
+            None => {
+                let words = split_shell_words(arguments)
+                    .map_err(|_| String::from("cat: unmatched quote or escape"))?;
+                if words.len() != 1 {
+                    return Err(String::from("usage: cat <path>"));
+                }
+                let path = resolve_path(current_dir, &words[0])
+                    .ok_or_else(|| String::from("cat: invalid path"))?;
+                read_text_output("cat", &path)
+            }
+        },
+        "head" | "tail" => {
+            let words = split_shell_words(arguments)
+                .map_err(|_| alloc::format!("{command}: unmatched quote or escape"))?;
+            let (count, text) = match input {
+                Some(input) => (
+                    parse_pipeline_line_count(&words).map_err(|_| {
+                        alloc::format!("usage: {command} [-n count] (reading pipeline input)")
+                    })?,
+                    String::from(input),
+                ),
+                None => {
+                    let (count, file) = parse_line_selection_arguments(&words)
+                        .map_err(|_| alloc::format!("usage: {command} [-n count] <file>"))?;
+                    let path = resolve_path(current_dir, file)
+                        .ok_or_else(|| alloc::format!("{command}: invalid path"))?;
+                    (count, read_text_output(command, &path)?)
+                }
+            };
+            let line_count = text.lines().count();
+            let range = selected_line_range(line_count, count, command == "tail");
+            let mut output = String::new();
+            for line in text.lines().skip(range.start).take(range.len()) {
+                output.push_str(line);
+                output.push('\n');
+            }
+            Ok(output)
+        }
+        "wc" => {
+            let words = split_shell_words(arguments)
+                .map_err(|_| String::from("wc: unmatched quote or escape"))?;
+            let text = match input {
+                Some(input) => {
+                    if !words.is_empty() {
+                        return Err(String::from("usage: wc (reading pipeline input)"));
+                    }
+                    String::from(input)
+                }
+                None => {
+                    if words.len() != 1 {
+                        return Err(String::from("usage: wc <file>"));
+                    }
+                    let path = resolve_path(current_dir, &words[0])
+                        .ok_or_else(|| String::from("wc: invalid path"))?;
+                    read_text_output("wc", &path)?
+                }
+            };
+            let (lines, words, bytes) = text_counts(&text);
+            Ok(alloc::format!("{lines} {words} {bytes}\n"))
+        }
+        "grep" => {
+            let words = split_shell_words(arguments)
+                .map_err(|_| String::from("grep: unmatched quote or escape"))?;
+            let (show_line_numbers, pattern, text) = match input {
+                Some(input) => {
+                    let (show_line_numbers, pattern_index) =
+                        if words.first().is_some_and(|word| word == "-n") {
+                            (true, 1)
+                        } else {
+                            (false, 0)
+                        };
+                    if words.len() != pattern_index + 1 {
+                        return Err(String::from(
+                            "usage: grep [-n] <text> (reading pipeline input)",
+                        ));
+                    }
+                    (
+                        show_line_numbers,
+                        String::from(words[pattern_index].as_str()),
+                        String::from(input),
+                    )
+                }
+                None => {
+                    let (show_line_numbers, pattern, file) = parse_grep_arguments(&words)
+                        .map_err(|_| String::from("usage: grep [-n] <text> <file>"))?;
+                    let path = resolve_path(current_dir, file)
+                        .ok_or_else(|| String::from("grep: invalid path"))?;
+                    (
+                        show_line_numbers,
+                        String::from(pattern),
+                        read_text_output("grep", &path)?,
+                    )
+                }
+            };
+            let mut output = String::new();
+            for (index, line) in matching_lines(&text, &pattern) {
+                if show_line_numbers {
+                    output.push_str(&alloc::format!("{}:{line}\n", index + 1));
+                } else {
+                    output.push_str(line);
+                    output.push('\n');
+                }
+            }
+            Ok(output)
+        }
+        _ => Err(alloc::format!(
+            "shell: '{command}' is not supported in a pipeline (cat, head, tail, wc, grep, echo)"
+        )),
     }
 }
 
@@ -977,6 +1326,25 @@ fn copy_file(current_dir: &str, arguments: &str) {
     }) {
         Ok(()) => {}
         Err(error) => crate::println!("cp: {source} -> {target}: {error:?}"),
+    }
+}
+
+fn move_node(current_dir: &str, arguments: &str) {
+    let mut paths = arguments.split_whitespace();
+    let (Some(source), Some(target), None) = (paths.next(), paths.next(), paths.next()) else {
+        crate::println!("usage: mv <source> <target>");
+        return;
+    };
+    let (Some(source), Some(target)) = (
+        resolve_path(current_dir, source),
+        resolve_path(current_dir, target),
+    ) else {
+        crate::println!("mv: invalid path");
+        return;
+    };
+    match with_vfs(|vfs| vfs.rename(&source, &target)) {
+        Ok(()) => {}
+        Err(error) => crate::println!("mv: {source} -> {target}: {error:?}"),
     }
 }
 
@@ -1341,7 +1709,10 @@ fn list_kernel_devices() {
 
 fn split_partition_device_name(name: &str) -> Option<(&str, u32)> {
     let (disk_name, suffix) = name.rsplit_once('p')?;
-    if disk_name.is_empty() || suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+    if disk_name.is_empty()
+        || suffix.is_empty()
+        || !suffix.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return None;
     }
     let partition_index = suffix.parse::<u32>().ok()?;
@@ -1373,10 +1744,12 @@ fn resolve_ext2_format_target(
     }
 
     let Some((disk_name, partition_index)) = split_partition_device_name(target_name) else {
-        return Err(format!("storage device {target_name} not found (try devices)"));
+        return Err(format!(
+            "storage device {target_name} not found (try devices)"
+        ));
     };
-    let disk = block::get(disk_name)
-        .ok_or_else(|| format!("parent disk {disk_name} was not found"))?;
+    let disk =
+        block::get(disk_name).ok_or_else(|| format!("parent disk {disk_name} was not found"))?;
     let partitions = partition::read_gpt_partitions(disk.as_ref())
         .map_err(|error| format!("cannot read GPT on {disk_name}: {error:?}"))?;
     let partition = partitions
@@ -1402,15 +1775,16 @@ fn resolve_ext2_format_target(
 
 fn format_ext2_device(arguments: &str) {
     let mut parts = arguments.split_whitespace();
-    let (Some(target_name), Some(confirmation), None) =
-        (parts.next(), parts.next(), parts.next())
+    let (Some(target_name), Some(confirmation), None) = (parts.next(), parts.next(), parts.next())
     else {
         crate::println!("usage: mkfs.ext2 <device|diskpN> --yes");
         crate::println!("examples: mkfs.ext2 usb0 --yes; mkfs.ext2 sata0p2 --yes");
         return;
     };
     if confirmation != "--yes" {
-        crate::println!("mkfs.ext2: formatting erases all data on the selected device or partition");
+        crate::println!(
+            "mkfs.ext2: formatting erases all data on the selected device or partition"
+        );
         crate::println!("rerun with mkfs.ext2 {target_name} --yes to confirm");
         return;
     }
@@ -1654,8 +2028,7 @@ fn manage_package(current_dir: &str, arguments: &str) {
                 Ok(data)
             }) {
                 Ok(bytes) => {
-                    let text = core::str::from_utf8(&bytes)
-                        .unwrap_or("# invalid package registry");
+                    let text = core::str::from_utf8(&bytes).unwrap_or("# invalid package registry");
                     if text.is_empty() {
                         crate::println!("no packages installed");
                     } else {
@@ -1696,8 +2069,7 @@ fn manage_package(current_dir: &str, arguments: &str) {
             }
         }
         "add" | "update" => {
-            let (Some(name), Some(source), version) =
-                (parts.next(), parts.next(), parts.next())
+            let (Some(name), Some(source), version) = (parts.next(), parts.next(), parts.next())
             else {
                 crate::println!("usage: pkg {operation} <name> <source> [version]");
                 return;
@@ -1822,9 +2194,9 @@ fn manage_package(current_dir: &str, arguments: &str) {
                 let metadata_path = format!("/var/lib/octagram/packages/{name}.pkg");
                 let app = read_file_limited(vfs, &app_path, MAX_TOOLCHAIN_FILE)?;
                 let metadata = read_file_limited(vfs, &metadata_path, MAX_FILE_OPERATION)?;
-                let metadata = core::str::from_utf8(&metadata)
-                    .map_err(|_| FsError::InvalidData)?;
-                let declared_size = metadata.lines()
+                let metadata = core::str::from_utf8(&metadata).map_err(|_| FsError::InvalidData)?;
+                let declared_size = metadata
+                    .lines()
                     .find_map(|line| line.strip_prefix("size="))
                     .and_then(|value| value.parse::<usize>().ok())
                     .ok_or(FsError::InvalidData)?;
@@ -1836,8 +2208,7 @@ fn manage_package(current_dir: &str, arguments: &str) {
                     "/var/lib/octagram/packages/registry.txt",
                     MAX_FILE_OPERATION,
                 )?;
-                let registry = core::str::from_utf8(&registry)
-                    .map_err(|_| FsError::InvalidData)?;
+                let registry = core::str::from_utf8(&registry).map_err(|_| FsError::InvalidData)?;
                 if !package_registry_has(registry, name) {
                     return Err(FsError::NotFound);
                 }
@@ -2094,12 +2465,51 @@ async fn edit_file(current_dir: &str, arguments: &str, terminal: usize) {
     let mut dirty = false;
     let mut confirming_discard = false;
     let mut status = String::new();
+    let mut search = String::new();
+    let mut last_search = String::new();
+    let mut searching = false;
     let mut viewport = EditorViewport::default();
     render_editor(&path, &text, cursor, &status, terminal, &mut viewport);
 
     loop {
         let event = keyboard::next_event_for(terminal).await;
         crate::terminal::set_output_terminal(terminal);
+        if searching {
+            match event {
+                keyboard::KeyEvent::Character('\x1b') => {
+                    searching = false;
+                    status.clear();
+                }
+                keyboard::KeyEvent::Character('\n' | '\r') => {
+                    searching = false;
+                    if search.is_empty() {
+                        status.clear();
+                    } else {
+                        last_search = search.clone();
+                        match find_next(&text, &last_search, cursor) {
+                            Some(position) => {
+                                cursor = position;
+                                status = alloc::format!("Found: {last_search}");
+                            }
+                            None => status = alloc::format!("Not found: {last_search}"),
+                        }
+                    }
+                }
+                keyboard::KeyEvent::Character('\x08' | '\x7f') => {
+                    search.pop();
+                    status = alloc::format!("Search: {search}");
+                }
+                keyboard::KeyEvent::Character(character)
+                    if !character.is_control() && search.len() < MAX_EDITOR_SEARCH =>
+                {
+                    search.push(character);
+                    status = alloc::format!("Search: {search}");
+                }
+                _ => {}
+            }
+            render_editor(&path, &text, cursor, &status, terminal, &mut viewport);
+            continue;
+        }
         let previous_cursor = cursor;
         let previous_viewport = (viewport.top_line, viewport.left_column);
         let update_cursor_only = status.is_empty()
@@ -2111,6 +2521,24 @@ async fn edit_file(current_dir: &str, arguments: &str, terminal: usize) {
                     | keyboard::KeyEvent::Down
             );
         match event {
+            keyboard::KeyEvent::Character('\x06') => {
+                searching = true;
+                search = last_search.clone();
+                status = alloc::format!("Search: {search}");
+            }
+            keyboard::KeyEvent::Character('\x07') => {
+                if last_search.is_empty() {
+                    status = String::from("Find: Ctrl+F first");
+                } else {
+                    match find_next(&text, &last_search, next_char_boundary(&text, cursor)) {
+                        Some(position) => {
+                            cursor = position;
+                            status = alloc::format!("Found: {last_search}");
+                        }
+                        None => status = alloc::format!("Not found: {last_search}"),
+                    }
+                }
+            }
             keyboard::KeyEvent::Character('\x13') => {
                 match save_editor_file(&path, &text) {
                     Ok(()) => {
@@ -2149,7 +2577,7 @@ async fn edit_file(current_dir: &str, arguments: &str, terminal: usize) {
                 confirming_discard = false;
             }
             keyboard::KeyEvent::Character('\n' | '\r') => {
-                if text.len() < MAX_FILE_OPERATION && text.try_reserve(1).is_ok() {
+                if text.len() < MAX_EDITOR_FILE && text.try_reserve(1).is_ok() {
                     text.insert(cursor, '\n');
                     cursor += 1;
                     dirty = true;
@@ -2158,7 +2586,7 @@ async fn edit_file(current_dir: &str, arguments: &str, terminal: usize) {
                 confirming_discard = false;
             }
             keyboard::KeyEvent::Character(character) if !character.is_control() => {
-                if text.len() + character.len_utf8() <= MAX_FILE_OPERATION
+                if text.len() + character.len_utf8() <= MAX_EDITOR_FILE
                     && text.try_reserve(character.len_utf8()).is_ok()
                 {
                     text.insert(cursor, character);
@@ -2217,7 +2645,9 @@ async fn edit_file(current_dir: &str, arguments: &str, terminal: usize) {
 
 fn open_or_create_editor_file(path: &str) -> Result<Vec<u8>, FsError> {
     with_vfs(|vfs| match vfs.metadata(path) {
-        Ok(metadata) if metadata.node_type == NodeType::File => read_file(vfs, path),
+        Ok(metadata) if metadata.node_type == NodeType::File => {
+            read_file_limited(vfs, path, MAX_EDITOR_FILE)
+        }
         Ok(_) => Err(FsError::IsDirectory),
         Err(FsError::NotFound) => {
             vfs.create_file(path)?;
@@ -2275,7 +2705,7 @@ fn render_editor(
     }
     render_editor_caret(text, cursor, terminal, viewport, true);
 
-    let help = "Ctrl+S Save   Ctrl+Q Quit   Tab Insert   Arrow keys move";
+    let help = "Ctrl+S Save  Ctrl+Q Quit  Ctrl+F Find  Ctrl+G Next  Tab Insert  Arrows move";
     let help_row = visible_rows + 1;
     if status.is_empty() {
         render_editor_text_at(terminal, help_row, 0, help, columns);
@@ -2373,12 +2803,24 @@ fn insert_editor_text(text: &mut String, cursor: &mut usize, inserted: &str) -> 
     let Some(new_length) = text.len().checked_add(inserted.len()) else {
         return false;
     };
-    if new_length > MAX_FILE_OPERATION || text.try_reserve(inserted.len()).is_err() {
+    if new_length > MAX_EDITOR_FILE || text.try_reserve(inserted.len()).is_err() {
         return false;
     }
     text.insert_str(*cursor, inserted);
     *cursor += inserted.len();
     true
+}
+
+/// Find `pattern` at or after `from`, wrapping around to the start of the file.
+fn find_next(text: &str, pattern: &str, from: usize) -> Option<usize> {
+    if pattern.is_empty() {
+        return None;
+    }
+    let from = from.min(text.len());
+    if let Some(offset) = text[from..].find(pattern) {
+        return Some(from + offset);
+    }
+    text[..from].find(pattern)
 }
 
 fn previous_char_boundary(text: &str, cursor: usize) -> Option<usize> {
@@ -2519,10 +2961,13 @@ mod tests {
     use super::{
         EditorViewport, editor_cursor_position, editor_display_character, insert_editor_text,
         matching_lines, move_vertical, next_char_boundary, parse_grep_arguments,
-        split_partition_device_name,
         parse_ipv4_address, parse_line_selection_arguments, previous_char_boundary,
-        program_candidates, resolve_path, selected_line_range, split_shell_words, text_counts,
-        update_editor_viewport,
+        program_candidates, resolve_path, selected_line_range, split_partition_device_name,
+        split_shell_words, text_counts, update_editor_viewport,
+    };
+    use super::{
+        find_next, has_unquoted_operator, parse_pipeline_line_count, split_output_redirection,
+        split_shell_pipeline,
     };
 
     #[test]
@@ -2655,6 +3100,62 @@ mod tests {
         assert_eq!(text, "ma\tke");
         assert_eq!(cursor, 3);
         assert_eq!(editor_display_character('\t'), '>');
+    }
+
+    #[test]
+    fn finds_search_matches_and_wraps_from_the_cursor() {
+        let text = "alpha beta\ngamma beta\n";
+        assert_eq!(find_next(text, "beta", 0), Some(6));
+        assert_eq!(find_next(text, "beta", 7), Some(17));
+        assert_eq!(find_next(text, "beta", 18), Some(6));
+        assert_eq!(find_next(text, "missing", 0), None);
+        assert_eq!(find_next(text, "", 0), None);
+    }
+
+    #[test]
+    fn splits_pipeline_stages_outside_quotes() {
+        assert_eq!(
+            split_shell_pipeline("cat a.c | grep -n 'x | y' | wc"),
+            Some(vec![
+                "cat a.c".into(),
+                "grep -n 'x | y'".into(),
+                "wc".into()
+            ])
+        );
+        assert_eq!(split_shell_pipeline("cat a.c |"), None);
+        assert_eq!(split_shell_pipeline("cat 'a.c"), None);
+    }
+
+    #[test]
+    fn detects_only_unquoted_pipeline_and_redirection_operators() {
+        assert!(has_unquoted_operator("echo hi > /tmp/x"));
+        assert!(has_unquoted_operator("cat a | wc"));
+        assert!(!has_unquoted_operator("grep 'a>b' file"));
+        assert!(!has_unquoted_operator("grep \"a|b\" file"));
+    }
+
+    #[test]
+    fn splits_output_redirection_and_keeps_append_mode() {
+        assert_eq!(
+            split_output_redirection("grep -n x a.c >> out.txt"),
+            Some(("grep -n x a.c".into(), Some((true, "out.txt".into()))))
+        );
+        assert_eq!(
+            split_output_redirection("wc a.c > out.txt"),
+            Some(("wc a.c".into(), Some((false, "out.txt".into()))))
+        );
+        assert_eq!(
+            split_output_redirection("cat a.c"),
+            Some(("cat a.c".into(), None))
+        );
+        assert_eq!(split_output_redirection("echo hi >"), None);
+    }
+
+    #[test]
+    fn parses_pipeline_line_counts_with_default_ten() {
+        assert_eq!(parse_pipeline_line_count(&[]), Ok(10));
+        assert_eq!(parse_pipeline_line_count(&["-n".into(), "3".into()]), Ok(3));
+        assert!(parse_pipeline_line_count(&["many".into()]).is_err());
     }
 
     #[test]

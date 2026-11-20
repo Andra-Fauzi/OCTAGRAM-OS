@@ -290,6 +290,9 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
 
 - [x] M0: baseline build/test dan manifest artefak yang reproducible (`make manifest`, lihat dokumen roadmap bagian 15)
 - [ ] M1: native developer substrate, editor terminal, source tree persisten
+  (implemented di source: direktori `/src`/`/build`/`/toolchain`, `mv` + rename
+  EXT2, pipeline/redirection teks, pencarian editor, uji persistensi reboot;
+  menunggu verifikasi QEMU)
 - [ ] M2: native C toolchain (TinyCC + assembler/linker) teruji end-to-end
 - [ ] M3: native build orchestrator dengan dependency dan incremental rebuild
 - [ ] M4: bootstrap `rustc`, Rust `core/alloc`, lalu Cargo native/offline

@@ -74,8 +74,8 @@ fn run(argc: i32, argv: *const *const u8) -> Result<i32, String> {
 Supported Makefile features: includes, explicit dependencies, single-stem pattern rules, \n\
 variables, $@/$</$^/$*, .PHONY, and timestamp-based incremental rebuilds.\n\
 Targets rebuild when missing or older than prerequisites; -B forces a rebuild.\n\
-Shell operators, wildcards, and multi-stem pattern rules are unsupported.\n\
-",
+Recipe lines may chain commands with ';' or '&&'; other shell operators,\n\
+wildcards, and multi-stem pattern rules are unsupported.\n",
                 )
                 .map_err(|error| format!("write failed ({error})"))?;
                 return Ok(0);
@@ -601,28 +601,106 @@ fn run_recipe(
         Some((target, first_dependency, all_dependencies, stem)),
         0,
     )?;
-    let arguments = split_words(&expanded)?;
-    if arguments.is_empty() {
-        return Ok(());
+    let commands = split_recipe_commands(&expanded)?;
+    for (index, (command_text, stop_on_failure)) in commands.iter().enumerate() {
+        if !silent && !globally_silent {
+            write_all(STDOUT, command_text.as_bytes())
+                .and_then(|_| write_all(STDOUT, b"\n"))
+                .map_err(|error| format!("write failed ({error})"))?;
+        }
+        if dry_run {
+            continue;
+        }
+        let arguments = split_words(command_text)?;
+        if arguments.is_empty() {
+            continue;
+        }
+        let status = run_recipe_program(&arguments)?;
+        if status != 0 {
+            if ignore_errors || !stop_on_failure {
+                continue;
+            }
+            return Err(format!(
+                "recipe command {} failed with status {status}",
+                index + 1
+            ));
+        }
     }
-    if expanded
-        .chars()
-        .any(|character| matches!(character, ';' | '|' | '&' | '<' | '>'))
-    {
-        return Err(String::from(
-            "shell operators are unsupported in recipes; invoke one program per recipe",
-        ));
-    }
-    if !silent && !globally_silent {
-        write_all(STDOUT, expanded.as_bytes())
-            .and_then(|_| write_all(STDOUT, b"\n"))
-            .map_err(|error| format!("write failed ({error})"))?;
-    }
+    Ok(())
+}
 
-    if dry_run {
-        return Ok(());
+/// Split a recipe line into commands joined by `;` (always continue) and `&&`
+/// (stop on the first failure). Pipelines and redirection stay unsupported so a
+/// recipe never silently runs something the shell would interpret differently.
+fn split_recipe_commands(source: &str) -> Result<Vec<(String, bool)>, String> {
+    let mut commands = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut stop_on_failure = false;
+    let mut characters = source.chars().peekable();
+    while let Some(character) = characters.next() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            current.push(character);
+            escaped = true;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if character == delimiter {
+                quote = None;
+            }
+            current.push(character);
+            continue;
+        }
+        match character {
+            '\'' | '"' => {
+                quote = Some(character);
+                current.push(character);
+            }
+            ';' => {
+                push_recipe_command(&mut commands, &mut current, stop_on_failure)?;
+                stop_on_failure = false;
+            }
+            '&' if characters.peek() == Some(&'&') => {
+                characters.next();
+                push_recipe_command(&mut commands, &mut current, stop_on_failure)?;
+                stop_on_failure = true;
+            }
+            '|' | '>' | '<' | '&' | '`' => {
+                return Err(String::from(
+                    "unsupported shell operator in recipe; use one program per recipe or ';' / '&&'",
+                ));
+            }
+            _ => current.push(character),
+        }
     }
+    if quote.is_some() || escaped {
+        return Err(String::from("unmatched quote or escape in recipe"));
+    }
+    push_recipe_command(&mut commands, &mut current, stop_on_failure)?;
+    Ok(commands)
+}
 
+fn push_recipe_command(
+    commands: &mut Vec<(String, bool)>,
+    current: &mut String,
+    stop_on_failure: bool,
+) -> Result<(), String> {
+    let command = current.trim().to_string();
+    current.clear();
+    if command.is_empty() {
+        return Err(String::from("empty command in recipe"));
+    }
+    commands.push((command, stop_on_failure));
+    Ok(())
+}
+
+fn run_recipe_program(arguments: &[String]) -> Result<i32, String> {
     let command = &arguments[0];
     let executable = if command.contains('/') {
         command.clone()
@@ -663,10 +741,7 @@ fn run_recipe(
     }
     let mut status = 0;
     waitpid(pid, Some(&mut status)).map_err(|error| format!("waitpid failed ({error})"))?;
-    if status != 0 && !ignore_errors {
-        return Err(format!("recipe failed with status {status}"));
-    }
-    Ok(())
+    Ok(i32::try_from(status).unwrap_or(-1))
 }
 
 fn split_words(source: &str) -> Result<Vec<String>, String> {

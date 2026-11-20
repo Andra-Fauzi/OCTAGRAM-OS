@@ -128,16 +128,23 @@ terdiagnosis; semua artefak mempunyai manifest.
 
 Tujuan: membuat OCTAGRAM nyaman dan aman untuk menyimpan serta mengedit source.
 
-- [ ] Pastikan instalasi ext2 persisten dapat dipakai sebagai root kerja.
-- [ ] Sediakan direktori standar: `/src`, `/build`, `/toolchain`,
-  `/var/cache/build`, `/var/log/build`.
-- [ ] Implementasikan editor teks terminal native (buat, buka, simpan,
-  pencarian, navigasi, file besar, penanganan input).
-- [ ] Pastikan `mkdir`, `stat`, `rename`, `unlink`, `chmod`,
-  `getcwd`, environment, dan path panjang berperilaku konsisten.
-- [ ] Tambahkan shell redirection dan pipeline yang diperlukan build system.
-- [ ] Tambahkan proses spawn/wait dan propagasi exit code yang dapat diandalkan.
-- [ ] Tambahkan uji read/write source pada ext2 setelah reboot.
+- [x] Pastikan instalasi ext2 persisten dapat dipakai sebagai root kerja
+  (root discovery EXT2/FAT32 yang sudah ada, ditambah uji persistensi reboot
+  `tools/qemu_ext2_persistence_test.py`).
+- [x] Sediakan direktori standar: `/src`, `/build`, `/toolchain`,
+  `/var/cache/build`, `/var/log/build` (dibuat di `fs::init`).
+- [x] Implementasikan editor teks terminal native (buat, buka, simpan,
+  pencarian literal Ctrl+F/Ctrl+G, navigasi, berkas sampai `MAX_EDITOR_FILE`).
+- [x] Pastikan `mkdir`, `stat`, `rename`, `unlink`, `chmod`,
+  `getcwd`, environment, dan path panjang berperilaku konsisten; `mv` memakai
+  `Vfs::rename` dan EXT2 sekarang mengimplementasikan `rename` untuk berkas,
+  symlink, dan direktori dalam parent yang sama.
+- [x] Tambahkan shell redirection dan pipeline yang diperlukan build system
+  (`cat`/`head`/`tail`/`wc`/`grep`/`echo`, `>` dan `>>`).
+- [x] Tambahkan proses spawn/wait dan propagasi exit code yang dapat diandalkan
+  (`run`, `runp`, `waitpid`, status recipe native `make`).
+- [x] Tambahkan uji read/write source pada ext2 setelah reboot
+  (`tools/qemu_ext2_persistence_test.py`).
 
 Gate: source kecil dapat diedit, disimpan di ext2, dibaca ulang setelah reboot,
 dan diproses beberapa executable native dengan exit status benar.
@@ -676,7 +683,77 @@ merupakan direktori kerja pembuatan ISO.
 
 ### Status
 
-M0 selesai. M1–M7 tetap belum selesai: tidak ada editor native (M1), tidak ada
-assembler/linker native lengkap (M2), orchestrator build native (M3), `rustc`
-atau Cargo native (M4), build kernel dari dalam OCTAGRAM (M5), image builder
-native (M6), maupun A/B update/rollback (M7).
+M0 selesai. M1 diimplementasikan pada bagian 16 dan masih menunggu verifikasi
+QEMU. M2–M7 belum selesai: assembler/linker native lengkap (M2), orchestrator
+build native penuh termasuk linking hasil `tcc -c` (M3), `rustc` atau Cargo
+native (M4), build kernel dari dalam OCTAGRAM (M5), image builder native (M6),
+maupun A/B update/rollback (M7).
+
+## 16. M1 diimplementasikan — substrate developer native (20 November 2026)
+
+Perubahan menyentuh kernel (`fs`, `storage/ext2`, `shell`) dan tool build native.
+Semua butir di bawah berstatus source tersedia; verifikasi QEMU dijadwalkan
+setelah rangkaian milestone siap, sesuai permintaan untuk menunda pengujian.
+
+### Direktori kerja standar
+
+`fs::init` membuat `/src`, `/build`, `/toolchain`, `/var/cache`,
+`/var/cache/build`, `/var/log`, dan `/var/log/build` pada root persisten
+(EXT2/FAT32) maupun RAMFS, sehingga alur build native punya lokasi tetap.
+
+### Rename konsisten di EXT2
+
+Sebelumnya `Vfs::rename` hanya berfungsi pada RAMFS karena implementasi default
+trait mengembalikan error. `Ext2::rename` kini:
+
+- memindahkan berkas dan symlink antar direktori dengan menambah entry baru lalu
+  menghapus entry lama memakai inode yang sama (isi tidak disalin);
+- menolak mengganti nama tujuan yang sudah ada (`AlreadyExists`) agar data tidak
+  hilang diam-diam;
+- hanya mengizinkan direktori dipindah dalam parent yang sama, karena `..` pada
+  direktori yang berpindah parent belum ditulis ulang (`Unsupported`);
+- melakukan rollback entry tujuan bila penghapusan entry sumber gagal sehingga
+  satu inode tidak pernah punya dua nama;
+- memperbarui mtime kedua direktori parent.
+
+`mv` di shell memakai jalur yang sama, jadi perilaku RAMFS dan EXT2 konsisten.
+
+### Pipeline dan redirection teks
+
+Shell mengenali `|`, `>`, dan `>>` di luar tanda kutip lalu menjalankannya
+sebagai pipeline perintah teks (`cat`, `head`, `tail`, `wc`, `grep`, `echo`).
+Stage terakhir dapat menulis ke berkas (`>` truncate, `>>` append). Operator di
+dalam kutipan tetap literal, dan perintah di luar daftar ditolak dengan pesan
+eksplisit sehingga tidak ada eksekusi setengah jalan.
+
+### Editor terminal
+
+`edit` ditambah pencarian literal (`Ctrl+F`; `Ctrl+G` untuk kemunculan
+berikutnya dengan wrap-around), batas berkas dinaikkan ke `MAX_EDITOR_FILE` =
+256 KiB, dan baris bantuan menampilkan tombol pencarian.
+
+### Native Make
+
+`user/rust/make` sudah mendukung include, variabel (`=`, `:=`, `?=`, `+=`),
+pattern rule satu stem, automatic variables `$@ $< $^ $*`, `.PHONY`, order-only
+prerequisites, `-n`, `-s`, `-j1`, `-B`, `-C`, dan `-f`. Pekerjaan ini menambah
+chaining recipe dengan `;` dan `&&` (berhenti pada kegagalan pertama untuk
+`&&`); `|`, `<`, `>`, dan backtick tetap ditolak agar semantik tidak berbeda
+dari shell.
+
+### Uji persistensi EXT2 lintas reboot
+
+`tools/qemu_ext2_persistence_test.py`: format disk kedua dengan `mkfs.ext2`
+native, mount, tulis berkas source, uji pipeline/redirection dan `mv`, unmount,
+reset mesin lewat monitor QEMU, lalu mount ulang dan baca kembali isi berkas
+yang sama. Skrip ini adalah calon bukti gate M1 ("source kecil dapat diedit,
+disimpan di ext2, dibaca ulang setelah reboot").
+
+### Yang masih terbuka
+
+- Belum ada verifikasi QEMU pada commit ini; jalankan
+  `tools/qemu_ext2_persistence_test.py` dan `tools/qemu_syscall_test.py` pada
+  image hasil build terbaru sebelum menandai M1 QEMU-tested.
+- `mv` belum menimpa nama tujuan (perilaku POSIX `rename`), dan direktori belum
+  dapat dipindah antar parent.
+- Pipeline belum tersedia untuk program ELF, dan input redirection `<` belum ada.

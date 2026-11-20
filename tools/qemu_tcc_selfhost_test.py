@@ -72,15 +72,24 @@ def main():
         monitor.sendall(b"sendkey ret\n")
         time.sleep(0.5)
 
-    send_line("tcc /tmp/tcc.c -o /tmp/tcc-selfhost-smoke.elf")
-    if not wait_for("program exited with status 0", 120):
-        print("TCC-COMPILE-FAIL: native TinyCC did not exit successfully")
+    output_offset = len(serial_text())
+    send_line("tcc /tmp/tcc.c -o /tmp/tcc-selfhost-minimal.elf")
+    if not wait_for_after("program exited with status 0", output_offset, 120):
+        print("TCC-COMPILE-FAIL: minimal native TinyCC compile did not exit successfully")
         print(serial_text()[-5000:])
         return 1
 
-    send_line("run /tmp/tcc-selfhost-smoke.elf")
-    if not wait_for("TCC runs on OCTAGRAM: 24 24", 120):
-        print("TCC-RUN-FAIL: compiled guest ELF output was not observed")
+    output_offset = len(serial_text())
+    send_line("run /tmp/tcc-selfhost-minimal.elf")
+    if not wait_for_after("TCC runs on OCTAGRAM: 24 24", output_offset, 120):
+        print("TCC-RUN-FAIL: minimal compiled guest ELF output was not observed")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("tcc /tmp/tcc-full.c -o /tmp/tcc-selfhost-full.elf")
+    if not wait_for_after("program exited with status 0", output_offset, 120):
+        print("TCC-FULL-COMPILE-FAIL: extended libc smoke source did not compile")
         print(serial_text()[-5000:])
         return 1
 
@@ -98,7 +107,7 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
-    print("TCC-SELFHOST-PASS: native TinyCC compiled and ran a guest ELF")
+    print("TCC-SELFHOST-PASS: native TinyCC compiled and ran a minimal guest ELF; extended libc source compiled")
     print(serial_text()[-3000:])
     return 0
 

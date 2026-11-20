@@ -13,8 +13,8 @@ use core::ffi::{c_char, CStr};
 use core::panic::PanicInfo;
 use core::slice;
 use octagram_runtime::{
-    chdir, close, environ, execve, exit, fork, open, read, waitpid, write_all, O_RDONLY, STDERR,
-    STDOUT,
+    chdir, close, environ, execve, exit, fork, open, read, stat_path, waitpid, write_all,
+    O_RDONLY, STDERR, STDOUT,
 };
 
 const MAX_MAKEFILE_SIZE: usize = 64 * 1024;
@@ -58,6 +58,7 @@ fn run(argc: i32, argv: *const *const u8) -> Result<i32, String> {
     let mut targets = Vec::new();
     let mut dry_run = false;
     let mut silent = false;
+    let mut always_make = false;
     let mut overrides = Vec::new();
     let mut index = 0;
 
@@ -73,7 +74,7 @@ Targets are rebuilt on every invocation; shell operators and implicit rules are 
                 .map_err(|error| format!("write failed ({error})"))?;
                 return Ok(0);
             }
-            "-B" => {}
+            "-B" => always_make = true,
             "-n" | "--dry-run" => dry_run = true,
             "-s" | "--silent" => silent = true,
             "-j1" => {}
@@ -128,7 +129,7 @@ Targets are rebuilt on every invocation; shell operators and implicit rules are 
     let mut visiting = Vec::new();
     for target in targets {
         if let Err(error) = build_target(
-            &target, &makefile, &mut visiting, &mut built, dry_run, silent,
+            &target, &makefile, &mut visiting, &mut built, dry_run, silent, always_make,
         ) {
             report(&format!("make: {error}\n"));
             return Ok(2);
@@ -381,6 +382,7 @@ fn build_target(
     built: &mut Vec<String>,
     dry_run: bool,
     silent: bool,
+    always_make: bool,
 ) -> Result<(), String> {
     if built.iter().any(|name| name == target) {
         return Ok(());
@@ -398,9 +400,35 @@ fn build_target(
     visiting.push(target.to_string());
     let rule = rule.clone();
     for dependency in &rule.dependencies {
-        build_target(dependency, makefile, visiting, built, dry_run, silent)?;
+        build_target(
+            dependency,
+            makefile,
+            visiting,
+            built,
+            dry_run,
+            silent,
+            always_make,
+        )?;
     }
     visiting.pop();
+
+    // Aggregate targets without recipes (for example, "all") are graph nodes,
+    // not output files. Their prerequisites have already been visited.
+    if rule.recipes.is_empty() {
+        built.push(target.to_string());
+        return Ok(());
+    }
+
+    let target_mtime = file_mtime(target);
+    let prerequisite_mtimes = rule
+        .dependencies
+        .iter()
+        .map(|dependency| file_mtime(dependency))
+        .collect::<Vec<_>>();
+    if !needs_rebuild(target_mtime, &prerequisite_mtimes, always_make) {
+        built.push(target.to_string());
+        return Ok(());
+    }
 
     let first = rule.dependencies.first().map(String::as_str).unwrap_or("");
     let all = rule.dependencies.join(" ");
@@ -570,10 +598,32 @@ fn file_exists(path: &str) -> bool {
     let Ok(path) = CString::new(path) else {
         return false;
     };
-    let Ok(descriptor) = open(&path, O_RDONLY) else {
-        return false;
+    stat_path(&path).is_ok()
+}
+
+/// Return EXT2/VFS mtime when it is known. Zero is the ABI's "unknown" value.
+fn file_mtime(path: &str) -> Option<u64> {
+    let path = CString::new(path).ok()?;
+    let metadata = stat_path(&path).ok()?;
+    (metadata.modified_seconds != 0).then_some(u64::from(metadata.modified_seconds))
+}
+
+/// Decide whether a target must be rebuilt. Unknown dependency times fail
+/// conservatively: rebuild rather than accidentally reusing stale output.
+fn needs_rebuild(
+    target_mtime: Option<u64>,
+    prerequisite_mtimes: &[Option<u64>],
+    always_make: bool,
+) -> bool {
+    if always_make {
+        return true;
+    }
+    let Some(target_mtime) = target_mtime else {
+        return true;
     };
-    close(descriptor).is_ok()
+    prerequisite_mtimes
+        .iter()
+        .any(|modified| modified.is_none_or(|modified| modified > target_mtime))
 }
 
 fn read_file(path: &str) -> Result<Vec<u8>, String> {

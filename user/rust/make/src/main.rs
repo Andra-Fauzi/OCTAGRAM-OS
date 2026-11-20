@@ -383,6 +383,28 @@ fn expand(
     Ok(output)
 }
 
+fn instantiate_pattern_rule(rule: &Rule, target: &str) -> Option<Rule> {
+    let (prefix, suffix) = rule.target.split_once('%')?;
+    if !target.starts_with(prefix) || !target.ends_with(suffix) {
+        return None;
+    }
+    let stem_end = target.len().checked_sub(suffix.len())?;
+    if stem_end < prefix.len() {
+        return None;
+    }
+    let stem = &target[prefix.len()..stem_end];
+    let substitute = |value: &str| value.replace('%', stem);
+    Some(Rule {
+        target: target.to_string(),
+        dependencies: rule
+            .dependencies
+            .iter()
+            .map(|dependency| substitute(dependency))
+            .collect(),
+        recipes: rule.recipes.clone(),
+    })
+}
+
 fn build_target(
     target: &str,
     makefile: &Makefile,
@@ -399,7 +421,18 @@ fn build_target(
         return Err(format!("dependency cycle involving `{target}`"));
     }
     let is_phony = makefile.phony_targets.iter().any(|name| name == target);
-    let Some(rule) = makefile.rules.iter().find(|rule| rule.target == target) else {
+    let rule = makefile
+        .rules
+        .iter()
+        .find(|rule| rule.target == target)
+        .cloned()
+        .or_else(|| {
+            makefile
+                .rules
+                .iter()
+                .find_map(|rule| instantiate_pattern_rule(rule, target))
+        });
+    let Some(rule) = rule else {
         return if is_phony || file_exists(target) {
             Ok(())
         } else {
@@ -407,7 +440,6 @@ fn build_target(
         };
     };
     visiting.push(target.to_string());
-    let rule = rule.clone();
     for dependency in &rule.dependencies {
         build_target(
             dependency,

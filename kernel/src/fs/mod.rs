@@ -48,6 +48,8 @@ const TCC_CRT1: &[u8] = include_bytes!("../../../user/build/crt0.o");
 const TCC_LIBC: &[u8] = include_bytes!("../../../user/build/libc.a");
 const TCC_LIBTCC1: &[u8] = include_bytes!("../../../user/build/libtcc1.a");
 const TCC_SMOKE_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_smoke.c");
+const TCC_SMOKE_MINIMAL_SOURCE: &[u8] =
+    include_bytes!("../../../user/examples/tcc_smoke_minimal.c");
 const USER_HEADERS: &[(&str, &[u8])] = &[
     (
         "/include/assert.h",
@@ -795,7 +797,8 @@ pub fn init() {
         seed_file(&mut vfs, "/lib/tcc/crt1.o", TCC_CRT1, 0o644);
         seed_file(&mut vfs, "/lib/tcc/libc.a", TCC_LIBC, 0o644);
         seed_file(&mut vfs, "/lib/tcc/libtcc1.a", TCC_LIBTCC1, 0o644);
-        seed_file(&mut vfs, "/tmp/tcc.c", TCC_SMOKE_SOURCE, 0o644);
+        seed_file(&mut vfs, "/tmp/tcc.c", TCC_SMOKE_MINIMAL_SOURCE, 0o644);
+        seed_file(&mut vfs, "/tmp/tcc-full.c", TCC_SMOKE_SOURCE, 0o644);
         seed_file(
             &mut vfs,
             "/etc/os-release",

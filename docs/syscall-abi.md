@@ -412,10 +412,17 @@ NUL-terminated, dan maksimal 255 byte.
 ```c
 struct oct_stat {
     uint64_t size;
-    uint32_t mode;     /* node type bits plus Unix permission bits */
-    uint32_t reserved;
+    uint32_t mode;             /* node type bits plus Unix permission bits */
+    uint32_t modified_seconds; /* Unix mtime in whole seconds; 0 means unavailable */
 };
 ```
+
+`modified_seconds` mempertahankan ukuran ABI 16 byte dengan memakai kembali
+slot yang sebelumnya reserved. EXT2 mengembalikan inode mtime dalam Unix
+seconds (resolusi satu detik); nilai 0 berarti timestamp belum tersedia.
+FAT32 dan devfs saat ini tidak menyediakan mtime yang dapat dipercaya.
+`stat` family C menyalin nilai ini ke `st_mtime`; `st_atime` dan `st_ctime`
+belum disediakan.
 
 `mode` menyertakan tipe node dan bit permission: file `0100000`, direktori
 `0040000`, symlink `0120000`, character device `0020000`; bit permission

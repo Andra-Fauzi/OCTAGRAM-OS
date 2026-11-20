@@ -458,5 +458,46 @@ Commit implementasi:
 - `b3387092` — CI validation step.
 - `0b3c92df` — dokumentasi bootstrap dan ABI gates.
 
-M4.1 masih **in progress**: target identity scaffold tersedia, tetapi ABI host
-lengkap dan conformance tests belum selesai.
+M4.1 masih **in progress**. Selain target identity scaffold, sekarang tersedia
+satu executable Rust no_std + alloc yang dibangun dengan custom target
+x86_64-unknown-octagram dan dijalankan dari shell OCTAGRAM (QEMU-tested).
+Namun ABI host belum lengkap dan compiler/Cargo native belum tersedia.
+
+## 12. M4.1.1 — Custom-target Rust executable dan runtime ABI (20 November 2026)
+
+Branch implementasi: feature/native-self-hosting
+Commit yang diuji tanpa diagnostik scheduler: 80e823fd4212635bbca3273b23608035ebe1ea80
+GitHub Actions: [run 44713729286](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44713729286) — **success**.
+
+### Implementasi
+
+- user/rust/.cargo/config.toml menambahkan konfigurasi khusus target x86_64-unknown-octagram dengan LLD, linker script ELF userspace OCTAGRAM, crt0.o, static relocation, dan no-redzone.
+- make -C user/rust build-octagram menjalankan Cargo nightly dengan -Z build-std=core,alloc dan menghasilkan user/rust/build/rust_hello_octagram.elf.
+- Kernel menanamkan binary itu sebagai /bin/rust-hello-octagram. Program mengalokasikan Vec<u8> berukuran 2 MiB, menguji stat/open/read/close pada file VFS, dan mencetak marker khusus target_os="octagram".
+- octagram-runtime menyediakan ABI memori freestanding memset/memcpy/memmove/memcmp. memmove overlap-safe tanpa mengaktifkan direction flag (DF), sehingga tidak meninggalkan state CPU yang berbahaya ketika thread dipreempt.
+- Tes unit runtime memeriksa fill, copy, compare, dan overlap memmove dua arah. CI menjalankan 6 unit test runtime dan semuanya lulus.
+- Perbaikan scheduler yang dipertahankan: capture TLS sebelum menukar state task, jangan memulihkan state proses lama ketika syscall mengembalikan kontrol ke trampoline kernel, dan pulihkan TLS/FPU sebelum kembali ke user mode. Trace serial diagnostik sudah dihapus pada commit yang diuji.
+
+### Bukti build dan runtime
+
+Run 44713729286 pada commit 80e823f berhasil melewati:
+
+- validasi target JSON OCTAGRAM;
+- kompilasi core dan runtime no_std untuk target;
+- kompilasi probe core + alloc yang menggunakan Vec;
+- link executable rust_hello_octagram.elf dengan linker script OCTAGRAM;
+- 6 unit test runtime memory ABI;
+- 373 kernel host tests dan libc host tests;
+- build kernel dan bootable ISO;
+- QEMU TinyCC/Make smoke test: TCC-SELFHOST-PASS;
+- QEMU syscall/thread test: M4-ABI-MMAP-PASS, M4-ABI-TLS-PASS, M4-ABI-THREADS-PASS, M4-RUST-TARGET-EXEC-PASS, RUST-NOSTD-PASS, dan SYSCALL-TEST: PASS.
+- Guest Rust mencetak Rust runtime file/stat: PASS dan keluar dengan status 0. Test thread berjalan tanpa trace diagnostik scheduler.
+
+### Status yang boleh diklaim
+
+- **Implemented:** custom target config, linker flags, freestanding memory ABI, embedding guest ELF, dan test coverage terkait.
+- **Build-tested:** core, alloc, runtime, dan executable Rust custom target.
+- **QEMU-tested:** satu ELF no_std + alloc custom target berjalan, mengalokasikan Vec, mengakses file/stat, dan keluar sukses; thread/TLS/SSE smoke test lulus.
+- **Belum tercapai:** rustc native, Cargo native, Rust std, proc-macro/build scripts, native kernel build, native image builder, serta A/B update/rollback. Seluruh build Rust di atas masih dijalankan oleh Cargo/rustc nightly pada host.
+
+M4.1 kini memiliki bukti executable custom target yang berjalan, tetapi M4 Rust native bootstrap belum selesai. Langkah berikutnya adalah mengaudit dependency host rustc/LLVM dan memilih strategi Stage 0 yang realistis; jangan menganggap keberhasilan core + alloc sebagai keberhasilan port std atau compiler native.

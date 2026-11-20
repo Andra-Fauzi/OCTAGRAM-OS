@@ -197,6 +197,43 @@ freestanding yang sekarang dipakai kernel dan aplikasi `no_std`.
 5. Bangun satu executable native kecil untuk target OCTAGRAM dan jalankan
    dari shell; baru setelah itu mulai port rustc/LLVM.
 
+
+## 3.5. Executable pertama untuk custom target OCTAGRAM (2026-11-20)
+
+Target x86_64-unknown-octagram sekarang sudah diuji lebih jauh daripada rustc --print cfg: CI dapat membangun satu executable no_std + alloc lengkap dan menjalankannya di dalam OCTAGRAM.
+
+Perintah dari root repository:
+
+```sh
+make -C user/rust build-octagram
+```
+
+Target Makefile ini menjalankan Cargo nightly dengan ekuivalen perintah:
+
+```sh
+cargo +nightly -Z build-std=core,alloc -Z json-target-spec build \
+  --release --bin rust_hello \
+  --target targets/x86_64-unknown-octagram.json
+```
+
+Konfigurasi target memasang linker ld.lld, linker script linker.ld, startup object build/crt0.o, static relocation, dan no-redzone. ELF hasil build ditanam kernel di /bin/rust-hello-octagram. Binary tersebut memakai target_os="octagram" untuk menghasilkan marker khusus, mengalokasikan Vec<u8> 2 MiB, lalu menguji syscall stat, open, read, dan close pada VFS.
+
+### Runtime freestanding
+
+octagram-runtime kini menyediakan simbol C memory ABI yang diperlukan linker untuk binary Rust freestanding:
+
+- memset dan memcpy menggunakan instruksi string x86_64 dengan DF dibersihkan;
+- memmove mendukung rentang overlap dua arah tanpa mengubah DF;
+- memcmp mengembalikan perbedaan byte pertama.
+
+Unit test host memeriksa fungsi tersebut. Ini bukan pengganti libc penuh dan tidak membuat Rust std tersedia.
+
+### Bukti CI/QEMU
+
+GitHub Actions [run 44713729286](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44713729286) pada commit 80e823fd4212635bbca3273b23608035ebe1ea80 berstatus success. Marker QEMU yang diamati mencakup M4-RUST-TARGET-EXEC-PASS, RUST-NOSTD-PASS, dan Rust runtime file/stat: PASS. Run yang sama menguji TLS/thread tanpa trace diagnostik scheduler dan menghasilkan M4-ABI-THREADS-PASS.
+
+**Batas klaim:** Cargo dan rustc yang menghasilkan ELF tersebut masih berjalan pada host Linux. Yang berjalan native di OCTAGRAM adalah hasil ELF guest-nya, bukan compiler atau Cargo. rustc native, Cargo native, std, proc macros, native kernel build, dan bootstrap berulang tetap belum tersedia.
+
 ## 4. Urutan bootstrap yang direkomendasikan
 
 ### M4.1 — Host ABI dan target specification

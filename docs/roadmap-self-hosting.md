@@ -64,7 +64,7 @@ selesai jika bukti sesuai tersedia.
 | Kernel/proses/ELF | Kernel x86_64, ELF loader, proses dan syscall sudah tersedia | Fondasi ada |
 | Filesystem | VFS, EXT2, FAT32, mount dan instalasi persisten tersedia | Perlu validasi workflow source |
 | Editor | Perintah editor native tersedia | Perlu uji edit file besar dan persistensi |
-| C compiler | TinyCC minimal ELF compile/run lulus QEMU; extended C source compile lulus tetapi ELF belum dieksekusi | QEMU guest-tested untuk minimal; multi-file/archive belum terbukti |
+| C compiler | TinyCC mengompilasi beberapa source menjadi object terpisah, melakukan link ELF, lalu executable berjalan di QEMU | QEMU guest-tested untuk multi-file object + link; archive belum diuji |
 | Mini toolchain | Compiler C-subset, assembler/linker mini tersedia | Terbatas, bukan GNU toolchain |
 | Native Make | Rust no_std; explicit graph, variables, `-n`, `-s`, `-j1`, mtime incremental, `-B` | QEMU-tested: build, skip, newer prerequisite, forced rebuild |
 | Rust application | Workspace Rust no_std dapat di-cross-compile dari host | Bukan Rust compiler native |
@@ -246,7 +246,8 @@ program C native.
 - [ ] Jalankan extended libc smoke ELF (saat ini baru tahap compile).
 - [ ] Uji argv, envp, file I/O, malloc, TLS, errno, signal, dan stack alignment.
 - [ ] Uji include header OCTAGRAM, static libc, relocation, dan diagnostics.
-- [ ] Uji proyek C multi-file: compile beberapa object, archive, lalu link.
+- [x] Uji proyek C multi-file: compile beberapa object (`tcc -c`), link object menjadi ELF, dan jalankan hasilnya di QEMU.
+- [ ] Uji pembuatan dan penggunaan static archive (`.a`).
 - [ ] Sediakan antarmuka compiler/assembler/linker yang konsisten.
 - [ ] Tegaskan perbedaan `cc` (compiler C-subset kernel) dengan `tcc`
       (TinyCC userspace).
@@ -280,10 +281,12 @@ dan rebuild yang benar.
 
 ### Pekerjaan lanjutan
 
-- [ ] Buktikan recipe nyata berjalan di QEMU dan menghasilkan ELF.
-- [ ] Buktikan invocation kedua melewati recipe untuk target yang mutakhir.
-- [ ] Buktikan `-B` menjalankan ulang recipe.
-- [ ] Uji prerequisite yang timestamp-nya lebih baru dari target.
+- [x] Buktikan recipe native Make berjalan di QEMU dan menghasilkan ELF yang dapat dieksekusi.
+- [x] Buktikan invocation kedua melewati recipe untuk object dan target yang mutakhir.
+- [x] Buktikan `-B` menjalankan ulang semua recipe.
+- [x] Uji prerequisite yang lebih baru: hanya object terkait dan executable final yang dibangun ulang.
+- [x] Uji pipeline `source.c -> object.o -> executable.elf` dengan dua source file terpisah.
+- [ ] Uji archive `.a` sebagai input linker dan dependency Make.
 - [ ] Tambahkan `include`, pattern rules, dan implicit rules yang diperlukan.
 - [ ] Perbaiki quoting dan argument parsing recipe.
 - [ ] Pastikan recipe berjalan di shell dengan cwd dan environment yang benar.
@@ -493,22 +496,12 @@ Jangan menyebut build host sebagai native runtime test.
 
 ## 8. Next actions — urutan kerja terdekat
 
-1. **M2.1 — baseline ISA:** sudah diterapkan dan guard disassembly
-   `.text` tidak menemukan instruksi AVX/VEX.
-2. **M2.2 — runtime TLS:** fault `mov %fs:0x0,%rax` dengan
-   `FS_BASE=0` telah diperbaiki melalui fallback ELF `PT_TLS`; executable
-   minimal hasil TinyCC kini lulus compile dan run di QEMU.
-3. **M2.3 — extended smoke:** executable C yang lebih lengkap telah berhasil
-   dikompilasi, tetapi belum dieksekusi. Tambahkan eksekusi dan verifikasi
-   errno, TLS, file I/O, serta thread secara bertahap.
-4. **M2.4 — native Make:** run `44671112721` gagal karena QEMU test harness
-   kehilangan huruf kapital pada opsi `-C`. Commit `570f8c39` memetakan
-   tombol itu ke `shift-c`; jalankan ulang tes `-n` dan `-j1`.
-5. **M3.1:** setelah Make guest smoke lulus, implementasikan timestamp-based
-   incremental build secara backward-compatible dengan metadata VFS yang
-   tersedia.
-6. **M4.1:** mulai desain bootstrap rustc secara paralel: versi, target triple,
-   sysroot, backend, dependensi OS, dan strategi Stage 0.
+1. **M2.1 — baseline ISA:** selesai; guard disassembly `.text` tidak menemukan instruksi AVX/VEX.
+2. **M2.2 — runtime TLS:** selesai; fallback ELF `PT_TLS` membuat executable minimal hasil TinyCC lulus compile dan run di QEMU.
+3. **M2.3 — multi-file object pipeline:** selesai diuji di QEMU pada run [44679567500](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44679567500), branch `feature/native-self-hosting`, commit `ef044d21fcda30ac1faa216dd9c56772093f6df6`. Native Make menjalankan `tcc -c` untuk `hello.c` dan `message.c`, link `hello.o message.o` menjadi ELF, lalu menjalankan ELF dengan exit status 0.
+4. **M3.1 — incremental object graph:** selesai diuji: build kedua melewati semua recipe; setelah `hello.c` disentuh, hanya `hello.o` dan link final yang dibangun ulang; `make -B` membangun ulang kedua object dan executable.
+5. **M2.4 — static archive:** verifikasi dukungan `ar`/`tcc -ar`, lalu uji membuat `.a`, link terhadap archive, dan jalankan hasilnya.
+6. **M3.2 — Make compatibility:** tambahkan pattern rules/implicit rules dan `.PHONY` sungguhan setelah kasus object/archive stabil.
+7. **M4.1 — Rust bootstrap:** lanjutkan inventaris rustc, target triple, sysroot, backend, dependensi OS, dan strategi Stage 0 secara paralel.
 
-Jangan lanjut ke M6 sebagai prioritas sebelum jalur native compiler dan build
-kernel dapat dibuktikan. Image builder tidak menyelesaikan blocker compiler.
+Jangan lanjut ke M6 sebagai prioritas sebelum native compiler dan native kernel build dapat dibuktikan. Image builder tidak menyelesaikan blocker compiler.

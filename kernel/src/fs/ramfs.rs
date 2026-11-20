@@ -358,6 +358,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn modification_time_advances_after_file_mutations() {
+        let mut filesystem = RamFs::new();
+        filesystem.create_file("/mtime").unwrap();
+        let created = filesystem.metadata("/mtime").unwrap().modified.unwrap();
+
+        filesystem.write("/mtime", 0, b"first").unwrap();
+        let written = filesystem.metadata("/mtime").unwrap().modified.unwrap();
+        assert!(written > created);
+
+        filesystem.truncate("/mtime", 2).unwrap();
+        let truncated = filesystem.metadata("/mtime").unwrap().modified.unwrap();
+        assert!(truncated > written);
+        assert_eq!(
+            filesystem.read_dir("/").unwrap()[0].metadata.modified,
+            Some(truncated)
+        );
+    }
+
+    #[test]
     fn truncate_removes_stale_bytes_after_shorter_overwrite() {
         let mut fs = RamFs::new();
         fs.create_file("/note").unwrap();

@@ -439,17 +439,28 @@ Jangan menyebut build host sebagai native runtime test.
 
 ## 8. Next actions — urutan kerja terdekat
 
-1. **M2.1:** perbaiki TinyCC invalid opcode. Disassembly menunjukkan AVX
-   `vpxor` pada RIP `0x402a2e`; verifikasi compiler flags dan fitur CPU guest.
-2. **M2.2:** jalankan TinyCC compile -> hasil ELF -> execute di QEMU.
-3. **M3.1:** setelah QEMU TinyCC lulus, jalankan Make `-n`, `-s`, dan `-j1`
-   pada guest.
-4. **M3.2:** audit EXT2 inode timestamps dan perluas metadata VFS/syscall
-   secara backward-compatible.
-5. **M3.3:** implementasikan incremental Make dengan test timestamp dan
-   prerequisite yang berubah/tidak berubah.
-6. **M4.1:** buat dokumen desain bootstrap rustc: versi, target triple, sysroot,
-   backend, dependensi OS, dan strategi Stage 0.
+1. **M2.1 — baseline ISA:** build TinyCC dengan target x86-64 baseline dan
+   tanpa AVX/AVX2/AVX-512. CI memeriksa mnemonic hasil decoding pada section
+   `.text`; pemeriksaan ini sudah lulus pada commit `f80c0694`.
+2. **M2.2 — runtime TinyCC:** TinyCC berhasil dikompilasi di guest dan
+   menghasilkan ELF. Namun executable minimal gagal saat dijalankan di QEMU:
+   user page fault `error_code=0x4`, RIP `0x413104`, alamat `0x0`, dan
+   `FS_BASE=0`. Jadi M2 belum lulus.
+3. **M2.3 — diagnosis fault:** commit `dfdd14ad` menambahkan pencatatan byte
+   instruksi dan general-purpose register saat user page fault. Commit
+   `522b1c3e` membatasi pembacaan byte dengan pemeriksaan mapping agar
+   diagnostik tidak memicu fault kedua ketika melewati batas halaman.
+4. **M2.4:** gunakan byte instruksi/register dari serial QEMU untuk
+   mengidentifikasi apakah fault berasal dari TLS/FS-relative access, startup
+   runtime, atau jalur lain. Jangan mengubah loader atau TLS sebelum bukti
+   instruksi tersedia.
+5. **M2.5:** setelah program minimal berhasil berjalan, jalankan executable
+   smoke yang lebih lengkap dan verifikasi output serta exit status.
+6. **M3.1:** setelah TinyCC runtime lulus, jalankan Make `-n`, `-s`, dan
+   `-j1` pada guest; kemudian implementasikan timestamp-based incremental
+   build secara backward-compatible dengan metadata VFS yang tersedia.
+7. **M4.1:** mulai desain bootstrap rustc secara paralel: versi, target triple,
+   sysroot, backend, dependensi OS, dan strategi Stage 0.
 
 Jangan lanjut ke M6 sebagai prioritas sebelum jalur native compiler dan build
 kernel dapat dibuktikan. Image builder tidak menyelesaikan blocker compiler.

@@ -61,6 +61,13 @@ jobs:
       - name: Build executable for experimental OCTAGRAM Rust target
         run: make -C user/rust build-octagram
 
+      - name: Test Rust runtime freestanding memory ABI
+        run: |
+          cargo +nightly test \
+            --manifest-path user/rust/Cargo.toml \
+            --package octagram-runtime \
+            --target x86_64-unknown-linux-gnu
+
       - name: Build embedded Rust utility
         run: make -C user/rust all
 

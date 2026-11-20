@@ -737,11 +737,20 @@ mod tests {
                 source.as_ptr().cast(),
                 source.len(),
             );
-            assert_eq!(memcmp(
+            assert_eq!(
+                memcmp(
+                    destination.as_ptr().cast(),
+                    source.as_ptr().cast(),
+                    source.len(),
+                ),
+                0
+            );
+            destination[3] = b'B';
+            assert!(memcmp(
                 destination.as_ptr().cast(),
                 source.as_ptr().cast(),
                 source.len(),
-            ), 0);
+            ) > 0);
         }
         assert_eq!(&source, b"AAAAAAAA");
         assert_eq!(&destination, b"AAAAAAAA");

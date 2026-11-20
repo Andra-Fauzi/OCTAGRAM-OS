@@ -19,10 +19,10 @@ static int verify_xmm_across_kernel_yield(uint64_t pattern)
 {
     uint64_t observed;
     __asm__ volatile(
-        "movq %1, %%xmm15\\n\\t"
-        "mov $65, %%eax\\n\\t"
-        "int $0x80\\n\\t"
-        "movq %%xmm15, %0\\n\\t"
+        "movq %1, %%xmm15\n\t"
+        "mov $65, %%eax\n\t"
+        "int $0x80\n\t"
+        "movq %%xmm15, %0\n\t"
         : "=&r"(observed)
         : "r"(pattern)
         : "rax", "rcx", "r11", "xmm15", "cc", "memory");
@@ -39,12 +39,12 @@ static int verify_xmm_across_preemption(uint64_t pattern)
     uint64_t observed;
     const uint32_t spins = 30000000u;
     __asm__ volatile(
-        "movq %1, %%xmm15\\n\\t"
-        "movl %2, %%ecx\\n\\t"
-        "1: pause\\n\\t"
-        "decl %%ecx\\n\\t"
-        "jnz 1b\\n\\t"
-        "movq %%xmm15, %0\\n\\t"
+        "movq %1, %%xmm15\n\t"
+        "movl %2, %%ecx\n\t"
+        "1: pause\n\t"
+        "decl %%ecx\n\t"
+        "jnz 1b\n\t"
+        "movq %%xmm15, %0\n\t"
         : "=&r"(observed)
         : "r"(pattern), "r"(spins)
         : "rcx", "xmm15", "cc", "memory");

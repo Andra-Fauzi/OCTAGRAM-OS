@@ -93,10 +93,21 @@ pastinya harus dikonfirmasi dengan memeriksa fitur CPU yang diekspos QEMU,
 CR4.OSXSAVE, XCR0, dan flags compiler. Jangan menganggap masalah ini sudah
 diperbaiki hanya karena kernel build berhasil.
 
-**Tindakan pertama:** bangun TinyCC dengan baseline x86_64 yang tidak
-menghasilkan AVX, atau implementasikan dan verifikasi dukungan AVX secara
-lengkap (CPUID, OSXSAVE, XCR0, context switch FPU/SIMD, dan konfigurasi QEMU).
-Untuk tahap awal, baseline tanpa AVX lebih sederhana dan lebih aman.
+**Perubahan yang sudah dibuat pada branch pengembangan:**
+
+- `user/Makefile` kini memaksa `-march=x86-64 -mtune=generic` serta
+  `-mno-avx -mno-avx2 -mno-avx512f` untuk kompilasi userland, termasuk
+  runtime dan object TinyCC yang memakai `CFLAGS` tersebut.
+- `.github/workflows/posix-core-stage1.yml` kini memeriksa disassembly
+  `user/build/tcc.elf` dan menggagalkan CI jika mnemonic AVX/VEX terdeteksi.
+- `docs/toolchain.md` menjelaskan alasan baseline ISA: kernel belum memiliki
+  kontrak XSAVE/XCR0 dan penyimpanan state AVX yang lengkap.
+
+**Status verifikasi:** perubahan source sudah di-commit, tetapi belum boleh
+ dianggap selesai sebelum workflow CI terbaru membuktikan bahwa guard lulus,
+TinyCC berhasil compile program di guest, dan ELF hasilnya berhasil dijalankan.
+Jika masih gagal, periksa disassembly baru dan jangan langsung mengaktifkan
+AVX di kernel tanpa audit context switch FPU/SIMD.
 
 ---
 

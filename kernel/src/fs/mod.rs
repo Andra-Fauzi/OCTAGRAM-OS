@@ -29,6 +29,7 @@ use crate::storage::{
 use alloc::sync::Arc;
 
 const MAKE_ELF: &[u8] = include_bytes!("../../../user/rust/build/make.elf");
+const RUST_HELLO_ELF: &[u8] = include_bytes!("../../../user/rust/build/rust_hello.elf");
 const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
 const FILE_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/file_api_demo.elf");
 const PATH_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/path_api_demo.elf");
@@ -793,6 +794,7 @@ pub fn init() {
         vfs.mount("/dev", DevFs::new())
             .expect("mounting the device filesystem must succeed");
         seed_file(&mut vfs, "/bin/make", MAKE_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/rust-hello", RUST_HELLO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/tcc", TCC_ELF, 0o755);
         seed_file(&mut vfs, "/bin/file-api-demo", FILE_API_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/path-api-demo", PATH_API_DEMO_ELF, 0o755);
@@ -929,6 +931,12 @@ mod tests {
             assert!(make.len > 0);
             let mut magic = [0; 4];
             assert_eq!(vfs.read("/bin/make", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            let rust_hello = vfs.metadata("/bin/rust-hello").unwrap();
+            assert_eq!(rust_hello.permissions, 0o755);
+            assert!(rust_hello.len > 0);
+            assert_eq!(vfs.read("/bin/rust-hello", 0, &mut magic), Ok(4));
             assert_eq!(&magic, b"\x7FELF");
 
             for path in ["/bin/gcc", "/bin/rustc", "/bin/chibicc"] {

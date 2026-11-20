@@ -4640,6 +4640,24 @@ fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProces
     })
 }
 
+/// Snapshot the active scheduled task's TLS identity for fatal user-fault
+/// diagnostics. This is deliberately called only after a fault, not in the
+/// scheduler hot path.
+pub fn current_user_tls_debug() -> (u64, u64, bool, u64, u64) {
+    let scheduler = USER_SCHEDULER.lock();
+    let process = USER_PROCESS.lock();
+    let Some(task) = scheduler.processes.get(scheduler.current) else {
+        return (0, 0, false, process.thread_pointer, thread_pointer::read());
+    };
+    (
+        task.pid,
+        task.tid,
+        task.is_thread,
+        process.thread_pointer,
+        thread_pointer::read(),
+    )
+}
+
 fn save_current_user_fpu() {
     let mut process = USER_PROCESS.lock();
     if process.active {

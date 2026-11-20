@@ -108,8 +108,52 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
-    print("TCC-SELFHOST-PASS: native TinyCC compiled and ran a minimal guest ELF; extended libc source compiled")
-    print(serial_text()[-3000:])
+    output_offset = len(serial_text())
+    send_line("make -C /share/octagram")
+    if not wait_for_after("program exited with status 0", output_offset, 120):
+        print("MAKE-BUILD-FAIL: native Make did not execute the TinyCC recipe")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("tcc hello.c -o hello.elf", output_offset, 5):
+        print("MAKE-BUILD-FAIL: expected TinyCC recipe was not executed")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("run /share/octagram/hello.elf")
+    if not wait_for_after("Built inside OCTAGRAM!", output_offset, 120):
+        print("MAKE-ELF-RUN-FAIL: executable built by native Make did not run")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 5):
+        print("MAKE-ELF-RUN-FAIL: built ELF did not exit successfully")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("make -C /share/octagram")
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("MAKE-INCREMENTAL-FAIL: second Make invocation did not exit successfully")
+        print(serial_text()[-5000:])
+        return 1
+    if "tcc hello.c -o hello.elf" in serial_text()[output_offset:]:
+        print("MAKE-INCREMENTAL-FAIL: up-to-date target recipe ran again")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("make -B -C /share/octagram")
+    if not wait_for_after("tcc hello.c -o hello.elf", output_offset, 30):
+        print("MAKE-FORCE-FAIL: -B did not force the target recipe")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 120):
+        print("MAKE-FORCE-FAIL: forced rebuild did not exit successfully")
+        print(serial_text()[-5000:])
+        return 1
+
+    print("TCC-SELFHOST-PASS: TinyCC compile/run, native Make build, incremental skip, and -B force passed")
+    print(serial_text()[-4000:])
     return 0
 
 

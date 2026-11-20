@@ -24,6 +24,7 @@ const MAX_RULES: usize = 128;
 struct Rule {
     target: String,
     dependencies: Vec<String>,
+    order_only_dependencies: Vec<String>,
     recipes: Vec<String>,
     stem: Option<String>,
 }
@@ -303,7 +304,15 @@ fn parse_makefile(source: &str) -> Result<Makefile, String> {
                 line_number + 1
             ));
         }
-        let dependencies = expand(dependency_text.trim(), &makefile.variables, None, 0)?
+        let (normal_text, order_only_text) = dependency_text
+            .split_once('|')
+            .map(|(normal, order_only)| (normal, order_only))
+            .unwrap_or((dependency_text, ""));
+        let dependencies = expand(normal_text.trim(), &makefile.variables, None, 0)?
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let order_only_dependencies = expand(order_only_text.trim(), &makefile.variables, None, 0)?
             .split_whitespace()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
@@ -323,6 +332,11 @@ fn parse_makefile(source: &str) -> Result<Makefile, String> {
                         makefile.rules[index].dependencies.push(dependency);
                     }
                 }
+                for dependency in order_only_dependencies.iter() {
+                    if !makefile.rules[index].order_only_dependencies.contains(dependency) {
+                        makefile.rules[index].order_only_dependencies.push(dependency.clone());
+                    }
+                }
                 index
             } else {
                 if makefile.rules.len() >= MAX_RULES {
@@ -334,6 +348,7 @@ fn parse_makefile(source: &str) -> Result<Makefile, String> {
                 makefile.rules.push(Rule {
                     target: target.to_string(),
                     dependencies,
+                    order_only_dependencies,
                     recipes: Vec::new(),
                     stem: None,
                 });
@@ -460,6 +475,11 @@ fn instantiate_pattern_rule(rule: &Rule, target: &str) -> Option<Rule> {
             .iter()
             .map(|dependency| substitute(dependency))
             .collect(),
+        order_only_dependencies: rule
+            .order_only_dependencies
+            .iter()
+            .map(|dependency| substitute(dependency))
+            .collect(),
         recipes: rule.recipes.clone(),
         stem: Some(stem.to_string()),
     })
@@ -500,7 +520,7 @@ fn build_target(
         };
     };
     visiting.push(target.to_string());
-    for dependency in &rule.dependencies {
+    for dependency in rule.dependencies.iter().chain(&rule.order_only_dependencies) {
         build_target(
             dependency,
             makefile,

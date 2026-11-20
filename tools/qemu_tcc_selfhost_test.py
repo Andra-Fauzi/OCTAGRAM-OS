@@ -141,6 +141,27 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
+    # EXT2 mtime has one-second resolution; cross a second before touching
+    # the prerequisite so this test proves the newer-prerequisite path.
+    time.sleep(1.2)
+    touch_offset = len(serial_text())
+    send_line("touch /share/octagram/hello.c")
+    if not wait_for_after("octagram:/ $", touch_offset, 15):
+        print("MAKE-PREREQUISITE-FAIL: touch did not return to the shell")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("make -C /share/octagram")
+    if not wait_for_after("tcc hello.c -o hello.elf", output_offset, 30):
+        print("MAKE-PREREQUISITE-FAIL: newer source did not trigger a rebuild")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 120):
+        print("MAKE-PREREQUISITE-FAIL: rebuild after touching source failed")
+        print(serial_text()[-5000:])
+        return 1
+
     output_offset = len(serial_text())
     send_line("make -B -C /share/octagram")
     if not wait_for_after("tcc hello.c -o hello.elf", output_offset, 30):
@@ -152,7 +173,7 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
-    print("TCC-SELFHOST-PASS: TinyCC compile/run, native Make build, incremental skip, and -B force passed")
+    print("TCC-SELFHOST-PASS: TinyCC compile/run, Make build, up-to-date skip, newer-prerequisite rebuild, and -B force passed")
     print(serial_text()[-4000:])
     return 0
 

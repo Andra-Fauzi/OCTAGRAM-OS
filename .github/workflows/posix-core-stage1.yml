@@ -40,7 +40,7 @@ jobs:
       # kernel/src/fs/mod.rs embeds these artifacts with include_bytes!,
       # so create them before invoking cargo test or compilation fails early.
       - name: Build embedded Rust utility
-        run: make -C user/rust make
+        run: make -C user/rust all
 
       - name: Build user programs
         run: make -C user

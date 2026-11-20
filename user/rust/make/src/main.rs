@@ -25,6 +25,7 @@ struct Rule {
     target: String,
     dependencies: Vec<String>,
     recipes: Vec<String>,
+    stem: Option<String>,
 }
 
 struct Makefile {
@@ -278,6 +279,7 @@ fn parse_makefile(source: &str) -> Result<Makefile, String> {
                     target: target.to_string(),
                     dependencies,
                     recipes: Vec::new(),
+                    stem: None,
                 });
                 makefile.rules.len() - 1
             };
@@ -330,7 +332,7 @@ fn get_variable<'a>(variables: &'a [(String, String)], name: &str) -> Option<&'a
 fn expand(
     source: &str,
     variables: &[(String, String)],
-    automatic: Option<(&str, &str, &str)>,
+    automatic: Option<(&str, &str, &str, &str)>,
     depth: usize,
 ) -> Result<String, String> {
     if depth > 16 {
@@ -352,9 +354,10 @@ fn expand(
                 output.push('$');
                 continue;
             }
-            '@' => automatic.map(|(target, _, _)| target).unwrap_or(""),
-            '<' => automatic.map(|(_, first, _)| first).unwrap_or(""),
-            '^' => automatic.map(|(_, _, all)| all).unwrap_or(""),
+            '@' => automatic.map(|(target, _, _, _)| target).unwrap_or(""),
+            '<' => automatic.map(|(_, first, _, _)| first).unwrap_or(""),
+            '^' => automatic.map(|(_, _, all, _)| all).unwrap_or(""),
+            '*' => automatic.map(|(_, _, _, stem)| stem).unwrap_or(""),
             '(' | '{' => {
                 let closing = if next == '(' { ')' } else { '}' };
                 let mut name = String::new();
@@ -402,6 +405,7 @@ fn instantiate_pattern_rule(rule: &Rule, target: &str) -> Option<Rule> {
             .map(|dependency| substitute(dependency))
             .collect(),
         recipes: rule.recipes.clone(),
+        stem: Some(stem.to_string()),
     })
 }
 
@@ -480,6 +484,7 @@ fn build_target(
             first,
             &all,
             &makefile.variables,
+            rule.stem.as_deref().unwrap_or(""),
             dry_run,
             silent,
         )?;
@@ -494,6 +499,7 @@ fn run_recipe(
     first_dependency: &str,
     all_dependencies: &str,
     variables: &[(String, String)],
+    stem: &str,
     dry_run: bool,
     globally_silent: bool,
 ) -> Result<(), String> {
@@ -516,7 +522,7 @@ fn run_recipe(
     let expanded = expand(
         recipe,
         variables,
-        Some((target, first_dependency, all_dependencies)),
+        Some((target, first_dependency, all_dependencies, stem)),
         0,
     )?;
     let arguments = split_words(&expanded)?;

@@ -24,7 +24,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
 
     // Exercise the Rust runtime's file/stat syscall ABI against a seeded VFS
     // source file, not just stdout and the allocator.
-    let path = match CStr::from_bytes_with_nul(b"/share/octagram/message.c\\0") {
+    let path = match CStr::from_bytes_with_nul(b"/share/octagram/message.c\0") {
         Ok(path) => path,
         Err(_) => return 2,
     };
@@ -43,7 +43,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         (Ok(count), Ok(())) if count > 0 && metadata.size >= count as u64 => {}
         _ => return 5,
     }
-    if write_all(STDOUT, b"Rust runtime file/stat: PASS\\n").is_err() {
+    if write_all(STDOUT, b"Rust runtime file/stat: PASS\n").is_err() {
         return 6;
     }
     0

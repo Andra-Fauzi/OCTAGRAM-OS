@@ -229,7 +229,7 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                         };
                     }
                 }
-                let (pid, tid, is_thread, process_tls, actual_fs) =
+                let (pid, tid, is_thread, initial_tls, process_tls, actual_fs) =
                     crate::elf::current_user_tls_debug();
                 crate::println!(
                     "User page fault error_code={:#x} rip={:#x} address={:#x} fs_base={:#x} bytes={:02x?}",
@@ -240,7 +240,7 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                     instruction
                 );
                 crate::println!(
-                    "User fault task pid={pid} tid={tid} is_thread={is_thread} process_tls={process_tls:#x} actual_fs={actual_fs:#x}"
+                    "User fault task pid={pid} tid={tid} is_thread={is_thread} initial_tls={initial_tls:#x} process_tls={process_tls:#x} actual_fs={actual_fs:#x}"
                 );
                 crate::println!(
                     "User fault regs rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rsi={:#x} rdi={:#x} rbp={:#x} rsp={:#x}",

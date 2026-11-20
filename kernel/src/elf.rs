@@ -2084,6 +2084,7 @@ fn run_loaded_processes(
             .map_or(0, |stack| initialize_user_frame(&image, stack.top()));
         processes.push(ScheduledProcess {
             image,
+            initial_thread_pointer: state.thread_pointer,
             state,
             pid: index as u64 + 1,
             _kernel_stack: kernel_stack,
@@ -3198,6 +3199,7 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     scheduler.next_tid = next_tid;
     scheduler.processes.push(ScheduledProcess {
         image,
+        initial_thread_pointer: thread_pointer,
         state,
         pid,
         _kernel_stack: Some(kernel_stack),
@@ -3531,6 +3533,7 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
     scheduler.next_pid = next_pid;
     scheduler.processes.push(ScheduledProcess {
         image: child_image,
+        initial_thread_pointer: child_state.thread_pointer,
         state: child_state,
         pid: child_pid,
         _kernel_stack: Some(kernel_stack),
@@ -4643,16 +4646,24 @@ fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProces
 /// Snapshot the active scheduled task's TLS identity for fatal user-fault
 /// diagnostics. This is deliberately called only after a fault, not in the
 /// scheduler hot path.
-pub fn current_user_tls_debug() -> (u64, u64, bool, u64, u64) {
+pub fn current_user_tls_debug() -> (u64, u64, bool, u64, u64, u64) {
     let scheduler = USER_SCHEDULER.lock();
     let process = USER_PROCESS.lock();
     let Some(task) = scheduler.processes.get(scheduler.current) else {
-        return (0, 0, false, process.thread_pointer, thread_pointer::read());
+        return (
+            0,
+            0,
+            false,
+            0,
+            process.thread_pointer,
+            thread_pointer::read(),
+        );
     };
     (
         task.pid,
         task.tid,
         task.is_thread,
+        task.initial_thread_pointer,
         process.thread_pointer,
         thread_pointer::read(),
     )

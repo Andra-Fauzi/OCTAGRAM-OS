@@ -2187,6 +2187,10 @@ fn run_loaded_processes(
                 }
                 schedule_next(&mut scheduler).map(|next| {
                     let frame_pointer = scheduler.processes[next].frame_pointer;
+                    // Capture the next task's TLS base before swapping its
+                    // state into USER_PROCESS. After the swap, scheduler.processes[next].state
+                    // contains the previously active task, not the task being resumed.
+                    let thread_pointer_value = scheduler.processes[next].state.thread_pointer;
                     if let Some(context) = scheduler.processes[next].resume_context.take() {
                         let frame = unsafe { &mut *(frame_pointer as *mut InterruptFrame) };
                         frame.rax = context.accumulator;
@@ -2200,7 +2204,7 @@ fn run_loaded_processes(
                         process.image.memory.address_space.activate();
                         gdt::set_ring0_stack_top(process.kernel_stack_top);
                     }
-                    (frame_pointer, process.state.thread_pointer)
+                    (frame_pointer, thread_pointer_value)
                 })
             };
 

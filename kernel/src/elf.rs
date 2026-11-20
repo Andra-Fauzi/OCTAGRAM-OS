@@ -2515,8 +2515,19 @@ pub fn handle_syscall(frame: &mut InterruptFrame) -> *mut InterruptFrame {
             next_frame = replacement;
         }
     }
-    restore_current_thread_pointer();
-    restore_current_user_fpu();
+    // A syscall may hand control back to the kernel scheduler (for example
+    // kernel_yield or process exit) by rewriting the saved CS to ring 0.
+    // USER_PROCESS has already been swapped out in that case, so restoring
+    // its TLS/FPU state here would install stale state while the kernel
+    // trampoline is running. The scheduler restores the selected user task
+    // immediately before resuming its saved user frame.
+    let returns_to_user = unsafe {
+        (*next_frame).stack_frame.code_segment & 3 == 3
+    };
+    if returns_to_user {
+        restore_current_thread_pointer();
+        restore_current_user_fpu();
+    }
     next_frame
 }
 

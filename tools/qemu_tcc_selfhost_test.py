@@ -97,19 +97,25 @@ def main():
 
     output_offset = len(serial_text())
     send_line("make -C /share/octagram -n")
-    if not wait_for_after("tcc hello.o message.o -o hello.elf", output_offset, 30):
+    if not wait_for_after("tcc hello.o libmessage.a -o hello.elf", output_offset, 30):
         print("MAKE-DRY-RUN-FAIL: native make did not expand the object-file link recipe")
         print(serial_text()[-5000:])
         return 1
     dry_run_output = serial_text()[output_offset:]
-    if "tcc -c hello.c -o hello.o" not in dry_run_output or "tcc -c message.c -o message.o" not in dry_run_output:
-        print("MAKE-DRY-RUN-FAIL: native make omitted one of the separate object compilations")
+    required_dry_run = (
+        "tcc -c hello.c -o hello.o",
+        "tcc -c message.c -o message.o",
+        "tcc -ar rcs libmessage.a message.o",
+        "tcc hello.o libmessage.a -o hello.elf",
+    )
+    if not all(command in dry_run_output for command in required_dry_run):
+        print("MAKE-DRY-RUN-FAIL: native make omitted an object, archive, or link recipe")
         print(dry_run_output[-5000:])
         return 1
 
     output_offset = len(serial_text())
     send_line("make -C /share/octagram -j1 -n")
-    if not wait_for_after("tcc hello.o message.o -o hello.elf", output_offset, 30):
+    if not wait_for_after("tcc hello.o libmessage.a -o hello.elf", output_offset, 30):
         print("MAKE-SERIAL-FAIL: native make rejected -j1")
         print(serial_text()[-5000:])
         return 1
@@ -120,7 +126,7 @@ def main():
         print("MAKE-BUILD-FAIL: native Make did not execute the TinyCC recipe")
         print(serial_text()[-5000:])
         return 1
-    if not wait_for_after("tcc hello.o message.o -o hello.elf", output_offset, 5):
+    if not wait_for_after("tcc hello.o libmessage.a -o hello.elf", output_offset, 5):
         print("MAKE-BUILD-FAIL: expected TinyCC recipe was not executed")
         print(serial_text()[-5000:])
         return 1
@@ -146,9 +152,10 @@ def main():
     if any(command in incremental_output for command in (
         "tcc -c hello.c -o hello.o",
         "tcc -c message.c -o message.o",
-        "tcc hello.o message.o -o hello.elf",
+        "tcc -ar rcs libmessage.a message.o",
+        "tcc hello.o libmessage.a -o hello.elf",
     )):
-        print("MAKE-INCREMENTAL-FAIL: up-to-date object or executable recipe ran again")
+        print("MAKE-INCREMENTAL-FAIL: up-to-date object, archive, or executable recipe ran again")
         print(incremental_output[-5000:])
         return 1
 
@@ -164,19 +171,54 @@ def main():
 
     output_offset = len(serial_text())
     send_line("make -C /share/octagram")
-    if not wait_for_after("tcc hello.o message.o -o hello.elf", output_offset, 30):
-        print("MAKE-PREREQUISITE-FAIL: newer source did not trigger a rebuild")
+    if not wait_for_after("tcc hello.o libmessage.a -o hello.elf", output_offset, 30):
+        print("MAKE-PREREQUISITE-FAIL: newer source did not trigger a relink")
         print(serial_text()[-5000:])
         return 1
     if not wait_for_after("program exited with status 0", output_offset, 120):
         print("MAKE-PREREQUISITE-FAIL: rebuild after touching source failed")
         print(serial_text()[-5000:])
         return 1
+    hello_rebuild = serial_text()[output_offset:]
+    if "tcc -c hello.c -o hello.o" not in hello_rebuild or "tcc -ar rcs libmessage.a message.o" in hello_rebuild:
+        print("MAKE-PREREQUISITE-FAIL: touching hello.c rebuilt the wrong dependency set")
+        print(hello_rebuild[-5000:])
+        return 1
+
+    time.sleep(1.2)
+    touch_offset = len(serial_text())
+    send_line("touch /share/octagram/message.c")
+    if not wait_for_after("octagram:/ $", touch_offset, 15):
+        print("MAKE-ARCHIVE-FAIL: touching message.c did not return to the shell")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("make -C /share/octagram")
+    archive_rebuild = (
+        "tcc -c message.c -o message.o",
+        "tcc -ar rcs libmessage.a message.o",
+        "tcc hello.o libmessage.a -o hello.elf",
+    )
+    if not all(wait_for_after(command, output_offset, 30) for command in archive_rebuild):
+        print("MAKE-ARCHIVE-FAIL: message.c did not rebuild its object, archive, and final ELF")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 120):
+        print("MAKE-ARCHIVE-FAIL: archive dependency rebuild failed")
+        print(serial_text()[-5000:])
+        return 1
 
     output_offset = len(serial_text())
     send_line("make -B -C /share/octagram")
-    if not wait_for_after("tcc hello.o message.o -o hello.elf", output_offset, 30):
-        print("MAKE-FORCE-FAIL: -B did not force the target recipe")
+    forced_commands = (
+        "tcc -c hello.c -o hello.o",
+        "tcc -c message.c -o message.o",
+        "tcc -ar rcs libmessage.a message.o",
+        "tcc hello.o libmessage.a -o hello.elf",
+    )
+    if not all(wait_for_after(command, output_offset, 30) for command in forced_commands):
+        print("MAKE-FORCE-FAIL: -B did not force every object/archive/link recipe")
         print(serial_text()[-5000:])
         return 1
     if not wait_for_after("program exited with status 0", output_offset, 120):

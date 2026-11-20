@@ -2990,8 +2990,8 @@ mod tests {
         split_shell_words, text_counts, update_editor_viewport,
     };
     use super::{
-        find_next, has_unquoted_operator, parse_pipeline_line_count, split_output_redirection,
-        split_shell_pipeline,
+        elf_entry_address, find_next, has_unquoted_operator, parse_pipeline_line_count,
+        split_output_redirection, split_shell_pipeline,
     };
 
     #[test]
@@ -3124,6 +3124,16 @@ mod tests {
         assert_eq!(text, "ma\tke");
         assert_eq!(cursor, 3);
         assert_eq!(editor_display_character('\t'), '>');
+    }
+
+    #[test]
+    fn reads_the_entry_point_only_from_elf_output() {
+        let mut executable = alloc::vec![0u8; 32];
+        executable[..4].copy_from_slice(b"\x7fELF");
+        executable[24..32].copy_from_slice(&0x4012_34u64.to_le_bytes());
+        assert_eq!(elf_entry_address(&executable), Some(0x4012_34));
+        assert_eq!(elf_entry_address(b"OCTOBJ1\0short"), None);
+        assert_eq!(elf_entry_address(&executable[..16]), None);
     }
 
     #[test]

@@ -59,6 +59,37 @@ di atas belum seluruhnya diaudit atau dibuktikan kompatibel dengan kebutuhan
 Rust `std`, LLVM, dan Cargo. Jangan tandai komponen selesai sebelum ada test
 program native khusus untuk API tersebut.
 
+## 3.1. Fasilitas OS yang sudah ada dan batas yang terverifikasi
+
+Dokumen syscall ABI saat ini sudah mencantumkan keluarga API berikut:
+
+- file I/O, descriptor, `openat`, `fstatat`, direktori, pipe, dan subprocess
+  melalui `fork`, `execve`, serta `waitpid`;
+- virtual memory melalui `mmap`, `munmap`, `mprotect`, `brk`, dan operasi
+  pemetaan terkait;
+- thread melalui syscall OCTAGRAM `thread_create/join/self/exit`, pointer TLS
+  FS, serta `futex`;
+- clock/timer, random, signal, poll/epoll, dan socket API.
+
+Ini adalah inventaris syscall, bukan klaim bahwa Rust `std` sudah kompatibel.
+Setiap API masih memerlukan conformance test untuk semantics, error code,
+blocking behavior, concurrency, dan edge case.
+
+Batas penting yang sudah terdokumentasi:
+
+- syscall `sendmsg` dan `recvmsg` mengembalikan `ENOSYS`; libc menyusun
+  sebagian perilakunya dari syscall lain;
+- dynamic loader OCTAGRAM saat ini memakai interpreter `ET_EXEC` dengan
+  alamat tetap;
+- loader belum mendukung TLS umum pada shared object (relokasi
+  `TPOFF`/`DTPMOD` dan alokasi TLS per objek);
+- dukungan relocation dan dynamic-linking masih subset, bukan ABI Linux penuh.
+
+Artinya, sebelum compiler besar dijalankan, pilihan realistis antara
+static-linking penuh dan perluasan dynamic loader harus ditentukan. TLS shared
+object, thread, dan memory mapping merupakan area berisiko tinggi untuk
+toolchain Rust/LLVM.
+
 ## 4. Urutan bootstrap yang direkomendasikan
 
 ### M4.1 — Host ABI dan target specification

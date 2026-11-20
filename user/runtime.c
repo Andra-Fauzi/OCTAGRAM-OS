@@ -220,9 +220,7 @@ static int oct_tls_from_auxiliary_vector(uintptr_t *template_start,
         uintptr_t tls_alignment = (uintptr_t)header->alignment;
         uintptr_t tls_start = (uintptr_t)header->virtual_address;
 
-        if (header->file_size > UINTPTR_MAX
-            || header->memory_size > UINTPTR_MAX
-            || header->alignment > 4096
+        if (header->alignment > 4096
             || tls_filesz > tls_size
             || (tls_filesz != 0 && tls_start == 0)
             || tls_start > UINTPTR_MAX - tls_filesz) {

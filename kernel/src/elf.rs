@@ -4690,10 +4690,25 @@ fn restore_current_user_fpu() {
     }
 }
 
+fn saved_thread_pointer_after_kernel_entry(saved: u64, observed: u64) -> u64 {
+    // An intentional reset is committed through syscall_set_thread_pointer,
+    // which updates the saved value and FS_BASE together. Therefore a zero
+    // FS_BASE while the saved value is nonzero is a transient/context-restore
+    // failure, not a request to discard the task's TLS mapping.
+    if saved != 0 && observed == 0 {
+        saved
+    } else {
+        observed
+    }
+}
+
 fn save_current_thread_pointer() {
     let mut process = USER_PROCESS.lock();
     if process.active {
-        process.thread_pointer = thread_pointer::read();
+        process.thread_pointer = saved_thread_pointer_after_kernel_entry(
+            process.thread_pointer,
+            thread_pointer::read(),
+        );
     }
 }
 
@@ -9044,7 +9059,7 @@ mod tests {
         ProcessWait, capability_present, is_poll_wait, robust_word_after_exit,
         FUTEX_OWNER_DIED, FUTEX_WAITERS,
         effective_priority_target, priority_change_allowed, priority_target_matches,
-        SCHED_OTHER, ElfError,
+        SCHED_OTHER, ElfError, saved_thread_pointer_after_kernel_entry,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
         PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_PAGES, STACK_RANDOM_PAGES,
         STACK_TOP, SYSCALL_MMAP, SYSCALL_MUNMAP, UserDescriptor, signal_stack_top, stack_layout,
@@ -9350,6 +9365,17 @@ mod tests {
             parse(&bytes).unwrap().interpreter.as_deref(),
             Some("/lib/ld-octagram.so")
         );
+    }
+
+    #[test]
+    fn preserves_saved_tls_when_kernel_observes_transient_zero_fs_base() {
+        assert_eq!(saved_thread_pointer_after_kernel_entry(0x1000, 0), 0x1000);
+    }
+
+    #[test]
+    fn accepts_nonzero_hardware_tls_and_explicit_saved_zero() {
+        assert_eq!(saved_thread_pointer_after_kernel_entry(0x1000, 0x2000), 0x2000);
+        assert_eq!(saved_thread_pointer_after_kernel_entry(0, 0), 0);
     }
 
     #[test]

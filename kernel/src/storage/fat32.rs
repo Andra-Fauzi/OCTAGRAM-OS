@@ -826,6 +826,7 @@ impl FileSystem for Fat32 {
                 node_type: NodeType::Directory,
                 len: 0,
                 permissions: 0o755,
+                modified: None,
             }),
             Some(record) => {
                 let is_directory = record.attributes & 0x10 != 0;
@@ -847,6 +848,7 @@ impl FileSystem for Fat32 {
                     },
                     len: record.size as usize,
                     permissions,
+                    modified: None,
                 })
             }
         }
@@ -1098,6 +1100,7 @@ impl FileSystem for Fat32 {
                         },
                         len: record.size as usize,
                         permissions,
+                        modified: None,
                     },
                 }
             })

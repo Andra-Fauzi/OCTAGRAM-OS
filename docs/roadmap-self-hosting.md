@@ -243,7 +243,7 @@ program C native.
       minimal; QEMU mengembalikan exit status 0.
 - [x] Jalankan ELF minimal hasil TinyCC dari shell; output dan exit status 0
       diperiksa di QEMU.
-- [ ] Jalankan extended libc smoke ELF (saat ini baru tahap compile).
+- [x] Jalankan extended libc smoke ELF di QEMU; setelah fixture diperbaiki memakai `rmdir()` untuk menghapus direktori (bukan `unlink()`), seluruh pemeriksaan libc dan program keluar dengan status 0. CI run [44689488243](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44689488243), commit `8dccebb08acd152a12a6b831c7c2e28b8db06629`.
 - [ ] Uji argv, envp, file I/O, malloc, TLS, errno, signal, dan stack alignment.
 - [ ] Uji include header OCTAGRAM, static libc, relocation, dan diagnostics.
 - [x] Uji proyek C multi-file: compile beberapa object (`tcc -c`), link object menjadi ELF, dan jalankan hasilnya di QEMU.

@@ -2343,6 +2343,30 @@ mod tests {
     }
 
     #[test]
+    fn inode_mtime_is_created_updated_and_persisted() {
+        let disk = test_disk();
+        let mut filesystem = Ext2::mount(disk.clone()).unwrap();
+        filesystem.create_file("/mtime").unwrap();
+        let created = filesystem.metadata("/mtime").unwrap().modified.unwrap();
+
+        filesystem.write("/mtime", 0, b"hello").unwrap();
+        let written = filesystem.metadata("/mtime").unwrap().modified.unwrap();
+        assert!(written > created);
+
+        let entry = filesystem
+            .read_dir("/")
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.name == "mtime")
+            .unwrap();
+        assert_eq!(entry.metadata.modified, Some(written));
+        drop(filesystem);
+
+        let remounted = Ext2::mount(disk).unwrap();
+        assert_eq!(remounted.metadata("/mtime").unwrap().modified, Some(written));
+    }
+
+    #[test]
     fn mounts_reads_writes_and_truncates_files() {
         let disk = test_disk();
         let mut ext2 = Ext2::mount(disk.clone()).unwrap();

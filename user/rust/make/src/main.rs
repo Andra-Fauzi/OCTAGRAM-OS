@@ -328,7 +328,7 @@ fn parse_makefile(source: &str) -> Result<Makefile, String> {
                 if makefile.rules.len() >= MAX_RULES {
                     return Err("too many targets in Makefile".into());
                 }
-                if makefile.default_target.is_none() && !target.starts_with('.') {
+                if makefile.default_target.is_none() && !target.starts_with('.') && !target.contains('%') {
                     makefile.default_target = Some(target.to_string());
                 }
                 makefile.rules.push(Rule {

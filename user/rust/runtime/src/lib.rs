@@ -82,23 +82,15 @@ pub unsafe extern "C" fn memmove(
         return unsafe { memcpy(destination, source, length) };
     }
 
-    let mut destination_cursor = unsafe { destination.cast::<u8>().add(length - 1) };
-    let mut source_cursor = unsafe { source.cast::<u8>().add(length - 1) };
-    let mut count = length;
-    // SAFETY: The destination overlaps above the source, so copy backwards.
-    // CLD restores the ABI-required direction flag before returning.
-    unsafe {
-        core::arch::asm!(
-            "std",
-            "rep movsb",
-            "cld",
-            inout("rdi") destination_cursor => _,
-            inout("rsi") source_cursor => _,
-            inout("rcx") count => _,
-            options(nostack)
-        );
+    // Do not set DF=1 here: user code may be preempted during memmove, and
+    // the interrupt handler/kernel ABI must always see the normal DF=0 state.
+    let destination = destination.cast::<u8>();
+    let source = source.cast::<u8>();
+    for offset in (0..length).rev() {
+        let byte = unsafe { source.add(offset).read_volatile() };
+        unsafe { destination.add(offset).write_volatile(byte) };
     }
-    destination
+    destination.cast::<c_void>()
 }
 
 #[no_mangle]

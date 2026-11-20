@@ -97,14 +97,19 @@ def main():
 
     output_offset = len(serial_text())
     send_line("make -C /share/octagram -n")
-    if not wait_for_after("tcc hello.c message.c -o hello.elf", output_offset, 30):
-        print("MAKE-DRY-RUN-FAIL: native make did not expand the selfhost recipe")
+    if not wait_for_after("tcc hello.o message.o -o hello.elf", output_offset, 30):
+        print("MAKE-DRY-RUN-FAIL: native make did not expand the object-file link recipe")
         print(serial_text()[-5000:])
+        return 1
+    dry_run_output = serial_text()[output_offset:]
+    if "tcc -c hello.c -o hello.o" not in dry_run_output or "tcc -c message.c -o message.o" not in dry_run_output:
+        print("MAKE-DRY-RUN-FAIL: native make omitted one of the separate object compilations")
+        print(dry_run_output[-5000:])
         return 1
 
     output_offset = len(serial_text())
     send_line("make -C /share/octagram -j1 -n")
-    if not wait_for_after("tcc hello.c message.c -o hello.elf", output_offset, 30):
+    if not wait_for_after("tcc hello.o message.o -o hello.elf", output_offset, 30):
         print("MAKE-SERIAL-FAIL: native make rejected -j1")
         print(serial_text()[-5000:])
         return 1
@@ -115,7 +120,7 @@ def main():
         print("MAKE-BUILD-FAIL: native Make did not execute the TinyCC recipe")
         print(serial_text()[-5000:])
         return 1
-    if not wait_for_after("tcc hello.c message.c -o hello.elf", output_offset, 5):
+    if not wait_for_after("tcc hello.o message.o -o hello.elf", output_offset, 5):
         print("MAKE-BUILD-FAIL: expected TinyCC recipe was not executed")
         print(serial_text()[-5000:])
         return 1
@@ -137,9 +142,14 @@ def main():
         print("MAKE-INCREMENTAL-FAIL: second Make invocation did not exit successfully")
         print(serial_text()[-5000:])
         return 1
-    if "tcc hello.c message.c -o hello.elf" in serial_text()[output_offset:]:
-        print("MAKE-INCREMENTAL-FAIL: up-to-date target recipe ran again")
-        print(serial_text()[-5000:])
+    incremental_output = serial_text()[output_offset:]
+    if any(command in incremental_output for command in (
+        "tcc -c hello.c -o hello.o",
+        "tcc -c message.c -o message.o",
+        "tcc hello.o message.o -o hello.elf",
+    )):
+        print("MAKE-INCREMENTAL-FAIL: up-to-date object or executable recipe ran again")
+        print(incremental_output[-5000:])
         return 1
 
     # EXT2 mtime has one-second resolution; cross a second before touching
@@ -154,7 +164,7 @@ def main():
 
     output_offset = len(serial_text())
     send_line("make -C /share/octagram")
-    if not wait_for_after("tcc hello.c message.c -o hello.elf", output_offset, 30):
+    if not wait_for_after("tcc hello.o message.o -o hello.elf", output_offset, 30):
         print("MAKE-PREREQUISITE-FAIL: newer source did not trigger a rebuild")
         print(serial_text()[-5000:])
         return 1
@@ -165,7 +175,7 @@ def main():
 
     output_offset = len(serial_text())
     send_line("make -B -C /share/octagram")
-    if not wait_for_after("tcc hello.c message.c -o hello.elf", output_offset, 30):
+    if not wait_for_after("tcc hello.o message.o -o hello.elf", output_offset, 30):
         print("MAKE-FORCE-FAIL: -B did not force the target recipe")
         print(serial_text()[-5000:])
         return 1

@@ -168,6 +168,32 @@ pub fn open(path: &CStr, flags: u64) -> Result<u64, i64> {
     }
 }
 
+/// Compact metadata layout returned by OCTAGRAM's stat syscall.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileStat {
+    pub size: u64,
+    pub mode: u32,
+    pub modified_seconds: u32,
+}
+
+/// Read file metadata without opening a descriptor.
+pub fn stat_path(path: &CStr) -> Result<FileStat, i64> {
+    let mut metadata = FileStat::default();
+    let result = unsafe {
+        syscall2(
+            6,
+            path.as_ptr() as usize as u64,
+            &mut metadata as *mut FileStat as usize as u64,
+        )
+    };
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(metadata)
+    }
+}
+
 pub fn getcwd(buffer: &mut [u8]) -> Result<usize, i64> {
     let result = unsafe { syscall2(14, buffer.as_mut_ptr() as usize as u64, buffer.len() as u64) };
     checked_result(result)

@@ -48,6 +48,14 @@ Direktori yang diharapkan saat runtime: `/lib/tcc` (binary dan library),
 Header yang dipasang adalah header `user/include/`, sehingga program yang
 dikompilasi TinyCC memakai ABI dan deklarasi yang sama dengan program bawaan.
 
+Build userland memakai baseline `-march=x86-64 -mtune=generic` dan secara
+eksplisit menonaktifkan AVX/AVX2/AVX-512. Kernel belum menyediakan kontrak
+penyimpanan/restorasi state AVX (XSAVE/XCR0) untuk semua jalur eksekusi dan
+context switch, jadi binary userland harus tetap pada baseline x86-64. CI
+memeriksa disassembly `tcc.elf` agar instruksi AVX/VEX tidak masuk ke image
+guest secara tidak sengaja.
+dikompilasi TinyCC memakai ABI dan deklarasi yang sama dengan program bawaan.
+
 Perintah `tcc` kini menjadi alias shell untuk executable native `/bin/tcc.elf`.
 Ia menerima argumen TinyCC secara langsung, sehingga pola compile dan eksekusi
 program sederhana adalah:

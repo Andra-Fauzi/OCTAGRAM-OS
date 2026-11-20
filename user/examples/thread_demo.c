@@ -11,16 +11,16 @@ typedef struct WorkerArgument {
 } WorkerArgument;
 
 /*
- * Keep an SSE2 register live across an OCTAGRAM syscall.  This intentionally
- * uses int 0x80 rather than a C function call so the compiler cannot apply the
- * SysV caller-saved XMM register rule to the value being checked.
+ * Keep an SSE2 register live across a normal getpid syscall.  This uses int
+ * 0x80 rather than a C function call so the compiler cannot apply the SysV
+ * caller-saved XMM register rule to the value being checked.
  */
 static int verify_xmm_across_kernel_yield(uint64_t pattern)
 {
     uint64_t observed;
     __asm__ volatile(
         "movq %1, %%xmm15\n\t"
-        "mov $65, %%eax\n\t"
+        "mov $11, %%eax\n\t"
         "int $0x80\n\t"
         "movq %%xmm15, %0\n\t"
         : "=&r"(observed)

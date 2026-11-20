@@ -113,10 +113,10 @@ Shell operators and implicit rules are unsupported.\n",
         chdir(&directory).map_err(|error| format!("cannot change directory ({error})"))?;
     }
 
-    let source = read_file(&makefile_path)?;
-    let text = core::str::from_utf8(&source)
-        .map_err(|_| format!("{makefile_path}: Makefile is not UTF-8"))?;
-    let mut makefile = parse_makefile(text)?;
+    let mut include_stack = Vec::new();
+    let mut total_size = 0usize;
+    let text = load_makefile(&makefile_path, 0, &mut include_stack, &mut total_size)?;
+    let mut makefile = parse_makefile(&text)?;
     for (name, value) in overrides {
         set_variable(&mut makefile.variables, &name, &value);
     }
@@ -160,6 +160,58 @@ fn collect_arguments(argc: i32, argv: *const *const u8) -> Result<Vec<String>, S
         );
     }
     Ok(arguments)
+}
+
+fn load_makefile(
+    path: &str,
+    depth: usize,
+    include_stack: &mut Vec<String>,
+    total_size: &mut usize,
+) -> Result<String, String> {
+    const MAX_INCLUDE_DEPTH: usize = 8;
+    if depth > MAX_INCLUDE_DEPTH {
+        return Err("Makefile include nesting is too deep".into());
+    }
+    if include_stack.iter().any(|included| included == path) {
+        return Err(format!("recursive Makefile include: {path}"));
+    }
+
+    let source = read_file(path)?;
+    *total_size = total_size.saturating_add(source.len());
+    if *total_size > MAX_MAKEFILE_SIZE {
+        return Err("combined Makefiles are too large".into());
+    }
+    let text = core::str::from_utf8(&source)
+        .map_err(|_| format!("{path}: Makefile is not UTF-8"))?;
+    include_stack.push(path.to_string());
+
+    let mut expanded = String::new();
+    for (line_number, line) in text.lines().enumerate() {
+        let directive = line.trim();
+        if let Some(includes) = directive.strip_prefix("include ") {
+            let includes = includes.split('#').next().unwrap_or("").trim();
+            if includes.is_empty() {
+                include_stack.pop();
+                return Err(format!("{path}:{}: empty include directive", line_number + 1));
+            }
+            for included_path in includes.split_whitespace() {
+                let included = load_makefile(included_path, depth + 1, include_stack, total_size)
+                    .map_err(|error| format!("{path}:{}: {error}", line_number + 1))?;
+                expanded.push_str(&included);
+                expanded.push('\n');
+            }
+        } else {
+            expanded.push_str(line);
+            expanded.push('\n');
+        }
+        if expanded.len() > MAX_MAKEFILE_SIZE {
+            include_stack.pop();
+            return Err("combined Makefiles are too large".into());
+        }
+    }
+
+    include_stack.pop();
+    Ok(expanded)
 }
 
 fn parse_makefile(source: &str) -> Result<Makefile, String> {

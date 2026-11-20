@@ -189,7 +189,9 @@ fn load_makefile(
 
     let mut expanded = String::new();
     for (line_number, line) in text.lines().enumerate() {
-        let directive = line.trim();
+        // A recipe may invoke a program named "include"; only non-recipe
+        // lines can contain Makefile include directives.
+        let directive = if line.starts_with('\t') { "" } else { line.trim() };
         if let Some(includes) = directive.strip_prefix("include ") {
             let includes = includes.split('#').next().unwrap_or("").trim();
             if includes.is_empty() {

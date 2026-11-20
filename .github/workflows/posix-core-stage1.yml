@@ -42,7 +42,7 @@ jobs:
 
       - name: Compile no_std runtime for experimental OCTAGRAM host target
         run: |
-          cargo +nightly -Z build-std=core build --offline \
+          cargo +nightly -Z build-std=core -Z json-target-spec build --offline \
             --manifest-path user/rust/Cargo.toml \
             --package octagram-runtime \
             --release \

@@ -5,10 +5,7 @@ ARCHIVE = libmessage.a
 .PHONY: all phony-check
 all: $(TARGET)
 
-hello.o: hello.c
-	$(CC) -c $< -o $@
-
-message.o: message.c
+%.o: %.c
 	$(CC) -c $< -o $@
 
 $(ARCHIVE): message.o

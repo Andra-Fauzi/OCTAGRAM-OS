@@ -13,13 +13,18 @@ enum Node {
 /// In-memory filesystem. All data is lost when the kernel stops.
 pub struct RamFs {
     nodes: BTreeMap<String, Node>,
+    modified: BTreeMap<String, u64>,
 }
 
 impl RamFs {
     pub fn new() -> Self {
         let mut nodes = BTreeMap::new();
         nodes.insert(String::from("/"), Node::Directory { permissions: 0o755 });
-        Self { nodes }
+        let mut modified = BTreeMap::new();
+        if let Some(timestamp) = super::current_timestamp() {
+            modified.insert(String::from("/"), timestamp);
+        }
+        Self { nodes, modified }
     }
 
     fn parent_path(path: &str) -> Option<&str> {
@@ -42,22 +47,25 @@ impl RamFs {
         }
     }
 
-    fn metadata_for(node: &Node) -> Metadata {
+    fn metadata_for(node: &Node, modified: Option<u64>) -> Metadata {
         match node {
             Node::Directory { permissions } => Metadata {
                 node_type: NodeType::Directory,
                 len: 0,
                 permissions: *permissions,
+                modified,
             },
             Node::File { data, permissions } => Metadata {
                 node_type: NodeType::File,
                 len: data.len(),
                 permissions: *permissions,
+                modified,
             },
             Node::Symlink(target) => Metadata {
                 node_type: NodeType::Symlink,
                 len: target.len(),
                 permissions: 0o777,
+                modified,
             },
         }
     }
@@ -90,7 +98,7 @@ impl FileSystem for RamFs {
         let path = normalize_path(path)?;
         self.nodes
             .get(&path)
-            .map(Self::metadata_for)
+            .map(|node| Self::metadata_for(node, self.modified.get(&path).copied()))
             .ok_or(FsError::NotFound)
     }
 
@@ -121,8 +129,8 @@ impl FileSystem for RamFs {
     fn write(&mut self, path: &str, offset: usize, bytes: &[u8]) -> Result<usize, FsError> {
         let path = normalize_path(path)?;
         let end = offset.checked_add(bytes.len()).ok_or(FsError::NoSpace)?;
-        match self.nodes.get_mut(&path).ok_or(FsError::NotFound)? {
-            Node::Directory { .. } => Err(FsError::IsDirectory),
+        let written = match self.nodes.get_mut(&path).ok_or(FsError::NotFound)? {
+            Node::Directory { .. } => return Err(FsError::IsDirectory),
             Node::File { data, .. } => {
                 if bytes.is_empty() {
                     return Ok(0);
@@ -132,16 +140,20 @@ impl FileSystem for RamFs {
                     data.resize(end, 0);
                 }
                 data[offset..end].copy_from_slice(bytes);
-                Ok(bytes.len())
+                bytes.len()
             }
-            Node::Symlink(_) => Err(FsError::InvalidData),
+            Node::Symlink(_) => return Err(FsError::InvalidData),
+        };
+        if let Some(timestamp) = super::current_timestamp() {
+            self.modified.insert(path, timestamp);
         }
+        Ok(written)
     }
 
     fn truncate(&mut self, path: &str, len: usize) -> Result<(), FsError> {
         let path = normalize_path(path)?;
         match self.nodes.get_mut(&path).ok_or(FsError::NotFound)? {
-            Node::Directory { .. } => Err(FsError::IsDirectory),
+            Node::Directory { .. } => return Err(FsError::IsDirectory),
             Node::File { data, .. } => {
                 if len > data.len() {
                     grow_vec(data, len - data.len())?;
@@ -151,10 +163,13 @@ impl FileSystem for RamFs {
                     // Give the memory back: it is the same heap every file shares.
                     data.shrink_to_fit();
                 }
-                Ok(())
             }
-            Node::Symlink(_) => Err(FsError::InvalidData),
+            Node::Symlink(_) => return Err(FsError::InvalidData),
         }
+        if let Some(timestamp) = super::current_timestamp() {
+            self.modified.insert(path, timestamp);
+        }
+        Ok(())
     }
 
     fn set_permissions(&mut self, path: &str, permissions: u16) -> Result<(), FsError> {
@@ -184,12 +199,15 @@ impl FileSystem for RamFs {
         }
         self.ensure_parent_directory(&path)?;
         self.nodes.insert(
-            path,
+            path.clone(),
             Node::File {
                 data: Vec::new(),
                 permissions: 0o644,
             },
         );
+        if let Some(timestamp) = super::current_timestamp() {
+            self.modified.insert(path, timestamp);
+        }
         Ok(())
     }
 
@@ -200,7 +218,10 @@ impl FileSystem for RamFs {
         }
         self.ensure_parent_directory(&path)?;
         self.nodes
-            .insert(path, Node::Directory { permissions: 0o755 });
+            .insert(path.clone(), Node::Directory { permissions: 0o755 });
+        if let Some(timestamp) = super::current_timestamp() {
+            self.modified.insert(path, timestamp);
+        }
         Ok(())
     }
 
@@ -213,7 +234,10 @@ impl FileSystem for RamFs {
             return Err(FsError::AlreadyExists);
         }
         self.ensure_parent_directory(&path)?;
-        self.nodes.insert(path, Node::Symlink(String::from(target)));
+        self.nodes.insert(path.clone(), Node::Symlink(String::from(target)));
+        if let Some(timestamp) = super::current_timestamp() {
+            self.modified.insert(path, timestamp);
+        }
         Ok(())
     }
 
@@ -234,6 +258,7 @@ impl FileSystem for RamFs {
             }
         }
         self.nodes.remove(&path);
+        self.modified.remove(&path);
         Ok(())
     }
 
@@ -290,7 +315,10 @@ impl FileSystem for RamFs {
         }
         for (old_path, new_path) in moved {
             if let Some(node) = self.nodes.remove(&old_path) {
-                self.nodes.insert(new_path, node);
+                self.nodes.insert(new_path.clone(), node);
+            }
+            if let Some(timestamp) = self.modified.remove(&old_path) {
+                self.modified.insert(new_path, timestamp);
             }
         }
         Ok(())
@@ -318,7 +346,7 @@ impl FileSystem for RamFs {
             }
             entries.push(DirectoryEntry {
                 name: String::from(name),
-                metadata: Self::metadata_for(node),
+                metadata: Self::metadata_for(node, self.modified.get(candidate).copied()),
             });
         }
         Ok(entries)

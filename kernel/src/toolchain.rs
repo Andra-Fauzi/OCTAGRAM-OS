@@ -2880,7 +2880,149 @@ fn apply_elf_relocation(
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolchainError, assemble, compile, compile_with_includes, link};
+    use super::{
+        ToolchainError, assemble, compile, compile_with_includes, link, link_elf_object,
+    };
+
+    fn put_elf64(bytes: &mut [u8], offset: usize, value: u64) {
+        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_elf32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_elf16(bytes: &mut [u8], offset: usize, value: u16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    /// Build a minimal ET_REL object: `_start` moves the address of `message`
+    /// into edi and exits, with one R_X86_64_32 relocation against `.data`.
+    fn relocatable_object() -> alloc::vec::Vec<u8> {
+        const HEADER: usize = 64;
+        const SECTION: usize = 64;
+        const COUNT: usize = 6;
+        let text: [u8; 12] = [
+            0xBF, 0, 0, 0, 0, // mov $message, %edi
+            0xB8, 60, 0, 0, 0, // mov $60, %eax
+            0x0F, 0x05, // syscall
+        ];
+        let data: [u8; 8] = *b"OCTAGRAM";
+
+        let mut object = alloc::vec![0u8; 0x400];
+        object[..4].copy_from_slice(b"\x7fELF");
+        object[4] = 2;
+        object[5] = 1;
+        object[6] = 1;
+        put_elf16(&mut object, 16, 1); // ET_REL
+        put_elf16(&mut object, 18, 62); // x86_64
+        put_elf32(&mut object, 20, 1);
+        put_elf64(&mut object, 40, 0x240);
+        put_elf16(&mut object, 52, HEADER as u16);
+        put_elf16(&mut object, 58, SECTION as u16);
+        put_elf16(&mut object, 60, COUNT as u16);
+        put_elf16(&mut object, 62, 5); // .shstrtab
+
+        let text_offset = 0x100;
+        let data_offset = 0x120;
+        let symtab_offset = 0x140;
+        let rela_offset = 0x200;
+        let shstrtab_offset = 0x220;
+        object[text_offset..text_offset + text.len()].copy_from_slice(&text);
+        object[data_offset..data_offset + data.len()].copy_from_slice(&data);
+        object[shstrtab_offset..shstrtab_offset + 15].copy_from_slice(b"_start\0message\0");
+
+        // Section 0 stays all zero (SHT_NULL).
+        let section = |index: usize| 0x240 + index * SECTION;
+        // 1: .text
+        put_elf32(&mut object, section(1), 1);
+        put_elf32(&mut object, section(1) + 4, 1);
+        put_elf64(&mut object, section(1) + 8, 0x6); // ALLOC | EXECINSTR
+        put_elf64(&mut object, section(1) + 24, text_offset as u64);
+        put_elf64(&mut object, section(1) + 32, text.len() as u64);
+        put_elf64(&mut object, section(1) + 48, 16);
+        // 2: .data
+        put_elf32(&mut object, section(2), 7);
+        put_elf32(&mut object, section(2) + 4, 1);
+        put_elf64(&mut object, section(2) + 8, 0x3); // ALLOC | WRITE
+        put_elf64(&mut object, section(2) + 24, data_offset as u64);
+        put_elf64(&mut object, section(2) + 32, data.len() as u64);
+        put_elf64(&mut object, section(2) + 48, 8);
+        // 3: .rela.text (applies to section 1, symbols from section 4)
+        put_elf32(&mut object, section(3), 13);
+        put_elf32(&mut object, section(3) + 4, 4);
+        put_elf64(&mut object, section(3) + 24, rela_offset as u64);
+        put_elf64(&mut object, section(3) + 32, 24);
+        put_elf32(&mut object, section(3) + 40, 4);
+        put_elf32(&mut object, section(3) + 44, 1);
+        put_elf64(&mut object, section(3) + 48, 8);
+        put_elf64(&mut object, section(3) + 56, 24);
+        // 4: .symtab (3 entries, first is the null symbol)
+        put_elf32(&mut object, section(4), 24);
+        put_elf32(&mut object, section(4) + 4, 2);
+        put_elf64(&mut object, section(4) + 24, symtab_offset as u64);
+        put_elf64(&mut object, section(4) + 32, 72);
+        put_elf32(&mut object, section(4) + 40, 5);
+        put_elf32(&mut object, section(4) + 44, 1);
+        put_elf64(&mut object, section(4) + 48, 8);
+        put_elf64(&mut object, section(4) + 56, 24);
+        // 5: string table used by .symtab (also the section-name table)
+        put_elf32(&mut object, section(5), 1);
+        put_elf32(&mut object, section(5) + 4, 3);
+        put_elf64(&mut object, section(5) + 24, shstrtab_offset as u64);
+        put_elf64(&mut object, section(5) + 32, 15);
+        put_elf64(&mut object, section(5) + 48, 1);
+
+        let symbol = |index: usize| symtab_offset + index * 24;
+        put_elf32(&mut object, symbol(1), 0);
+        object[symbol(1) + 4] = 0x12; // STB_GLOBAL | STT_FUNC
+        put_elf16(&mut object, symbol(1) + 6, 1); // .text
+        put_elf32(&mut object, symbol(2), 7);
+        object[symbol(2) + 4] = 0x11; // STB_GLOBAL | STT_OBJECT
+        put_elf16(&mut object, symbol(2) + 6, 2); // .data
+        put_elf64(&mut object, symbol(2) + 8, 0);
+
+        put_elf64(&mut object, rela_offset, 1); // r_offset: the imm32 field
+        let info = (2u64 << 32) | 10; // R_X86_64_32 to symbol 2
+        put_elf64(&mut object, rela_offset + 8, info);
+        put_elf64(&mut object, rela_offset + 16, 0);
+        object
+    }
+
+    #[test]
+    fn links_elf_relocatable_into_two_load_segments() {
+        let executable = link_elf_object(&relocatable_object()).unwrap();
+        assert_eq!(&executable[..4], b"\x7fELF");
+        let u16_at = |offset| u16::from_le_bytes([executable[offset], executable[offset + 1]]);
+        let u64_at = |offset| {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&executable[offset..offset + 8]);
+            u64::from_le_bytes(bytes)
+        };
+        assert_eq!(u16_at(16), 2); // ET_EXEC
+        assert_eq!(u16_at(56), 2); // two program headers
+        assert_eq!(u64_at(24), 0x400000); // _start at the text base
+        assert_eq!(u16_at(64 + 4) & 1, 1); // text is executable
+        let data_vaddr = u64_at(64 + 56 + 16);
+        assert_eq!(data_vaddr, 0x401000);
+        let text = &executable[0x1000..];
+        assert_eq!(text[0], 0xBF);
+        assert_eq!(
+            u32::from_le_bytes([text[1], text[2], text[3], text[4]]),
+            data_vaddr as u32
+        );
+        assert_eq!(&executable[0x2000..0x2008], b"OCTAGRAM");
+    }
+
+    #[test]
+    fn rejects_relocatable_objects_without_an_entry_symbol() {
+        let mut object = relocatable_object();
+        object[0x220] = b'm'; // rename `_start` so no entry symbol remains
+        assert_eq!(
+            link_elf_object(&object),
+            Err(ToolchainError::NoEntryPoint)
+        );
+    }
     use crate::fs::FsError;
 
     #[test]

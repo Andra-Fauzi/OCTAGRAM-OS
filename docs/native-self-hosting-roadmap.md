@@ -166,7 +166,10 @@ toolchain native yang teruji.
   dengan segmen teks R|X dan data R|W, relokasi 64/PC32/PLT32/32/32S);
   toolchain mini tetap diberi label terbatas. Verifikasi QEMU menyusul.
 - [x] Bangun program multi-file dengan beberapa object dan static library (QEMU-tested melalui TinyCC dan native Make).
-- [ ] Tambahkan test positif dan negatif untuk compiler/linker.
+- [x] Tambahkan test positif dan negatif untuk compiler/linker (host test
+  `links_elf_relocatable_into_two_load_segments` dan
+  `rejects_relocatable_objects_without_an_entry_symbol`, di samping test
+  assembler/C-subset yang sudah ada).
 
 Gate: proyek C multi-file dibangun sepenuhnya di OCTAGRAM dan hasilnya
 dijalankan; tidak ada GCC/binutils host yang dipanggil.

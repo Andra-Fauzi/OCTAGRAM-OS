@@ -57,6 +57,10 @@ Batasan yang masih ada: satu objek per pemanggilan `ld` (belum ada penggabungan
 beberapa objek atau arsip `.a` lewat linker ini), tanpa dukungan relocation
 GOT/PLT/TLS, dan tanpa simbol lokal bernama sama pada banyak objek.
 
+Uji host: `cargo +nightly test ... toolchain::tests::` mencakup link objek
+`ET_REL` dua segmen (relokasi `R_X86_64_32` terhadap `.data`) dan penolakan
+objek tanpa simbol `_start`.
+
 ## TinyCC di dalam OS
 
 `user/Makefile` membangun TinyCC `ONE_SOURCE=0` dengan target

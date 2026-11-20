@@ -6,7 +6,7 @@ ARCHIVE = libmessage.a
 all: $(TARGET)
 
 %.o: %.c
-	$(CC) -c $< -o $@
+	$(CC) -c $< -o $*.o
 
 $(ARCHIVE): message.o
 	$(CC) -ar rcs $@ $<

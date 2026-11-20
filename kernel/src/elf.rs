@@ -2206,31 +2206,42 @@ fn run_loaded_processes(
                     // Capture the next task's TLS base before swapping its
                     // state into USER_PROCESS. After the swap, scheduler.processes[next].state
                     // contains the previously active task, not the task being resumed.
+                    let selected_tid = scheduler.processes[next].tid;
+                    let selected_is_thread = scheduler.processes[next].is_thread;
                     let thread_pointer_value = scheduler.processes[next].state.thread_pointer;
-                    if thread_pointer_value != 0 {
-                        serial_trace(format_args!(
-                            "[sched-tls] kernel resume tid={} tls={thread_pointer_value:#x}",
-                            scheduler.processes[next].tid
-                        ));
-                    }
                     if let Some(context) = scheduler.processes[next].resume_context.take() {
                         let frame = unsafe { &mut *(frame_pointer as *mut InterruptFrame) };
                         frame.rax = context.accumulator;
                         frame.stack_frame = context.stack_frame;
                     }
                     let mut active_process = USER_PROCESS.lock();
+                    if selected_is_thread
+                        || thread_pointer_value != 0
+                        || active_process.thread_pointer != 0
+                    {
+                        serial_trace(format_args!(
+                            "[sched-tls] pick tid={selected_tid} is_thread={selected_is_thread} saved_tls={thread_pointer_value:#x} outgoing_tls={:#x}",
+                            active_process.thread_pointer
+                        ));
+                    }
                     core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
+                    if active_process.thread_pointer != thread_pointer_value {
+                        serial_trace(format_args!(
+                            "[sched-tls] state mismatch tid={selected_tid} captured={thread_pointer_value:#x} installed_state={:#x}",
+                            active_process.thread_pointer
+                        ));
+                    }
                     scheduler.current = next;
                     let process = &scheduler.processes[next];
                     unsafe {
                         process.image.memory.address_space.activate();
                         gdt::set_ring0_stack_top(process.kernel_stack_top);
                     }
-                    (frame_pointer, thread_pointer_value)
+                    (frame_pointer, thread_pointer_value, selected_tid, selected_is_thread)
                 })
             };
 
-            let Some((frame_pointer, thread_pointer_value)) = next else {
+            let Some((frame_pointer, thread_pointer_value, selected_tid, selected_is_thread)) = next else {
                 unsafe {
                     core::arch::asm!("sti; hlt");
                 }
@@ -2240,6 +2251,12 @@ fn run_loaded_processes(
                 continue;
             };
             thread_pointer::write(thread_pointer_value);
+            if selected_is_thread || thread_pointer_value != 0 {
+                serial_trace(format_args!(
+                    "[sched-tls] installed tid={selected_tid} tls={thread_pointer_value:#x} fs={:#x}",
+                    thread_pointer::read()
+                ));
+            }
             restore_current_user_fpu();
             let _last_status = unsafe { gdt::resume_user_frame(frame_pointer as *mut u8) };
         }

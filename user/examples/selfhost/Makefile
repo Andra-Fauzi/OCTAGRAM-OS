@@ -1,3 +1,5 @@
+include selfhost-rules.mk
+
 CC = tcc
 TARGET = hello.elf
 ARCHIVE = libmessage.a
@@ -5,8 +7,6 @@ ARCHIVE = libmessage.a
 .PHONY: all phony-check
 all: $(TARGET)
 
-%.o: %.c
-	$(CC) -c $< -o $*.o
 
 $(ARCHIVE): message.o
 	$(CC) -ar rcs $@ $<

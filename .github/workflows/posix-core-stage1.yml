@@ -72,12 +72,12 @@ jobs:
             readelf -h user/build/tcc.elf
             echo "Instructions around the guest fault address 0x402a2e:"
             objdump -d --start-address=0x402a00 --stop-address=0x402a60 user/build/tcc.elf || true
-          echo "Checking that the shipped TinyCC binary contains no AVX/VEX mnemonics..."
-          if objdump -d user/build/tcc.elf | grep -E ':[[:space:]]+([0-9a-f]{2}[[:space:]]+)*v[a-z0-9]+[[:space:]]'; then
-            echo "ERROR: AVX/VEX instruction found in TinyCC guest binary."
-            exit 1
-          fi
-          echo "TinyCC binary uses the baseline instruction set."
+            echo "Checking that the shipped TinyCC binary contains no VEX/EVEX instruction prefixes..."
+            if objdump -d user/build/tcc.elf | grep -E '^[[:space:]]*[[:xdigit:]]+:[[:space:]]+([cC][45]|62)[[:space:]]'; then
+              echo "ERROR: VEX/EVEX instruction prefix found in TinyCC guest binary."
+              exit 1
+            fi
+            echo "TinyCC binary contains no VEX/EVEX instruction prefixes."
           else
             echo "TinyCC guest ELF was not produced at user/build/tcc.elf"
           fi

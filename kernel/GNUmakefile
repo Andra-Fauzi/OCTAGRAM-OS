@@ -31,7 +31,7 @@ endif
 # Default target.
 .PHONY: all
 all:
-	$(MAKE) -C ../user/rust make
+	$(MAKE) -C ../user/rust all
 	$(MAKE) -C ../user tcc
 	$(MAKE) -C ../user build/file_api_demo.elf
 	$(MAKE) -C ../user build/path_api_demo.elf

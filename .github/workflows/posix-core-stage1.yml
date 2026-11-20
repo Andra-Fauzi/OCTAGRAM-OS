@@ -72,12 +72,27 @@ jobs:
             readelf -h user/build/tcc.elf
             echo "Instructions around the guest fault address 0x402a2e:"
             objdump -d --start-address=0x402a00 --stop-address=0x402a60 user/build/tcc.elf || true
-            echo "Checking that the shipped TinyCC binary contains no VEX/EVEX instruction prefixes..."
-            if objdump -d user/build/tcc.elf | grep -E '^[[:space:]]*[[:xdigit:]]+:[[:space:]]+([cC][45]|62)[[:space:]]'; then
-              echo "ERROR: VEX/EVEX instruction prefix found in TinyCC guest binary."
+            echo "Checking decoded instructions in the executable .text section for AVX/VEX mnemonics..."
+            # Never scan raw bytes: values such as 0x62/c4/c5 also occur in
+            # strings, tables, and other non-code data. Restrict objdump to
+            # .text and inspect its decoded mnemonic column. Exclude legacy
+            # virtualization mnemonics beginning with 'v' (e.g. vmcall).
+            if objdump -d -j .text user/build/tcc.elf | awk -F '\\t' '
+              NF >= 3 {
+                split($3, instruction, /[[:space:]]+/)
+                mnemonic = instruction[1]
+                if (mnemonic ~ /^v[a-zA-Z0-9]+$/ &&
+                    mnemonic !~ /^(verr|verw|vmcall|vmlaunch|vmresume|vmrun|vmsave|vmmcall)$/) {
+                  print
+                  found = 1
+                }
+              }
+              END { exit(found ? 0 : 1) }
+            '; then
+              echo "ERROR: decoded AVX/VEX instruction found in TinyCC .text."
               exit 1
             fi
-            echo "TinyCC binary contains no VEX/EVEX instruction prefixes."
+            echo "TinyCC .text contains no decoded AVX/VEX instructions."
           else
             echo "TinyCC guest ELF was not produced at user/build/tcc.elf"
           fi

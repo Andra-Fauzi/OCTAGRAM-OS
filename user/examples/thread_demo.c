@@ -58,7 +58,7 @@ static void *worker(void *opaque)
         return (void *)(uintptr_t)1;
     }
 
-    const uint64_t xmm_pattern = UINT64_C(0x4f43544147524100) | (uint64_t)argument->value;
+    const uint64_t xmm_pattern = 0x4f43544147524100ULL | (uint64_t)argument->value;
     if (!verify_xmm_across_kernel_yield(xmm_pattern)) {
         return (void *)(uintptr_t)4;
     }

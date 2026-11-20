@@ -231,7 +231,7 @@ const HELP_ENTRIES: &[&str] = &[
     "tail [-n count] <file> print the last lines of a text file",
     "wc <file>              count lines, words, and bytes",
     "grep [-n] <text> <file> search literal text in a file",
-    "touch <path>           create an empty file",
+    "touch <path>           create a file or update its modification time",
     "mkdir <path>           create a directory",
     "ln -s <target> <link>  create a symbolic link",
     "rm <path>              remove an empty file or directory",
@@ -854,7 +854,15 @@ fn create_node(current_dir: &str, arguments: &str, directory: bool) {
         if directory {
             vfs.create_dir(&path)
         } else {
-            vfs.create_file(&path)
+            match vfs.metadata(&path) {
+                Ok(metadata) if metadata.node_type == NodeType::File => {
+                    // Preserve contents while updating the filesystem mtime.
+                    vfs.truncate(&path, metadata.len)
+                }
+                Ok(_) => Err(FsError::IsDirectory),
+                Err(FsError::NotFound) => vfs.create_file(&path),
+                Err(error) => Err(error),
+            }
         }
     });
     match result {

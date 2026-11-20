@@ -970,7 +970,7 @@ mod tests {
                 assert_eq!(&archive_magic, b"!<arch>\n");
             }
 
-            let tcc_source = include_bytes!("../../../user/examples/tcc_smoke.c");
+            let tcc_source = include_bytes!("../../../user/examples/tcc_smoke_minimal.c");
             let tcc_metadata = vfs.metadata("/tmp/tcc.c").unwrap();
             assert_eq!(tcc_metadata.len, tcc_source.len());
             let mut tcc_contents = alloc::vec![0; tcc_metadata.len];
@@ -979,6 +979,10 @@ mod tests {
                 Ok(tcc_source.len())
             );
             assert_eq!(&tcc_contents, tcc_source);
+
+            let tcc_full_source = include_bytes!("../../../user/examples/tcc_smoke.c");
+            let tcc_full_metadata = vfs.metadata("/tmp/tcc-full.c").unwrap();
+            assert_eq!(tcc_full_metadata.len, tcc_full_source.len());
 
             for (path, expected) in [
                 (

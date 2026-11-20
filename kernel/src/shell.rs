@@ -276,7 +276,7 @@ const HELP_ENTRIES: &[&str] = &[
     "mkfs.fat <device> --yes  format a FAT32 superfloppy (erases data)",
     "mkfs.ext2 <device|diskpN> --yes  format EXT2 on a disk or GPT Linux partition",
     "as <input.s> -o <out.o> assemble supported x86_64 source",
-    "ld <input.o> -o <out.elf> link a native toolchain object",
+    "ld <input.o> -o <out.elf> link a native toolchain or ELF64 relocatable object",
     "cc <input.c> -o <out.elf> compile the kernel C subset",
     "tcc <input.c> [options] compile C with native TinyCC",
     "tcc <input.c> [-o <out.elf>] compile C with TinyCC",
@@ -2381,7 +2381,13 @@ fn run_toolchain_command(command: &str, current_dir: &str, arguments: &str) {
     };
     let result = match command {
         "as" => crate::toolchain::assemble(&source),
-        "ld" => crate::toolchain::link(&source),
+        "ld" => {
+            if crate::toolchain::is_elf_object(&source) {
+                crate::toolchain::link_elf_object(&source)
+            } else {
+                crate::toolchain::link(&source)
+            }
+        }
         "cc" => crate::toolchain::compile_with_includes(&source, &input, read_toolchain_file),
         _ => return,
     };

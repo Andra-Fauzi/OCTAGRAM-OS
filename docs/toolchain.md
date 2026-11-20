@@ -10,8 +10,8 @@ filesystem (`user/third_party/tinycc`).
 menulis ELF64 x86_64 langsung ke VFS. Perintah shell:
 
 ```
-as input.s -o output.o     # assembler
-ld input.s -o output.elf   # link objek/sumber menjadi ELF
+as input.s -o output.o     # assembler toolchain mini
+ld input.o -o output.elf   # link objek toolchain mini atau ELF64 relocatable
 cc input.c -o output.elf   # compile C-subset dengan include
 ```
 
@@ -33,6 +33,29 @@ ELF keluaran memakai base `0x400000`, satu segmen load di offset `0x1000`,
 dan header standar 64 byte + program header 56 byte. Compiler hanya menerima
 subset C yang didokumentasikan oleh pesan `UnsupportedC`/`UnsupportedPreprocessor`;
 bukan pengganti GCC.
+
+### Linking ELF64 relocatable (`tcc -c`)
+
+`ld` mendeteksi objek ELF lewat magic `\x7fELF` dan memakai
+`toolchain::link_elf_object`; objek format toolchain mini (`OCTOBJ1`) tetap
+memakai jalur lama. Linker ELF menerima satu objek `ET_REL` x86_64 dan
+menghasilkan executable statis dengan dua segmen:
+
+| Segmen | Isi | Flag |
+| --- | --- | --- |
+| teks | section `SHF_ALLOC` + `SHF_EXECINSTR` (`.text`) | `R|X` |
+| data | section `SHF_ALLOC` non-eksekusi (`.data`, `.rodata`) dan `.bss` | `R|W` |
+
+Relokasi yang didukung: `R_X86_64_64`, `PC32`, `PLT32`, `32`, dan `32S`.
+Relokasi lain gagal dengan `UnsupportedRelocation` alih-alih menghasilkan binary
+rusak. Simbol undefined dianggap error (`UndefinedSymbol`), common symbol
+ditolak (`UnsupportedCommonSymbol`), dan entry point diambil dari simbol
+`_start` (`NoEntryPoint` bila tidak ada). `.bss` ditempatkan setelah data
+dengan `p_memsz` lebih besar dari `p_filesz`.
+
+Batasan yang masih ada: satu objek per pemanggilan `ld` (belum ada penggabungan
+beberapa objek atau arsip `.a` lewat linker ini), tanpa dukungan relocation
+GOT/PLT/TLS, dan tanpa simbol lokal bernama sama pada banyak objek.
 
 ## TinyCC di dalam OS
 

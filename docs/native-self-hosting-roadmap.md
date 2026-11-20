@@ -161,8 +161,10 @@ toolchain native yang teruji.
   `cc` tetap compiler C-subset kernel dan `as`/`ld` tetap toolchain mini.
 - [ ] Satukan antarmuka compiler/assembler/linker menjadi toolchain ELF native
   yang konsisten; dokumentasikan satu sintaks canonical.
-- [ ] Tambahkan assembler dan linker yang mampu menangani object ELF yang
-  dihasilkan compiler; toolchain mini tetap diberi label terbatas.
+- [x] Tambahkan assembler dan linker yang mampu menangani object ELF yang
+  dihasilkan compiler (`toolchain::link_elf_object`: ET_REL x86_64 → ET_EXEC
+  dengan segmen teks R|X dan data R|W, relokasi 64/PC32/PLT32/32/32S);
+  toolchain mini tetap diberi label terbatas. Verifikasi QEMU menyusul.
 - [x] Bangun program multi-file dengan beberapa object dan static library (QEMU-tested melalui TinyCC dan native Make).
 - [ ] Tambahkan test positif dan negatif untuk compiler/linker.
 
@@ -757,3 +759,23 @@ disimpan di ext2, dibaca ulang setelah reboot").
 - `mv` belum menimpa nama tujuan (perilaku POSIX `rename`), dan direktori belum
   dapat dipindah antar parent.
 - Pipeline belum tersedia untuk program ELF, dan input redirection `<` belum ada.
+
+## 17. M2 dimulai — linker ELF64 relocatable native (20 November 2026)
+
+`ld` sebelumnya hanya menerima object format internal (`OCTOBJ1`, satu blok kode
+tanpa simbol atau relokasi). Sekarang `ld` mendeteksi magic `\x7fELF` dan
+memanggil `toolchain::link_elf_object`:
+
+- mem-parse ELF64 `ET_REL` x86_64: section header, `SHT_SYMTAB`, string table,
+  dan `SHT_RELA`;
+- menggabungkan section `SHF_ALLOC`: section eksekusi ke segmen teks `R|X`,
+  data/rodata ke segmen data `R|W`, dan `SHT_NOBITS` (`.bss`) ke memori setelah
+  data (`p_memsz` > `p_filesz`);
+- menerapkan relokasi `R_X86_64_64`, `PC32`, `PLT32`, `32`, dan `32S` dengan
+  pengecekan batas serta overflow 32-bit;
+- menolak simbol undefined, common symbol, relokasi tak dikenal, dan object
+  tanpa simbol `_start` alih-alih menghasilkan binary rusak.
+
+Yang belum: penggabungan beberapa object atau arsip `.a` dalam satu pemanggilan,
+relokasi GOT/PLT/TLS, dan verifikasi QEMU yang membuktikan ELF hasil
+`tcc -c` + `ld` benar-benar berjalan.

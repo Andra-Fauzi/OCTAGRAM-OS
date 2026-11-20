@@ -15,5 +15,5 @@ int main(void)
         return 3;
     }
     const char *message = selfhost_message();
-    return oct_write(OCT_STDOUT, message, 26) < 0;
+    return oct_write(OCT_STDOUT, message, 23) < 0;
 }

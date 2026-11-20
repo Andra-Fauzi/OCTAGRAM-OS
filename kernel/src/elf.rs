@@ -9063,6 +9063,7 @@ mod tests {
                 node_type: NodeType::Directory,
                 len: 0,
                 permissions: 0o755,
+                modified: None,
             },
         };
         let record = user_dirent(2, &entry).unwrap();
@@ -9086,6 +9087,7 @@ mod tests {
                 node_type: NodeType::File,
                 len: 0,
                 permissions: 0o644,
+                modified: None,
             },
         };
 

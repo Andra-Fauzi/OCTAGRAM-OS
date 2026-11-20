@@ -858,6 +858,12 @@ pub fn init() {
         );
         seed_file(
             &mut vfs,
+            "/share/octagram/selfhost-rules.mk",
+            include_bytes!("../../../user/examples/selfhost/selfhost-rules.mk"),
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
             "/share/octagram/hello.c",
             include_bytes!("../../../user/examples/selfhost/hello.c"),
             0o644,

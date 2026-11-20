@@ -120,6 +120,9 @@ pub struct Fat32 {
     geometry: Geometry,
     next_free_cluster: u32,
     free_cluster_count: Option<u32>,
+    /// The last file chain written, retained between sequential append chunks.
+    /// Any FAT mutation invalidates this cache.
+    chain_cache: Option<(u32, Vec<u32>)>,
 }
 
 impl Fat32 {
@@ -144,6 +147,14 @@ impl Fat32 {
         }
 
         let mut sectors_per_cluster = 1u32;
+        // Prefer 4 KiB clusters on sufficiently large FAT32 volumes. This keeps
+        // cluster allocation/FAT metadata work bounded while respecting FAT32's
+        // minimum cluster count.
+        while sectors_per_cluster < 8
+            && total_sectors / (sectors_per_cluster as u64 * 2) >= MIN_FAT32_CLUSTERS + 512
+        {
+            sectors_per_cluster *= 2;
+        }
         while total_sectors.div_ceil(sectors_per_cluster as u64) > TARGET_MAX_CLUSTERS
             && sectors_per_cluster < 64
         {
@@ -248,6 +259,7 @@ impl Fat32 {
             geometry,
             next_free_cluster,
             free_cluster_count,
+            chain_cache: None,
         })
     }
 
@@ -283,6 +295,28 @@ impl Fat32 {
             .map_err(|_| FsError::IoError)
     }
 
+    /// Submit an aligned run of whole sectors with one block-device request.
+    fn write_sectors_run(&self, relative_lba: u64, data: &[u8]) -> Result<(), FsError> {
+        if data.is_empty() || data.len() % SECTOR_SIZE != 0 {
+            return Err(FsError::IoError);
+        }
+        let sectors = (data.len() / SECTOR_SIZE) as u64;
+        if relative_lba
+            .checked_add(sectors)
+            .is_none_or(|end| end > self.geometry.partition_sectors)
+        {
+            return Err(FsError::IoError);
+        }
+        let absolute_lba = self
+            .geometry
+            .partition_start
+            .checked_add(relative_lba)
+            .ok_or(FsError::IoError)?;
+        self.device
+            .write_sectors(absolute_lba, data)
+            .map_err(|_| FsError::IoError)
+    }
+
     fn fat_entry(&self, cluster: u32) -> Result<u32, FsError> {
         let byte_offset = (cluster as u64).checked_mul(4).ok_or(FsError::IoError)?;
         let fat_start = self.geometry.fat_start
@@ -300,6 +334,7 @@ impl Fat32 {
         if cluster >= self.geometry.cluster_count + 2 {
             return Err(FsError::IoError);
         }
+        self.chain_cache = None;
         let old_value = self.fat_entry(cluster)? & 0x0FFF_FFFF;
         let value = value & 0x0FFF_FFFF;
         let byte_offset = (cluster as u64).checked_mul(4).ok_or(FsError::IoError)?;
@@ -617,6 +652,36 @@ impl Fat32 {
             let cluster_offset = position % cluster_size;
             let sector_lba = self.cluster_lba(cluster)? + (cluster_offset / SECTOR_SIZE) as u64;
             let sector_offset = cluster_offset % SECTOR_SIZE;
+            let remaining = data.len() - written;
+
+            if sector_offset == 0 && remaining >= SECTOR_SIZE {
+                // Fast path for sector-aligned writes: merge physically
+                // contiguous clusters into one multi-sector operation.
+                const MAX_RUN_SECTORS: usize = 512;
+                let sectors_per_cluster = self.geometry.sectors_per_cluster as usize;
+                let mut run_sectors = (cluster_size - cluster_offset) / SECTOR_SIZE;
+                let mut last_cluster = cluster;
+                let mut next_index = cluster_index + 1;
+                while run_sectors * SECTOR_SIZE < remaining && run_sectors < MAX_RUN_SECTORS {
+                    match chain.get(next_index) {
+                        Some(&next) if next == last_cluster + 1 => {
+                            run_sectors += sectors_per_cluster;
+                            last_cluster = next;
+                            next_index += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                let run_sectors = run_sectors
+                    .min(remaining / SECTOR_SIZE)
+                    .min(MAX_RUN_SECTORS);
+                let run_bytes = run_sectors * SECTOR_SIZE;
+                self.write_sectors_run(sector_lba, &data[written..written + run_bytes])?;
+                position = position.checked_add(run_bytes).ok_or(FsError::NoSpace)?;
+                written += run_bytes;
+                continue;
+            }
+
             let copy_len = (SECTOR_SIZE - sector_offset).min(data.len() - written);
             let mut sector = [0u8; SECTOR_SIZE];
             if sector_offset != 0 || copy_len != SECTOR_SIZE {
@@ -879,17 +944,28 @@ impl FileSystem for Fat32 {
         let old_size = record.size as usize;
         let cluster_size = self.geometry.sectors_per_cluster as usize * SECTOR_SIZE;
         let required_clusters = end.div_ceil(cluster_size);
-        let mut chain = self.cluster_chain(record.first_cluster)?;
+        let mut chain = match self.chain_cache.take() {
+            Some((first, cached)) if record.first_cluster != 0 && first == record.first_cluster => {
+                cached
+            }
+            _ => self.cluster_chain(record.first_cluster)?,
+        };
         if chain.len() < (old_size.div_ceil(cluster_size)) {
             return Err(FsError::IoError);
         }
         let new_count = required_clusters.saturating_sub(chain.len());
+        let first_new_index = chain.len();
         let new_clusters = self.allocate_clusters(new_count)?;
         if chain.try_reserve(new_clusters.len()).is_err() {
             self.release_clusters(&new_clusters)?;
             return Err(FsError::NoSpace);
         }
-        for &cluster in &new_clusters {
+        for (index, &cluster) in new_clusters.iter().enumerate() {
+            // Fully overwritten clusters do not need a redundant zero-fill pass.
+            let cluster_start = (first_new_index + index) * cluster_size;
+            if offset <= cluster_start && cluster_start + cluster_size <= end {
+                continue;
+            }
             if let Err(error) = self.zero_cluster(cluster) {
                 self.release_clusters(&new_clusters)?;
                 return Err(error);
@@ -923,6 +999,7 @@ impl FileSystem for Fat32 {
             self.rollback_new_clusters(existing_last, &new_clusters)?;
             return Err(error);
         }
+        self.chain_cache = Some((first_cluster, chain));
         Ok(data.len())
     }
 

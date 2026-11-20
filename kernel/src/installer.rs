@@ -16,7 +16,7 @@ use crate::storage::{
 };
 
 const CONFIRMATION: &str = "INSTALL-OCTAGRAM-ERASE";
-const COPY_CHUNK_SIZE: usize = 32 * 1024;
+const COPY_CHUNK_SIZE: usize = 256 * 1024;
 const MINIMUM_ROOT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 pub fn run(arguments: &str) {

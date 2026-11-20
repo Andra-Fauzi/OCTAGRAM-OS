@@ -90,6 +90,35 @@ static-linking penuh dan perluasan dynamic loader harus ditentukan. TLS shared
 object, thread, dan memory mapping merupakan area berisiko tinggi untuk
 toolchain Rust/LLVM.
 
+## 3.2. QEMU conformance slice (2026-11-20)
+
+CI run [44688400258](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44688400258)
+pada branch `feature/native-self-hosting`, commit
+`7bba60172120f385fcc5d43768d73f8fb07b5836`, menjalankan program berikut
+di guest QEMU dan memeriksa marker serta exit status 0:
+
+| Program | Kontrak yang diuji | Hasil |
+| --- | --- | --- |
+| `/bin/mmap-demo` | anonymous dan file-backed mmap, shared/private alias, fork mapping semantics, mincore, mprotect, msync, mlock/munlock, munlockall | QEMU guest-tested |
+| `/bin/tls-demo` | FS thread pointer, TLS initialized-data dan zero-fill | QEMU guest-tested |
+| `/bin/thread-demo` | pthread create/join, TLS isolation antar-thread, mutex, stack-size attribute | QEMU guest-tested |
+| `/bin/syscall-compat-demo` | syscall compatibility suite, termasuk polling stdin dan exit status | QEMU guest-tested |
+
+Log CI memuat marker `M4-ABI-MMAP-PASS`, `M4-ABI-TLS-PASS`,
+`M4-ABI-THREADS-PASS`, `SYSCALL-TEST: PASS`, serta exit status 0 untuk
+setiap executable di atas.
+
+Ini menutup sebagian risiko dasar memory mapping, static TLS, dan thread
+primitives pada executable OCTAGRAM. Ini **bukan** bukti Rust `std`
+kompatibel: belum ada rustc/LLVM native, belum ada conformance suite Rust
+standard library, dan TLS pada shared object masih tidak didukung.
+
+Langkah ABI berikutnya tetap perlu menguji error semantics, descriptor
+inheritance, environment, subprocess/pipe, atomics, condition variables,
+clock monotonic, entropy, signal delivery, mmap protection faults, dan
+stress/concurrency. Jangan mengubah status M4.2 secara keseluruhan hanya
+berdasarkan smoke test ini.
+
 ## 4. Urutan bootstrap yang direkomendasikan
 
 ### M4.1 — Host ABI dan target specification

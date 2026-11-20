@@ -82,6 +82,7 @@ def main():
         monitor.sendall(b"sendkey ret\n")
         time.sleep(0.5)
 
+    syscall_output_offset = len(serial_text())
     send_line("run /bin/syscall-compat-demo")
 
     if not wait_for("type a line", 120):
@@ -91,8 +92,16 @@ def main():
 
     send_line("hello")
 
-    if not wait_for("SYSCALL-TEST", 180):
+    if not wait_for_after("SYSCALL-TEST", syscall_output_offset, 180):
         print("TEST-FAIL: no result marker")
+        print(serial_text()[-4000:])
+        return 1
+    if not wait_for_after("program exited with status 0", syscall_output_offset, 30):
+        print("TEST-FAIL: syscall compatibility program did not exit successfully")
+        print(serial_text()[-4000:])
+        return 1
+    if not wait_prompt(30):
+        print("TEST-FAIL: shell did not return after syscall compatibility program")
         print(serial_text()[-4000:])
         return 1
 

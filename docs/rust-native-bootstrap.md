@@ -103,10 +103,19 @@ di guest QEMU dan memeriksa marker serta exit status 0:
 | `/bin/tls-demo` | FS thread pointer, TLS initialized-data dan zero-fill | QEMU guest-tested |
 | `/bin/thread-demo` | pthread create/join, TLS isolation antar-thread, mutex, stack-size attribute | QEMU guest-tested |
 | `/bin/syscall-compat-demo` | syscall compatibility suite, termasuk polling stdin dan exit status | QEMU guest-tested |
+| `/bin/rust-hello` | executable Rust `no_std + alloc` hasil cross-build host, memakai `Vec` 2 MiB dan syscall write, berjalan native di guest | QEMU guest-tested; bukan rustc native |
 
 Log CI memuat marker `M4-ABI-MMAP-PASS`, `M4-ABI-TLS-PASS`,
 `M4-ABI-THREADS-PASS`, `SYSCALL-TEST: PASS`, serta exit status 0 untuk
 setiap executable di atas.
+
+CI lanjutan [run 44690760833](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44690760833)
+pada commit `af8925753da69805d6f7c4f3bd05d599a4765daf` juga lulus untuk
+`RUST-NOSTD-PASS`: binary `rust_hello.elf` hasil host cross-compile
+dijalankan dari `/bin/rust-hello` di dalam guest dan keluar dengan status 0.
+Build pipeline kini membangun target `all` dari `user/rust` agar ELF tersebut
+tersedia sebelum kernel meng-embed-nya.
+
 
 Ini menutup sebagian risiko dasar memory mapping, static TLS, dan thread
 primitives pada executable OCTAGRAM. Ini **bukan** bukti Rust `std`

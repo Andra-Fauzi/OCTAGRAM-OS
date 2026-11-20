@@ -2,7 +2,7 @@
 
 #[cfg(not(test))]
 use core::alloc::{GlobalAlloc, Layout};
-use core::ffi::{c_char, CStr};
+use core::ffi::{c_char, c_void, CStr};
 use core::ptr;
 #[cfg(not(test))]
 use core::sync::atomic::AtomicBool;
@@ -18,6 +18,106 @@ pub const O_RDWR: u64 = 2;
 pub const O_CREAT: u64 = 1 << 8;
 pub const O_TRUNC: u64 = 1 << 9;
 pub const O_APPEND: u64 = 1 << 10;
+
+
+/// Freestanding C memory primitives required by Rust core/alloc when linking
+/// without a hosted libc. OCTAGRAM currently targets x86_64.
+#[no_mangle]
+pub unsafe extern "C" fn memset(destination: *mut c_void, value: i32, length: usize) -> *mut c_void {
+    let mut cursor = destination.cast::<u8>();
+    let mut count = length;
+    let byte = value as u8;
+    // SAFETY: The caller guarantees a writable range of length bytes.
+    // CLD restores the ABI-required direction flag before returning.
+    unsafe {
+        core::arch::asm!(
+            "cld",
+            "rep stosb",
+            inout("rdi") cursor => _,
+            inout("rcx") count => _,
+            in("al") byte,
+            options(nostack)
+        );
+    }
+    destination
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn memcpy(
+    destination: *mut c_void,
+    source: *const c_void,
+    length: usize,
+) -> *mut c_void {
+    let mut destination_cursor = destination.cast::<u8>();
+    let mut source_cursor = source.cast::<u8>();
+    let mut count = length;
+    // SAFETY: The caller guarantees valid, non-overlapping source/destination ranges.
+    unsafe {
+        core::arch::asm!(
+            "cld",
+            "rep movsb",
+            inout("rdi") destination_cursor => _,
+            inout("rsi") source_cursor => _,
+            inout("rcx") count => _,
+            options(nostack)
+        );
+    }
+    destination
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn memmove(
+    destination: *mut c_void,
+    source: *const c_void,
+    length: usize,
+) -> *mut c_void {
+    if length == 0 || destination as usize == source as usize {
+        return destination;
+    }
+
+    let destination_address = destination as usize;
+    let source_address = source as usize;
+    if destination_address < source_address || destination_address - source_address >= length {
+        // SAFETY: The ranges do not overlap in this branch.
+        return unsafe { memcpy(destination, source, length) };
+    }
+
+    let mut destination_cursor = unsafe { destination.cast::<u8>().add(length - 1) };
+    let mut source_cursor = unsafe { source.cast::<u8>().add(length - 1) };
+    let mut count = length;
+    // SAFETY: The destination overlaps above the source, so copy backwards.
+    // CLD restores the ABI-required direction flag before returning.
+    unsafe {
+        core::arch::asm!(
+            "std",
+            "rep movsb",
+            "cld",
+            inout("rdi") destination_cursor => _,
+            inout("rsi") source_cursor => _,
+            inout("rcx") count => _,
+            options(nostack)
+        );
+    }
+    destination
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn memcmp(
+    left: *const c_void,
+    right: *const c_void,
+    length: usize,
+) -> i32 {
+    let left = left.cast::<u8>();
+    let right = right.cast::<u8>();
+    for offset in 0..length {
+        let left_byte = unsafe { left.add(offset).read_volatile() };
+        let right_byte = unsafe { right.add(offset).read_volatile() };
+        if left_byte != right_byte {
+            return i32::from(left_byte) - i32::from(right_byte);
+        }
+    }
+    0
+}
 
 #[no_mangle]
 pub static mut environ: *mut *mut c_char = ptr::null_mut();
@@ -632,7 +732,41 @@ static ALLOCATOR: MmapAllocator = MmapAllocator;
 mod tests {
     extern crate std;
 
-    use super::{build_dns_query, parse_dns_response, skip_dns_name};
+    use super::{build_dns_query, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name};
+
+    #[test]
+    fn freestanding_memset_memcpy_memcmp_work() {
+        let mut source = *b"abcdefgh";
+        let mut destination = [0u8; 8];
+        unsafe {
+            memset(source.as_mut_ptr().cast(), 0x41, source.len());
+            memcpy(
+                destination.as_mut_ptr().cast(),
+                source.as_ptr().cast(),
+                source.len(),
+            );
+            assert_eq!(memcmp(
+                destination.as_ptr().cast(),
+                source.as_ptr().cast(),
+                source.len(),
+            ), 0);
+        }
+        assert_eq!(&source, b"AAAAAAAA");
+        assert_eq!(&destination, b"AAAAAAAA");
+    }
+
+    #[test]
+    fn freestanding_memmove_handles_overlapping_ranges_both_directions() {
+        let mut bytes = *b"abcdefgh";
+        unsafe {
+            memmove(bytes.as_mut_ptr().add(2).cast(), bytes.as_ptr().cast(), 6);
+        }
+        assert_eq!(&bytes, b"ababcdef");
+        unsafe {
+            memmove(bytes.as_mut_ptr().cast(), bytes.as_ptr().add(2).cast(), 6);
+        }
+        assert_eq!(&bytes, b"abcdefef");
+    }
 
     #[test]
     fn dns_query_encodes_labels_and_accepts_trailing_dot() {

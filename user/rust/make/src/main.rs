@@ -29,6 +29,7 @@ struct Rule {
 
 struct Makefile {
     rules: Vec<Rule>,
+    phony_targets: Vec<String>,
     variables: Vec<(String, String)>,
     default_target: Option<String>,
 }
@@ -166,6 +167,7 @@ fn parse_makefile(source: &str) -> Result<Makefile, String> {
     }
     let mut makefile = Makefile {
         rules: Vec::new(),
+        phony_targets: Vec::new(),
         variables: alloc::vec![(String::from("CC"), String::from("tcc"))],
         default_target: None,
     };
@@ -244,13 +246,18 @@ fn parse_makefile(source: &str) -> Result<Makefile, String> {
                 line_number + 1
             ));
         }
-        if target == ".PHONY" {
-            continue;
-        }
         let dependencies = expand(dependency_text.trim(), &makefile.variables, None, 0)?
             .split_whitespace()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
+        if target == ".PHONY" {
+            for target in dependencies {
+                if !makefile.phony_targets.contains(&target) {
+                    makefile.phony_targets.push(target);
+                }
+            }
+            continue;
+        }
 
         let rule_index =
             if let Some(index) = makefile.rules.iter().position(|rule| rule.target == target) {
@@ -391,8 +398,9 @@ fn build_target(
     if visiting.iter().any(|name| name == target) {
         return Err(format!("dependency cycle involving `{target}`"));
     }
+    let is_phony = makefile.phony_targets.iter().any(|name| name == target);
     let Some(rule) = makefile.rules.iter().find(|rule| rule.target == target) else {
-        return if file_exists(target) {
+        return if is_phony || file_exists(target) {
             Ok(())
         } else {
             Err(format!("no rule to make target `{target}`"))
@@ -420,7 +428,7 @@ fn build_target(
         return Ok(());
     }
 
-    let target_mtime = file_mtime(target);
+    let target_mtime = if is_phony { None } else { file_mtime(target) };
     let prerequisite_mtimes = rule
         .dependencies
         .iter()

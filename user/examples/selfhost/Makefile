@@ -1,6 +1,5 @@
 CC = tcc
 TARGET = hello.elf
-OBJECTS = hello.o
 ARCHIVE = libmessage.a
 
 .PHONY: all

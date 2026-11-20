@@ -61,6 +61,11 @@ Uji host: `cargo +nightly test ... toolchain::tests::` mencakup link objek
 `ET_REL` dua segmen (relokasi `R_X86_64_32` terhadap `.data`) dan penolakan
 objek tanpa simbol `_start`.
 
+Setelah menulis output, `ld` mencetak `ld: entry point 0x…` dari `e_entry` ELF
+hasil link. Baris ini dipakai untuk membandingkan alamat entry dengan RIP pada
+pesan page fault guest tanpa disassembler host; helper `elf_entry_address`
+diuji terpisah untuk input non-ELF dan buffer terpotong.
+
 ## TinyCC di dalam OS
 
 `user/Makefile` membangun TinyCC `ONE_SOURCE=0` dengan target

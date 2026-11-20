@@ -216,12 +216,29 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                         options(nomem, nostack, preserves_flags)
                     );
                 }
+                // The faulting RIP is in a mapped user executable page. Capture
+                // its first bytes and saved GPRs so guest faults can be decoded
+                // from serial output without guessing at TLS/loader behavior.
+                let rip = frame.stack_frame.instruction_pointer;
+                let mut instruction = [0u8; 8];
+                for (offset, byte) in instruction.iter_mut().enumerate() {
+                    *byte = unsafe {
+                        core::ptr::read_volatile((rip as *const u8).add(offset))
+                    };
+                }
                 crate::println!(
-                    "User page fault error_code={:#x} rip={:#x} address={:#x} fs_base={:#x}",
+                    "User page fault error_code={:#x} rip={:#x} address={:#x} fs_base={:#x} bytes={:02x?}",
                     frame.error_code,
-                    frame.stack_frame.instruction_pointer,
+                    rip,
                     fault_address,
-                    crate::arch::x86_64::thread_pointer::read()
+                    crate::arch::x86_64::thread_pointer::read(),
+                    instruction
+                );
+                crate::println!(
+                    "User fault regs rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rsi={:#x} rdi={:#x} rbp={:#x} rsp={:#x}",
+                    frame.rax, frame.rbx, frame.rcx, frame.rdx,
+                    frame.rsi, frame.rdi, frame.rbp,
+                    frame.stack_frame.stack_pointer
                 );
             } else {
                 crate::println!(

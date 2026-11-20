@@ -508,3 +508,118 @@ M4.1 kini memiliki bukti executable custom target yang berjalan, tetapi M4 Rust 
 - Matriks membedakan `qemu_tested`, `build_tested`, `implemented_partial`, dan `not_implemented`. Rust `std`, rustc native, Cargo native, LLVM/LLD native, Stage 0, native kernel build, image builder, dan rollback tetap belum diimplementasikan.
 - Audit source menemukan dokumentasi futex lama tidak sinkron: kernel sudah menangani `FUTEX_WAIT_BITSET`, `FUTEX_WAKE_BITSET`, dan `FUTEX_REQUEUE`. Dokumentasi diperbarui; guest tests untuk absolute deadline, bitset filtering, dan requeue-to-target lulus di QEMU run [44716140003](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44716140003). Batas same-PID/shared-futex serta operasi PI/CMP_REQUEUE tetap dicatat.
 - Batas semantik yang dipertahankan eksplisit: futex waiter di-matching dalam PID yang sama, `FUTEX_PRIVATE_FLAG` belum mengubah perilaku, dan `CMP_REQUEUE`/`WAKE_OP`/PI operations belum didukung.
+
+## 14. Audit TLS scheduler dan perbaikan context restore (20 November 2026)
+
+Branch: `feature/native-self-hosting`. Fokus: kegagalan QEMU syscall
+compatibility smoke test yang berulang, yaitu `M4-ABI-THREADS-FAIL` pada
+`/bin/thread-demo`.
+
+### Bukti kegagalan
+
+Fault selalu berbentuk sama:
+
+```text
+User page fault error_code=0x4 rip=0x400c5c address=0x0 fs_base=0x0
+bytes=[64, 4c, 8b, 24, 25, 00, 00, 00]      ; mov %fs:0x0,%r12
+User fault task pid=1 tid=2 is_thread=true ... process_tls=0x0 actual_fs=0x0
+```
+
+RIP tersebut adalah awal `oct_pthread_run_key_destructors`, yaitu kode yang
+membaca TCB lewat `%fs:0` setelah fungsi worker selesai. Artinya worker sudah
+berjalan normal, lalu **kembali ke user mode dengan `FS_BASE` nol**.
+
+### Yang diperbaiki
+
+1. `terminate_user` hanya memulihkan FPU, tidak memulihkan TLS. Setiap fault
+   user yang mengalihkan kendali ke task lain (parent `waitpid` atau task
+   berikutnya) membuat task itu berjalan dengan `FS_BASE` milik task yang mati
+   (atau nol), sehingga akses `__thread` berikutnya fault. Sekarang TLS dan FPU
+   dipulihkan lewat satu helper `restore_user_context()` yang dipakai jalur
+   syscall, timer, dan fault.
+2. Base TLS dipindahkan menjadi satu record per task di `UserProcess`
+   (`thread_pointer`, `tls_anchor`, `tls_cleared`). `tls_anchor` adalah base
+   terakhir yang sah; `select_tls_base()` memakainya bila base tersimpan nol
+   dan program belum pernah mengosongkan TLS sendiri lewat
+   `set_thread_pointer(0)`. `save_current_thread_pointer()` tidak lagi
+   membuang base hidup hanya karena satu pembacaan `FS_BASE` bernilai nol.
+3. Trace diagnostik sementara (`TLS-FIRST-LOSS`, ring buffer switch) dihapus
+   lagi; baris diagnostik fault tetap ada karena berguna.
+
+### Akar masalah kedua: desinkronisasi perpindahan task
+
+Sebelas jalur perpindahan task (yield, timer, `thread_join`, `thread_exit`,
+`waitpid`, `block_current_on_wait`, futex, `poll`, fault parent/next, dan loop
+resume) masing-masing menyalin state dengan urutan swap sendiri. Kalau satu
+jalur mengubah `scheduler.current` tanpa menyimpan state hidup task yang
+ditinggalkan, slotnya berisi placeholder dan task berikutnya dijalankan dengan
+state kosong (TLS nol) — persis fault di awal dokumen ini.
+
+Sekarang semua jalur memakai satu helper:
+
+- `save_task_state()` menyimpan state hidup `USER_PROCESS` ke slot task yang
+  ditinggalkan, dan menolak menimpa slot yang masih memuat state hidup.
+- `load_task_state()` hanya memuat slot yang benar-benar state hidup
+  (`state.active`) dan mengembalikan frame user task itu.
+- `switch_task()` = simpan lalu muat, dipakai seluruh jalur perpindahan;
+  `terminate_user_inner` memakai `save_task_state` + `load_task_state` karena
+  task yang mati tidak boleh dimuat lagi.
+- `keep_running_after_switch_refusal()` melanjutkan task sekarang (dan
+  melepas penantian yang sempat dicatat) bila invariant dilanggar, alih-alih
+  menjalankan task dengan state kosong.
+
+Pelanggaran invariant dicetak sekali sebagai
+`[sched] invariant switch dilanggar di <site>: ...` beserta pid/tid/TLS slot
+dan state aktif. Pada seluruh uji di bawah tidak ada pelanggaran yang tercatat,
+jadi desinkronisasi yang tampak pada trace lama tidak lagi terjadi.
+
+### Akar masalah ketiga: deadlock lock scheduler di jalur interrupt
+
+Sisa kegagalan intermiten ternyata bukan lagi soal TLS. Monitor QEMU saat
+sistem macet menunjukkan CPU berputar di `spin_loop_hint()` dengan `CPL=0` dan
+`RFL=0x2` — artinya interrupt mati. `handle_timer_inner()` mengunci
+`USER_SCHEDULER` tanpa syarat (untuk `expire_futex_timeouts`) **sebelum**
+memeriksa apakah frame yang diinterupsi milik user atau kernel. Bila timer
+datang saat task kernel (shell/pemuat program) sedang memegang lock itu,
+handler berputar selamanya dengan interrupt mati dan pemegang lock tidak akan
+pernah dijadwalkan lagi.
+
+Perbaikan:
+
+1. `handle_timer_inner()` memakai `try_lock()`; bila lock sedang dipegang task
+   kernel, tick itu dilewati (tick berikutnya 1 ms kemudian).
+2. `restore_current_thread_pointer()` tidak lagi mengunci `USER_SCHEDULER`
+   karena hanya membutuhkan `USER_PROCESS`; ini menghapus satu lagi jalur
+   deadlock dari konteks interrupt.
+
+### Status verifikasi
+
+- **Build-tested:** kernel `x86_64-unknown-none` (release) dan ISO bootable.
+- **Host-tested:** 375 unit test kernel lulus, termasuk
+  `task_never_resumes_with_a_lost_tls_base`,
+  `user_selector_requires_the_ring3_privilege_bits`, dan
+  `a_task_slot_is_resumable_only_while_it_holds_a_live_state`.
+- **QEMU-tested:** `tools/qemu_syscall_test.py` lulus **empat boot
+  berturut-turut** (exit=0, tanpa `User page fault`, tanpa pelanggaran
+  invariant): `SYSCALL-TEST`, `M4-ABI-MMAP`, `M4-ABI-TLS`,
+  `M4-ABI-THREADS`, `M4-RUST-TARGET-EXEC`, dan `RUST-NOSTD` semuanya PASS.
+- **Uji tekan:** satu boot menjalankan 78 program berurutan
+  (`mmap-demo`, `tls-demo`, `thread-demo`, `rust-hello` bergantian) tanpa hang
+  dan tanpa fault.
+
+### Cara mereproduksi lokal
+
+Build ISO dan jalankan smoke test seperti CI:
+
+```sh
+make -C user && make -C user/rust all && make -C user/rust build-octagram
+make -C kernel KARCH=x86_64 && make all
+qemu-system-x86_64 -M q35 -cdrom OCTAGRAM-x86_64.iso -boot d -m 2G \
+  -display none -serial file:/tmp/serial.log \
+  -monitor unix:/tmp/mon.sock,server,nowait -no-reboot -no-shutdown &
+python3 tools/qemu_syscall_test.py
+```
+
+Bila sistem macet, tanyakan monitor QEMU (`info registers`) untuk melihat RIP
+dan flag interrupt; CPU berputar di `spin_loop_hint` dengan `RFL` tanpa bit
+`0x200` berarti deadlock spinlock di dalam kernel, bukan program user.

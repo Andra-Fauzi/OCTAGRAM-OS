@@ -1416,7 +1416,15 @@ struct UserProcess {
     environment: Vec<String>,
     file_creation_mask: u16,
     fpu_state: FpuState,
+    /// Base TLS (`FS_BASE`) task ini.
     thread_pointer: u64,
+    /// Base TLS terakhir yang sah. Sebuah task dengan TLS tidak boleh berjalan
+    /// dengan `FS_BASE` nol, jadi nilai ini dipakai sebagai fallback bila base
+    /// tersimpan hilang (misalnya karena state task tertimpa state lain).
+    tls_anchor: u64,
+    /// Program mengosongkan TLS-nya sendiri lewat `set_thread_pointer(0)`;
+    /// hanya dalam kasus itu base nol dianggap sah.
+    tls_cleared: bool,
     /// Hasil FUTEX_WAIT yang disimpan saat proses dibangunkan.
     wait_result: Option<i32>,
     pending_signals: u64,
@@ -1447,6 +1455,8 @@ impl UserProcess {
             file_creation_mask: 0o022,
             fpu_state: FpuState::new(),
             thread_pointer: 0,
+            tls_anchor: 0,
+            tls_cleared: false,
             wait_result: None,
             pending_signals: 0,
             blocked_signals: 0,
@@ -1490,9 +1500,6 @@ struct ScheduledProcess {
     parent_pid: Option<u64>,
     is_thread: bool,
     tid: u64,
-    /// Immutable TLS base supplied when this scheduled task was created.
-    /// Used to distinguish a bad create argument from later state corruption.
-    initial_thread_pointer: u64,
     thread_mapping: Option<(u64, u64)>,
     waiting_for: Option<ProcessWait>,
     wait_deadline: Option<u64>,
@@ -2087,7 +2094,6 @@ fn run_loaded_processes(
             .map_or(0, |stack| initialize_user_frame(&image, stack.top()));
         processes.push(ScheduledProcess {
             image,
-            initial_thread_pointer: state.thread_pointer,
             state,
             pid: index as u64 + 1,
             _kernel_stack: kernel_stack,
@@ -2127,7 +2133,9 @@ fn run_loaded_processes(
         scheduler.next_pid = next_pid;
         scheduler.next_tid = next_pid;
         let mut active_process = USER_PROCESS.lock();
-        core::mem::swap(&mut *active_process, &mut scheduler.processes[0].state);
+        if load_task_state(&mut scheduler, &mut active_process, 0).is_none() {
+            return Err(ElfError::InvalidArguments);
+        }
         let first = &scheduler.processes[0].image;
         unsafe {
             first.memory.address_space.activate();
@@ -2189,26 +2197,20 @@ fn run_loaded_processes(
                 {
                     break;
                 }
-                schedule_next(&mut scheduler).map(|next| {
+                schedule_next(&mut scheduler).and_then(|next| {
                     let frame_pointer = scheduler.processes[next].frame_pointer;
                     // Capture the next task's TLS base before swapping its
                     // state into USER_PROCESS. After the swap, scheduler.processes[next].state
                     // contains the previously active task, not the task being resumed.
-                    let thread_pointer_value = scheduler.processes[next].state.thread_pointer;
+                    let thread_pointer_value = task_tls_base(&scheduler.processes[next]);
                     if let Some(context) = scheduler.processes[next].resume_context.take() {
                         let frame = unsafe { &mut *(frame_pointer as *mut InterruptFrame) };
                         frame.rax = context.accumulator;
                         frame.stack_frame = context.stack_frame;
                     }
                     let mut active_process = USER_PROCESS.lock();
-                    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
-                    scheduler.current = next;
-                    let process = &scheduler.processes[next];
-                    unsafe {
-                        process.image.memory.address_space.activate();
-                        gdt::set_ring0_stack_top(process.kernel_stack_top);
-                    }
-                    (frame_pointer, thread_pointer_value)
+                    switch_task(&mut scheduler, &mut active_process, next)
+                        .map(|_| (frame_pointer, thread_pointer_value))
                 })
             };
 
@@ -2221,13 +2223,6 @@ fn run_loaded_processes(
                 wake_console_waiters(crate::fs::pump_console_input());
                 continue;
             };
-            {
-                let scheduler = USER_SCHEDULER.lock();
-                let process = USER_PROCESS.lock();
-                if let Some(task) = scheduler.processes.get(scheduler.current) {
-                    record_first_tls_mismatch(TLS_SITE_KERNEL_RESUME, task, &process);
-                }
-            }
             thread_pointer::write(thread_pointer_value);
             restore_current_user_fpu();
             let _last_status = unsafe { gdt::resume_user_frame(frame_pointer as *mut u8) };
@@ -2526,19 +2521,7 @@ pub fn handle_syscall(frame: &mut InterruptFrame) -> *mut InterruptFrame {
             next_frame = replacement;
         }
     }
-    // A syscall may hand control back to the kernel scheduler (for example
-    // kernel_yield or process exit) by rewriting the saved CS to ring 0.
-    // USER_PROCESS has already been swapped out in that case, so restoring
-    // its TLS/FPU state here would install stale state while the kernel
-    // trampoline is running. The scheduler restores the selected user task
-    // immediately before resuming its saved user frame.
-    let returns_to_user = unsafe {
-        (*next_frame).stack_frame.code_segment & 3 == 3
-    };
-    if returns_to_user {
-        restore_current_thread_pointer(TLS_SITE_SYSCALL_RETURN);
-        restore_current_user_fpu();
-    }
+    restore_user_context(next_frame);
     next_frame
 }
 
@@ -2608,10 +2591,7 @@ fn yield_user_to_kernel(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         accumulator: 0,
         stack_frame: frame.stack_frame,
     });
-    core::mem::swap(
-        &mut *active_process,
-        &mut scheduler.processes[current].state,
-    );
+    save_task_state(&mut scheduler, &mut active_process);
     frame.rax = 0;
     frame.stack_frame.instruction_pointer = gdt::user_exit_address();
     frame.stack_frame.code_segment = gdt::KERNEL_CODE_SELECTOR as u64;
@@ -2629,8 +2609,7 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     }
     let next_frame = handle_timer_inner(frame);
     if from_user {
-        restore_current_thread_pointer(TLS_SITE_TIMER_RETURN);
-        restore_current_user_fpu();
+        restore_user_context(next_frame);
     }
     next_frame
 }
@@ -2639,7 +2618,13 @@ fn handle_timer_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
     let from_user = frame.stack_frame.code_segment & 3 == 3;
 
-    let mut scheduler = USER_SCHEDULER.lock();
+    // Timer bisa datang saat sebuah task kernel (shell, pemuat program) memegang
+    // USER_SCHEDULER. Menunggu lock itu di jalur interrupt berarti spin dengan
+    // interrupt mati: task pemegangnya tidak akan pernah jalan lagi. Tick ini
+    // dilewati saja; tick berikutnya (1 ms) akan mencoba lagi.
+    let Some(mut scheduler) = USER_SCHEDULER.try_lock() else {
+        return frame_pointer;
+    };
     expire_futex_timeouts(&mut scheduler);
     if !from_user {
         return frame_pointer;
@@ -2686,19 +2671,10 @@ fn handle_timer_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     }
 
     let mut active_process = USER_PROCESS.lock();
-    core::mem::swap(
-        &mut *active_process,
-        &mut scheduler.processes[current].state,
-    );
-    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
-    scheduler.current = next;
-    let next_process = &scheduler.processes[next];
-    let next_frame = next_process.frame_pointer as *mut InterruptFrame;
-    unsafe {
-        gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-        next_process.image.memory.address_space.activate();
+    match switch_task(&mut scheduler, &mut active_process, next) {
+        Some(next_frame) => next_frame,
+        None => keep_running_after_switch_refusal(&mut scheduler, frame_pointer),
     }
-    next_frame
 }
 
 fn syscall_set_thread_pointer(value: u64) -> Result<u64, i32> {
@@ -2711,6 +2687,10 @@ fn syscall_set_thread_pointer(value: u64) -> Result<u64, i32> {
         return Err(EINTR);
     }
     process.thread_pointer = value;
+    process.tls_cleared = value == 0;
+    if value != 0 {
+        process.tls_anchor = value;
+    }
     thread_pointer::write(value);
     Ok(0)
 }
@@ -3177,6 +3157,8 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     };
     state.fpu_state = FpuState::new();
     state.thread_pointer = thread_pointer;
+    state.tls_anchor = thread_pointer;
+    state.tls_cleared = false;
     let kernel_stack = match ProcessKernelStack::new() {
         Ok(stack) => stack,
         Err(error) => {
@@ -3209,7 +3191,6 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     scheduler.next_tid = next_tid;
     scheduler.processes.push(ScheduledProcess {
         image,
-        initial_thread_pointer: thread_pointer,
         state,
         pid,
         _kernel_stack: Some(kernel_stack),
@@ -3330,29 +3311,20 @@ fn syscall_thread_join(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     scheduler.processes[current].waiting_for = Some(ProcessWait::Thread(target_tid));
     scheduler.processes[current].wait_status_pointer = result_pointer;
     let mut active_process = USER_PROCESS.lock();
-    core::mem::swap(
-        &mut *active_process,
-        &mut scheduler.processes[current].state,
-    );
+    let saved_task_state = save_task_state(&mut scheduler, &mut active_process);
     let Some(next) = schedule_next(&mut scheduler) else {
-        core::mem::swap(
-            &mut *active_process,
-            &mut scheduler.processes[current].state,
-        );
+        if saved_task_state {
+            core::mem::swap(&mut *active_process, &mut scheduler.processes[current].state);
+        }
         scheduler.processes[current].waiting_for = None;
         scheduler.processes[current].wait_status_pointer = 0;
         frame.rax = (-(EDEADLK as i64)) as u64;
         return frame_pointer;
     };
-    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
-    scheduler.current = next;
-    let next_process = &scheduler.processes[next];
-    let next_frame = next_process.frame_pointer as *mut InterruptFrame;
-    unsafe {
-        gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-        next_process.image.memory.address_space.activate();
+    match load_task_state(&mut scheduler, &mut active_process, next) {
+        Some(next_frame) => next_frame,
+        None => keep_running_after_switch_refusal(&mut scheduler, frame_pointer),
     }
-    next_frame
 }
 
 fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
@@ -3376,10 +3348,7 @@ fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     }
     scheduler.processes[current].exit_status = Some(frame.rdi);
     let mut active_process = USER_PROCESS.lock();
-    core::mem::swap(
-        &mut *active_process,
-        &mut scheduler.processes[current].state,
-    );
+    save_task_state(&mut scheduler, &mut active_process);
     scheduler.processes[current].state.active = false;
 
     for waiter in &mut scheduler.processes {
@@ -3405,15 +3374,9 @@ fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     }
 
     if let Some(next) = schedule_next(&mut scheduler) {
-        core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
-        scheduler.current = next;
-        let next_process = &scheduler.processes[next];
-        let next_frame = next_process.frame_pointer as *mut InterruptFrame;
-        unsafe {
-            gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-            next_process.image.memory.address_space.activate();
+        if let Some(next_frame) = switch_task(&mut scheduler, &mut active_process, next) {
+            return next_frame;
         }
-        return next_frame;
     }
 
     scheduler.active = scheduler
@@ -3543,7 +3506,6 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
     scheduler.next_pid = next_pid;
     scheduler.processes.push(ScheduledProcess {
         image: child_image,
-        initial_thread_pointer: child_state.thread_pointer,
         state: child_state,
         pid: child_pid,
         _kernel_stack: Some(kernel_stack),
@@ -3818,29 +3780,20 @@ fn syscall_waitpid(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     scheduler.processes[current].waiting_for = Some(ProcessWait::Child(wait_target));
     scheduler.processes[current].wait_status_pointer = status_pointer;
     let mut active_process = USER_PROCESS.lock();
-    core::mem::swap(
-        &mut *active_process,
-        &mut scheduler.processes[current].state,
-    );
+    let saved_task_state = save_task_state(&mut scheduler, &mut active_process);
     let Some(next) = schedule_next(&mut scheduler) else {
-        core::mem::swap(
-            &mut *active_process,
-            &mut scheduler.processes[current].state,
-        );
+        if saved_task_state {
+            core::mem::swap(&mut *active_process, &mut scheduler.processes[current].state);
+        }
         scheduler.processes[current].waiting_for = None;
         scheduler.processes[current].wait_status_pointer = 0;
         frame.rax = (-(ECHILD as i64)) as u64;
         return frame_pointer;
     };
-    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
-    scheduler.current = next;
-    let next_process = &scheduler.processes[next];
-    let next_frame = next_process.frame_pointer as *mut InterruptFrame;
-    unsafe {
-        gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-        next_process.image.memory.address_space.activate();
+    match load_task_state(&mut scheduler, &mut active_process, next) {
+        Some(next_frame) => next_frame,
+        None => keep_running_after_switch_refusal(&mut scheduler, frame_pointer),
     }
-    next_frame
 }
 
 fn wait_target_matches(target: u64, child_pid: u64) -> bool {
@@ -3918,15 +3871,11 @@ fn block_current_on_wait(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut 
     // Ulangi instruksi int 0x80 setelah event yang ditunggu siap.
     frame.stack_frame.instruction_pointer = retry_address;
     let mut active_process = USER_PROCESS.lock();
-    core::mem::swap(
-        &mut *active_process,
-        &mut scheduler.processes[current].state,
-    );
+    let saved_task_state = save_task_state(&mut scheduler, &mut active_process);
     let Some(next) = schedule_next(&mut scheduler) else {
-        core::mem::swap(
-            &mut *active_process,
-            &mut scheduler.processes[current].state,
-        );
+        if saved_task_state {
+            core::mem::swap(&mut *active_process, &mut scheduler.processes[current].state);
+        }
         scheduler.processes[current].waiting_for = None;
         frame.stack_frame.instruction_pointer = retry_address + 2;
         if let ProcessWait::ConsoleInput(terminal) = wait {
@@ -3954,15 +3903,10 @@ fn block_current_on_wait(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut 
         frame.rax = (-(EDEADLK as i64)) as u64;
         return frame_pointer;
     };
-    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
-    scheduler.current = next;
-    let next_process = &scheduler.processes[next];
-    let next_frame = next_process.frame_pointer as *mut InterruptFrame;
-    unsafe {
-        gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-        next_process.image.memory.address_space.activate();
+    match load_task_state(&mut scheduler, &mut active_process, next) {
+        Some(next_frame) => next_frame,
+        None => keep_running_after_switch_refusal(&mut scheduler, frame_pointer),
     }
-    next_frame
 }
 
 fn expire_futex_timeouts(scheduler: &mut UserScheduler) {
@@ -4083,19 +4027,9 @@ fn block_current_on_futex(
     frame.stack_frame.instruction_pointer = retry_address;
     let mut active_process = USER_PROCESS.lock();
     if let Some(next) = schedule_next(&mut scheduler) {
-        core::mem::swap(
-            &mut *active_process,
-            &mut scheduler.processes[current].state,
-        );
-        core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
-        scheduler.current = next;
-        let next_process = &scheduler.processes[next];
-        let next_frame = next_process.frame_pointer as *mut InterruptFrame;
-        unsafe {
-            gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-            next_process.image.memory.address_space.activate();
+        if let Some(next_frame) = switch_task(&mut scheduler, &mut active_process, next) {
+            return next_frame;
         }
-        return next_frame;
     }
 
     let Some(deadline) = deadline else {
@@ -4131,19 +4065,12 @@ fn block_current_on_futex(
             continue;
         };
         let mut active = USER_PROCESS.lock();
-        core::mem::swap(
-            &mut *active,
-            &mut scheduler.processes[current].state,
-        );
-        core::mem::swap(&mut *active, &mut scheduler.processes[next].state);
-        scheduler.current = next;
-        let next_process = &scheduler.processes[next];
-        let next_frame = next_process.frame_pointer as *mut InterruptFrame;
-        unsafe {
-            gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-            next_process.image.memory.address_space.activate();
+        match switch_task(&mut scheduler, &mut active, next) {
+            Some(next_frame) => return next_frame,
+            None => {
+                continue;
+            }
         }
-        return next_frame;
     }
 }
 
@@ -4167,15 +4094,11 @@ fn block_current_on_poll(frame: &mut InterruptFrame, deadline: u64) -> *mut Inte
     scheduler.processes[current].wait_deadline = Some(deadline);
     frame.stack_frame.instruction_pointer = retry_address;
     let mut active_process = USER_PROCESS.lock();
-    core::mem::swap(
-        &mut *active_process,
-        &mut scheduler.processes[current].state,
-    );
+    let saved_task_state = save_task_state(&mut scheduler, &mut active_process);
     let Some(next) = schedule_next(&mut scheduler) else {
-        core::mem::swap(
-            &mut *active_process,
-            &mut scheduler.processes[current].state,
-        );
+        if saved_task_state {
+            core::mem::swap(&mut *active_process, &mut scheduler.processes[current].state);
+        }
         scheduler.processes[current].waiting_for = None;
         scheduler.processes[current].wait_deadline = None;
         // Tidak ada proses lain: tidur sebentar lalu ulangi scan.
@@ -4185,15 +4108,10 @@ fn block_current_on_poll(frame: &mut InterruptFrame, deadline: u64) -> *mut Inte
         frame.stack_frame.instruction_pointer = retry_address;
         return frame_pointer;
     };
-    core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
-    scheduler.current = next;
-    let next_process = &scheduler.processes[next];
-    let next_frame = next_process.frame_pointer as *mut InterruptFrame;
-    unsafe {
-        gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-        next_process.image.memory.address_space.activate();
+    match load_task_state(&mut scheduler, &mut active_process, next) {
+        Some(next_frame) => next_frame,
+        None => keep_running_after_switch_refusal(&mut scheduler, frame_pointer),
     }
-    next_frame
 }
 
 /// Bangunkan waiter futex pada `address` yang bit tunggunya beririsan.
@@ -4592,6 +4510,8 @@ fn new_user_process(
         file_creation_mask: 0o022,
         fpu_state: FpuState::new(),
         thread_pointer: 0,
+        tls_anchor: 0,
+        tls_cleared: false,
         wait_result: None,
         pending_signals: 0,
         blocked_signals: 0,
@@ -4639,6 +4559,12 @@ fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProces
         file_creation_mask: parent.file_creation_mask,
         fpu_state: parent.fpu_state,
         thread_pointer: parent.thread_pointer,
+        tls_anchor: if parent.thread_pointer != 0 {
+            parent.thread_pointer
+        } else {
+            parent.tls_anchor
+        },
+        tls_cleared: parent.tls_cleared,
         wait_result: None,
         pending_signals: 0,
         blocked_signals: parent.blocked_signals,
@@ -4656,47 +4582,6 @@ fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProces
 /// Snapshot the active scheduled task's TLS identity for fatal user-fault
 /// diagnostics. This is deliberately called only after a fault, not in the
 /// scheduler hot path.
-const TLS_SITE_SYSCALL_RETURN: u64 = 1;
-const TLS_SITE_TIMER_RETURN: u64 = 2;
-const TLS_SITE_KERNEL_RESUME: u64 = 3;
-
-static FIRST_TLS_MISMATCH_CLAIMED: AtomicBool = AtomicBool::new(false);
-static FIRST_TLS_MISMATCH_READY: AtomicBool = AtomicBool::new(false);
-static FIRST_TLS_MISMATCH_SITE: AtomicU64 = AtomicU64::new(0);
-static FIRST_TLS_MISMATCH_TID: AtomicU64 = AtomicU64::new(0);
-static FIRST_TLS_MISMATCH_INITIAL: AtomicU64 = AtomicU64::new(0);
-static FIRST_TLS_MISMATCH_SAVED: AtomicU64 = AtomicU64::new(0);
-static FIRST_TLS_MISMATCH_FS: AtomicU64 = AtomicU64::new(0);
-
-fn record_first_tls_mismatch(site: u64, task: &ScheduledProcess, process: &UserProcess) {
-    if !task.is_thread || task.initial_thread_pointer == 0 || process.thread_pointer != 0 {
-        return;
-    }
-    if FIRST_TLS_MISMATCH_CLAIMED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-        .is_ok()
-    {
-        FIRST_TLS_MISMATCH_SITE.store(site, Ordering::Relaxed);
-        FIRST_TLS_MISMATCH_TID.store(task.tid, Ordering::Relaxed);
-        FIRST_TLS_MISMATCH_INITIAL.store(task.initial_thread_pointer, Ordering::Relaxed);
-        FIRST_TLS_MISMATCH_SAVED.store(process.thread_pointer, Ordering::Relaxed);
-        FIRST_TLS_MISMATCH_FS.store(thread_pointer::read(), Ordering::Relaxed);
-        FIRST_TLS_MISMATCH_READY.store(true, Ordering::Release);
-    }
-}
-
-pub fn first_tls_mismatch_debug() -> Option<(u64, u64, u64, u64, u64)> {
-    if !FIRST_TLS_MISMATCH_READY.load(Ordering::Acquire) {
-        return None;
-    }
-    Some((
-        FIRST_TLS_MISMATCH_SITE.load(Ordering::Relaxed),
-        FIRST_TLS_MISMATCH_TID.load(Ordering::Relaxed),
-        FIRST_TLS_MISMATCH_INITIAL.load(Ordering::Relaxed),
-        FIRST_TLS_MISMATCH_SAVED.load(Ordering::Relaxed),
-        FIRST_TLS_MISMATCH_FS.load(Ordering::Relaxed),
-    ))
-}
 
 pub fn current_user_tls_debug() -> (u64, u64, bool, u64, u64, u64) {
     let scheduler = USER_SCHEDULER.lock();
@@ -4715,7 +4600,7 @@ pub fn current_user_tls_debug() -> (u64, u64, bool, u64, u64, u64) {
         task.pid,
         task.tid,
         task.is_thread,
-        task.initial_thread_pointer,
+        process.tls_anchor,
         process.thread_pointer,
         thread_pointer::read(),
     )
@@ -4739,41 +4624,210 @@ fn restore_current_user_fpu() {
     }
 }
 
-fn saved_thread_pointer_after_kernel_entry(saved: u64, observed: u64) -> u64 {
-    // An intentional reset is committed through syscall_set_thread_pointer,
-    // which updates the saved value and FS_BASE together. Therefore a zero
-    // FS_BASE while the saved value is nonzero is a transient/context-restore
-    // failure, not a request to discard the task's TLS mapping.
-    if saved != 0 && observed == 0 {
-        saved
+/// Base TLS yang harus dipakai. `saved` adalah nilai tersimpan (atau hasil baca
+/// `FS_BASE`); bila nol padahal anchor nonzero dan program tidak mengosongkan
+/// TLS-nya, pakai anchor: task dengan TLS tidak boleh berjalan dengan
+/// `FS_BASE` nol karena akses `__thread` pertama akan fault di alamat 0.
+fn select_tls_base(saved: u64, anchor: u64, cleared: bool) -> u64 {
+    if saved == 0 && !cleared {
+        anchor
     } else {
-        observed
+        saved
     }
+}
+
+/// Pelanggaran invariant perpindahan task dilaporkan sekali, tetapi switch-nya
+/// dibatalkan: lebih baik task sekarang tetap berjalan daripada menjalankan task
+/// lain dengan state kosong (tanpa TLS/kredensial, frame nol).
+static TASK_SWITCH_VIOLATION_REPORTED: AtomicBool = AtomicBool::new(false);
+
+fn report_task_switch_violation(
+    site: &str,
+    scheduler: &UserScheduler,
+    active: &UserProcess,
+    next: usize,
+) {
+    if TASK_SWITCH_VIOLATION_REPORTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let slot = scheduler.processes.get(next);
+    crate::println!(
+        "[sched] invariant switch dilanggar di {site}: next={next} current={} active_live={} slot_active={} slot_pid={} slot_tid={} slot_tls={:#x} active_tls={:#x}",
+        scheduler.current,
+        active.active,
+        slot.is_some_and(|task| task.state.active),
+        slot.map_or(0, |task| task.pid),
+        slot.map_or(0, |task| task.tid),
+        slot.map_or(0, |task| task.state.thread_pointer),
+        active.thread_pointer,
+    );
+}
+
+/// Simpan state hidup ke slot task yang ditinggalkan.
+///
+/// Invariant: selama sebuah task berjalan, state hidupnya ada di `USER_PROCESS`
+/// dan slotnya memuat state yang tidak aktif. Bila slot `current` ternyata
+/// masih memuat state hidup, ada dua state hidup untuk satu task; menimpa slot
+/// itu akan menghilangkan salah satunya, jadi penyimpanan dibatalkan.
+/// Mengembalikan `true` bila state benar-benar tersimpan.
+fn save_task_state(scheduler: &mut UserScheduler, active: &mut UserProcess) -> bool {
+    if !active.active {
+        return false;
+    }
+    let current = scheduler.current;
+    if current >= scheduler.processes.len() {
+        report_task_switch_violation("save/current", scheduler, active, current);
+        return false;
+    }
+    if scheduler.processes[current].state.active {
+        report_task_switch_violation("save/slot", scheduler, active, current);
+        return false;
+    }
+    core::mem::swap(active, &mut scheduler.processes[current].state);
+    true
+}
+
+/// Muat slot `next` sebagai state hidup dan kembalikan frame user-nya.
+///
+/// Invariant: slot yang dimuat harus memuat state hidup (`state.active`).
+/// Placeholder (state kosong hasil pertukaran sebelumnya) tidak boleh
+/// dijalankan: task akan lanjut dengan `FS_BASE` nol dan fault di akses
+/// `__thread` pertama. Pelanggaran dilaporkan dan switch dibatalkan (`None`),
+/// sehingga pemanggil melanjutkan task yang sekarang.
+/// Aturan invariant: slot yang boleh dimuat harus milik task yang ada dan
+/// memuat state hidup. Slot placeholder (state kosong) hanya boleh berada di
+/// `USER_PROCESS` milik task yang sedang berjalan, tidak boleh dimuat.
+fn slot_is_resumable(task_count: usize, next: usize, slot_active: bool) -> bool {
+    next < task_count && slot_active
+}
+
+fn load_task_state(
+    scheduler: &mut UserScheduler,
+    active: &mut UserProcess,
+    next: usize,
+) -> Option<*mut InterruptFrame> {
+    if !slot_is_resumable(
+        scheduler.processes.len(),
+        next,
+        scheduler
+            .processes
+            .get(next)
+            .is_some_and(|task| task.state.active),
+    ) {
+        report_task_switch_violation("load", scheduler, active, next);
+        return None;
+    }
+    let frame_pointer = scheduler.processes[next].frame_pointer as *mut InterruptFrame;
+    core::mem::swap(active, &mut scheduler.processes[next].state);
+    scheduler.current = next;
+    let process = &scheduler.processes[next];
+    unsafe {
+        gdt::set_ring0_stack_top(process.kernel_stack_top);
+        process.image.memory.address_space.activate();
+    }
+    Some(frame_pointer)
+}
+
+/// Pindahkan kendali dari task yang hidup di `USER_PROCESS` ke task `next`:
+/// simpan state yang ditinggalkan, lalu muat slot `next` (satu jalur untuk
+/// yield, timer, join, exit, waitpid, futex, poll, dan fault).
+fn switch_task(
+    scheduler: &mut UserScheduler,
+    active: &mut UserProcess,
+    next: usize,
+) -> Option<*mut InterruptFrame> {
+    let saved = save_task_state(scheduler, active);
+    match load_task_state(scheduler, active, next) {
+        Some(frame) => Some(frame),
+        None => {
+            if saved {
+                let current = scheduler.current;
+                core::mem::swap(active, &mut scheduler.processes[current].state);
+            }
+            None
+        }
+    }
+}
+
+/// Switch ditolak karena invariant: lanjutkan task sekarang dan lepaskan
+/// penantian yang sempat dicatat pemanggil agar task itu bisa dijadwalkan lagi.
+fn keep_running_after_switch_refusal(
+    scheduler: &mut UserScheduler,
+    frame_pointer: *mut InterruptFrame,
+) -> *mut InterruptFrame {
+    let current = scheduler.current;
+    if let Some(process) = scheduler.processes.get_mut(current) {
+        process.waiting_for = None;
+        process.wait_deadline = None;
+    }
+    frame_pointer
 }
 
 fn save_current_thread_pointer() {
     let mut process = USER_PROCESS.lock();
     if process.active {
-        process.thread_pointer = saved_thread_pointer_after_kernel_entry(
-            process.thread_pointer,
+        // A zero read can be a context-restore artefact; never let it discard a
+        // live TLS base.
+        process.thread_pointer = select_tls_base(
             thread_pointer::read(),
+            process.tls_anchor,
+            process.tls_cleared,
         );
     }
 }
 
-fn restore_current_thread_pointer(site: u64) {
-    let scheduler = USER_SCHEDULER.lock();
-    let process = USER_PROCESS.lock();
-    if let Some(task) = scheduler.processes.get(scheduler.current) {
-        record_first_tls_mismatch(site, task, &process);
+/// Apakah `iretq` dengan selector `code_segment` kembali ke ring 3.
+fn selector_returns_to_user(code_segment: u64) -> bool {
+    code_segment & 3 == 3
+}
+
+/// Pulihkan konteks (TLS dan FPU) task yang akan menerima kendali saat `frame`
+/// di-`iretq`. Wajib dipanggil setiap kali handler bisa mengembalikan frame
+/// milik task lain.
+fn restore_user_context(frame: *mut InterruptFrame) {
+    // Frame yang melanjutkan kode ring 0 (trampoline kernel) tidak boleh diberi
+    // konteks user: loop scheduler memulihkan task terpilih tepat sebelum iretq
+    // miliknya sendiri. USER_PROCESS saat itu bisa saja sudah berisi state task
+    // lain, dan menulis FS_BASE-nya di sini akan merusak task tersebut.
+    if !selector_returns_to_user(unsafe { (*frame).stack_frame.code_segment }) {
+        return;
     }
-    let value = if process.active {
-        process.thread_pointer
-    } else {
+    restore_current_thread_pointer();
+    restore_current_user_fpu();
+}
+
+/// TLS base yang dipakai task ini. Sebuah thread yang dibuat dengan TLS tidak
+/// boleh berjalan dengan `FS_BASE` nol: akses `__thread` pertama akan memicu
+/// page fault di alamat 0. Jadi bila base tersimpan hilang (misalnya karena
+/// state task tertimpa state lain saat switch), pakai base awal yang immutable.
+/// Base nol hanya sah bila program sendiri mengosongkannya lewat
+/// `set_thread_pointer(0)`.
+fn task_tls_base(task: &ScheduledProcess) -> u64 {
+    select_tls_base(
+        task.state.thread_pointer,
+        task.state.tls_anchor,
+        task.state.tls_cleared,
+    )
+}
+
+fn restore_current_thread_pointer() {
+    // Tidak perlu USER_SCHEDULER: base TLS hanya hidup di USER_PROCESS. Mengunci
+    // scheduler di sini menambah risiko deadlock pada jalur interrupt.
+    let process = USER_PROCESS.lock();
+    // Selama task berjalan, state hidupnya ada di USER_PROCESS, bukan di slot
+    // `scheduler.processes[current]` (slot berisi state task lain yang sedang
+    // ditukar keluar). Jadi base diambil dari USER_PROCESS, dan hanya jatuh ke
+    // base awal bila base tersimpan hilang.
+    let value = if !process.active {
         0
+    } else {
+        select_tls_base(
+            process.thread_pointer,
+            process.tls_anchor,
+            process.tls_cleared,
+        )
     };
     drop(process);
-    drop(scheduler);
     thread_pointer::write(value);
 }
 
@@ -8720,7 +8774,12 @@ fn current_cpu_milliseconds() -> u64 {
 
 pub fn terminate_user(frame: &mut InterruptFrame, status: u64) -> *mut InterruptFrame {
     let next_frame = terminate_user_inner(frame, status);
-    restore_current_user_fpu();
+    // `terminate_user_inner` may hand control to a different task (the parent
+    // waiting in waitpid, or the next runnable task). That task must resume
+    // with its own TLS base and FPU state; restoring only the FPU left
+    // FS_BASE pointing at the terminated task's (soon unmapped) TLS block, so
+    // the next `__thread` access in the resumed task faulted.
+    restore_user_context(next_frame);
     next_frame
 }
 
@@ -8750,10 +8809,7 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
             }
             scheduler.processes[current].exit_status = Some(status);
             let mut active_process = USER_PROCESS.lock();
-            core::mem::swap(
-                &mut *active_process,
-                &mut scheduler.processes[current].state,
-            );
+            save_task_state(&mut scheduler, &mut active_process);
             scheduler.processes[current].state.active = false;
             while let Some(descriptor) = scheduler.processes[current].state.descriptors.pop() {
                 let pipe_id = descriptor.as_ref().and_then(|descriptor| match descriptor {
@@ -8790,13 +8846,11 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
                 let status_pointer = scheduler.processes[parent].wait_status_pointer;
                 scheduler.processes[parent].waiting_for = None;
                 scheduler.processes[parent].wait_status_pointer = 0;
-                core::mem::swap(&mut *active_process, &mut scheduler.processes[parent].state);
-                scheduler.current = parent;
-                let parent_process = &scheduler.processes[parent];
-                let parent_frame = parent_process.frame_pointer as *mut InterruptFrame;
+                let Some(parent_frame) = load_task_state(&mut scheduler, &mut active_process, parent)
+                else {
+                    return frame_pointer;
+                };
                 unsafe {
-                    gdt::set_ring0_stack_top(parent_process.kernel_stack_top);
-                    parent_process.image.memory.address_space.activate();
                     (*parent_frame).rax = if status_pointer == 0 {
                         child_pid
                     } else {
@@ -8820,15 +8874,9 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
             }
 
             if let Some(next) = schedule_next(&mut scheduler) {
-                core::mem::swap(&mut *active_process, &mut scheduler.processes[next].state);
-                scheduler.current = next;
-                let next_process = &scheduler.processes[next];
-                let next_frame = next_process.frame_pointer as *mut InterruptFrame;
-                unsafe {
-                    gdt::set_ring0_stack_top(next_process.kernel_stack_top);
-                    next_process.image.memory.address_space.activate();
+                if let Some(next_frame) = load_task_state(&mut scheduler, &mut active_process, next) {
+                    return next_frame;
                 }
-                return next_frame;
             }
             scheduler.active = scheduler
                 .processes
@@ -9115,7 +9163,7 @@ mod tests {
         ProcessWait, capability_present, is_poll_wait, robust_word_after_exit,
         FUTEX_OWNER_DIED, FUTEX_WAITERS,
         effective_priority_target, priority_change_allowed, priority_target_matches,
-        SCHED_OTHER, ElfError, saved_thread_pointer_after_kernel_entry,
+        SCHED_OTHER, ElfError, select_tls_base, selector_returns_to_user, slot_is_resumable,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
         PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_PAGES, STACK_RANDOM_PAGES,
         STACK_TOP, SYSCALL_MMAP, SYSCALL_MUNMAP, UserDescriptor, signal_stack_top, stack_layout,
@@ -9424,14 +9472,37 @@ mod tests {
     }
 
     #[test]
-    fn preserves_saved_tls_when_kernel_observes_transient_zero_fs_base() {
-        assert_eq!(saved_thread_pointer_after_kernel_entry(0x1000, 0), 0x1000);
+    fn user_selector_requires_the_ring3_privilege_bits() {
+        // Kernel code selector from the GDT is 0x08; user code is 0x23.
+        assert!(!selector_returns_to_user(0x08));
+        assert!(selector_returns_to_user(0x23));
+        // Only the low two bits decide the target privilege level.
+        assert!(selector_returns_to_user(0x3));
+        assert!(!selector_returns_to_user(0x0));
     }
 
     #[test]
-    fn accepts_nonzero_hardware_tls_and_explicit_saved_zero() {
-        assert_eq!(saved_thread_pointer_after_kernel_entry(0x1000, 0x2000), 0x2000);
-        assert_eq!(saved_thread_pointer_after_kernel_entry(0, 0), 0);
+    fn a_task_slot_is_resumable_only_while_it_holds_a_live_state() {
+        // Slot dengan state hidup boleh dimuat.
+        assert!(slot_is_resumable(3, 0, true));
+        assert!(slot_is_resumable(3, 2, true));
+        // Placeholder (state kosong) tidak boleh dijalankan: task akan lanjut
+        // dengan state kosong dan kehilangan TLS-nya.
+        assert!(!slot_is_resumable(3, 1, false));
+        // Indeks di luar daftar task juga bukan kandidat.
+        assert!(!slot_is_resumable(3, 3, true));
+    }
+
+    #[test]
+    fn task_never_resumes_with_a_lost_tls_base() {
+        // Lost base: fall back to the last known-good anchor.
+        assert_eq!(select_tls_base(0, 0x1000_2000, false), 0x1000_2000);
+        // A live value is always preferred over the anchor.
+        assert_eq!(select_tls_base(0x1000_3000, 0x1000_2000, false), 0x1000_3000);
+        // A program that cleared its own TLS keeps the zero base.
+        assert_eq!(select_tls_base(0, 0x1000_2000, true), 0);
+        // Tasks that never had TLS stay at zero.
+        assert_eq!(select_tls_base(0, 0, false), 0);
     }
 
     #[test]

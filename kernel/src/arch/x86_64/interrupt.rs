@@ -242,13 +242,6 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                 crate::println!(
                     "User fault task pid={pid} tid={tid} is_thread={is_thread} initial_tls={initial_tls:#x} process_tls={process_tls:#x} actual_fs={actual_fs:#x}"
                 );
-                if let Some((site, first_tid, first_initial, first_saved, first_fs)) =
-                    crate::elf::first_tls_mismatch_debug()
-                {
-                    crate::println!(
-                        "TLS-FIRST-LOSS site={site} tid={first_tid} initial={first_initial:#x} saved={first_saved:#x} fs={first_fs:#x}"
-                    );
-                }
                 crate::println!(
                     "User fault regs rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rsi={:#x} rdi={:#x} rbp={:#x} rsp={:#x}",
                     frame.rax, frame.rbx, frame.rcx, frame.rdx,

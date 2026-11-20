@@ -169,12 +169,14 @@ impl Fat32 {
         }
 
         let clear_end = data_start + sectors_per_cluster as u64;
-        let zeroes = [0u8; SECTOR_SIZE * 8];
+        // Clear in 64 KiB chunks so the block driver can issue large multi-sector commands.
+        const CLEAR_SECTORS: u64 = 128;
+        let zeroes = alloc::vec![0u8; SECTOR_SIZE * CLEAR_SECTORS as usize];
         let total_bytes = clear_end.saturating_mul(SECTOR_SIZE as u64);
         let mut lba = 0;
         progress(0, total_bytes);
         while lba < clear_end {
-            let count = (clear_end - lba).min(8) as usize;
+            let count = (clear_end - lba).min(CLEAR_SECTORS) as usize;
             device
                 .write_sectors(lba, &zeroes[..count * SECTOR_SIZE])
                 .map_err(|_| FsError::IoError)?;

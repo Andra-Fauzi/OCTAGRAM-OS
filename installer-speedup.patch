@@ -1,0 +1,346 @@
+diff --git a/kernel/src/drivers/ahci.rs b/kernel/src/drivers/ahci.rs
+index f33b097..58f22c3 100644
+--- a/kernel/src/drivers/ahci.rs
++++ b/kernel/src/drivers/ahci.rs
+@@ -71,6 +71,12 @@ const ATA_IDENTIFY: u8 = 0xEC;
+ const ATA_READ_DMA_EXT: u8 = 0x25;
+ const ATA_WRITE_DMA_EXT: u8 = 0x35;
+ const ATA_TIMEOUT: usize = 100_000_000;
++/// Sectors moved by a single ATA command. 128 sectors = 64 KiB, which is the
++/// classic safe limit for LBA48 DMA and keeps the bounce buffer small.
++const MAX_SECTORS_PER_COMMAND: usize = 128;
++const DMA_BUFFER_SIZE: usize = MAX_SECTORS_PER_COMMAND * SECTOR_SIZE;
++const DMA_PAGE_SIZE: usize = 4096;
++const PRDT_ENTRIES: usize = DMA_BUFFER_SIZE / DMA_PAGE_SIZE;
+ 
+ #[repr(C)]
+ #[derive(Clone, Copy, Default)]
+@@ -108,7 +114,7 @@ struct CommandTable {
+     command_fis: [u8; 64],
+     atapi_command: [u8; 16],
+     reserved: [u8; 48],
+-    prdt: [PrdtEntry; 1],
++    prdt: [PrdtEntry; PRDT_ENTRIES],
+ }
+ 
+ impl CommandTable {
+@@ -117,13 +123,13 @@ impl CommandTable {
+             command_fis: [0; 64],
+             atapi_command: [0; 16],
+             reserved: [0; 48],
+-            prdt: [PrdtEntry::default(); 1],
++            prdt: [PrdtEntry::default(); PRDT_ENTRIES],
+         }
+     }
+ }
+ 
+ #[repr(C, align(4096))]
+-struct DmaBuffer([u8; SECTOR_SIZE]);
++struct DmaBuffer([u8; DMA_BUFFER_SIZE]);
+ 
+ struct PortState {
+     port_regs: usize,
+@@ -150,7 +156,9 @@ impl PortState {
+                 command_list: Box::new(CommandList::new()),
+                 received_fis: Box::new(ReceivedFis([0; 256])),
+                 command_table: Box::new(CommandTable::new()),
+-                buffer: Box::new(DmaBuffer([0; SECTOR_SIZE])),
++                // Allocate zeroed directly on the heap; a 64 KiB array must not be
++                // built on the kernel stack first.
++                buffer: Box::<DmaBuffer>::new_zeroed().assume_init(),
+                 sector_count: 0,
+             };
+             let command_list_phys = physical_address(&*state.command_list as *const _ as usize)?;
+@@ -168,7 +176,7 @@ impl PortState {
+                 read_reg(port_regs, PORT_CMD) | PORT_CMD_FRE | PORT_CMD_ST,
+             );
+ 
+-            state.issue_command(ATA_IDENTIFY, 0, false)?;
++            state.issue_command(ATA_IDENTIFY, 0, 1, false)?;
+             let identify = &state.buffer.0;
+             if u16::from_le_bytes([identify[166], identify[167]]) & (1 << 10) == 0 {
+                 return Err(BlockError::Io);
+@@ -185,12 +193,16 @@ impl PortState {
+         &mut self,
+         command: u8,
+         lba: u64,
++        sectors: usize,
+         write: bool,
+     ) -> Result<(), BlockError> {
+         unsafe {
++            if sectors == 0 || sectors > MAX_SECTORS_PER_COMMAND {
++                return Err(BlockError::InvalidBuffer);
++            }
+             wait_clear(self.port_regs, PORT_TFD, PORT_TFD_BSY | PORT_TFD_DRQ)?;
+             let table_phys = physical_address(&*self.command_table as *const _ as usize)?;
+-            let buffer_phys = physical_address(self.buffer.0.as_ptr() as usize)?;
++            let buffer_base = self.buffer.0.as_ptr() as usize;
+ 
+             self.command_table.command_fis.fill(0);
+             self.command_table.command_fis[0] = 0x27;
+@@ -204,17 +216,30 @@ impl PortState {
+             self.command_table.command_fis[9] = (lba >> 32) as u8;
+             self.command_table.command_fis[10] = (lba >> 40) as u8;
+             if command != ATA_IDENTIFY {
+-                self.command_table.command_fis[12] = 1;
++                self.command_table.command_fis[12] = sectors as u8;
++                self.command_table.command_fis[13] = (sectors >> 8) as u8;
++            }
++
++            // One PRDT entry per 4 KiB page: the heap buffer is virtually
++            // contiguous but not necessarily physically contiguous.
++            let mut remaining = sectors * SECTOR_SIZE;
++            let mut entries = 0usize;
++            while remaining > 0 {
++                let chunk = remaining.min(DMA_PAGE_SIZE);
++                let page_phys = physical_address(buffer_base + entries * DMA_PAGE_SIZE)?;
++                self.command_table.prdt[entries] = PrdtEntry {
++                    data_base: page_phys,
++                    reserved: 0,
++                    byte_count_and_interrupt: (chunk as u32 - 1)
++                        | if remaining == chunk { 1 << 31 } else { 0 },
++                };
++                remaining -= chunk;
++                entries += 1;
+             }
+-            self.command_table.prdt[0] = PrdtEntry {
+-                data_base: buffer_phys as u64,
+-                reserved: 0,
+-                byte_count_and_interrupt: (SECTOR_SIZE as u32 - 1) | (1 << 31),
+-            };
+ 
+             let header = &mut self.command_list.0[0];
+             header.flags = 5 | if write { 1 << 6 } else { 0 };
+-            header.prdt_length = 1;
++            header.prdt_length = entries as u16;
+             header.transferred_bytes = 0;
+             header.command_table_low = table_phys as u32;
+             header.command_table_high = (table_phys >> 32) as u32;
+@@ -263,9 +288,12 @@ impl BlockDevice for AhciDevice {
+     fn read_sectors(&self, lba: u64, buffer: &mut [u8]) -> Result<(), BlockError> {
+         validate_range(lba, buffer.len(), self.sector_count())?;
+         let mut state = self.state.lock();
+-        for (index, output) in buffer.chunks_exact_mut(SECTOR_SIZE).enumerate() {
+-            unsafe { state.issue_command(ATA_READ_DMA_EXT, lba + index as u64, false) }?;
+-            output.copy_from_slice(&state.buffer.0);
++        let mut current_lba = lba;
++        for output in buffer.chunks_mut(DMA_BUFFER_SIZE) {
++            let sectors = output.len() / SECTOR_SIZE;
++            unsafe { state.issue_command(ATA_READ_DMA_EXT, current_lba, sectors, false) }?;
++            output.copy_from_slice(&state.buffer.0[..output.len()]);
++            current_lba += sectors as u64;
+         }
+         Ok(())
+     }
+@@ -273,9 +301,12 @@ impl BlockDevice for AhciDevice {
+     fn write_sectors(&self, lba: u64, buffer: &[u8]) -> Result<(), BlockError> {
+         validate_range(lba, buffer.len(), self.sector_count())?;
+         let mut state = self.state.lock();
+-        for (index, input) in buffer.chunks_exact(SECTOR_SIZE).enumerate() {
+-            state.buffer.0.copy_from_slice(input);
+-            unsafe { state.issue_command(ATA_WRITE_DMA_EXT, lba + index as u64, true) }?;
++        let mut current_lba = lba;
++        for input in buffer.chunks(DMA_BUFFER_SIZE) {
++            let sectors = input.len() / SECTOR_SIZE;
++            state.buffer.0[..input.len()].copy_from_slice(input);
++            unsafe { state.issue_command(ATA_WRITE_DMA_EXT, current_lba, sectors, true) }?;
++            current_lba += sectors as u64;
+         }
+         Ok(())
+     }
+diff --git a/kernel/src/installer.rs b/kernel/src/installer.rs
+index faaf1c4..18e2020 100644
+--- a/kernel/src/installer.rs
++++ b/kernel/src/installer.rs
+@@ -16,7 +16,7 @@ use crate::storage::{
+ };
+ 
+ const CONFIRMATION: &str = "INSTALL-OCTAGRAM-ERASE";
+-const COPY_CHUNK_SIZE: usize = 32 * 1024;
++const COPY_CHUNK_SIZE: usize = 256 * 1024;
+ const MINIMUM_ROOT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+ 
+ pub fn run(arguments: &str) {
+diff --git a/kernel/src/storage/ext2.rs b/kernel/src/storage/ext2.rs
+index cac5224..1245ea5 100644
+--- a/kernel/src/storage/ext2.rs
++++ b/kernel/src/storage/ext2.rs
+@@ -79,7 +79,9 @@ impl Ext2 {
+         const BLOCK_SIZE: usize = 4096;
+         const SECTORS_PER_BLOCK: u64 = (BLOCK_SIZE / SECTOR_SIZE) as u64;
+         const BLOCKS_PER_GROUP: u32 = 32_768;
+-        const INODES_PER_GROUP: u32 = 8_192;
++        // 4096 inodes per 128 MiB group (one inode per 32 KiB) halves the amount of
++        // zeroed inode-table data written at format time versus 8192.
++        const INODES_PER_GROUP: u32 = 4_096;
+         const INODE_SIZE: usize = EXT2_GOOD_OLD_INODE_SIZE;
+         const INODE_TABLE_BLOCKS: u32 =
+             (INODES_PER_GROUP * INODE_SIZE as u32).div_ceil(BLOCK_SIZE as u32);
+diff --git a/kernel/src/storage/fat32.rs b/kernel/src/storage/fat32.rs
+index 4c09b86..9a546d1 100644
+--- a/kernel/src/storage/fat32.rs
++++ b/kernel/src/storage/fat32.rs
+@@ -120,6 +120,10 @@ pub struct Fat32 {
+     geometry: Geometry,
+     next_free_cluster: u32,
+     free_cluster_count: Option<u32>,
++    /// Cluster chain of the file most recently written, keyed by its first
++    /// cluster. Lets sequential appends avoid re-walking the whole FAT chain
++    /// (which made large file copies quadratic). Any FAT change invalidates it.
++    chain_cache: Option<(u32, Vec<u32>)>,
+ }
+ 
+ impl Fat32 {
+@@ -144,6 +148,14 @@ impl Fat32 {
+         }
+ 
+         let mut sectors_per_cluster = 1u32;
++        // Prefer 4 KiB clusters when the volume is large enough to still have
++        // comfortably more than MIN_FAT32_CLUSTERS; fewer clusters means far
++        // fewer FAT updates when files are written.
++        while sectors_per_cluster < 8
++            && total_sectors / (sectors_per_cluster as u64 * 2) >= MIN_FAT32_CLUSTERS + 512
++        {
++            sectors_per_cluster *= 2;
++        }
+         while total_sectors.div_ceil(sectors_per_cluster as u64) > TARGET_MAX_CLUSTERS
+             && sectors_per_cluster < 64
+         {
+@@ -169,12 +181,14 @@ impl Fat32 {
+         }
+ 
+         let clear_end = data_start + sectors_per_cluster as u64;
+-        let zeroes = [0u8; SECTOR_SIZE * 8];
++        // Clear in 64 KiB chunks so the block driver can issue large multi-sector commands.
++        const CLEAR_SECTORS: u64 = 128;
++        let zeroes = alloc::vec![0u8; SECTOR_SIZE * CLEAR_SECTORS as usize];
+         let total_bytes = clear_end.saturating_mul(SECTOR_SIZE as u64);
+         let mut lba = 0;
+         progress(0, total_bytes);
+         while lba < clear_end {
+-            let count = (clear_end - lba).min(8) as usize;
++            let count = (clear_end - lba).min(CLEAR_SECTORS) as usize;
+             device
+                 .write_sectors(lba, &zeroes[..count * SECTOR_SIZE])
+                 .map_err(|_| FsError::IoError)?;
+@@ -246,6 +260,7 @@ impl Fat32 {
+             geometry,
+             next_free_cluster,
+             free_cluster_count,
++            chain_cache: None,
+         })
+     }
+ 
+@@ -281,6 +296,28 @@ impl Fat32 {
+             .map_err(|_| FsError::IoError)
+     }
+ 
++    /// Write several contiguous whole sectors with one block-device request.
++    fn write_sectors_run(&self, relative_lba: u64, data: &[u8]) -> Result<(), FsError> {
++        if data.is_empty() || data.len() % SECTOR_SIZE != 0 {
++            return Err(FsError::IoError);
++        }
++        let sectors = (data.len() / SECTOR_SIZE) as u64;
++        if relative_lba
++            .checked_add(sectors)
++            .is_none_or(|end| end > self.geometry.partition_sectors)
++        {
++            return Err(FsError::IoError);
++        }
++        let absolute_lba = self
++            .geometry
++            .partition_start
++            .checked_add(relative_lba)
++            .ok_or(FsError::IoError)?;
++        self.device
++            .write_sectors(absolute_lba, data)
++            .map_err(|_| FsError::IoError)
++    }
++
+     fn fat_entry(&self, cluster: u32) -> Result<u32, FsError> {
+         let byte_offset = (cluster as u64).checked_mul(4).ok_or(FsError::IoError)?;
+         let fat_start = self.geometry.fat_start
+@@ -298,6 +335,7 @@ impl Fat32 {
+         if cluster >= self.geometry.cluster_count + 2 {
+             return Err(FsError::IoError);
+         }
++        self.chain_cache = None;
+         let old_value = self.fat_entry(cluster)? & 0x0FFF_FFFF;
+         let value = value & 0x0FFF_FFFF;
+         let byte_offset = (cluster as u64).checked_mul(4).ok_or(FsError::IoError)?;
+@@ -615,6 +653,36 @@ impl Fat32 {
+             let cluster_offset = position % cluster_size;
+             let sector_lba = self.cluster_lba(cluster)? + (cluster_offset / SECTOR_SIZE) as u64;
+             let sector_offset = cluster_offset % SECTOR_SIZE;
++            let remaining = data.len() - written;
++
++            if sector_offset == 0 && remaining >= SECTOR_SIZE {
++                // Aligned fast path: write whole sectors in one request,
++                // following physically contiguous clusters of the chain.
++                const MAX_RUN_SECTORS: usize = 512;
++                let sectors_per_cluster = self.geometry.sectors_per_cluster as usize;
++                let mut run_sectors = (cluster_size - cluster_offset) / SECTOR_SIZE;
++                let mut last_cluster = cluster;
++                let mut next_index = cluster_index + 1;
++                while run_sectors * SECTOR_SIZE < remaining && run_sectors < MAX_RUN_SECTORS {
++                    match chain.get(next_index) {
++                        Some(&next) if next == last_cluster + 1 => {
++                            run_sectors += sectors_per_cluster;
++                            last_cluster = next;
++                            next_index += 1;
++                        }
++                        _ => break,
++                    }
++                }
++                let run_sectors = run_sectors
++                    .min(remaining / SECTOR_SIZE)
++                    .min(MAX_RUN_SECTORS);
++                let run_bytes = run_sectors * SECTOR_SIZE;
++                self.write_sectors_run(sector_lba, &data[written..written + run_bytes])?;
++                position = position.checked_add(run_bytes).ok_or(FsError::NoSpace)?;
++                written += run_bytes;
++                continue;
++            }
++
+             let copy_len = (SECTOR_SIZE - sector_offset).min(data.len() - written);
+             let mut sector = [0u8; SECTOR_SIZE];
+             if sector_offset != 0 || copy_len != SECTOR_SIZE {
+@@ -877,17 +945,28 @@ impl FileSystem for Fat32 {
+         let old_size = record.size as usize;
+         let cluster_size = self.geometry.sectors_per_cluster as usize * SECTOR_SIZE;
+         let required_clusters = end.div_ceil(cluster_size);
+-        let mut chain = self.cluster_chain(record.first_cluster)?;
++        let mut chain = match self.chain_cache.take() {
++            Some((first, cached)) if record.first_cluster != 0 && first == record.first_cluster => {
++                cached
++            }
++            _ => self.cluster_chain(record.first_cluster)?,
++        };
+         if chain.len() < (old_size.div_ceil(cluster_size)) {
+             return Err(FsError::IoError);
+         }
+         let new_count = required_clusters.saturating_sub(chain.len());
++        let first_new_index = chain.len();
+         let new_clusters = self.allocate_clusters(new_count)?;
+         if chain.try_reserve(new_clusters.len()).is_err() {
+             self.release_clusters(&new_clusters)?;
+             return Err(FsError::NoSpace);
+         }
+-        for &cluster in &new_clusters {
++        for (index, &cluster) in new_clusters.iter().enumerate() {
++            // A new cluster that this write fully overwrites needs no zeroing.
++            let cluster_start = (first_new_index + index) * cluster_size;
++            if offset <= cluster_start && cluster_start + cluster_size <= end {
++                continue;
++            }
+             if let Err(error) = self.zero_cluster(cluster) {
+                 self.release_clusters(&new_clusters)?;
+                 return Err(error);
+@@ -921,6 +1000,7 @@ impl FileSystem for Fat32 {
+             self.rollback_new_clusters(existing_last, &new_clusters)?;
+             return Err(error);
+         }
++        self.chain_cache = Some((first_cluster, chain));
+         Ok(data.len())
+     }
+ 

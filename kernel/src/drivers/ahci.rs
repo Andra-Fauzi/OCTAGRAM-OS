@@ -71,6 +71,12 @@ const ATA_IDENTIFY: u8 = 0xEC;
 const ATA_READ_DMA_EXT: u8 = 0x25;
 const ATA_WRITE_DMA_EXT: u8 = 0x35;
 const ATA_TIMEOUT: usize = 100_000_000;
+/// Sectors moved by a single ATA command. 128 sectors = 64 KiB, which is the
+/// classic safe limit for LBA48 DMA and keeps the bounce buffer small.
+const MAX_SECTORS_PER_COMMAND: usize = 128;
+const DMA_BUFFER_SIZE: usize = MAX_SECTORS_PER_COMMAND * SECTOR_SIZE;
+const DMA_PAGE_SIZE: usize = 4096;
+const PRDT_ENTRIES: usize = DMA_BUFFER_SIZE / DMA_PAGE_SIZE;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -108,7 +114,7 @@ struct CommandTable {
     command_fis: [u8; 64],
     atapi_command: [u8; 16],
     reserved: [u8; 48],
-    prdt: [PrdtEntry; 1],
+    prdt: [PrdtEntry; PRDT_ENTRIES],
 }
 
 impl CommandTable {
@@ -117,13 +123,13 @@ impl CommandTable {
             command_fis: [0; 64],
             atapi_command: [0; 16],
             reserved: [0; 48],
-            prdt: [PrdtEntry::default(); 1],
+            prdt: [PrdtEntry::default(); PRDT_ENTRIES],
         }
     }
 }
 
 #[repr(C, align(4096))]
-struct DmaBuffer([u8; SECTOR_SIZE]);
+struct DmaBuffer([u8; DMA_BUFFER_SIZE]);
 
 struct PortState {
     port_regs: usize,
@@ -150,7 +156,9 @@ impl PortState {
                 command_list: Box::new(CommandList::new()),
                 received_fis: Box::new(ReceivedFis([0; 256])),
                 command_table: Box::new(CommandTable::new()),
-                buffer: Box::new(DmaBuffer([0; SECTOR_SIZE])),
+                // Allocate zeroed directly on the heap; a 64 KiB array must not be
+                // built on the kernel stack first.
+                buffer: Box::<DmaBuffer>::new_zeroed().assume_init(),
                 sector_count: 0,
             };
             let command_list_phys = physical_address(&*state.command_list as *const _ as usize)?;
@@ -168,7 +176,7 @@ impl PortState {
                 read_reg(port_regs, PORT_CMD) | PORT_CMD_FRE | PORT_CMD_ST,
             );
 
-            state.issue_command(ATA_IDENTIFY, 0, false)?;
+            state.issue_command(ATA_IDENTIFY, 0, 1, false)?;
             let identify = &state.buffer.0;
             if u16::from_le_bytes([identify[166], identify[167]]) & (1 << 10) == 0 {
                 return Err(BlockError::Io);
@@ -185,12 +193,16 @@ impl PortState {
         &mut self,
         command: u8,
         lba: u64,
+        sectors: usize,
         write: bool,
     ) -> Result<(), BlockError> {
         unsafe {
+            if sectors == 0 || sectors > MAX_SECTORS_PER_COMMAND {
+                return Err(BlockError::InvalidBuffer);
+            }
             wait_clear(self.port_regs, PORT_TFD, PORT_TFD_BSY | PORT_TFD_DRQ)?;
             let table_phys = physical_address(&*self.command_table as *const _ as usize)?;
-            let buffer_phys = physical_address(self.buffer.0.as_ptr() as usize)?;
+            let buffer_base = self.buffer.0.as_ptr() as usize;
 
             self.command_table.command_fis.fill(0);
             self.command_table.command_fis[0] = 0x27;
@@ -204,17 +216,30 @@ impl PortState {
             self.command_table.command_fis[9] = (lba >> 32) as u8;
             self.command_table.command_fis[10] = (lba >> 40) as u8;
             if command != ATA_IDENTIFY {
-                self.command_table.command_fis[12] = 1;
+                self.command_table.command_fis[12] = sectors as u8;
+                self.command_table.command_fis[13] = (sectors >> 8) as u8;
             }
-            self.command_table.prdt[0] = PrdtEntry {
-                data_base: buffer_phys as u64,
-                reserved: 0,
-                byte_count_and_interrupt: (SECTOR_SIZE as u32 - 1) | (1 << 31),
-            };
+
+            // One PRDT entry per 4 KiB page: the heap buffer is virtually
+            // contiguous but not necessarily physically contiguous.
+            let mut remaining = sectors * SECTOR_SIZE;
+            let mut entries = 0usize;
+            while remaining > 0 {
+                let chunk = remaining.min(DMA_PAGE_SIZE);
+                let page_phys = physical_address(buffer_base + entries * DMA_PAGE_SIZE)?;
+                self.command_table.prdt[entries] = PrdtEntry {
+                    data_base: page_phys,
+                    reserved: 0,
+                    byte_count_and_interrupt: (chunk as u32 - 1)
+                        | if remaining == chunk { 1 << 31 } else { 0 },
+                };
+                remaining -= chunk;
+                entries += 1;
+            }
 
             let header = &mut self.command_list.0[0];
             header.flags = 5 | if write { 1 << 6 } else { 0 };
-            header.prdt_length = 1;
+            header.prdt_length = entries as u16;
             header.transferred_bytes = 0;
             header.command_table_low = table_phys as u32;
             header.command_table_high = (table_phys >> 32) as u32;
@@ -263,9 +288,12 @@ impl BlockDevice for AhciDevice {
     fn read_sectors(&self, lba: u64, buffer: &mut [u8]) -> Result<(), BlockError> {
         validate_range(lba, buffer.len(), self.sector_count())?;
         let mut state = self.state.lock();
-        for (index, output) in buffer.chunks_exact_mut(SECTOR_SIZE).enumerate() {
-            unsafe { state.issue_command(ATA_READ_DMA_EXT, lba + index as u64, false) }?;
-            output.copy_from_slice(&state.buffer.0);
+        let mut current_lba = lba;
+        for output in buffer.chunks_mut(DMA_BUFFER_SIZE) {
+            let sectors = output.len() / SECTOR_SIZE;
+            unsafe { state.issue_command(ATA_READ_DMA_EXT, current_lba, sectors, false) }?;
+            output.copy_from_slice(&state.buffer.0[..output.len()]);
+            current_lba += sectors as u64;
         }
         Ok(())
     }
@@ -273,9 +301,12 @@ impl BlockDevice for AhciDevice {
     fn write_sectors(&self, lba: u64, buffer: &[u8]) -> Result<(), BlockError> {
         validate_range(lba, buffer.len(), self.sector_count())?;
         let mut state = self.state.lock();
-        for (index, input) in buffer.chunks_exact(SECTOR_SIZE).enumerate() {
-            state.buffer.0.copy_from_slice(input);
-            unsafe { state.issue_command(ATA_WRITE_DMA_EXT, lba + index as u64, true) }?;
+        let mut current_lba = lba;
+        for input in buffer.chunks(DMA_BUFFER_SIZE) {
+            let sectors = input.len() / SECTOR_SIZE;
+            state.buffer.0[..input.len()].copy_from_slice(input);
+            unsafe { state.issue_command(ATA_WRITE_DMA_EXT, current_lba, sectors, true) }?;
+            current_lba += sectors as u64;
         }
         Ok(())
     }

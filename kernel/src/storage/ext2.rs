@@ -79,7 +79,9 @@ impl Ext2 {
         const BLOCK_SIZE: usize = 4096;
         const SECTORS_PER_BLOCK: u64 = (BLOCK_SIZE / SECTOR_SIZE) as u64;
         const BLOCKS_PER_GROUP: u32 = 32_768;
-        const INODES_PER_GROUP: u32 = 8_192;
+        // 4096 inodes per 128 MiB group (one inode per 32 KiB) halves the amount of
+        // zeroed inode-table data written at format time versus 8192.
+        const INODES_PER_GROUP: u32 = 4_096;
         const INODE_SIZE: usize = EXT2_GOOD_OLD_INODE_SIZE;
         const INODE_TABLE_BLOCKS: u32 =
             (INODES_PER_GROUP * INODE_SIZE as u32).div_ceil(BLOCK_SIZE as u32);

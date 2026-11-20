@@ -312,6 +312,7 @@ impl FileSystem for RamFs {
         }
         if self.nodes.contains_key(&target) {
             self.nodes.remove(&target);
+            self.modified.remove(&target);
         }
         for (old_path, new_path) in moved {
             if let Some(node) = self.nodes.remove(&old_path) {

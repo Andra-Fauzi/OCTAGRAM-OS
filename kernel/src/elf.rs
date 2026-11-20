@@ -2621,6 +2621,22 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     if from_user {
         restore_current_thread_pointer();
         restore_current_user_fpu();
+        if next_frame != frame as *mut InterruptFrame {
+            let (tid, expected_thread_pointer) = {
+                let scheduler = USER_SCHEDULER.lock();
+                let tid = scheduler
+                    .processes
+                    .get(scheduler.current)
+                    .map(|process| process.tid)
+                    .unwrap_or(0);
+                let process = USER_PROCESS.lock();
+                (tid, process.thread_pointer)
+            };
+            let actual_thread_pointer = thread_pointer::read();
+            crate::println!(
+                "[sched-tls] timer selected tid={tid} expected={expected_thread_pointer:#x} fs={actual_thread_pointer:#x}"
+            );
+        }
     }
     next_frame
 }
@@ -3167,6 +3183,10 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     };
     state.fpu_state = FpuState::new();
     state.thread_pointer = thread_pointer;
+    crate::println!(
+        "[sched-tls] create tid={} tls={thread_pointer:#x} mapping={mapping_base:#x}+{mapping_length:#x}",
+        scheduler.next_tid
+    );
     let kernel_stack = match ProcessKernelStack::new() {
         Ok(stack) => stack,
         Err(error) => {

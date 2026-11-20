@@ -61,6 +61,9 @@ jobs:
       - name: Build executable for experimental OCTAGRAM Rust target
         run: make -C user/rust build-octagram
 
+      - name: Verify custom-target Rust ELF is self-contained
+        run: python3 tools/check_rust_octagram_elf.py
+
       - name: Test Rust runtime freestanding memory ABI
         run: |
           cargo +nightly test \

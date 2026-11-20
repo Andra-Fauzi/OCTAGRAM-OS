@@ -128,6 +128,22 @@ clock monotonic, entropy, signal delivery, mmap protection faults, dan
 stress/concurrency. Jangan mengubah status M4.2 secara keseluruhan hanya
 berdasarkan smoke test ini.
 
+## 3.3. Native Rust `no_std + alloc` guest execution (2026-11-20)
+
+CI run [44691194848](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44691194848)
+pada commit `e2be770724236140dd071aab998ac6ffb0f1c0ad` lulus seluruh job.
+Kernel image menanamkan `/bin/rust-hello`, sebuah ELF x86_64 yang dibangun
+dari workspace Rust menggunakan target `x86_64-unknown-none`. Test QEMU
+menjalankan ELF tersebut dari shell OCTAGRAM. Program membuat dan mengisi
+`Vec<u8>` berukuran 2 MiB melalui allocator runtime, menulis marker
+`Rust no_std + alloc runs in OCTAGRAM!`, lalu keluar dengan status 0.
+Log memuat `RUST-NOSTD-PASS`.
+
+Ini membuktikan jalur **host Rust compiler -> no_std target ELF -> kernel
+loader -> syscall runtime -> alloc -> eksekusi guest** untuk satu program
+kecil. Compiler masih berjalan di host; Cargo juga masih berjalan di host.
+Ini bukan rustc native dan bukan bukti kompatibilitas `std`.
+
 ## 4. Urutan bootstrap yang direkomendasikan
 
 ### M4.1 — Host ABI dan target specification

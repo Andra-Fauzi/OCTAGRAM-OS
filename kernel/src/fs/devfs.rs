@@ -342,6 +342,7 @@ impl DevFs {
                 node_type: NodeType::Directory,
                 len: 0,
                 permissions: 0o755,
+                modified: None,
             });
         }
         Device::from_path(path)
@@ -356,6 +357,7 @@ impl DevFs {
                     len,
                     permissions: (if device.readable() { 0o444 } else { 0 })
                         | (if device.writable() { 0o222 } else { 0 }),
+                    modified: None,
                 }
             })
             .ok_or(FsError::NotFound)
@@ -481,6 +483,7 @@ fn directory_entry(name: &str) -> DirectoryEntry {
                         | (if device.writable() { 0o222 } else { 0 })
                 })
                 .unwrap_or(0o444),
+            modified: None,
         },
     }
 }
@@ -618,6 +621,7 @@ mod tests {
                 node_type: NodeType::File,
                 len: 0,
                 permissions: 0o666,
+                modified: None,
             })
         );
         let entries = devfs.read_dir("/").unwrap();

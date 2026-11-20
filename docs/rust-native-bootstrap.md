@@ -234,6 +234,26 @@ GitHub Actions [run 44713729286](https://github.com/Andra-Fauzi/OCTAGRAM-OS/acti
 
 **Batas klaim:** Cargo dan rustc yang menghasilkan ELF tersebut masih berjalan pada host Linux. Yang berjalan native di OCTAGRAM adalah hasil ELF guest-nya, bukan compiler atau Cargo. rustc native, Cargo native, std, proc macros, native kernel build, dan bootstrap berulang tetap belum tersedia.
 
+
+## 3.6. Batas build triple, host triple, dan target triple
+
+Bootstrap rustc memiliki tiga mesin berbeda yang tidak boleh dicampur:
+
+- **Build:** mesin yang menjalankan bootstrap awal; tahap pertama menggunakan x86_64 Linux.
+- **Host:** mesin/OS tempat executable rustc hasil build akan dijalankan; tujuan OCTAGRAM adalah x86_64-unknown-octagram.
+- **Target:** mesin/OS yang kode hasil kompilasi akan jalankan; kernel OCTAGRAM tetap x86_64-unknown-none.
+
+Dalam build system Rust, stage N compiler membangun artefak yang dipakai untuk menyusun stage N+1. Build compiler juga bergantung pada sysroot dan standard library stage sebelumnya. Dokumentasi upstream menjelaskan bahwa x.py build library membangun rustc menggunakan stage0, lalu membangun library dengan stage1; artefak compiler dan sysroot disusun sebagai satu toolchain yang dapat dijalankan. Lihat [Rust Compiler Development Guide — How to build and run](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html) dan [Bootstrapping the compiler](https://rustc-dev-guide.rust-lang.org/building/bootstrapping.html).
+
+Konsekuensi untuk OCTAGRAM:
+
+1. Build saat ini dengan --target x86_64-unknown-octagram hanya menghasilkan aplikasi/guest ELF dengan ABI OCTAGRAM. Itu bukan build rustc yang dapat dijalankan sebagai host compiler.
+2. rustc native membutuhkan host sysroot/runtime yang jauh lebih besar daripada core + alloc: Rust std, libc ABI, filesystem/process/environment, threads/TLS/synchronization, clocks, memory mapping, dynamic loading atau strategi static-link yang tervalidasi, serta backend code generation dan linker.
+3. Target kernel tetap freestanding x86_64-unknown-none. Setelah rustc host OCTAGRAM tersedia, compiler tersebut harus dapat menghasilkan kernel target-none menggunakan linker script high-half.
+4. Cargo adalah komponen terpisah: ia baru dapat dianggap native setelah executable Cargo berjalan pada OCTAGRAM dan memanggil rustc host OCTAGRAM, bukan rustc Linux.
+
+Tahap Stage 0 belum diimplementasikan. Sebelum memilih port LLVM/LLD, audit harus menentukan apakah compiler backend akan dibawa sebagai shared library native OCTAGRAM atau dibangun statis, dan apakah ABI/dynamic loader yang ada cukup untuk dependency tersebut. Jangan mencoba menjalankan Linux rustc sebagai pengganti native rustc dengan mengandalkan syscall compatibility; itu hanya memindahkan dependency host ke compatibility layer.
+
 ## 4. Urutan bootstrap yang direkomendasikan
 
 ### M4.1 — Host ABI dan target specification
@@ -271,11 +291,16 @@ script kernel.
 
 ### M4.4 — Stage 0 rustc dan Cargo
 
-- [ ] Bangun Stage 0 rustc untuk host OCTAGRAM menggunakan bootstrap host
-      yang tersedia di Linux.
-- [ ] Jalankan `rustc --version`, kompilasi program Rust sederhana, link,
-      dan jalankan hasilnya di OCTAGRAM.
-- [ ] Port Cargo sebagai executable host OCTAGRAM.
+- [ ] Tetapkan tiga triple secara eksplisit: build (Linux bootstrap machine),
+      host (x86_64-unknown-octagram untuk executable rustc/Cargo), dan
+      target (x86_64-unknown-none untuk kernel freestanding).
+- [ ] Sediakan Stage 0 rustc beserta sysroot/std yang dapat dijalankan pada
+      build machine, lalu cross-bootstrap compiler host OCTAGRAM. Build
+      aplikasi dengan --target OCTAGRAM saja tidak menghasilkan rustc native.
+- [ ] Link dan jalankan rustc host OCTAGRAM dengan sysroot, lalu buktikan
+      rustc --version dan kompilasi program sederhana dari shell OCTAGRAM.
+- [ ] Port Cargo sebagai executable host OCTAGRAM setelah rustc dan sysroot
+      host dapat dijalankan.
 - [ ] Pastikan Cargo dapat menjalankan rustc, membaca workspace/lockfile,
       mengelola cache offline, dan menjalankan build script yang dibutuhkan.
 - [ ] Sediakan registry/vendor cache untuk dependency yang dipakai OS agar

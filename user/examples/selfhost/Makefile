@@ -16,3 +16,12 @@ $(TARGET): hello.o $(ARCHIVE)
 
 phony-check:
 	$(CC) -c message.c -o phony-check
+
+.PHONY: order-only-check-run
+order-only-check-run: order-only-check
+
+order-only-check: message.o | order-only-dep
+	$(CC) -c message.c -o order-only-check
+
+order-only-dep:
+	$(CC) -c message.c -o order-only-dep

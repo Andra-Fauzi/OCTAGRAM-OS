@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "octagram-alloc-probe"
+version = "0.1.0"
+
+[[package]]
 name = "octagram-make"
 version = "0.1.0"
 dependencies = [

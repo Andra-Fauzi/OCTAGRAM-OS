@@ -181,9 +181,13 @@ Tujuan: build system native yang cukup kuat untuk membangun proyek OS.
 - [ ] Kembangkan `make` agar mendukung target, prerequisites, variables,
   automatic variables, pattern/implicit rules yang dibutuhkan, dan include.
 - [ ] Tambahkan timestamp/metadata yang andal dan incremental rebuild.
-- [ ] Tambahkan recipe exit code, quoting, environment, cwd, dan log.
+- [x] Tambahkan recipe exit code, quoting, environment, cwd, dan log: setiap
+  perintah dijalankan lewat `fork`/`execve` dengan environment induk, `-C`
+  mengganti cwd, kegagalan menghentikan build (kecuali prefix `-`), `@`/`-s`
+  membisukan echo, dan `;`/`&&` mengatur urutan perintah dalam satu recipe.
 - [ ] Tambahkan parallel build hanya setelah dependency graph dan locking aman.
-- [x] Implementasikan mode `-n`/`--dry-run`, `-s`/`--silent`, dan `-j1` pada native `make`.
+- [x] Implementasikan mode `-n`/`--dry-run`, `-s`/`--silent`, dan `-j1` pada native `make`,
+  plus `-p`/`--print-database` untuk mencetak variabel dan rule tanpa build.
 - [x] Validasi native Make di QEMU: `-n`, `-j1 -n`, target phony/order-only, incremental rebuild saat prerequisite berubah, dan `-B`.
 - [ ] Buat build manifest agar hasil build dapat direproduksi.
 

@@ -62,6 +62,7 @@ fn run(argc: i32, argv: *const *const u8) -> Result<i32, String> {
     let mut dry_run = false;
     let mut silent = false;
     let mut always_make = false;
+    let mut print_database = false;
     let mut overrides = Vec::new();
     let mut index = 0;
 
@@ -70,7 +71,8 @@ fn run(argc: i32, argv: *const *const u8) -> Result<i32, String> {
             "--help" | "-h" => {
                 write_all(
                     STDOUT,
-                    b"usage: make [-B] [-n] [-s] [-j1] [-C directory] [-f file] [NAME=value] [target...]\n\
+                    b"usage: make [-B] [-n] [-s] [-p] [-j1] [-C directory] [-f file] [NAME=value] [target...]\n\
+-p/--print-database prints variables and rules without building.\n\
 Supported Makefile features: includes, explicit dependencies, single-stem pattern rules, \n\
 variables, $@/$</$^/$*, .PHONY, and timestamp-based incremental rebuilds.\n\
 Targets rebuild when missing or older than prerequisites; -B forces a rebuild.\n\
@@ -81,6 +83,7 @@ wildcards, and multi-stem pattern rules are unsupported.\n",
                 return Ok(0);
             }
             "-B" => always_make = true,
+            "-p" | "--print-database" => print_database = true,
             "-n" | "--dry-run" => dry_run = true,
             "-s" | "--silent" => silent = true,
             "-j1" => {}
@@ -124,6 +127,10 @@ wildcards, and multi-stem pattern rules are unsupported.\n",
         set_variable(&mut makefile.variables, &name, &value);
     }
 
+    if print_database {
+        return print_make_database(&makefile);
+    }
+
     if targets.is_empty() {
         let Some(target) = makefile.default_target.clone() else {
             return Err("no targets in Makefile".into());
@@ -141,6 +148,45 @@ wildcards, and multi-stem pattern rules are unsupported.\n",
             return Ok(2);
         }
     }
+    Ok(0)
+}
+
+/// Print the parsed variable and rule database without building anything, so a
+/// build graph can be inspected or diffed inside OCTAGRAM.
+fn print_make_database(makefile: &Makefile) -> Result<i32, String> {
+    let mut output = String::from("# variables\n");
+    for (name, value) in &makefile.variables {
+        output.push_str(&format!("{name} = {value}\n"));
+    }
+    output.push_str("# rules\n");
+    for rule in &makefile.rules {
+        output.push_str(&rule.target);
+        output.push(':');
+        for dependency in &rule.dependencies {
+            output.push(' ');
+            output.push_str(dependency);
+        }
+        if !rule.order_only_dependencies.is_empty() {
+            output.push_str(" |");
+            for dependency in &rule.order_only_dependencies {
+                output.push(' ');
+                output.push_str(dependency);
+            }
+        }
+        output.push('\n');
+        for recipe in &rule.recipes {
+            output.push_str(&format!("\t{recipe}\n"));
+        }
+    }
+    if !makefile.phony_targets.is_empty() {
+        output.push_str("# phony\n.PHONY:");
+        for target in &makefile.phony_targets {
+            output.push(' ');
+            output.push_str(target);
+        }
+        output.push('\n');
+    }
+    write_all(STDOUT, output.as_bytes()).map_err(|error| format!("write failed ({error})"))?;
     Ok(0)
 }
 

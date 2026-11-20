@@ -50,6 +50,14 @@ jobs:
 
       # kernel/src/fs/mod.rs embeds these artifacts with include_bytes!,
       # so create them before invoking cargo test or compilation fails early.
+      - name: Compile no_std + alloc probe for experimental OCTAGRAM host target
+        run: |
+          cargo +nightly -Z build-std=core,alloc -Z json-target-spec build \
+            --manifest-path user/rust/Cargo.toml \
+            --package octagram-alloc-probe \
+            --release \
+            --target user/rust/targets/x86_64-unknown-octagram.json
+
       - name: Build embedded Rust utility
         run: make -C user/rust all
 

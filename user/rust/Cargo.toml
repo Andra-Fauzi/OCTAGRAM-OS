@@ -1,5 +1,5 @@
 [workspace]
-members = ["hello", "make", "runtime"]
+members = ["hello", "make", "runtime", "alloc-probe"]
 resolver = "2"
 
 [profile.dev]

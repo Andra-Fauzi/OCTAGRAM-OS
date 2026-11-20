@@ -66,7 +66,7 @@ selesai jika bukti sesuai tersedia.
 | Editor | Perintah editor native tersedia | Perlu uji edit file besar dan persistensi |
 | C compiler | TinyCC minimal ELF compile/run lulus QEMU; extended C source compile lulus tetapi ELF belum dieksekusi | QEMU guest-tested untuk minimal; multi-file/archive belum terbukti |
 | Mini toolchain | Compiler C-subset, assembler/linker mini tersedia | Terbatas, bukan GNU toolchain |
-| Native Make | Rust no_std; explicit graph, variables, `-n`, `-s`, `-j1`, mtime incremental, `-B` | Source implemented; QEMU actual build/skip test pending |
+| Native Make | Rust no_std; explicit graph, variables, `-n`, `-s`, `-j1`, mtime incremental, `-B` | QEMU-tested: build, skip, newer prerequisite, forced rebuild |
 | Rust application | Workspace Rust no_std dapat di-cross-compile dari host | Bukan Rust compiler native |
 | rustc | Belum terbukti berjalan di OCTAGRAM | Belum tersedia |
 | Cargo | Belum terbukti berjalan di OCTAGRAM | Belum tersedia |
@@ -151,11 +151,11 @@ yang didisassembly, bukan mencari semua mnemonic yang diawali huruf `v`.
   Perbaikan harness memetakan `C` menjadi `shift-c` pada commit
   `570f8c39`; perlu rerun untuk membuktikan native Make.
 
-**Status verifikasi terkini:** workflow [44671348202](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44671348202)
-lulus seluruh CI, termasuk QEMU syscall compatibility. TinyCC minimal compile
-dan execute terbukti; extended ELF baru berhasil dikompilasi, belum dieksekusi.
-Native Make `-n` dan `-j1 -n` terbukti di QEMU. Perbaikan incremental Make
-yang sedang dikembangkan belum mempunyai hasil QEMU setelah perubahan mtime.
+**Status verifikasi terkini:** workflow [44672916014](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44672916014)
+lulus seluruh job CI. QEMU membuktikan TinyCC minimal compile/run, native Make
+menjalankan recipe, target mutakhir melewati recipe, prerequisite lebih baru
+memicu rebuild, dan `-B` memaksa rebuild. Extended libc smoke ELF masih baru
+dikompilasi, belum dijalankan.
 
 ---
 

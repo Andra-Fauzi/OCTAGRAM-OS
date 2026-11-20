@@ -2399,9 +2399,27 @@ fn run_toolchain_command(command: &str, current_dir: &str, arguments: &str) {
         }
     };
     match write_toolchain_file(&output, &output_bytes, matches!(command, "ld" | "cc")) {
-        Ok(()) => crate::println!("{command}: wrote {} bytes to {output}", output_bytes.len()),
+        Ok(()) => {
+            crate::println!("{command}: wrote {} bytes to {output}", output_bytes.len());
+            if command == "ld"
+                && let Some(entry) = elf_entry_address(&output_bytes)
+            {
+                crate::println!("ld: entry point {entry:#x}");
+            }
+        }
         Err(error) => print_fs_error(command, &output, error),
     }
+}
+
+/// Read `e_entry` from a produced executable so a failed guest run can be
+/// matched against the address the linker chose, without a host disassembler.
+fn elf_entry_address(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 32 || bytes.get(..4) != Some(b"\x7fELF".as_slice()) {
+        return None;
+    }
+    let mut entry = [0u8; 8];
+    entry.copy_from_slice(bytes.get(24..32)?);
+    Some(u64::from_le_bytes(entry))
 }
 
 fn read_toolchain_file(path: &str) -> Result<Vec<u8>, FsError> {

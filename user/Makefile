@@ -9,6 +9,7 @@ HOSTLD ?= ld
 
 CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
 	-fno-stack-protector -fno-pie -fno-pic -mno-red-zone -mcmodel=small \
+	-march=x86-64 -mtune=generic -mno-avx -mno-avx2 -mno-avx512f \
 	-mno-mmx -msse2 -mfpmath=387 -DOCTAGRAM_TLS_ERRNO \
 	-Iinclude
 LDFLAGS := -m elf_x86_64 -static -nostdlib -T linker.ld

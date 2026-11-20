@@ -2,7 +2,7 @@ CC = tcc
 TARGET = hello.elf
 ARCHIVE = libmessage.a
 
-.PHONY: all
+.PHONY: all phony-check
 all: $(TARGET)
 
 hello.o: hello.c
@@ -16,3 +16,6 @@ $(ARCHIVE): message.o
 
 $(TARGET): hello.o $(ARCHIVE)
 	$(CC) $^ -o $@
+
+phony-check:
+	touch /share/octagram/phony-check

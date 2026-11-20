@@ -315,6 +315,18 @@ perubahan tidak menjalankan recipe yang tidak perlu.
 **Tujuan:** menjalankan `rustc` native di OCTAGRAM. Ini salah satu jalur kritis
 karena kernel utama ditulis dalam Rust.
 
+**Progress 2026-11-20:** inventaris syscall awal tersedia di
+`docs/syscall-abi.md`. CI run
+[44688400258](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44688400258)
+pada commit `7bba60172120f385fcc5d43768d73f8fb07b5836` juga menjalankan
+conformance slice guest untuk mmap, static TLS, thread/mutex, dan syscall
+compatibility. Semua lulus dengan exit status 0. Rincian dan batas test ada di
+`docs/rust-native-bootstrap.md`.
+
+Status ini hanya memvalidasi sebagian fasilitas OS. Target host triple
+`x86_64-unknown-octagram`, kebijakan static/dynamic linking, dan kontrak Rust
+`std` belum ditetapkan atau diimplementasikan.
+
 - [ ] Inventaris komponen bootstrap: rustc, LLVM/codegen backend, compiler
       builtins, target spec, sysroot, rust-src, dan linker.
 - [ ] Pilih versi Rust dan pin seluruh komponen bootstrap.

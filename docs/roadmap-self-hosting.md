@@ -64,9 +64,9 @@ selesai jika bukti sesuai tersedia.
 | Kernel/proses/ELF | Kernel x86_64, ELF loader, proses dan syscall sudah tersedia | Fondasi ada |
 | Filesystem | VFS, EXT2, FAT32, mount dan instalasi persisten tersedia | Perlu validasi workflow source |
 | Editor | Perintah editor native tersedia | Perlu uji edit file besar dan persistensi |
-| C compiler | TinyCC compile dan minimal ELF hasilnya sudah dijalankan di QEMU; extended C smoke compile lulus | Make QEMU smoke perlu dijalankan ulang setelah perbaikan input harness |
+| C compiler | TinyCC minimal ELF compile/run lulus QEMU; extended C source compile lulus tetapi ELF belum dieksekusi | QEMU guest-tested untuk minimal; multi-file/archive belum terbukti |
 | Mini toolchain | Compiler C-subset, assembler/linker mini tersedia | Terbatas, bukan GNU toolchain |
-| Native Make | Utility Rust no_std; dukungan target, variable, automatic variable, `-n`, `-s`, `-j1` | Implemented; QEMU test belum terbukti lulus |
+| Native Make | Rust no_std; explicit graph, variables, `-n`, `-s`, `-j1`, mtime incremental, `-B` | Source implemented; QEMU actual build/skip test pending |
 | Rust application | Workspace Rust no_std dapat di-cross-compile dari host | Bukan Rust compiler native |
 | rustc | Belum terbukti berjalan di OCTAGRAM | Belum tersedia |
 | Cargo | Belum terbukti berjalan di OCTAGRAM | Belum tersedia |
@@ -151,9 +151,11 @@ yang didisassembly, bukan mencari semua mnemonic yang diawali huruf `v`.
   Perbaikan harness memetakan `C` menjadi `shift-c` pada commit
   `570f8c39`; perlu rerun untuk membuktikan native Make.
 
-**Status verifikasi:** gate compile-run minimal TinyCC lulus di QEMU. M2
-belum selesai: extended ELF perlu dieksekusi, Make guest tests perlu lulus,
-dan multi-file/archive/link belum dibuktikan.
+**Status verifikasi terkini:** workflow [44671348202](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44671348202)
+lulus seluruh CI, termasuk QEMU syscall compatibility. TinyCC minimal compile
+dan execute terbukti; extended ELF baru berhasil dikompilasi, belum dieksekusi.
+Native Make `-n` dan `-j1 -n` terbukti di QEMU. Perbaikan incremental Make
+yang sedang dikembangkan belum mempunyai hasil QEMU setelah perubahan mtime.
 
 ---
 
@@ -237,8 +239,11 @@ program C native.
 - [x] Tetapkan baseline ISA x86_64 yang didukung oleh kernel dan QEMU.
 - [x] Hilangkan instruksi AVX dari TinyCC build; AVX kernel tidak diaktifkan.
 - [x] Verifikasi runtime TLS lewat `PT_TLS` dan auxiliary vector pada QEMU untuk executable minimal.
-- [ ] Uji command `tcc source.c -o program.elf` dari shell.
-- [ ] Jalankan hasil ELF dari shell dan periksa output serta exit status.
+- [x] Uji command `tcc source.c -o program.elf` dari shell untuk program
+      minimal; QEMU mengembalikan exit status 0.
+- [x] Jalankan ELF minimal hasil TinyCC dari shell; output dan exit status 0
+      diperiksa di QEMU.
+- [ ] Jalankan extended libc smoke ELF (saat ini baru tahap compile).
 - [ ] Uji argv, envp, file I/O, malloc, TLS, errno, signal, dan stack alignment.
 - [ ] Uji include header OCTAGRAM, static libc, relocation, dan diagnostics.
 - [ ] Uji proyek C multi-file: compile beberapa object, archive, lalu link.
@@ -263,24 +268,40 @@ dan rebuild yang benar.
 - [x] Dry-run `-n` / `--dry-run`.
 - [x] Silent `-s` / `--silent`.
 - [x] Mode serial eksplisit `-j1` (belum berarti parallel build).
+- [x] VFS metadata `modified: Option<u64>`; timestamp tak tersedia dinyatakan
+      eksplisit, bukan diganti nilai perkiraan.
+- [x] EXT2 membaca/menulis inode `i_mtime`; RAMFS memperbarui mtime pada
+      create/write/truncate; devfs/FAT32 menyatakan mtime belum tersedia.
+- [x] Syscall `stat` family mengembalikan mtime melalui slot 32-bit yang
+      sebelumnya reserved; ukuran ABI `oct_stat` tetap 16 byte.
+- [x] Native Make membandingkan mtime target dan prerequisite, rebuild bila
+      target hilang / prerequisite lebih baru / timestamp tidak diketahui.
+- [x] Opsi `-B` memaksa rebuild.
 
 ### Pekerjaan lanjutan
 
-- [ ] Jalankan smoke test Make di QEMU setelah blocker TinyCC selesai.
-- [ ] Tambahkan timestamp modification yang konsisten di VFS.
-- [ ] Baca dan simpan mtime EXT2 dengan benar.
-- [ ] Tentukan perilaku timestamp untuk RAMFS/devfs dan filesystem tanpa mtime.
-- [ ] Tambahkan incremental rebuild berdasarkan target/prerequisite.
+- [ ] Buktikan recipe nyata berjalan di QEMU dan menghasilkan ELF.
+- [ ] Buktikan invocation kedua melewati recipe untuk target yang mutakhir.
+- [ ] Buktikan `-B` menjalankan ulang recipe.
+- [ ] Uji prerequisite yang timestamp-nya lebih baru dari target.
 - [ ] Tambahkan `include`, pattern rules, dan implicit rules yang diperlukan.
 - [ ] Perbaiki quoting dan argument parsing recipe.
 - [ ] Pastikan recipe berjalan di shell dengan cwd dan environment yang benar.
 - [ ] Tambahkan build log dan manifest dependency.
 - [ ] Tambahkan parallel build setelah graph, locking, dan output ordering aman.
 
-Penting: `fs::Metadata` saat ini membawa node type, length, dan permissions;
-`struct oct_stat` hanya membawa size dan mode. Timestamp belum tersedia pada
-jalur metadata tersebut. Jangan mengimplementasikan incremental Make dengan
-mengandalkan timestamp yang belum ada.
+Batas timestamp saat ini:
+
+- EXT2 memakai inode mtime 32-bit Unix seconds dengan resolusi satu detik
+  (rentang representasi klasik sampai 2106).
+- Waktu diambil dari CMOS RTC; bila RTC tidak dapat dibaca, nilai mtime 0
+  diperlakukan sebagai unknown dan Make memilih rebuild secara konservatif.
+- RAMFS memakai clock pengujian deterministik di host tests dan RTC saat guest
+  berjalan. FAT32/devfs melaporkan timestamp tidak tersedia.
+- Make memakai perbandingan strict `prerequisite_mtime > target_mtime`.
+  Perubahan sumber dalam detik EXT2 yang sama bisa tidak terdeteksi; pengujian
+  perubahan sumber harus melintasi batas detik. Resolusi subdetik dan timestamp
+  FAT32 menjadi pekerjaan lanjutan.
 
 **Gate M3:** Make native membangun proyek multi-directory, dan perubahan satu
 prerequisite hanya membangun ulang target yang terdampak. Build kedua tanpa

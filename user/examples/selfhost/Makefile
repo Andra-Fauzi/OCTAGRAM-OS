@@ -18,4 +18,4 @@ $(TARGET): hello.o $(ARCHIVE)
 	$(CC) $^ -o $@
 
 phony-check:
-	touch /share/octagram/phony-check
+	$(CC) -c message.c -o phony-check

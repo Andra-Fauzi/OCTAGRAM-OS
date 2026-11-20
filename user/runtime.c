@@ -4078,8 +4078,10 @@ int stat(const char *path, struct stat *result)
         errno = EOVERFLOW;
         return -1;
     }
+    memset(result, 0, sizeof(*result));
     result->st_size = (off_t)metadata.size;
     result->st_mode = (mode_t)metadata.mode;
+    result->st_mtime = (time_t)metadata.modified_seconds;
     return 0;
 }
 
@@ -4097,8 +4099,10 @@ int lstat(const char *path, struct stat *result)
         errno = EOVERFLOW;
         return -1;
     }
+    memset(result, 0, sizeof(*result));
     result->st_size = (off_t)metadata.size;
     result->st_mode = (mode_t)metadata.mode;
+    result->st_mtime = (time_t)metadata.modified_seconds;
     return 0;
 }
 
@@ -4116,8 +4120,10 @@ int fstat(int fd, struct stat *result)
         errno = EOVERFLOW;
         return -1;
     }
+    memset(result, 0, sizeof(*result));
     result->st_size = (off_t)metadata.size;
     result->st_mode = (mode_t)metadata.mode;
+    result->st_mtime = (time_t)metadata.modified_seconds;
     return 0;
 }
 
@@ -4135,8 +4141,10 @@ int fstatat(int dirfd, const char *path, struct stat *result, int flags)
         errno = EOVERFLOW;
         return -1;
     }
+    memset(result, 0, sizeof(*result));
     result->st_size = (off_t)metadata.size;
     result->st_mode = (mode_t)metadata.mode;
+    result->st_mtime = (time_t)metadata.modified_seconds;
     return 0;
 }
 

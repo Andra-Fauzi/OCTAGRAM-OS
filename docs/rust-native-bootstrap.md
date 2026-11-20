@@ -265,9 +265,9 @@ untuk memeriksa schema, tiga triple, daftar subsistem wajib, dan mencegah status
 Validator itu memeriksa konsistensi dokumentasi, bukan membuktikan semantik ABI.
 
 Temuan penting: futex kernel sudah memiliki `WAIT_BITSET`, `WAKE_BITSET`, dan
-`REQUEUE`, tidak hanya `WAIT`/`WAKE`. Dokumentasi ABI diperbarui dan guest
-compatibility demo sekarang menambah uji bitset/deadline/requeue; QEMU pass
-untuk commit baru harus tetap ditunggu sebelum menandai coverage tersebut lulus.
+`REQUEUE`, tidak hanya `WAIT`/`WAKE`. Dokumentasi ABI diperbarui; guest
+compatibility demo menguji absolute deadline, bitset matching, dan requeue-to-
+target. Semua tes tersebut lulus pada QEMU run [44716140003](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44716140003). Shared futex lintas PID dan operasi PI tetap belum tersedia.
 
 ## 4. Urutan bootstrap yang direkomendasikan
 

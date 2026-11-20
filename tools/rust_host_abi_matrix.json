@@ -143,17 +143,19 @@
     {
       "id": "futex",
       "layer": "Synchronization",
-      "status": "implemented_partial",
+      "status": "qemu_tested",
       "summary": "Kernel implements WAIT, WAKE, WAIT_BITSET, WAKE_BITSET, and REQUEUE; the compatibility demo is being extended with guest tests for bitsets and requeue.",
       "evidence": [
         "kernel/src/elf.rs syscall_futex and helper functions",
-        "existing futex WAIT/WAKE and timeout tests in syscall-compat-demo"
+        "QEMU run 44716140003 emits SYSCALL-TEST: PASS",
+        "Guest checks pass for WAIT_BITSET absolute timeout, empty bitset rejection, bitset mismatch/match, REQUEUE-to-target, and wake of the requeued waiter"
       ],
       "limitations": [
         "Waiter matching is restricted to the same PID; private flag is accepted but ignored; CMP_REQUEUE, WAKE_OP, and PI operations return ENOSYS"
       ],
       "next_gate": [
-        "Require QEMU pass for WAIT_BITSET deadline, bitset filtering, and REQUEUE-to-target tests in the current branch run"
+        "Add cross-process shared futex only if a selected compiler/runtime dependency requires it",
+        "Consider CMP_REQUEUE/WAKE_OP/PI operations only from measured Stage 0 dependency requirements"
       ]
     },
     {

@@ -11,6 +11,7 @@ KEY_NAMES = {
     "-": "minus",
     ".": "dot",
     "_": "shift-minus",
+    "C": "shift-c",
     " ": "spc",
 }
 

@@ -312,6 +312,11 @@ perubahan tidak menjalankan recipe yang tidak perlu.
 
 ## M4 — Rust compiler native bootstrap
 
+**Progress 2026-11-20:** CI run [44691194848](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44691194848), commit `e2be770724236140dd071aab998ac6ffb0f1c0ad`, lulus penuh. Guest QEMU menjalankan `/bin/rust-hello`, sebuah program Rust `no_std + alloc` yang memakai allocator untuk membuat Vec 2 MiB, menampilkan marker `Rust no_std + alloc runs in OCTAGRAM!`, dan keluar status 0 (`RUST-NOSTD-PASS`). Jalur host compiler → target ELF → loader → runtime syscall → allocator → guest execution sudah terbukti untuk program kecil.
+
+**Batas penting:** rustc dan Cargo masih berjalan di host; belum ada `rustc` native, Rust `std`, atau bootstrap compiler berulang. Detail bukti ada di `docs/rust-native-bootstrap.md`.
+
+
 **Tujuan:** menjalankan `rustc` native di OCTAGRAM. Ini salah satu jalur kritis
 karena kernel utama ditulis dalam Rust.
 

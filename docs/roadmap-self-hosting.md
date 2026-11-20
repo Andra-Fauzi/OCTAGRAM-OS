@@ -99,15 +99,29 @@ diperbaiki hanya karena kernel build berhasil.
   `-mno-avx -mno-avx2 -mno-avx512f` untuk kompilasi userland, termasuk
   runtime dan object TinyCC yang memakai `CFLAGS` tersebut.
 - `.github/workflows/posix-core-stage1.yml` kini memeriksa disassembly
-  `user/build/tcc.elf` dan menggagalkan CI jika mnemonic AVX/VEX terdeteksi.
+  `user/build/tcc.elf` dan menggagalkan CI jika byte awal instruksi VEX/EVEX
+  terdeteksi (menghindari false positive mnemonic seperti `verr`/`verw`).
 - `docs/toolchain.md` menjelaskan alasan baseline ISA: kernel belum memiliki
   kontrak XSAVE/XCR0 dan penyimpanan state AVX yang lengkap.
 
-**Status verifikasi:** perubahan source sudah di-commit, tetapi belum boleh
- dianggap selesai sebelum workflow CI terbaru membuktikan bahwa guard lulus,
-TinyCC berhasil compile program di guest, dan ELF hasilnya berhasil dijalankan.
-Jika masih gagal, periksa disassembly baru dan jangan langsung mengaktifkan
-AVX di kernel tanpa audit context switch FPU/SIMD.
+**Hasil CI berikutnya:** TinyCC berhasil dikompilasi dan command compile di
+guest mengembalikan status 0, tetapi program hasil kompilasi mengalami page
+fault saat dijalankan: `error_code=0x4, RIP=0x413c84, address=0x0`. Ini adalah
+masalah baru setelah blocker invalid-opcode dan harus dianalisis terpisah;
+belum ada bukti bahwa program C hasil TinyCC berjalan benar.
+
+**Tindakan isolasi terbaru:** smoke test dipisah menjadi dua sumber:
+
+- `tcc_smoke_minimal.c`: program kecil yang hanya menggunakan `printf` dan
+  dipakai sebagai gate compile-run pertama.
+- `tcc_smoke.c`: test libc yang lebih luas; tetap dikompilasi sebagai
+  pemeriksaan tambahan, tetapi belum dieksekusi sampai test minimal stabil.
+
+Sumber minimal dipasang sebagai `/tmp/tcc.c` dan sumber luas sebagai
+`/tmp/tcc-full.c`. CI juga memeriksa byte prefix VEX/EVEX pada instruksi
+yang didisassembly, bukan mencari semua mnemonic yang diawali huruf `v`.
+**Status verifikasi:** source isolasi sudah di-commit; tunggu hasil workflow
+terbaru sebelum menyatakan TinyCC guest runtime lulus.
 
 ---
 

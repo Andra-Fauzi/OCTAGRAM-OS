@@ -254,6 +254,21 @@ Konsekuensi untuk OCTAGRAM:
 
 Tahap Stage 0 belum diimplementasikan. Sebelum memilih port LLVM/LLD, audit harus menentukan apakah compiler backend akan dibawa sebagai shared library native OCTAGRAM atau dibangun statis, dan apakah ABI/dynamic loader yang ada cukup untuk dependency tersebut. Jangan mencoba menjalankan Linux rustc sebagai pengganti native rustc dengan mengandalkan syscall compatibility; itu hanya memindahkan dependency host ke compatibility layer.
 
+## 3.7. Host ABI dependency matrix (2026-11-20)
+
+Audit komponen OS yang dibutuhkan host compiler disimpan sebagai matriks terstruktur:
+[`rust-host-abi-matrix.md`](rust-host-abi-matrix.md) dan
+[`tools/rust_host_abi_matrix.json`](../tools/rust_host_abi_matrix.json).
+CI menjalankan [`tools/check_rust_host_abi_matrix.py`](../tools/check_rust_host_abi_matrix.py)
+untuk memeriksa schema, tiga triple, daftar subsistem wajib, dan mencegah status
+`rust_std`/`rustc_host`/Cargo/backend dinaikkan tanpa implementasi native.
+Validator itu memeriksa konsistensi dokumentasi, bukan membuktikan semantik ABI.
+
+Temuan penting: futex kernel sudah memiliki `WAIT_BITSET`, `WAKE_BITSET`, dan
+`REQUEUE`, tidak hanya `WAIT`/`WAKE`. Dokumentasi ABI diperbarui dan guest
+compatibility demo sekarang menambah uji bitset/deadline/requeue; QEMU pass
+untuk commit baru harus tetap ditunggu sebelum menandai coverage tersebut lulus.
+
 ## 4. Urutan bootstrap yang direkomendasikan
 
 ### M4.1 — Host ABI dan target specification

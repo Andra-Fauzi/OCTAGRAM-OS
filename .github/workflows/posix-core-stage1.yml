@@ -64,6 +64,9 @@ jobs:
       - name: Test custom-target Rust ELF verifier
         run: python3 tools/test_check_rust_octagram_elf.py
 
+      - name: Validate Rust host ABI dependency matrix
+        run: python3 tools/check_rust_host_abi_matrix.py
+
       - name: Verify custom-target Rust ELF is self-contained
         run: python3 tools/check_rust_octagram_elf.py
 

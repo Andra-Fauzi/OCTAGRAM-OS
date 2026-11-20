@@ -501,3 +501,10 @@ Run 44713729286 pada commit 80e823f berhasil melewati:
 - **Belum tercapai:** rustc native, Cargo native, Rust std, proc-macro/build scripts, native kernel build, native image builder, serta A/B update/rollback. Seluruh build Rust di atas masih dijalankan oleh Cargo/rustc nightly pada host.
 
 M4.1 kini memiliki bukti executable custom target yang berjalan, tetapi M4 Rust native bootstrap belum selesai. Langkah berikutnya adalah mengaudit Stage 0 dengan memisahkan build/host/target triple, lalu menentukan cara menyediakan compiler dan sysroot yang benar-benar dapat berjalan di OCTAGRAM. ELF aplikasi yang di-cross-compile untuk target OCTAGRAM bukan compiler native; keberhasilan core + alloc juga bukan bukti port std atau compiler native.
+
+## 13. Audit dependency host Rust dan conformance futex (20 November 2026)
+
+- Matriks host ABI Build/Host/Target tersedia di `docs/rust-host-abi-matrix.md` dan `tools/rust_host_abi_matrix.json`; CI memvalidasi skema serta status klaim.
+- Matriks membedakan `qemu_tested`, `build_tested`, `implemented_partial`, dan `not_implemented`. Rust `std`, rustc native, Cargo native, LLVM/LLD native, Stage 0, native kernel build, image builder, dan rollback tetap belum diimplementasikan.
+- Audit source menemukan dokumentasi futex lama tidak sinkron: kernel sudah menangani `FUTEX_WAIT_BITSET`, `FUTEX_WAKE_BITSET`, dan `FUTEX_REQUEUE`. Dokumentasi diperbarui. Guest tests tambahan memeriksa absolute deadline, bitset filtering, dan requeue-to-target; status QEMU-nya mengikuti hasil CI commit ini.
+- Batas semantik yang dipertahankan eksplisit: futex waiter di-matching dalam PID yang sama, `FUTEX_PRIVATE_FLAG` belum mengubah perilaku, dan `CMP_REQUEUE`/`WAKE_OP`/PI operations belum didukung.

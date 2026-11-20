@@ -1,0 +1,326 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-11-20",
+  "branch": "feature/native-self-hosting",
+  "full_self_hosting_proven": false,
+  "triples": {
+    "build": "x86_64-unknown-linux-gnu",
+    "host": "x86_64-unknown-octagram",
+    "kernel_target": "x86_64-unknown-none"
+  },
+  "status_definitions": {
+    "qemu_tested": "A focused executable or OS path ran in QEMU and emitted its expected result.",
+    "build_tested": "Compilation/linking succeeded, but target execution has not been proven.",
+    "implemented_partial": "Source support exists, but semantics or coverage are incomplete.",
+    "not_implemented": "No native OCTAGRAM implementation/executable has been demonstrated."
+  },
+  "components": [
+    {
+      "id": "rust_target_spec",
+      "layer": "Rust target",
+      "status": "qemu_tested",
+      "summary": "Custom Rust target identity x86_64-unknown-octagram builds a freestanding ELF with target_os=octagram.",
+      "evidence": [
+        "tools/check_octagram_rust_target.py validates rustc cfg",
+        "make -C user/rust build-octagram links rust_hello_octagram.elf",
+        "QEMU run 44713729286 emitted M4-RUST-TARGET-EXEC-PASS"
+      ],
+      "limitations": [
+        "LLVM backend triple remains x86_64-unknown-none",
+        "This is an application target; it does not make rustc an OCTAGRAM host executable"
+      ],
+      "next_gate": [
+        "Integrate an OCTAGRAM host target into the rustc source build and supported-target tables"
+      ]
+    },
+    {
+      "id": "rust_core",
+      "layer": "Rust sysroot",
+      "status": "build_tested",
+      "summary": "Nightly build-std compiles core for the custom OCTAGRAM target.",
+      "evidence": [
+        "CI step Compile no_std runtime for experimental OCTAGRAM host target"
+      ],
+      "limitations": [
+        "Build runs on Linux; no OCTAGRAM rustc/std sysroot exists"
+      ],
+      "next_gate": [
+        "Build and test a host sysroot for x86_64-unknown-octagram"
+      ]
+    },
+    {
+      "id": "rust_alloc",
+      "layer": "Rust sysroot",
+      "status": "qemu_tested",
+      "summary": "alloc is compiled for the experimental target; guest Vec allocation of 2 MiB runs.",
+      "evidence": [
+        "octagram-alloc-probe compiles with build-std=core,alloc",
+        "/bin/rust-hello-octagram emits RUST-NOSTD-PASS in QEMU run 44713729286"
+      ],
+      "limitations": [
+        "No global allocator or std host runtime suitable for rustc is proven"
+      ],
+      "next_gate": [
+        "Build allocator and collection-heavy host utilities on top of a real target sysroot"
+      ]
+    },
+    {
+      "id": "freestanding_memory_abi",
+      "layer": "Rust runtime",
+      "status": "build_tested",
+      "summary": "octagram-runtime exports memset, memcpy, memmove, and memcmp for freestanding links.",
+      "evidence": [
+        "Six octagram-runtime unit tests pass in CI run 44713729286"
+      ],
+      "limitations": [
+        "These functions are not a libc implementation"
+      ],
+      "next_gate": [
+        "Expand runtime ABI tests under sanitizers/target guest tests where supported"
+      ]
+    },
+    {
+      "id": "allocator_guest",
+      "layer": "Memory",
+      "status": "qemu_tested",
+      "summary": "Rust guest allocates and writes a 2 MiB Vec through the OCTAGRAM runtime allocator.",
+      "evidence": [
+        "Rust custom target guest emits its target marker and exits with status 0 in QEMU run 44713729286"
+      ],
+      "limitations": [
+        "Large-process memory pressure, allocator fragmentation, multithreaded allocation contention, and OOM recovery are not fully characterized"
+      ],
+      "next_gate": [
+        "Add allocator stress, multithreaded allocation, and OOM behavior tests"
+      ]
+    },
+    {
+      "id": "filesystem",
+      "layer": "VFS",
+      "status": "qemu_tested",
+      "summary": "Rust guest calls stat, open, read, and close against a seeded VFS file.",
+      "evidence": [
+        "Rust runtime file/stat: PASS in QEMU run 44713729286"
+      ],
+      "limitations": [
+        "Directory traversal, rename durability, large source trees, mtime precision, and crash consistency are not validated as a Rust std contract"
+      ],
+      "next_gate": [
+        "Add Rust filesystem conformance tests for cwd, directories, rename, timestamps, and error mapping"
+      ]
+    },
+    {
+      "id": "process_api",
+      "layer": "Process",
+      "status": "implemented_partial",
+      "summary": "ELF loader, fork, execve, waitpid, pipe, and descriptor inheritance are implemented and some compatibility paths are QEMU-tested.",
+      "evidence": [
+        "syscall ABI documentation and user syscall-compat-demo",
+        "QEMU syscall compatibility smoke test in run 44713729286"
+      ],
+      "limitations": [
+        "Process limit is 16; descriptor limit is 16; not all Linux process and spawn semantics are implemented"
+      ],
+      "next_gate": [
+        "Add dedicated fork/exec/wait/pipe inheritance tests and document exact errno/edge behavior"
+      ]
+    },
+    {
+      "id": "threads_tls",
+      "layer": "Threads and TLS",
+      "status": "qemu_tested",
+      "summary": "Kernel thread creation/join, static TLS, FS base switching, timer preemption, and SSE state preservation pass the guest smoke test.",
+      "evidence": [
+        "M4-ABI-TLS-PASS and M4-ABI-THREADS-PASS in QEMU run 44713729286 without scheduler trace logging"
+      ],
+      "limitations": [
+        "Dynamic TLS for shared objects is not implemented; pthread semantics are a partial POSIX subset"
+      ],
+      "next_gate": [
+        "Implement and test dynamic TLS only if the chosen rustc/LLVM host build actually requires it"
+      ]
+    },
+    {
+      "id": "futex",
+      "layer": "Synchronization",
+      "status": "implemented_partial",
+      "summary": "Kernel implements WAIT, WAKE, WAIT_BITSET, WAKE_BITSET, and REQUEUE; the compatibility demo is being extended with guest tests for bitsets and requeue.",
+      "evidence": [
+        "kernel/src/elf.rs syscall_futex and helper functions",
+        "existing futex WAIT/WAKE and timeout tests in syscall-compat-demo"
+      ],
+      "limitations": [
+        "Waiter matching is restricted to the same PID; private flag is accepted but ignored; CMP_REQUEUE, WAKE_OP, and PI operations return ENOSYS"
+      ],
+      "next_gate": [
+        "Require QEMU pass for WAIT_BITSET deadline, bitset filtering, and REQUEUE-to-target tests in the current branch run"
+      ]
+    },
+    {
+      "id": "memory_mapping",
+      "layer": "Memory",
+      "status": "qemu_tested",
+      "summary": "Anonymous mmap and protection/TLS related guest paths run in QEMU.",
+      "evidence": [
+        "M4-ABI-MMAP-PASS in QEMU run 44713729286"
+      ],
+      "limitations": [
+        "MAP_PRIVATE is eagerly copied rather than COW; no SIGBUS at mapped EOF; mlock does not pin against swapping because swapping does not exist"
+      ],
+      "next_gate": [
+        "Add mmap stress and file-backed mapping conformance for the host runtime"
+      ]
+    },
+    {
+      "id": "time_and_entropy",
+      "layer": "Time and randomness",
+      "status": "implemented_partial",
+      "summary": "Clock, sleep, and getrandom syscalls exist and basic compatibility checks run.",
+      "evidence": [
+        "docs/syscall-abi.md syscall table and syscall-compat-demo"
+      ],
+      "limitations": [
+        "Realtime clock derives from RTC at one-second resolution; monotonic is about 1 ms; getrandom is xorshift seeded from TSC and flags do not change behavior"
+      ],
+      "next_gate": [
+        "Provide a stronger entropy source and define precise clock/sleep semantics for std and compiler dependencies"
+      ]
+    },
+    {
+      "id": "signals",
+      "layer": "Signals",
+      "status": "implemented_partial",
+      "summary": "Basic signal delivery, masking, handlers, and sigreturn are implemented.",
+      "evidence": [
+        "kernel/src/elf.rs signal dispatch and syscall-compat-demo signal paths"
+      ],
+      "limitations": [
+        "Some flags such as SA_SIGINFO and SA_NOCLDSTOP are accepted without full behavior; delivery and restart semantics are a subset"
+      ],
+      "next_gate": [
+        "Run a focused signal conformance suite before relying on std process behavior"
+      ]
+    },
+    {
+      "id": "dynamic_elf",
+      "layer": "Linking and loading",
+      "status": "implemented_partial",
+      "summary": "Static ELF is supported and a limited PT_INTERP/PIE loader exists for current userland.",
+      "evidence": [
+        "kernel ELF loader; dynamic userland build and smoke artifacts"
+      ],
+      "limitations": [
+        "Not a complete Linux dynamic loader; relocation, TLS, symbol versions, dlopen, and complex shared-library combinations are incomplete"
+      ],
+      "next_gate": [
+        "Select static-link strategy or specify the exact dynamic loader features required by a rustc/LLVM build"
+      ]
+    },
+    {
+      "id": "networking",
+      "layer": "Networking",
+      "status": "implemented_partial",
+      "summary": "IPv4 TCP/UDP subsets and DNS helpers exist.",
+      "evidence": [
+        "docs/syscall-abi.md networking sections and userland network demos"
+      ],
+      "limitations": [
+        "sendmsg/recvmsg are ENOSYS; no full IPv6 or general socket-option parity; blocking and nonblocking behavior is partial"
+      ],
+      "next_gate": [
+        "Vendor dependencies and determine whether Stage 0 rustc/Cargo/LLVM need network support at all"
+      ]
+    },
+    {
+      "id": "c_libc",
+      "layer": "C runtime",
+      "status": "implemented_partial",
+      "summary": "OCTAGRAM has a freestanding libc/runtime with errno, TLS errno, POSIX wrappers, and a tested subset.",
+      "evidence": [
+        "user/runtime.c and user/include",
+        "libc host tests and QEMU syscall compatibility demo"
+      ],
+      "limitations": [
+        "Not glibc or musl ABI-compatible; only the documented OCTAGRAM ABI is supported"
+      ],
+      "next_gate": [
+        "Define a Rust std port boundary against OCTAGRAM libc instead of assuming Linux libc compatibility"
+      ]
+    },
+    {
+      "id": "rust_std",
+      "layer": "Rust sysroot",
+      "status": "not_implemented",
+      "summary": "No Rust std build or std conformance test for OCTAGRAM exists.",
+      "evidence": [
+        "No target std build is present in the CI workflow or workspace"
+      ],
+      "limitations": [
+        "Many OS contracts and runtime dependencies are incomplete"
+      ],
+      "next_gate": [
+        "Audit std modules actually required by rustc host before porting the entire standard library"
+      ]
+    },
+    {
+      "id": "rustc_host",
+      "layer": "Compiler",
+      "status": "not_implemented",
+      "summary": "No rustc executable has been built to run on OCTAGRAM.",
+      "evidence": [
+        "Current CI invokes host Cargo/rustc nightly to cross-build the guest ELF"
+      ],
+      "limitations": [
+        "Host sysroot, std, platform integration, compiler backend, and linker dependencies are missing"
+      ],
+      "next_gate": [
+        "Build-stage0 compiler for Linux that cross-builds a runnable OCTAGRAM host rustc"
+      ]
+    },
+    {
+      "id": "cargo_host",
+      "layer": "Build orchestration",
+      "status": "not_implemented",
+      "summary": "Cargo has not run as a native OCTAGRAM process.",
+      "evidence": [
+        "Current Cargo commands execute in GitHub Actions on Linux"
+      ],
+      "limitations": [
+        "Needs host rustc, filesystem/process APIs, locks, environment, subprocesses, and offline registry support"
+      ],
+      "next_gate": [
+        "Port Cargo only after rustc and its sysroot execute natively"
+      ]
+    },
+    {
+      "id": "llvm_lld_host",
+      "layer": "Compiler backend and linker",
+      "status": "not_implemented",
+      "summary": "LLD is installed on CI Linux and links the guest; no OCTAGRAM-native LLVM/LLD executable or backend library is proven.",
+      "evidence": [
+        "CI Install host dependencies installs lld; custom target Cargo linker uses ld.lld from host"
+      ],
+      "limitations": [
+        "No native linker executable/backend on OCTAGRAM; TinyCC linker subset is not an LLD replacement"
+      ],
+      "next_gate": [
+        "Choose backend delivery (static or shared library) and prove native host linker execution before rustc Stage 0"
+      ]
+    },
+    {
+      "id": "bootstrap_stage0",
+      "layer": "Bootstrap",
+      "status": "not_implemented",
+      "summary": "No Stage 0 rustc for OCTAGRAM or Stage 0 to Stage 1 rebuild has been attempted.",
+      "evidence": [
+        "Roadmap M4.4 remains unchecked"
+      ],
+      "limitations": [
+        "Build/host/target pipeline and target integration in rustc source are still design work"
+      ],
+      "next_gate": [
+        "Pin rust compiler source revision, bootstrap host toolchain, sysroot, build/host/target triples, and target table patch"
+      ]
+    }
+  ]
+}

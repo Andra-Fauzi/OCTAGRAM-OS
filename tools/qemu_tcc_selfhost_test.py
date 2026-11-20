@@ -143,16 +143,16 @@ def main():
         return 1
 
     touch_offset = len(serial_text())
-    send_line("touch /share/octagram/phony-check")
-    if not wait_for_after("octagram:/ $", touch_offset, 15):
-        print("MAKE-PHONY-FAIL: could not create a file matching the phony target")
+    send_line("tcc -c /share/octagram/message.c -o /share/octagram/phony-check")
+    if not wait_for_after("program exited with status 0", touch_offset, 30):
+        print("MAKE-PHONY-FAIL: could not pre-create a file matching the phony target")
         print(serial_text()[-5000:])
         return 1
 
     for attempt in range(2):
         output_offset = len(serial_text())
         send_line("make -C /share/octagram phony-check")
-        if not wait_for_after("touch /share/octagram/phony-check", output_offset, 30):
+        if not wait_for_after("tcc -c message.c -o phony-check", output_offset, 30):
             print("MAKE-PHONY-FAIL: declared .PHONY recipe was skipped")
             print(serial_text()[-5000:])
             return 1

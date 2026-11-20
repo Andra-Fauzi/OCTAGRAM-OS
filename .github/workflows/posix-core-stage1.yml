@@ -58,6 +58,9 @@ jobs:
             --release \
             --target user/rust/targets/x86_64-unknown-octagram.json
 
+      - name: Build executable for experimental OCTAGRAM Rust target
+        run: make -C user/rust build-octagram
+
       - name: Build embedded Rust utility
         run: make -C user/rust all
 

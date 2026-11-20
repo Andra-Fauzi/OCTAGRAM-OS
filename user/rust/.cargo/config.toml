@@ -15,3 +15,18 @@ rustflags = [
     "-C",
     "link-arg=build/crt0.o",
 ]
+
+[target.x86_64-unknown-octagram]
+linker = "ld.lld"
+rustflags = [
+    "-C",
+    "relocation-model=static",
+    "-C",
+    "no-redzone=yes",
+    "-C",
+    "target-feature=+sse,+sse2",
+    "-C",
+    "link-arg=-Tlinker.ld",
+    "-C",
+    "link-arg=build/crt0.o",
+]

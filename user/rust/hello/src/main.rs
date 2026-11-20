@@ -10,6 +10,11 @@ use core::ffi::CStr;
 use core::panic::PanicInfo;
 use octagram_runtime::{close, exit, open, read, stat_path, write_all, O_RDONLY, STDOUT};
 
+#[cfg(target_os = "octagram")]
+const TARGET_MARKER: &[u8] = b"Rust custom target x86_64-unknown-octagram runs in OCTAGRAM!\n";
+#[cfg(not(target_os = "octagram"))]
+const TARGET_MARKER: &[u8] = b"Rust no_std + alloc runs in OCTAGRAM!\n";
+
 #[no_mangle]
 pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     let mut buffer = Vec::with_capacity(2 * 1024 * 1024);
@@ -18,7 +23,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     if write_all(STDOUT, &buffer[index..index + 1]).is_err() {
         return 1;
     }
-    if write_all(STDOUT, b"Rust no_std + alloc runs in OCTAGRAM!\n").is_err() {
+    if write_all(STDOUT, TARGET_MARKER).is_err() {
         return 1;
     }
 

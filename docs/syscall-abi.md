@@ -206,20 +206,33 @@ tick 1 ms sambil menyimpan deadline total per proses, sehingga thread lain bisa
 berjalan dan mengirim sinyal. `nanosleep`/`clock_nanosleep` hanya memeriksa
 sinyal sebelum tidur, belum bisa dibangunkan di tengah tidur.
 
-`futex` sudah nyata untuk `FUTEX_WAIT` dan `FUTEX_WAKE` (flag `FUTEX_PRIVATE_FLAG`
-dan `FUTEX_CLOCK_REALTIME` diabaikan). `FUTEX_WAIT` membandingkan word 32-bit di
-`address` dengan `value`: bila berbeda langsung `-EAGAIN`, bila sama proses
-diblokir dan dijadwalkan keluar sampai ada `FUTEX_WAKE` atau `timeout` relatif
-(`R10` menunjuk `timespec`) habis. Timeout diperiksa timer LAPIC sehingga
-`-ETIMEDOUT` dikembalikan tanpa polling dari user space. `FUTEX_WAKE` membangunkan
-hingga `value` waiter pada alamat yang sama dan mengembalikan jumlahnya. Bila
-tidak ada proses lain yang bisa dijalankan dan tidak ada timeout, `FUTEX_WAIT`
-mengembalikan `-EDEADLK`. Bila timeout ada tetapi belum ada thread siap, kernel
-tidak tidur memblokir CPU: waiter tetap berstatus menunggu, kernel bangun tiap
-1 ms untuk memeriksa deadline dan langsung menjadwalkan thread yang menjadi siap,
-lalu mengembalikan `-ETIMEDOUT` saat deadline lewat. Operasi lain (mis. `FUTEX_REQUEUE`, `WAIT_BITSET`)
-masih `-ENOSYS`, dan `FUTEX_WAIT` yang bangun karena wake mengembalikan 0 meski
-word tidak berubah.
+`futex` mendukung `FUTEX_WAIT`, `FUTEX_WAKE`, `FUTEX_WAIT_BITSET`,
+`FUTEX_WAKE_BITSET`, dan `FUTEX_REQUEUE`. `FUTEX_WAIT` membandingkan word
+32-bit di `address` dengan `value`: bila berbeda langsung `-EAGAIN`, bila sama
+task diblokir sampai wake atau timeout relatif (`R10` menunjuk `timespec`).
+`FUTEX_WAIT_BITSET` memakai `R9` sebagai bitset nonzero dan `R10` sebagai
+`timespec` absolut; `FUTEX_CLOCK_REALTIME` memilih jam realtime, selain itu
+deadline memakai jam monoton. `FUTEX_WAKE` membangunkan hingga `value` waiter
+pada alamat yang sama. `FUTEX_WAKE_BITSET` juga mensyaratkan bitset nonzero dan
+hanya membangunkan waiter yang bitset-nya beririsan dengan `R9`.
+`FUTEX_REQUEUE` memakai `RDX` sebagai jumlah maksimum waiter yang dibangunkan,
+`R10` sebagai jumlah maksimum waiter yang dipindahkan, dan `R8` sebagai alamat
+futex tujuan. Nilai balik menghitung waiter yang dibangunkan; waiter yang hanya
+dipindahkan tidak ikut dihitung.
+
+Timeout relatif diperiksa timer LAPIC sehingga `-ETIMEDOUT` dikembalikan tanpa
+polling dari user space. Bila tidak ada task lain yang dapat dijalankan dan
+tidak ada timeout, `FUTEX_WAIT` dapat mengembalikan `-EDEADLK`. Flag
+`FUTEX_PRIVATE_FLAG` diterima tetapi tidak mengubah perilaku. Implementasi
+mencocokkan waiter berdasarkan PID, sehingga operasi futex hanya menjangkau
+thread dalam proses yang sama; shared-futex antarproses belum didukung.
+Operasi lain seperti `FUTEX_CMP_REQUEUE`, `FUTEX_WAKE_OP`, dan operasi priority
+inheriting masih `-ENOSYS`. Wake normal mengembalikan 0 pada waiter yang
+dibangunkan meskipun word futex belum berubah.
+
+Demo `/bin/syscall-compat-demo` menguji WAIT/WAKE, timeout relatif, timeout
+absolut WAIT_BITSET, bitset mismatch/match, serta pemindahan waiter dengan
+REQUEUE lalu wake pada alamat tujuan.
 
 `epoll` memakai `struct epoll_event` padat (`u32 events`, `u64 data`, 12 byte).
 `epoll_create1` menerima flag apa pun tanpa mengubah perilaku; `epoll_ctl`

@@ -40,9 +40,18 @@ static void check(int condition, const char *what)
 
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1
+#define FUTEX_REQUEUE 3
+#define FUTEX_WAIT_BITSET 9
+#define FUTEX_WAKE_BITSET 10
+#define FUTEX_CLOCK_REALTIME 256
 
 static uint32_t futex_word;
 static volatile int futex_result;
+static uint32_t futex_bitset_word;
+static volatile int futex_bitset_result;
+static uint32_t futex_requeue_source;
+static uint32_t futex_requeue_target;
+static volatile int futex_requeue_result;
 
 static void *futex_waiter(void *argument)
 {
@@ -59,6 +68,23 @@ static void *futex_timeout_waiter(void *argument)
     timeout.tv_nsec = 50 * 1000 * 1000;
     futex_result = (int)oct_futex_wait_timeout(
         &futex_word, 0, (const struct oct_timespec *)&timeout);
+    return NULL;
+}
+
+static void *futex_bitset_waiter(void *argument)
+{
+    (void)argument;
+    futex_bitset_result = (int)oct_syscall6(
+        94, (uint64_t)(uintptr_t)&futex_bitset_word,
+        FUTEX_WAIT_BITSET, 0, 0, 0, 0x2);
+    return NULL;
+}
+
+static void *futex_requeue_waiter(void *argument)
+{
+    (void)argument;
+    futex_requeue_result = (int)oct_futex(
+        &futex_requeue_source, FUTEX_WAIT, 0);
     return NULL;
 }
 
@@ -405,6 +431,57 @@ int main(void)
           "pthread_join(futex timeout waiter)");
     check(futex_result == -ETIMEDOUT,
           "futex WAIT timeout returns ETIMEDOUT");
+
+    struct oct_timespec expired_futex_deadline = {0, 0};
+    int64_t expired_bitset_wait = oct_syscall6(
+        94, (uint64_t)(uintptr_t)&futex_word,
+        FUTEX_WAIT_BITSET | FUTEX_CLOCK_REALTIME,
+        futex_word, (uint64_t)(uintptr_t)&expired_futex_deadline, 0, 0x1);
+    check(expired_bitset_wait == -ETIMEDOUT,
+          "futex WAIT_BITSET honors expired absolute realtime deadline");
+    check(oct_syscall6(
+              94, (uint64_t)(uintptr_t)&futex_word,
+              FUTEX_WAKE_BITSET, 1, 0, 0, 0) == -EINVAL,
+          "futex WAKE_BITSET rejects an empty bitset");
+
+    futex_bitset_word = 0;
+    futex_bitset_result = -999;
+    check(pthread_create(&futex_thread, NULL, futex_bitset_waiter, NULL) == 0,
+          "pthread_create(futex bitset waiter)");
+    usleep(20000);
+    futex_bitset_word = 1;
+    check(oct_syscall6(
+              94, (uint64_t)(uintptr_t)&futex_bitset_word,
+              FUTEX_WAKE_BITSET, 1, 0, 0, 0x1) == 0,
+          "futex WAKE_BITSET does not wake a nonmatching waiter");
+    check(oct_syscall6(
+              94, (uint64_t)(uintptr_t)&futex_bitset_word,
+              FUTEX_WAKE_BITSET, 1, 0, 0, 0x2) == 1,
+          "futex WAKE_BITSET wakes an intersecting waiter");
+    check(pthread_join(futex_thread, NULL) == 0,
+          "pthread_join(futex bitset waiter)");
+    check(futex_bitset_result == 0,
+          "futex WAIT_BITSET returns 0 after matching wake");
+
+    futex_requeue_source = 0;
+    futex_requeue_target = 0;
+    futex_requeue_result = -999;
+    check(pthread_create(&futex_thread, NULL, futex_requeue_waiter, NULL) == 0,
+          "pthread_create(futex requeue waiter)");
+    usleep(20000);
+    futex_requeue_source = 1;
+    check(oct_syscall6(
+              94, (uint64_t)(uintptr_t)&futex_requeue_source,
+              FUTEX_REQUEUE, 0, 1,
+              (uint64_t)(uintptr_t)&futex_requeue_target, 0) == 0,
+          "futex REQUEUE moves waiter without waking it");
+    futex_requeue_target = 1;
+    check(oct_futex(&futex_requeue_target, FUTEX_WAKE, 1) == 1,
+          "futex WAKE releases requeued waiter at destination");
+    check(pthread_join(futex_thread, NULL) == 0,
+          "pthread_join(futex requeue waiter)");
+    check(futex_requeue_result == 0,
+          "requeued FUTEX_WAIT resumes successfully");
 
     counter_value = 0;
     pthread_t counter_a;

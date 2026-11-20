@@ -786,3 +786,54 @@ memanggil `toolchain::link_elf_object`:
 Yang belum: penggabungan beberapa object atau arsip `.a` dalam satu pemanggilan,
 relokasi GOT/PLT/TLS, dan verifikasi QEMU yang membuktikan ELF hasil
 `tcc -c` + `ld` benar-benar berjalan.
+
+## 18. Rencana kerja berikutnya (belum diimplementasikan)
+
+Urutan ini dipilih agar setiap langkah dapat diuji sendiri-sendiri tanpa
+menunggu milestone besar selesai.
+
+### M2 — beberapa object dalam satu `ld`
+
+1. Ubah `link_elf_object` menjadi dua fase: fase parse (section, symtab,
+   relokasi per object) dan fase layout (teks, data, bss gabungan).
+2. Simpan placement per `(object, section)`, lalu resolve simbol global lewat
+   peta nama → alamat dengan deteksi definisi duplikat.
+3. Untuk simbol undefined, cari definisi di object lain; bila tetap tidak ada,
+   kembalikan `UndefinedSymbol` dengan menyebut nama simbol pada pesan.
+4. Tambah dukungan arsip `ar` sederhana (header `!<arch>`, member `.o`) yang
+   hanya menarik member yang mendefinisikan simbol yang masih undefined.
+5. Uji host: dua object saling mereferensikan simbol global, satu duplikat yang
+   harus ditolak, dan satu simbol undefined yang harus ditolak.
+
+### M3 — manifest build native
+
+1. Setelah build selesai, tulis manifest berisi target, status (dibangun /
+   sudah terbaru), ukuran, dan mtime agar hasil build dapat dibandingkan.
+2. Hash file memerlukan SHA-256 di userspace; port rutin dari
+   `kernel/src/sha256.rs` bila manifest harus tahan terhadap perubahan mtime.
+3. Baru setelah dependency graph deterministik, pertimbangkan `-j` paralel
+   dengan locking pada output recipe.
+
+### M4 — bootstrap `rustc` native
+
+1. Inventaris komponen: `rustc`, backend, `rust-std`, linker, builtins,
+   proc-macro; catat kebutuhan syscall tiap komponen di
+   `docs/rust-host-abi-matrix.md`.
+2. Pilih Stage 0 yang benar-benar dapat dieksekusi pada ABI OCTAGRAM (bukan
+   Linux) dan buktikan dengan executable kecil yang memakai file, mmap, thread,
+   dan TLS — bukan hanya kompilasi.
+3. Lengkapi API OS yang kurang (dlopen, environment, clock, process group)
+   sebelum mencoba membangun `rustc` utuh.
+4. Bangun `rustc` native untuk crate `no_std`, lalu `core`/`alloc` target
+   OCTAGRAM, lalu Cargo offline.
+
+### M5–M7
+
+1. M5: port langkah build kernel (linker script, symbol, section, entry) ke
+   toolchain native dan bandingkan hash/behavior dengan kernel host-built.
+2. M6: image builder native (GPT + FAT32 ESP + EXT2 root, tulis bootloader dari
+   file yang disediakan image, verifikasi read-back) — `installer.rs` hanya
+   menulis ke disk target, belum menghasilkan image bootable.
+3. M7: slot A/B, verifikasi sebelum set boot berikutnya, rollback otomatis bila
+   boot gagal, dan laporan self-hosting yang memisahkan hasil host, QEMU, dan
+   hardware.

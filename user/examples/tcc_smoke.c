@@ -47,7 +47,7 @@ int main(void)
         stat(directory, &metadata) != 0 ||
         !S_ISDIR(metadata.st_mode) ||
         (metadata.st_mode & 0777) != 0700 ||
-        unlink(directory) != 0) {
+        rmdir(directory) != 0) {
         return 13;
     }
 

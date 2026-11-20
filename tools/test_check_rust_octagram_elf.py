@@ -54,6 +54,7 @@ class RustOctagramElfVerifierTests(unittest.TestCase):
             "                 w __errno_location\n"
             "                 w __h_errno_location\n"
             "                 w __oct_tls_initialize\n"
+            "                 w exit\n"
         )
         self.run_verifier()
 

@@ -14,6 +14,7 @@ ALLOWED_WEAK_UNDEFINED = {
     "__errno_location",
     "__h_errno_location",
     "__oct_tls_initialize",
+    "exit",
 }
 
 

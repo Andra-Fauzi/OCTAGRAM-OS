@@ -138,6 +138,27 @@ def main():
         return 1
 
     output_offset = len(serial_text())
+    send_line("tcc -ar rcs /tmp/libld.a /tmp/ld-helper.o")
+    if not wait_for_after("program exited with status 0", output_offset, 60):
+        print("LD-ARCHIVE-CREATE-FAIL: TinyCC did not create the static archive")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("ld /tmp/ld-main.o /tmp/libld.a -o /tmp/ld-archive.elf")
+    if not wait_for_after("ld: entry point", output_offset, 60):
+        print("LD-ARCHIVE-LINK-FAIL: native ld did not extract the required archive member")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("run /tmp/ld-archive.elf")
+    if not wait_for_after("program exited with status 0", output_offset, 60):
+        print("LD-ARCHIVE-RUN-FAIL: executable linked from a static archive did not exit successfully")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
     send_line("make -C /share/octagram -n")
     if not wait_for_after("tcc hello.o libmessage.a -o hello.elf", output_offset, 30):
         print("MAKE-DRY-RUN-FAIL: native make did not expand the object-file link recipe")

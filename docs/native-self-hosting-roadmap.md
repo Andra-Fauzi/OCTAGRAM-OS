@@ -856,11 +856,11 @@ Tahap berikutnya adalah archive extraction dan perluasan ABI ELF.
   dynamic section.
 - [x] Embed the result separately at `/usr/bin/gmake`; keep bootstrap
   `/bin/make` unchanged until runtime compatibility is proven.
-- [ ] Execute `/usr/bin/gmake --version` successfully in QEMU.
-- [ ] Parse the TinyCC Makefile with GNU Make `-n` in QEMU.
-- [ ] Execute GNU Make recipes (`-B`) through native `/bin/sh`, then run
+- [x] Execute `/usr/bin/gmake --version` successfully in QEMU.
+- [x] Parse the TinyCC Makefile with GNU Make `-n` in QEMU.
+- [x] Execute GNU Make recipes (`-B`) through native `/bin/sh`, then run
   the generated ELF.
-- [ ] Add dependency/incremental, phony, order-only, and automatic-variable
+- [x] Add dependency/incremental, phony, order-only, and automatic-variable
   guest tests for upstream GNU Make.
 - [ ] Replace or alias `/bin/make` only after the full guest test matrix passes.
 
@@ -954,18 +954,26 @@ berstatus **success**.
 Pada commit `3b586ec91b91435ea9c883f684d77f93a6af75a3`, guest test GNU Make
 4.4.1 diperluas untuk menguji langsung binary upstream `/usr/bin/gmake`:
 
-- [ ] automatic variables `$@`, `$<`, `$?`, `$|` melalui dry-run;
-- [ ] `.PHONY` tetap menjalankan recipe pada dua pemanggilan;
-- [ ] order-only prerequisite yang lebih baru tidak memaksa rebuild target;
-- [ ] default target kedua kali tidak menjalankan recipe ketika output up-to-date;
-- [ ] seluruh tes lama tetap: versi, parser/dry-run, `-B`, TinyCC recipe, dan eksekusi ELF.
+- [x] automatic variables `$@`, `$<`, `$?`, `$|` melalui dry-run;
+- [x] `.PHONY` tetap menjalankan recipe pada dua pemanggilan;
+- [x] order-only prerequisite yang lebih baru tidak memaksa rebuild target;
+- [x] default target kedua kali tidak menjalankan recipe ketika output up-to-date;
+- [x] seluruh tes lama tetap: versi, parser/dry-run, `-B`, TinyCC recipe, dan eksekusi ELF.
 
-Item di atas **baru ditambahkan sebagai pengujian** dan belum boleh ditandai
-QEMU-tested sebelum workflow pada commit tersebut selesai. Test ini memakai
-fixture `/share/octagram` yang sama dan timestamp EXT2 dengan resolusi satu
-detik; jeda eksplisit dipertahankan sebelum menyegarkan prerequisite.
+Semua tes tersebut sudah dieksekusi pada head branch saat ini oleh CI run
+[44895785773](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44895785773).
+Log QEMU memuat marker eksplisit:
 
-Setelah matrix GNU Make ini stabil, langkah selanjutnya bukan langsung
-mengklaim GNU Make penuh, melainkan menambahkan manifest build deterministik
-dan dependency graph untuk native build orchestrator. M4 tetap memerlukan
-jalur compiler Rust native yang terpisah.
+```text
+GNU-MAKE-OCTAGRAM-PASS: upstream GNU Make 4.4.1 version, dry-run, automatic variables, phony/order-only, incremental build, forced TinyCC build, and guest ELF execution passed
+```
+
+Run yang sama juga menyelesaikan syscall compatibility suite dengan
+`SYSCALL-TEST: PASS`. Ini menutup matrix runtime M3.2 yang diuji, tetapi
+tidak mengklaim kompatibilitas GNU Make penuh: parallel execution, seluruh
+fungsi GNU Make, dan semantik shell yang lebih luas masih di luar cakupan.
+
+Bootstrap `/bin/make` tetap dipertahankan sampai pengganti native memiliki
+kontrak kompatibilitas tersendiri dan seluruh resep build sistem terbukti
+berjalan dengannya. Pekerjaan berikutnya adalah manifest build deterministik
+dan pelaporan dependency graph native untuk M3.3.

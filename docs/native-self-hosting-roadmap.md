@@ -744,11 +744,13 @@ berikutnya dengan wrap-around), batas berkas dinaikkan ke `MAX_EDITOR_FILE` =
 ### Native Make
 
 `user/rust/make` sudah mendukung include, variabel (`=`, `:=`, `?=`, `+=`),
-pattern rule satu stem, automatic variables `$@ $< $^ $*`, `.PHONY`, order-only
-prerequisites, `-n`, `-s`, `-j1`, `-B`, `-C`, dan `-f`. Pekerjaan ini menambah
-chaining recipe dengan `;` dan `&&` (berhenti pada kegagalan pertama untuk
-`&&`); `|`, `<`, `>`, dan backtick tetap ditolak agar semantik tidak berbeda
-dari shell.
+pattern rule satu stem, automatic variables `$@ $< $^ $* $? $|`, `.PHONY`, order-only
+prerequisites, `-n`, `-s`, `-j1`, `-B`, `-C`, dan `-f`. `$?` berisi prerequisite
+normal yang lebih baru dari target (atau semuanya jika target belum ada), sedangkan
+`$|` berisi order-only prerequisites. Test QEMU native Make memeriksa ekspansi
+`$@`, `$<`, `$?`, dan `$|`. Recipe mendukung chaining dengan `;` dan `&&`
+(berhenti pada kegagalan pertama untuk `&&`); `|`, `<`, `>`, dan backtick tetap
+ditolak agar semantik tidak berbeda dari shell.
 
 ### Uji persistensi EXT2 lintas reboot
 

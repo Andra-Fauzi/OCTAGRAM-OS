@@ -32,6 +32,7 @@ const MAKE_ELF: &[u8] = include_bytes!("../../../user/rust/build/make.elf");
 const RUST_HELLO_ELF: &[u8] = include_bytes!("../../../user/rust/build/rust_hello.elf");
 const RUST_HELLO_OCTAGRAM_ELF: &[u8] =
     include_bytes!("../../../user/rust/build/rust_hello_octagram.elf");
+const SH_ELF: &[u8] = include_bytes!("../../../user/build/sh.elf");
 const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
 const FILE_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/file_api_demo.elf");
 const PATH_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/path_api_demo.elf");
@@ -801,6 +802,7 @@ pub fn init() {
             .expect("mounting the selected root filesystem must succeed");
         vfs.mount("/dev", DevFs::new())
             .expect("mounting the device filesystem must succeed");
+        seed_file(&mut vfs, "/bin/sh", SH_ELF, 0o755);
         seed_file(&mut vfs, "/bin/make", MAKE_ELF, 0o755);
         seed_file(&mut vfs, "/bin/rust-hello", RUST_HELLO_ELF, 0o755);
         seed_file(

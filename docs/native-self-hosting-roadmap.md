@@ -790,23 +790,20 @@ relocations dan COMDAT/group sections belum didukung. QEMU smoke test multi-obje
 sudah ditambahkan untuk compile dua source terpisah, link dengan `ld`, dan
 menjalankan ELF hasilnya.
 
-## 18. Rencana kerja berikutnya (belum diimplementasikan)
+## 18. Rencana kerja lanjutan
 
-Urutan ini dipilih agar setiap langkah dapat diuji sendiri-sendiri tanpa
-menunggu milestone besar selesai.
+Linker ELF multi-object kini sudah diimplementasikan dan memiliki host tests
+untuk resolusi simbol lintas object, definisi ganda, dan simbol undefined.
+Tahap berikutnya adalah archive extraction dan perluasan ABI ELF.
 
-### M2 — beberapa object dalam satu `ld`
+### M2 — archive extraction dan relocation coverage
 
-1. Ubah `link_elf_object` menjadi dua fase: fase parse (section, symtab,
-   relokasi per object) dan fase layout (teks, data, bss gabungan).
-2. Simpan placement per `(object, section)`, lalu resolve simbol global lewat
-   peta nama → alamat dengan deteksi definisi duplikat.
-3. Untuk simbol undefined, cari definisi di object lain; bila tetap tidak ada,
-   kembalikan `UndefinedSymbol` dengan menyebut nama simbol pada pesan.
-4. Tambah dukungan arsip `ar` sederhana (header `!<arch>`, member `.o`) yang
-   hanya menarik member yang mendefinisikan simbol yang masih undefined.
-5. Uji host: dua object saling mereferensikan simbol global, satu duplikat yang
-   harus ditolak, dan satu simbol undefined yang harus ditolak.
+1. Tambahkan parser ar yang memvalidasi header/member bounds dan hanya menarik
+   member object yang menyediakan simbol undefined yang masih dibutuhkan.
+2. Tambahkan test QEMU untuk weak-symbol fallback, alignment, BSS, dan
+   relocation overflow.
+3. Implementasikan relocation GOT/PLT/TLS secara terpisah setelah kontrak
+   dynamic/static linking ditentukan; PLT32 bukan bukti PLT dinamis tersedia.
 
 ### M3 — manifest build native
 

@@ -850,3 +850,14 @@ Tahap berikutnya adalah archive extraction dan perluasan ABI ELF.
 - [ ] Get the upstream GNU Make 4.4.1 cross-build green in CI.
 - [ ] Boot and execute the produced ELF in QEMU.
 - [x] Add the first native `/bin/sh` executable and embed it in the initial VFS.\n- [ ] Pass the new QEMU tests for `sh -c`, pipelines, and redirection.\n- [ ] Extend shell grammar/runtime until real GNU Make recipes and configure scripts work.\n- [ ] Boot and execute the produced GNU Make ELF in QEMU.
+
+
+## M3.1 update — GNU Make guest integration
+
+The upstream GNU Make cross-build is now embedded separately as
+`/usr/bin/gmake`; the existing bootstrap `/bin/make` is intentionally kept
+for compatibility during the transition. The QEMU TinyCC self-hosting test
+now runs GNU Make 4.4.1 in the guest, checks its version, parses the existing
+C build Makefile with `-n`, forces compile/archive/link recipes with `-B`,
+and executes the resulting ELF. The milestone is complete only when the
+`GNU-MAKE-OCTAGRAM-PASS` marker is observed in QEMU CI.

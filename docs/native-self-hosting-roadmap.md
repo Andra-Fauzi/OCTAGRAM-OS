@@ -883,8 +883,10 @@ bytes=[49, 8b, 3f, 5b, 4d, 89, f8, 41]
 
 Therefore GNU Make guest execution remains unchecked. The kernel page-fault trace now includes all saved general-purpose registers
 (`r8`–`r15` as well as the original register set). The next diagnostic
-step is to inspect the new register values at the fault,
-identify the invalid pointer used by the instruction, and trace it to the
-GNU Make runtime/libc interface or ELF loading behavior. Do not mark M3.2
+the latest guest trace reports `r15=0x41f` at RIP `0x4134ee`, while
+`rdi=0`. The faulting instruction bytes begin with `49 8b 3f` (a load
+through `r15`). CI now disassembles the GNU Make ELF around that exact RIP
+and prints nearby symbols, so the next fix can target the responsible code
+path instead of guessing at TLS or the ELF loader. Do not mark M3.2
 runtime items complete until the `GNU-MAKE-OCTAGRAM-PASS` marker appears
 in QEMU CI.

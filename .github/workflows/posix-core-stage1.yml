@@ -146,6 +146,16 @@ jobs:
           else
             echo "TinyCC guest ELF was not produced at user/build/tcc.elf"
           fi
+          if [ -f user/build/gnu-make-octagram/make ]; then
+            echo "GNU Make ELF headers and entry point:"
+            readelf -h user/build/gnu-make-octagram/make
+            echo "GNU Make instructions around the observed guest fault 0x4134ee:"
+            objdump -d --start-address=0x4134c0 --stop-address=0x413520 user/build/gnu-make-octagram/make || true
+            echo "GNU Make symbols near the fault address:"
+            nm -n user/build/gnu-make-octagram/make | awk '$1 >= "00000000004134a0" && $1 <= "0000000000413540" { print }' || true
+          else
+            echo "GNU Make guest ELF was not produced"
+          fi
       - name: Check build artifact manifest
         run: make manifest-check
 

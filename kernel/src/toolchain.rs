@@ -3013,7 +3013,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
         executable.extend_from_slice(&data);
     }
 
-    executable[..4].copy_from_slice(b"\\x7fELF");
+    executable[..4].copy_from_slice(b"\x7fELF");
     executable[4] = 2;
     executable[5] = 1;
     executable[6] = 1;
@@ -3245,6 +3245,57 @@ mod tests {
             data_vaddr as u32
         );
         assert_eq!(&executable[0x2000..0x2008], b"OCTAGRAM");
+    }
+
+    fn rename_fixture_symbol(object: &mut [u8], symbol_index: usize, name: &[u8]) {
+        // The fixture's .symtab starts at 0x140 and its string table at 0x220.
+        let symbol = 0x140 + symbol_index * 24;
+        let name_offset = 7 + (symbol_index - 2) * 8;
+        object[symbol..symbol + 4].copy_from_slice(&(name_offset as u32).to_le_bytes());
+        let strings = 0x220;
+        object[strings + name_offset..strings + name_offset + name.len()]
+            .copy_from_slice(name);
+        object[strings + name_offset + name.len()] = 0;
+    }
+
+    #[test]
+    fn links_global_symbols_across_multiple_objects() {
+        let mut caller = relocatable_object();
+        // Turn the caller's data symbol into an undefined external reference.
+        rename_fixture_symbol(&mut caller, 2, b"external");
+        caller[0x140 + 2 * 24 + 6..0x140 + 2 * 24 + 8]
+            .copy_from_slice(&0u16.to_le_bytes());
+
+        let mut provider = relocatable_object();
+        // Export the provider's text symbol as "external", not a second entry.
+        rename_fixture_symbol(&mut provider, 1, b"external");
+
+        let executable = super::link_elf_objects(&[&caller, &provider]).unwrap();
+        assert_eq!(&executable[..4], b"\x7fELF");
+        let text_base = u64::from_le_bytes(executable[24..32].try_into().unwrap());
+        assert_eq!(text_base, 0x400000);
+        // The caller's immediate now points at the provider's text, which is
+        // placed after the caller's 12-byte text section aligned to 16 bytes.
+        let resolved = u32::from_le_bytes(executable[0x1001..0x1005].try_into().unwrap());
+        assert_eq!(resolved, 0x400010);
+    }
+
+    #[test]
+    fn rejects_duplicate_global_definitions_and_unresolved_symbols() {
+        let object = relocatable_object();
+        assert_eq!(
+            super::link_elf_objects(&[&object, &object]),
+            Err(ToolchainError::DuplicateSymbol)
+        );
+
+        let mut unresolved = relocatable_object();
+        rename_fixture_symbol(&mut unresolved, 2, b"missing");
+        unresolved[0x140 + 2 * 24 + 6..0x140 + 2 * 24 + 8]
+            .copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(
+            super::link_elf_objects(&[&unresolved]),
+            Err(ToolchainError::UndefinedSymbol)
+        );
     }
 
     #[test]

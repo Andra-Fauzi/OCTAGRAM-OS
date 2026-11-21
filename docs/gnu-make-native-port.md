@@ -85,3 +85,45 @@ Only source import/provenance and CI checkout validation are complete.
 GNU Make is **not yet ported, built, embedded, or QEMU-tested**. The existing
 Rust `/bin/make` remains the bootstrap implementation until the acceptance
 gates above pass.
+
+
+## ABI audit (21 November 2026)
+
+The upstream POSIX implementation uses the process/job-control path in
+`src/job.c`, `src/posixos.c`, and `src/main.c`. The OCTAGRAM libc headers
+and runtime already expose several of the required interfaces:
+
+| Area | Existing OCTAGRAM support |
+| --- | --- |
+| Process creation | `fork`, `execve`, `waitpid`, `posix_spawn`/`posix_spawnp` |
+| Child file descriptors | `pipe`, `dup2`, `fcntl`, `open`, `close` |
+| Signals | `sigaction`, `sigprocmask`, signal masks in spawn attributes |
+| Job control | `setpgid`, process/session IDs, terminal APIs |
+| Filesystem | `stat`, `lstat`, `fstat`, `fstatat`, `opendir`, `readdir`, `closedir` |
+| Paths | `access`, `chdir`, `getcwd`, `realpath`, `readlink` |
+| Time/resource | `utimensat`, `futimens`, `getrlimit`, `setrlimit`, `getloadavg` |
+| Diagnostics | `strerror`, `strsignal`, `isatty`, `ttyname` |
+
+The following are gaps or configure decisions to verify before compiling:
+
+- `pselect` is not currently declared in OCTAGRAM's `sys/select.h`; keep
+  `HAVE_PSELECT` disabled initially and use the `select` fallback.
+- `mkstemp`, `mktemp`, and `setlinebuf` are not currently exposed by the
+  OCTAGRAM libc headers/runtime. Check whether the bundled gnulib objects
+  provide the needed replacements; otherwise add libc implementations.
+- `strcoll`/locale behavior is not yet equivalent to a full POSIX locale
+  implementation. The first build should use the C locale and disable NLS.
+- The native userspace does not yet provide a standalone `/bin/sh` executable.
+  GNU Make recipes are executed through `$(SHELL) -c`, so a usable native
+  command interpreter is a hard runtime dependency, not an optional feature.
+  The in-kernel interactive shell is not automatically an executable that
+  GNU Make can spawn.
+- Configure must not accidentally detect host glibc headers/functions or link
+  against host libc. A successful Linux build is not evidence of an OCTAGRAM
+  target build.
+
+The immediate implementation order is therefore: provide a deterministic
+OCTAGRAM config header and cross-build; add/confirm the missing libc APIs;
+provide a spawnable `/bin/sh`; then run the upstream Make test subset under
+QEMU. Do not install upstream GNU Make as `/bin/make` until recipe execution
+and child status handling pass those tests.

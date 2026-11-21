@@ -736,6 +736,45 @@ mod tests {
         loader
     }
 
+    /// Host-side helper that turns real build artifacts into a bootable A/B
+    /// disk image, so a QEMU test can boot the kernel this checkout produced
+    /// without needing an ISO writer. Ignored by default; run it with
+    /// `OCTAGRAM_BOOT_IMAGE=<path> cargo test -- --ignored writes_a_boot_image`.
+    #[test]
+    #[ignore = "writes a boot image from real artifacts; needs OCTAGRAM_BOOT_IMAGE"]
+    fn writes_a_boot_image_from_real_artifacts() {
+        use alloc::string::String;
+
+        let Ok(output) = std::env::var("OCTAGRAM_BOOT_IMAGE") else {
+            return;
+        };
+        let kernel_path = std::env::var("OCTAGRAM_KERNEL_ELF").unwrap_or_else(|_| {
+            String::from("target/x86_64-unknown-none/release/octagram-kernel")
+        });
+        let bootloader_path = std::env::var("OCTAGRAM_BOOTLOADER")
+            .unwrap_or_else(|_| String::from("../../limine/BOOTX64.EFI"));
+        let kernel = std::fs::read(&kernel_path).expect("kernel ELF");
+        let bootloader = std::fs::read(&bootloader_path).expect("limine BOOTX64.EFI");
+
+        let disk = Arc::new(MemoryDisk::new(256 * 1024 * 1024));
+        let boot_config = super::render_ab_boot_config(1);
+        let report = super::build_ab_image(
+            disk.clone(),
+            ImageAssets {
+                kernel: &kernel,
+                bootloader: &bootloader,
+                boot_config: boot_config.as_bytes(),
+            },
+        )
+        .expect("A/B image build");
+        std::fs::write(&output, disk.data.lock().as_slice()).expect("write image");
+        std::fs::write(
+            format!("{output}.manifest"),
+            report.manifest.as_bytes(),
+        )
+        .expect("write manifest");
+    }
+
     #[test]
     fn builds_and_verifies_a_bootable_layout() {
         let disk = Arc::new(MemoryDisk::new(160 * 1024 * 1024));

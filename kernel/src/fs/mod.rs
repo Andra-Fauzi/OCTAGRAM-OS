@@ -977,6 +977,18 @@ pub fn init() {
         );
         seed_file(
             &mut vfs,
+            "/share/octagram/xrustc-sum.rs",
+            include_bytes!("../../../user/examples/selfhost/xrustc-sum.rs"),
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
+            "/share/octagram/xrustc-bad.rs",
+            include_bytes!("../../../user/examples/selfhost/xrustc-bad.rs"),
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
             "/share/octagram/fb_demo.c",
             include_bytes!("../../../user/examples/fb_demo.c"),
             0o644,
@@ -1149,6 +1161,14 @@ mod tests {
                 (
                     "/share/octagram/message.c",
                     include_bytes!("../../../user/examples/selfhost/message.c").as_slice(),
+                ),
+                (
+                    "/share/octagram/xrustc-sum.rs",
+                    include_bytes!("../../../user/examples/selfhost/xrustc-sum.rs").as_slice(),
+                ),
+                (
+                    "/share/octagram/xrustc-bad.rs",
+                    include_bytes!("../../../user/examples/selfhost/xrustc-bad.rs").as_slice(),
                 ),
             ] {
                 let metadata = vfs.metadata(path).unwrap();

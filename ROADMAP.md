@@ -304,6 +304,10 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
   - [x] Make serial, include, single-stem pattern, `.PHONY`, order-only, incremental mtime rebuild, `-B` (QEMU)
   - [ ] Build manifest native dan full shell recipe semantics
 - [ ] M4: bootstrap `rustc`, Rust `core/alloc`, lalu Cargo native/offline
+  - [x] `xrustc`: frontend Rust-subset native (parse → assembly → `as` → `ld` di
+    dalam OCTAGRAM, `putstr`/`putchar`, rekursi dan loop; 7 host test + QEMU
+    `XRUSTC-SUBSET-PASS`). Bukan port `rustc`; lihat `docs/native-self-hosting-roadmap.md` M4.2
+  - [ ] `rustc` native, `core`/`alloc` native, dan Cargo native/offline
 - [ ] M5: build kernel Rust sepenuhnya dari dalam OCTAGRAM
 - [ ] M6: native disk/boot image builder dan installer
   - [x] Builder image native: GPT + FAT32 ESP + EXT2 root, manifest SHA-256,

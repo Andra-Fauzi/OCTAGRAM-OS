@@ -1252,3 +1252,62 @@ AHCI tetap sangat lambat (puluhan KB/detik), jadi boot dari image hasil builder
 masih terbuka. **Belum** ada pemilihan entri Limine berdasarkan journal,
 penanda boot sukses, atau uji boot QEMU/firmware; entri pertama (slot A) masih
 yang dipilih bootloader.
+
+## M4.2 — `xrustc`: frontend Rust-subset native (21 November 2026)
+
+Status: **QEMU-tested untuk subset kecil; `rustc`, `core`/`alloc` native, dan
+Cargo native tetap belum ada.**
+
+Port `rustc` utuh tidak dapat dimulai dari sini: `rustc` membutuhkan Rust `std`
+(thread, file, env, panic/unwind), `core`/`alloc` untuk target, dynamic loading
+untuk proc-macro, dan sebuah backend LLVM. Semuanya belum ada untuk target
+OCTAGRAM, dan binary `rustc` statis berukuran ratusan MB sehingga tidak bisa
+dititipkan ke heap kernel 32 MiB. Karena itu M4 dimulai dari ujung pipeline yang
+masih bisa dijalankan seluruhnya di dalam OCTAGRAM.
+
+### Yang diimplementasikan
+
+- `kernel/src/xrustc.rs`: lexer, parser rekursif-turun, dan code generator yang
+  menghasilkan dialek assembly yang sudah dipakai `crate::toolchain`. Tidak ada
+  langkah host: parse → assembly → `assemble` (encoder x86_64 native) → `link`
+  (ELF writer native).
+- Perintah shell `xrustc [-S] <input.rs> -o <output>`; `-S` hanya menulis
+  assembly agar codegen bisa diperiksa, tanpa `-S` ditulis ELF statis.
+- Subset yang didukung: `fn` (maksimum 6 parameter), rekursi dan pemanggilan
+  maju, `let`/`let mut`, assignment, `return`, `if`/`else if`/`else`, `while`,
+  `break`, `+ - *`, perbandingan, `&&`/`||`, `!`, unary `-`, `as`, literal
+  string `*const u8`, serta intrinsic `putstr("literal")` dan `putchar(nilai)`
+  yang memakai syscall tulis `int $0x80` guest.
+- Yang **ditolak dengan nomor baris**, bukan salah-kompilasi: `/` dan `%`
+  (backend native belum punya instruksi divide), array, struct, `match`,
+  closure, trait, generik, `extern` block, tipe di luar daftar, `break` di luar
+  loop, variabel/fungsi tak dikenal, dan jumlah argumen yang salah.
+- `user/examples/selfhost/xrustc-sum.rs` (rekursi Fibonacci + loop + keluaran
+  karakter) dan `xrustc-bad.rs` (pembagian, harus ditolak) di-seed ke
+  `/share/octagram`.
+
+### Bukti
+
+- Host: 416 test lulus, termasuk 7 test `xrustc` — program rekursif berhasil
+  dirakit dan di-link menjadi ELF dengan entry `0x400000`, dan semua kasus
+  negatif memeriksa nomor baris serta pesannya.
+- QEMU (`tools/qemu_xrustc_test.py`, image A/B 256 MiB dari
+  `tools/build_xrustc_boot_image.sh`): `XRUSTC-SUBSET-PASS` —
+  `xrustc /share/octagram/xrustc-sum.rs -o /tmp/xrustc-sum.elf` menulis 4822
+  byte dan entry `0x400000`, `run` mencetak `xrustc fib sum: 88` lalu keluar
+  status 0, dan `xrustc-bad.rs` ditolak pada baris 4 tanpa menghasilkan ELF.
+- `tools/build_xrustc_boot_image.sh` memakai test host `#[ignore]`
+  `writes_a_boot_image_from_real_artifacts` untuk menulis image A/B bootable
+  dari kernel release + `limine/BOOTX64.EFI`, sehingga uji QEMU tidak lagi
+  bergantung pada penulis ISO.
+
+### Batas yang tidak boleh dilewati
+
+- Ini **bukan** port `rustc` dan **bukan** `cargo`. Tidak ada `core`/`alloc`,
+  `std`, borrow checker, type checker, monomorphization, proc-macro, build
+  script, registry, atau dependency resolution.
+- M5 (kernel Rust dibangun dari dalam OCTAGRAM) tetap belum tercapai: kernel
+  memakai `core`, makro, `alloc`, dan fitur bahasa di luar subset ini.
+- Catatan M7.2 di atas masih menggambarkan keadaan sebelum pemilihan entri boot
+  selesai; status terbaru ada di `ROADMAP.md` dan bagian M7.2 pada commit
+  `102282b` (pemilihan slot via `default_entry` + `octagram.slot=`).

@@ -14,6 +14,8 @@ KEY_NAMES = {
     " ": "spc",
     "\n": "ret",
     "'": "apostrophe",
+    ">": "shift-dot",
+    ";": "semicolon",
 }
 
 

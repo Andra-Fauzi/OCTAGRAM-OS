@@ -84,7 +84,7 @@ readelf -h "$BUILD/make" | grep -q 'Advanced Micro Devices X86-64' || \
 if readelf -l "$BUILD/make" | grep -q 'INTERP'; then
     fail "output unexpectedly requires a host dynamic loader"
 fi
-if readelf -d "$BUILD/make" >/dev/null 2>&1; then
+if readelf -d "$BUILD/make" 2>&1 | grep -q "Dynamic section"; then
     fail "output unexpectedly has a dynamic section"
 fi
 

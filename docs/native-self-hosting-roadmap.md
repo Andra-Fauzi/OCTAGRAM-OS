@@ -891,3 +891,54 @@ path instead of guessing at TLS or the ELF loader. Do not mark M3.2
 runtime items complete until the `GNU-MAKE-OCTAGRAM-PASS` marker appears
 in QEMU CI. The CI host job now also emits disassembly and nearby symbols
 for GNU Make at the observed fault RIP (`0x4134ee`).
+
+## 13. Validasi GNU Make native dan diagnosis syscall (21 November 2026)
+
+Commit `cca31f97694088d56ea3b3df007a5b1688992b24`, CI
+[run 44894360524](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44894360524):
+
+### GNU Make 4.4.1 — QEMU-tested
+
+Langkah `QEMU native TinyCC compile and run smoke test` berhasil dan
+mengeluarkan `GNU-MAKE-OCTAGRAM-PASS`. Log membuktikan:
+
+- `/usr/bin/gmake --version` berjalan dan melaporkan GNU Make 4.4.1,
+  target `x86_64-unknown-octagram`.
+- `gmake -C /share/octagram -n` membaca Makefile dan mencetak empat resep
+  tanpa menjalankannya.
+- `gmake -B -C /share/octagram` menjalankan resep melalui shell OCTAGRAM,
+  memanggil TinyCC, membuat executable ELF, dan executable tersebut berjalan
+  serta mencetak `Built inside OCTAGRAM!`.
+- Setup timestamp fixture diperbaiki dengan menunggu prompt shell setelah
+  builtin `touch`, bukan menunggu pesan exit dari proses eksternal.
+
+Ini membuktikan jalur versi, parser Makefile sederhana, dry-run, recipe
+execution, pemanggilan TinyCC, dan eksekusi hasil build. Ini **belum**
+membuktikan kompatibilitas penuh GNU Make, parallel build, pattern rules,
+include, atau seluruh semantics dependency graph di guest.
+
+### CI keseluruhan — masih gagal pada tes syscall terpisah
+
+Job host build, kernel tests, build kernel, ISO, serta job TinyCC/GNU Make
+berhasil. Job `qemu-smoke-tests` kemudian gagal pada langkah
+`QEMU syscall compatibility smoke test`, setelah tes GNU Make lulus.
+Program syscall compatibility berakhir dengan `SYSCALL-TEST: FAIL(2)`.
+Cuplikan log yang dicetak runner hanya memuat bagian akhir output sehingga
+dua baris pemeriksaan yang gagal belum teridentifikasi.
+
+Perubahan diagnostik berikutnya pada `tools/qemu_syscall_test.py` akan
+mencetak semua baris `FAIL` individual ketika program mengembalikan status
+non-zero. Sampai dua kegagalan itu ditemukan dan diperbaiki, status QEMU
+keseluruhan tetap **failure**; jangan menandai syscall suite atau keseluruhan
+CI sebagai lulus.
+
+### Langkah berikut
+
+1. Jalankan ulang CI dengan diagnostik daftar kegagalan individual.
+2. Perbaiki dua assertion syscall yang benar-benar gagal; jangan menurunkan
+   assertion atau mengabaikan exit status hanya agar CI hijau.
+3. Tambahkan tes khusus GNU Make untuk dependency/incremental, phony,
+   order-only prerequisite, automatic variables, dan error handling.
+4. Setelah test matrix GNU Make stabil, lanjutkan build orchestrator/manifest
+   native dan audit dependency bootstrap rustc. Rust runtime yang berjalan
+   sebagai ELF native tetap bukan bukti bahwa `rustc` atau Cargo sudah native.

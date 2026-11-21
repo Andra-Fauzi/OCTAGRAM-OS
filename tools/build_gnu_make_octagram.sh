@@ -72,7 +72,11 @@ export LDFLAGS="-nostdlib -static -Wl,--gc-sections -Wl,-T,$USER/linker.ld"
 export LIBS="$USER/build/crt0.o $USER/build/runtime.o"
 
 echo "GNU-MAKE-OCTAGRAM: configure target=$TARGET build=$BUILD_TRIPLET"
-# The OCTAGRAM headers expose POSIX declarations; avoid GNU Make\x27s\n# legacy non-POSIX getcwd prototype. The target intentionally has no\n# system ar.h, so use GNU Make\x27s built-in portable archive layout.\nexport ac_cv_header_ar_h=no\nexport ac_cv_func_getcwd=yes\n\nif ! "$SRC/configure" \
+# Keep the cross result deterministic. unistd.h advertises POSIX so GNU Make
+# does not declare its legacy zero-argument getcwd prototype.
+export ac_cv_func_getcwd=yes
+
+if ! "$SRC/configure" \
     --srcdir="$SRC" \
     --build="$BUILD_TRIPLET" \
     --host="$TARGET" \

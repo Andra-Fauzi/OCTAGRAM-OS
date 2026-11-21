@@ -154,7 +154,9 @@ jobs:
             echo "GNU Make guile_gmake_setup() disassembly:"
             objdump -d --disassemble=guile_gmake_setup user/build/gnu-make-octagram/make || true
             echo "GNU Make relevant function symbols:"
-            nm -n user/build/gnu-make-octagram/make | grep -E ' (main|guile_gmake_setup)
+            nm -n user/build/gnu-make-octagram/make | grep -E 'main|guile_gmake_setup' || true
+            echo "GNU Make focused instructions around the observed guest fault 0x4134ee:"
+            objdump -d --start-address=0x4134c0 --stop-address=0x413520 user/build/gnu-make-octagram/make || true
           else
             echo "GNU Make guest ELF was not produced"
           fi

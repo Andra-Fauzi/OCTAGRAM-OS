@@ -362,12 +362,12 @@ def main():
 
     output_offset = len(serial_text())
     send_line("cat /share/octagram/native-build.manifest")
-    if not wait_for_after("hello.elf\\tup-to-date", output_offset, 30):
+    if not wait_for_after("hello.elf\tup-to-date", output_offset, 30):
         print("MAKE-MANIFEST-FAIL: manifest omitted the up-to-date executable record")
         print(serial_text()[-6000:])
         return 1
     manifest_output = serial_text()[output_offset:]
-    if "OCTAGRAM-BUILD-MANIFEST\\t1" not in manifest_output or "hello.o libmessage.a" not in manifest_output:
+    if "OCTAGRAM-BUILD-MANIFEST\t1" not in manifest_output or "hello.o libmessage.a" not in manifest_output:
         print("MAKE-MANIFEST-FAIL: manifest header or dependency graph is incomplete")
         print(manifest_output[-6000:])
         return 1

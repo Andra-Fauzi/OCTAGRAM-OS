@@ -26,6 +26,7 @@ struct BuildRecord {
     status: String,
     modified_seconds: Option<u64>,
     size_bytes: Option<u64>,
+    sha256: Option<String>,
     dependencies: String,
 }
 
@@ -593,6 +594,7 @@ fn build_target(
                 status: if is_phony { "phony" } else { "source" }.to_string(),
                 modified_seconds: file_mtime(target),
                 size_bytes: file_size(target),
+                sha256: file_sha256(target),
                 dependencies: String::new(),
             });
             return Ok(());
@@ -621,6 +623,7 @@ fn build_target(
             status: "aggregate".to_string(),
             modified_seconds: file_mtime(target),
             size_bytes: file_size(target),
+            sha256: file_sha256(target),
             dependencies,
         });
         built.push(target.to_string());
@@ -638,6 +641,7 @@ fn build_target(
             status: "up-to-date".to_string(),
             modified_seconds: target_mtime,
             size_bytes: file_size(target),
+            sha256: file_sha256(target),
             dependencies,
         });
         built.push(target.to_string());
@@ -679,7 +683,7 @@ fn write_build_manifest(path: &str, records: &[BuildRecord]) -> Result<(), Strin
     let descriptor = open(&path, O_WRONLY | O_CREAT | O_TRUNC)
         .map_err(|error| format!("cannot create build manifest ({error})"))?;
     let mut output = String::from(
-        "OCTAGRAM-BUILD-MANIFEST\t1\n# target\tstatus\tmtime_unix\tsize_bytes\tdependencies\n",
+        "OCTAGRAM-BUILD-MANIFEST\t2\n# target\tstatus\tmtime_unix\tsize_bytes\tsha256\tdependencies\n",
     );
     for record in records {
         let modified = record.modified_seconds
@@ -688,9 +692,10 @@ fn write_build_manifest(path: &str, records: &[BuildRecord]) -> Result<(), Strin
         let size = record.size_bytes
             .map(|value| value.to_string())
             .unwrap_or_else(|| String::from("unknown"));
+        let digest = record.sha256.as_deref().unwrap_or("unknown");
         output.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\n",
-            record.target, record.status, modified, size, record.dependencies
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            record.target, record.status, modified, size, digest, record.dependencies
         ));
     }
     let result = write_all(descriptor, output.as_bytes())
@@ -935,6 +940,166 @@ fn file_exists(path: &str) -> bool {
 }
 
 /// Return EXT2/VFS mtime when it is known. Zero is the ABI's "unknown" value.
+
+/// Streaming SHA-256 so manifest generation does not need to load an entire
+/// build artifact into memory.
+struct Sha256 {
+    state: [u32; 8],
+    buffer: [u8; 64],
+    buffer_len: usize,
+    total_len: u64,
+}
+
+impl Sha256 {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
+        0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+        0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ];
+
+    fn new() -> Self {
+        Self {
+            state: [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+            ],
+            buffer: [0; 64],
+            buffer_len: 0,
+            total_len: 0,
+        }
+    }
+
+    fn update(&mut self, mut input: &[u8]) {
+        self.total_len = self.total_len.wrapping_add(input.len() as u64);
+        if self.buffer_len != 0 {
+            let count = core::cmp::min(64 - self.buffer_len, input.len());
+            self.buffer[self.buffer_len..self.buffer_len + count]
+                .copy_from_slice(&input[..count]);
+            self.buffer_len += count;
+            input = &input[count..];
+            if self.buffer_len == 64 {
+                let block = self.buffer;
+                self.compress(&block);
+                self.buffer_len = 0;
+            }
+        }
+        while input.len() >= 64 {
+            let mut block = [0u8; 64];
+            block.copy_from_slice(&input[..64]);
+            self.compress(&block);
+            input = &input[64..];
+        }
+        if !input.is_empty() {
+            self.buffer[..input.len()].copy_from_slice(input);
+            self.buffer_len = input.len();
+        }
+    }
+
+    fn compress(&mut self, block: &[u8; 64]) {
+        let mut words = [0u32; 64];
+        for index in 0..16 {
+            let offset = index * 4;
+            words[index] = u32::from_be_bytes([
+                block[offset], block[offset + 1], block[offset + 2], block[offset + 3],
+            ]);
+        }
+        for index in 16..64 {
+            let x = words[index - 15];
+            let y = words[index - 2];
+            let s0 = x.rotate_right(7) ^ x.rotate_right(18) ^ (x >> 3);
+            let s1 = y.rotate_right(17) ^ y.rotate_right(19) ^ (y >> 10);
+            words[index] = words[index - 16]
+                .wrapping_add(s0)
+                .wrapping_add(words[index - 7])
+                .wrapping_add(s1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = self.state;
+        for index in 0..64 {
+            let sum1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let choice = (e & f) ^ ((!e) & g);
+            let temp1 = h
+                .wrapping_add(sum1)
+                .wrapping_add(choice)
+                .wrapping_add(Self::K[index])
+                .wrapping_add(words[index]);
+            let sum0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let majority = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = sum0.wrapping_add(majority);
+            h = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+        self.state[4] = self.state[4].wrapping_add(e);
+        self.state[5] = self.state[5].wrapping_add(f);
+        self.state[6] = self.state[6].wrapping_add(g);
+        self.state[7] = self.state[7].wrapping_add(h);
+    }
+
+    fn finish(mut self) -> String {
+        let bit_len = self.total_len.wrapping_mul(8);
+        self.buffer[self.buffer_len] = 0x80;
+        self.buffer_len += 1;
+        if self.buffer_len > 56 {
+            self.buffer[self.buffer_len..].fill(0);
+            let block = self.buffer;
+            self.compress(&block);
+            self.buffer = [0; 64];
+            self.buffer_len = 0;
+        }
+        self.buffer[self.buffer_len..56].fill(0);
+        self.buffer[56..64].copy_from_slice(&bit_len.to_be_bytes());
+        let block = self.buffer;
+        self.compress(&block);
+
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut digest = String::with_capacity(64);
+        for word in self.state {
+            for byte in word.to_be_bytes() {
+                digest.push(HEX[(byte >> 4) as usize] as char);
+                digest.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+        }
+        digest
+    }
+}
+
+fn file_sha256(path: &str) -> Option<String> {
+    let c_path = CString::new(path).ok()?;
+    let descriptor = open(&c_path, O_RDONLY).ok()?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 1024];
+    let read_result = loop {
+        match read(descriptor, &mut buffer) {
+            Ok(0) => break true,
+            Ok(count) => hash.update(&buffer[..count]),
+            Err(_) => break false,
+        }
+    };
+    let close_result = close(descriptor).is_ok();
+    if read_result && close_result {
+        Some(hash.finish())
+    } else {
+        None
+    }
+}
+
 fn file_size(path: &str) -> Option<u64> {
     let path = CString::new(path).ok()?;
     stat_path(&path).ok().map(|metadata| metadata.size)

@@ -38,6 +38,7 @@ SECTIONS
 
     .data : {
         *(.data .data.*)
+        *(.got .got.*)
 
         /* Place the sections that contain the Limine requests as part of the .data */
         /* output section. */
@@ -52,7 +53,7 @@ SECTIONS
     /* unnecessary zeros will be written to the binary. */
     /* If you need, for example, .init_array and .fini_array, those should be placed */
     /* above this. */
-    .bss : {
+    .bss (NOLOAD) : {
         *(.sbss .sbss.*)
         *(.bss .bss.*)
         *(COMMON)

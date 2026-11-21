@@ -1148,6 +1148,22 @@ penuh 160 MiB ke file RamFs dan pembacaan kembali header GPT. **Belum** ada uji
 boot QEMU dari image file tersebut; langkah berikutnya adalah menjalankan
 `mkimage file`, menyalin image keluar, dan membuktikan boot Limine di QEMU.
 
+## M6.3 — Ukuran kernel ELF dan I/O image builder (21 November 2026)
+
+- `.bss` di keempat linker script sekarang `(NOLOAD)` dan `.got` dipindah ke
+  dalam `.data`, sehingga tidak ada lagi bagian berisi berkas setelah `.bss`.
+  Sebelumnya linker memadatkan ELF sampai akhir segmen writable: kernel release
+  37,8 MB (teks hanya 3,7 MB) dan kernel debug 54,9 MB. Sekarang release 3,9 MB
+  dan debug 21,0 MB; kernel release dengan linker baru sudah di-boot di QEMU
+  sampai prompt shell.
+- Ukuran itu penting untuk M7.2: ESP 80 MiB harus memuat dua salinan kernel,
+  dan dua kernel 37,8 MB tidak akan pernah muat.
+- FAT32 menyimpan jendela tulis 64 sektor dan menunda FSInfo sampai flush,
+  serta driver AHCI memindahkan 64 sektor per perintah DMA. Pada uji guest,
+  laju tulis naik dari ~6 KB/detik ke puluhan–ratusan KB/detik; build A/B penuh
+  di disk QEMU tetap lambat karena TCG, sehingga verifikasi read-back guest
+  masih terbuka.
+
 ## M7.1 — A/B update policy engine dan journal (21 November 2026)
 
 `kernel/src/selfupdate.rs` mengimplementasikan aturan keselamatan update:

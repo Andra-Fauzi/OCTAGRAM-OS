@@ -65,10 +65,10 @@ path = Path(sys.argv[1])
 text = path.read_text()
 include = "#include <time.h>"
 if include not in text:
-    anchor = '#include "makeint.h"\\n'
+    anchor = '#include "makeint.h"\n'
     if anchor not in text:
         raise SystemExit("cannot safely add time.h include to upstream src/main.c")
-    text = text.replace(anchor, anchor + include + "\\n", 1)
+    text = text.replace(anchor, anchor + include + "\n", 1)
     path.write_text(text)
 PY
 

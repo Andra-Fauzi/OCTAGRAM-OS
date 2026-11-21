@@ -72,6 +72,7 @@ CFLAGS_PARTS=(
     -mno-avx512f -mno-mmx -msse2 -mfpmath=387
     -DOCTAGRAM_TLS_ERRNO -DOCTAGRAM_GNU_MAKE_ERRNO_ACCESSOR
     -Dalloca=__builtin_alloca
+    -include time.h
     -nostdinc -isystem "$GCC_INTERNAL"
 )
 printf -v CFLAGS '%s ' "${CFLAGS_PARTS[@]}"

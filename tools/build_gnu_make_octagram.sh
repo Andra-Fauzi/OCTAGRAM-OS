@@ -21,6 +21,14 @@ fail() {
 # upstream checkout and its pinned gnulib revision before configuring it.
 if [[ ! -x "$SRC/configure" || ! -f "$SRC/src/config.h.in" ]]; then
     echo "GNU-MAKE-OCTAGRAM: bootstrapping upstream Autotools files"
+    # Savannah intermittently returns HTTP 500 for the pinned Gnulib fetch.
+    # Use the GitHub mirror that exposes the same stable-202301 revision.
+    export GNULIB_URL="${GNULIB_URL:-https://github.com/coreutils/gnulib.git}"
+    # A failed git fetch can leave an initialized but empty gnulib directory;
+    # bootstrap treats that as an existing checkout and will not clone again.
+    if [[ ! -f "$SRC/gnulib/gnulib-tool" ]]; then
+        rm -rf "$SRC/gnulib"
+    fi
     (cd "$SRC" && ./bootstrap --skip-po)
 fi
 

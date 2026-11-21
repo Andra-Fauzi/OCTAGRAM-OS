@@ -310,8 +310,9 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     verifikasi read-back byte-per-byte, perintah `mkimage` (host tests)
   - [x] Image berbasis file lewat `FileDisk` + `mkimage file <path> <mib>`
     (host tests, termasuk build image penuh ke file VFS)
-  - [ ] Boot QEMU dari image hasil builder dan verifikasi entry boot Limine pada
-    firmware nyata
+  - [x] Boot QEMU (UEFI/OVMF) dari image hasil builder, root persisten dipilih
+    dari slot A, dan journal A/B terbaca (`tools/qemu_ab_image_boot_test.py`)
+  - [ ] Verifikasi entry boot Limine pada perangkat keras/firmware nyata
 - [ ] M7: A/B update, verifikasi, rollback, dan bootstrap proof
   - [x] Policy engine A/B + journal 128 byte ber-SHA-256 (`selfupdate`): hanya
     slot nonaktif, switch wajib setelah verifikasi, rollback setelah 3 boot
@@ -322,6 +323,8 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     slot, entri Limine per slot, journal A known-good di kedua root, dan
     verifikasi read-back ketiga partisi (host tests; `mkimage file ... ab` dan
     `mkimage sataN MKIMAGE-ERASE ab`)
+  - [x] Image A/B hasil `mkimage ... ab` di-boot di QEMU/UEFI: kernel memilih
+    root EXT2 persisten `sata0p2` dan journal melaporkan slot A `known-good`
   - [ ] Pemilihan slot oleh bootloader dari journal, penanda boot sukses, uji
     mati listrik, dan bootstrap berulang
 

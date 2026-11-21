@@ -1125,8 +1125,12 @@ bukan dari file Live yang kebetulan dimuat Limine:
 Status: 3 host test `image_builder::` lulus (build+verifikasi penuh pada
 memory disk 160 MiB, penolakan aset invalid sebelum menulis, penolakan loader
 non-PE), bersama test `storage::`. Image berbasis file ditambahkan di M6.2.
-**Belum** ada boot QEMU dari image hasil builder, dan entry boot Limine belum
-diverifikasi pada firmware nyata. Karena itu M6 belum selesai.
+
+Boot dari image hasil builder sudah diverifikasi di QEMU (21 November 2026):
+guest membangun image A/B pada disk SATA (`mkimage sata0 MKIMAGE-ERASE ab`),
+lalu image itu di-boot lewat firmware UEFI/OVMF. Kernel berjalan dan memilih
+`persistent EXT2 root selected from sata0p2` (slot A). Yang **belum** adalah
+verifikasi entry boot Limine pada perangkat keras nyata.
 
 ## M6.2 — Image berbasis file (21 November 2026)
 
@@ -1144,9 +1148,11 @@ diverifikasi pada firmware nyata. Karena itu M6 belum selesai.
   SHA-256 setelah verifikasi read-back.
 
 Status: 3 host test `storage::file_disk::tests::` lulus, termasuk build image
-penuh 160 MiB ke file RamFs dan pembacaan kembali header GPT. **Belum** ada uji
-boot QEMU dari image file tersebut; langkah berikutnya adalah menjalankan
-`mkimage file`, menyalin image keluar, dan membuktikan boot Limine di QEMU.
+penuh 160 MiB ke file RamFs dan pembacaan kembali header GPT. Boot QEMU sudah
+dibuktikan untuk image yang dibangun langsung pada disk SATA di dalam guest
+(lihat M6.1); jalur `mkimage file` + boot dari file yang disalin keluar belum
+dijalankan, dan di guest jalur itu masih dibatasi heap kernel 32 MiB (image
+minimum 160 MiB).
 
 ## M6.3 — Ukuran kernel ELF dan I/O image builder (21 November 2026)
 
@@ -1215,7 +1221,11 @@ lagi memakan satu perintah SATA per sektor.
 
 Status: host test `builds_an_ab_image_with_both_root_slots` (image builder) dan
 `ab_layout_has_two_equal_root_slots` (partition) lulus; seluruh suite kernel
-408 test lulus. Uji guest QEMU (21 November 2026, disk target 256 MiB di
+408 test lulus. `tools/qemu_ab_image_boot_test.py` menjalankan rantai penuh di
+QEMU: bangun image A/B pada disk SATA di guest, boot image itu lewat UEFI/OVMF,
+root persisten dipilih dari `sata0p2`, lalu `selfupdate status` melaporkan
+`active=A ... A: known-good B: empty (unverified)` dari journal yang di-seed
+image builder. Uji guest QEMU (21 November 2026, disk target 256 MiB di
 `/dev/shm`) menjalankan `mkimage sata0 MKIMAGE-ERASE ab`; hasil di disk sudah
 diperiksa dari host: GPT berisi tiga entri (ESP 80 MiB di LBA 2048, root A dan
 root B masing-masing 178176 sektor), kedua superblok EXT2 valid (`0xef53`, 8192

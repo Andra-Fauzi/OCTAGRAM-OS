@@ -892,6 +892,18 @@ pub fn init() {
         );
         seed_file(
             &mut vfs,
+            "/share/octagram/ld-main.c",
+            include_bytes!("../../../user/examples/selfhost/ld-main.c"),
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
+            "/share/octagram/ld-helper.c",
+            include_bytes!("../../../user/examples/selfhost/ld-helper.c"),
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
             "/share/octagram/fb_demo.c",
             include_bytes!("../../../user/examples/fb_demo.c"),
             0o644,

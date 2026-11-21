@@ -1,6 +1,11 @@
 #ifndef OCTAGRAM_UNISTD_H
 #define OCTAGRAM_UNISTD_H
 
+/* Advertise the POSIX interfaces declared by this header. */
+#ifndef _POSIX_VERSION
+#define _POSIX_VERSION 200809L
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>

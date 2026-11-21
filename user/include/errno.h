@@ -1,7 +1,10 @@
 #ifndef OCTAGRAM_ERRNO_H
 #define OCTAGRAM_ERRNO_H
 
-#ifdef OCTAGRAM_TLS_ERRNO
+#ifdef OCTAGRAM_GNU_MAKE_ERRNO_ACCESSOR
+int *__errno_location(void);
+#define errno (*__errno_location())
+#elif defined(OCTAGRAM_TLS_ERRNO)
 extern __thread int errno;
 #elif defined(OCTAGRAM_RUNTIME_ERRNO_ACCESSOR)
 int *__errno_location(void);

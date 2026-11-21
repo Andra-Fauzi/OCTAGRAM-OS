@@ -101,6 +101,11 @@ if ! "$SRC/configure" \
     fail "upstream configure failed"
 fi
 
+echo "GNU-MAKE-OCTAGRAM: resolved compiler environment"
+printf '  CC=%q\\n  CPPFLAGS=%q\\n  CFLAGS=%q\\n  LDFLAGS=%q\\n' "$CC" "$CPPFLAGS" "$CFLAGS" "$LDFLAGS"
+echo "GNU-MAKE-OCTAGRAM: generated Make variables"
+make -pn 2>/dev/null | grep -E '^(CC|CPP|CPPFLAGS|CFLAGS|DEFS|DEFAULT_INCLUDES|AM_CPPFLAGS|AM_CFLAGS) ?[:=]' | head -n 30 || true
+
 echo "GNU-MAKE-OCTAGRAM: compile upstream GNU Make"
 make -j2 V=1
 

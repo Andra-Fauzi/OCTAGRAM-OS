@@ -771,21 +771,24 @@ disimpan di ext2, dibaca ulang setelah reboot").
 
 `ld` sebelumnya hanya menerima object format internal (`OCTOBJ1`, satu blok kode
 tanpa simbol atau relokasi). Sekarang `ld` mendeteksi magic `\x7fELF` dan
-memanggil `toolchain::link_elf_object`:
+memanggil `toolchain::link_elf_objects` untuk satu atau beberapa ELF64 ET_REL:
 
 - mem-parse ELF64 `ET_REL` x86_64: section header, `SHT_SYMTAB`, string table,
   dan `SHT_RELA`;
-- menggabungkan section `SHF_ALLOC`: section eksekusi ke segmen teks `R|X`,
-  data/rodata ke segmen data `R|W`, dan `SHT_NOBITS` (`.bss`) ke memori setelah
-  data (`p_memsz` > `p_filesz`);
+- menggabungkan section `SHF_ALLOC` dari beberapa object: section eksekusi ke
+  segmen teks `R|X`, data/rodata ke segmen data `R|W`, dan `SHT_NOBITS` (`.bss`)
+  ke memori setelah data (`p_memsz` > `p_filesz`);
 - menerapkan relokasi `R_X86_64_64`, `PC32`, `PLT32`, `32`, dan `32S` dengan
   pengecekan batas serta overflow 32-bit;
-- menolak simbol undefined, common symbol, relokasi tak dikenal, dan object
-  tanpa simbol `_start` alih-alih menghasilkan binary rusak.
+- menyelesaikan simbol global/weak antar-object, memilih definisi global kuat
+  di atas weak, serta menolak definisi ganda dan simbol kuat yang belum terdefinisi;
+- menolak common symbol, relokasi tak dikenal, input malformed, ukuran berlebih,
+  dan object tanpa `_start` alih-alih menghasilkan binary rusak.
 
-Yang belum: penggabungan beberapa object atau arsip `.a` dalam satu pemanggilan,
-relokasi GOT/PLT/TLS, dan verifikasi QEMU yang membuktikan ELF hasil
-`tcc -c` + `ld` benar-benar berjalan.
+Batas yang masih ada: arsip `.a` belum diekstrak oleh `ld`; GOT/PLT/TLS
+relocations dan COMDAT/group sections belum didukung. QEMU smoke test multi-object
+sudah ditambahkan untuk compile dua source terpisah, link dengan `ld`, dan
+menjalankan ELF hasilnya.
 
 ## 18. Rencana kerja berikutnya (belum diimplementasikan)
 

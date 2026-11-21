@@ -3,6 +3,8 @@
 
 /* x86_64 OCTAGRAM userspace limits. Keep these independent of host headers. */
 #define CHAR_BIT 8
+#define CHAR_MIN (-128)
+#define CHAR_MAX 127
 #define SCHAR_MIN (-128)
 #define SCHAR_MAX 127
 #define UCHAR_MAX 255

@@ -839,3 +839,4 @@ Tahap berikutnya adalah archive extraction dan perluasan ABI ELF.
 3. M7: slot A/B, verifikasi sebelum set boot berikutnya, rollback otomatis bila
    boot gagal, dan laporan self-hosting yang memisahkan hasil host, QEMU, dan
    hardware.
+\n\n## 12. M3.1 — Import GNU Make upstream (21 November 2026)\n\nGNU Make 4.4.1 telah dipin sebagai submodule di\n`user/third_party/gnu-make`. CI mengambil submodule secara rekursif dan\nmenjalankan `tools/check_gnu_make_source.py` untuk memastikan commit dan\nfile sumber inti sesuai. Ini baru tahap impor sumber; belum ada executable\nGNU Make untuk OCTAGRAM. Porting ABI, build native, tes QEMU, dan penggantian\n`/bin/make` masih berstatus belum selesai. Lihat\n`docs/gnu-make-native-port.md`.\n

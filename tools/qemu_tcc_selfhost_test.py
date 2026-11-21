@@ -178,7 +178,7 @@ def main():
 
     output_offset = len(serial_text())
     send_line("make -C /share/octagram -n automatic-vars-check")
-    if not wait_for_after("automatic:automatic-vars-check first:hello.c newer:hello.c order:order-only-dep", output_offset, 30):
+    if not wait_for_after("echo automatic:automatic-vars-check first:hello.c newer:hello.c order:order-only-dep", output_offset, 30):
         print("MAKE-AUTOMATIC-VARS-FAIL: $@, $<, $?, or $| expanded incorrectly")
         print(serial_text()[-5000:])
         return 1

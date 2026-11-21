@@ -52,6 +52,26 @@ PY
 fi
 "$CONFIG_SUB" "$TARGET" >/dev/null || fail "config.sub does not recognize $TARGET"
 
+# GNU Make's main.c calls ctime() but does not include <time.h>. Include the
+# target declaration at the source that uses it instead of force-including
+# time.h through CFLAGS: global forced includes interfere with gnulib's
+# per-directory warning-flag probes and can leak preprocessed declarations
+# into Automake compile command variables.
+python3 - "$SRC/src/main.c" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+include = "#include <time.h>"
+if include not in text:
+    anchor = '#include "makeint.h"\\n'
+    if anchor not in text:
+        raise SystemExit("cannot safely add time.h include to upstream src/main.c")
+    text = text.replace(anchor, anchor + include + "\\n", 1)
+    path.write_text(text)
+PY
+
 CC="${CC:-gcc}"
 AR="${AR:-ar}"
 RANLIB="${RANLIB:-ranlib}"
@@ -72,7 +92,6 @@ CFLAGS_PARTS=(
     -mno-avx512f -mno-mmx -msse2 -mfpmath=387
     -DOCTAGRAM_TLS_ERRNO -DOCTAGRAM_GNU_MAKE_ERRNO_ACCESSOR
     -Dalloca=__builtin_alloca
-    -include time.h
     -nostdinc -isystem "$GCC_INTERNAL"
 )
 printf -v CFLAGS '%s ' "${CFLAGS_PARTS[@]}"
@@ -104,7 +123,7 @@ fi
 echo "GNU-MAKE-OCTAGRAM: resolved compiler environment"
 printf '  CC=%q\\n  CPPFLAGS=%q\\n  CFLAGS=%q\\n  LDFLAGS=%q\\n' "$CC" "$CPPFLAGS" "$CFLAGS" "$LDFLAGS"
 echo "GNU-MAKE-OCTAGRAM: generated Make variables (bounded diagnostic)"
-timeout 15s make -pn 2>/dev/null | grep -E '^(CC|CPP|CPPFLAGS|CFLAGS|DEFS|DEFAULT_INCLUDES|AM_CPPFLAGS|AM_CFLAGS) ?[:=]' | head -n 30 || true
+timeout 15s make -C lib -pn 2>/dev/null | grep -E '^(CC|CPP|CPPFLAGS|CFLAGS|DEFS|DEFAULT_INCLUDES|AM_CPPFLAGS|AM_CFLAGS|WARN_CFLAGS|libgnu_a_CFLAGS) ?[:=]' | head -n 40 || true
 
 echo "GNU-MAKE-OCTAGRAM: compile upstream GNU Make"
 make -j2 V=1

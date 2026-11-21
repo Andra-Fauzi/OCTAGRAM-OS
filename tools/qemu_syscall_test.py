@@ -101,7 +101,15 @@ def main():
         return 1
     if not wait_for_after("program exited with status 0", syscall_output_offset, 30):
         print("TEST-FAIL: syscall compatibility program did not exit successfully")
-        print(serial_text()[-4000:])
+        output = serial_text()[syscall_output_offset:]
+        failures = [line for line in output.splitlines() if "FAIL " in line]
+        if failures:
+            print("SYSCALL-FAILURES (%d):" % len(failures))
+            for failure in failures:
+                print(failure)
+        else:
+            print("SYSCALL-FAILURES: no individual FAIL line captured")
+        print(output[-4000:])
         return 1
     if not wait_prompt(30):
         print("TEST-FAIL: shell did not return after syscall compatibility program")

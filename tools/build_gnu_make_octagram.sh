@@ -36,10 +36,9 @@ import sys
 
 path = Path(sys.argv[1])
 text = path.read_text()
-anchor = "\t| openbsd* \\\n"
-if anchor not in text:
-    raise SystemExit("cannot safely extend config.sub: openbsd OS anchor not found")
-text = text.replace(anchor, "\t| octagram* \\\n" + anchor, 1)
+if "| openbsd*" not in text:
+    raise SystemExit("cannot safely extend config.sub: openbsd OS token not found")
+text = text.replace("| openbsd*", "| octagram* | openbsd*", 1)
 path.write_text(text)
 PY
 fi

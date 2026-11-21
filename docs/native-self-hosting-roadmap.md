@@ -977,3 +977,25 @@ Bootstrap `/bin/make` tetap dipertahankan sampai pengganti native memiliki
 kontrak kompatibilitas tersendiri dan seluruh resep build sistem terbukti
 berjalan dengannya. Pekerjaan berikutnya adalah manifest build deterministik
 dan pelaporan dependency graph native untuk M3.3.
+
+
+## 16. M3.3 — Native build manifest dan integritas artefak (21 November 2026)
+
+Branch: feature/native-self-hosting.
+
+### Yang sudah diimplementasikan
+
+- make --manifest <file> menulis manifest tab-separated dengan versi skema.
+- Setiap target mencatat status build, mtime Unix, ukuran byte, SHA-256, dan
+  daftar prerequisite (termasuk penanda order-only).
+- SHA-256 dihitung streaming dari file melalui syscall open/read/close;
+  artefak tidak perlu dimuat seluruhnya ke RAM.
+- QEMU menguji schema manifest, ukuran executable, dependency graph, dan
+  digest file kosong terhadap nilai SHA-256 standar.
+
+### Status verifikasi
+
+- QEMU-tested: manifest versi 1 (mtime, ukuran, dependency graph) lulus
+  pada workflow 44897407783. SHA-256 versi 2 masih menunggu CI baru.
+- Belum diklaim: reproducible build penuh, hash seluruh input compiler,
+  validasi dependency graph lintas direktori, dan parallel build.

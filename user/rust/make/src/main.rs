@@ -14,11 +14,19 @@ use core::panic::PanicInfo;
 use core::slice;
 use octagram_runtime::{
     chdir, close, environ, execve, exit, fork, open, read, stat_path, waitpid, write_all,
-    O_RDONLY, STDERR, STDOUT,
+    O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY, STDERR, STDOUT,
 };
 
 const MAX_MAKEFILE_SIZE: usize = 64 * 1024;
 const MAX_RULES: usize = 128;
+
+#[derive(Clone)]
+struct BuildRecord {
+    target: String,
+    status: String,
+    modified_seconds: Option<u64>,
+    dependencies: String,
+}
 
 #[derive(Clone)]
 struct Rule {
@@ -63,6 +71,7 @@ fn run(argc: i32, argv: *const *const u8) -> Result<i32, String> {
     let mut silent = false;
     let mut always_make = false;
     let mut print_database = false;
+    let mut manifest_path = None;
     let mut overrides = Vec::new();
     let mut index = 0;
 
@@ -87,6 +96,13 @@ wildcards, and multi-stem pattern rules are unsupported.\n",
             "-n" | "--dry-run" => dry_run = true,
             "-s" | "--silent" => silent = true,
             "-j1" => {}
+            "--manifest" => {
+                index += 1;
+                let Some(value) = arguments.get(index) else {
+                    return Err(String::from("missing argument after --manifest"));
+                };
+                manifest_path = Some(value.clone());
+            }
             "-f" | "-C" => {
                 index += 1;
                 let Some(value) = arguments.get(index) else {
@@ -140,10 +156,18 @@ wildcards, and multi-stem pattern rules are unsupported.\n",
 
     let mut built = Vec::new();
     let mut visiting = Vec::new();
+    let mut records = Vec::new();
     for target in targets {
         if let Err(error) = build_target(
-            &target, &makefile, &mut visiting, &mut built, dry_run, silent, always_make,
+            &target, &makefile, &mut visiting, &mut built, &mut records,
+            dry_run, silent, always_make,
         ) {
+            report(&format!("make: {error}\n"));
+            return Ok(2);
+        }
+    }
+    if let Some(path) = manifest_path {
+        if let Err(error) = write_build_manifest(&path, &records) {
             report(&format!("make: {error}\n"));
             return Ok(2);
         }
@@ -538,6 +562,7 @@ fn build_target(
     makefile: &Makefile,
     visiting: &mut Vec<String>,
     built: &mut Vec<String>,
+    records: &mut Vec<BuildRecord>,
     dry_run: bool,
     silent: bool,
     always_make: bool,
@@ -546,7 +571,7 @@ fn build_target(
         return Ok(());
     }
     if visiting.iter().any(|name| name == target) {
-        return Err(format!("dependency cycle involving `{target}`"));
+        return Err(format!("dependency cycle involving {target}"));
     }
     let is_phony = makefile.phony_targets.iter().any(|name| name == target);
     let rule = makefile
@@ -561,49 +586,63 @@ fn build_target(
                 .find_map(|rule| instantiate_pattern_rule(rule, target))
         });
     let Some(rule) = rule else {
-        return if is_phony || file_exists(target) {
-            Ok(())
-        } else {
-            Err(format!("no rule to make target `{target}`"))
-        };
+        if is_phony || file_exists(target) {
+            records.push(BuildRecord {
+                target: target.to_string(),
+                status: if is_phony { "phony" } else { "source" }.to_string(),
+                modified_seconds: file_mtime(target),
+                dependencies: String::new(),
+            });
+            return Ok(());
+        }
+        return Err(format!("no rule to make target {target}"));
     };
     visiting.push(target.to_string());
     for dependency in rule.dependencies.iter().chain(&rule.order_only_dependencies) {
         build_target(
-            dependency,
-            makefile,
-            visiting,
-            built,
-            dry_run,
-            silent,
-            always_make,
+            dependency, makefile, visiting, built, records,
+            dry_run, silent, always_make,
         )?;
     }
     visiting.pop();
 
-    // Aggregate targets without recipes (for example, "all") are graph nodes,
-    // not output files. Their prerequisites have already been visited.
+    let mut dependencies = rule.dependencies.join(" ");
+    if !rule.order_only_dependencies.is_empty() {
+        dependencies.push_str(" | ");
+        dependencies.push_str(&rule.order_only_dependencies.join(" "));
+    }
+
+    // Aggregate targets without recipes are graph nodes, not output files.
     if rule.recipes.is_empty() {
+        records.push(BuildRecord {
+            target: target.to_string(),
+            status: "aggregate".to_string(),
+            modified_seconds: file_mtime(target),
+            dependencies,
+        });
         built.push(target.to_string());
         return Ok(());
     }
 
     let target_mtime = if is_phony { None } else { file_mtime(target) };
-    let prerequisite_mtimes = rule
-        .dependencies
+    let prerequisite_mtimes = rule.dependencies
         .iter()
         .map(|dependency| file_mtime(dependency))
         .collect::<Vec<_>>();
     if !needs_rebuild(target_mtime, &prerequisite_mtimes, always_make) {
+        records.push(BuildRecord {
+            target: target.to_string(),
+            status: "up-to-date".to_string(),
+            modified_seconds: target_mtime,
+            dependencies,
+        });
         built.push(target.to_string());
         return Ok(());
     }
 
     let first = rule.dependencies.first().map(String::as_str).unwrap_or("");
     let all = rule.dependencies.join(" ");
-    let newer = rule
-        .dependencies
-        .iter()
+    let newer = rule.dependencies.iter()
         .zip(&prerequisite_mtimes)
         .filter(|(_, modified)| {
             target_mtime.is_none_or(|target_time| modified.is_none_or(|time| time > target_time))
@@ -614,19 +653,44 @@ fn build_target(
     let order_only = rule.order_only_dependencies.join(" ");
     for recipe in &rule.recipes {
         run_recipe(
-            recipe,
-            &rule.target,
-            first,
-            &all,
-            &newer,
-            &order_only,
-            &makefile.variables,
-            rule.stem.as_deref().unwrap_or(""),
-            dry_run,
-            silent,
+            recipe, &rule.target, first, &all, &newer, &order_only,
+            &makefile.variables, rule.stem.as_deref().unwrap_or(""),
+            dry_run, silent,
         )?;
     }
+    records.push(BuildRecord {
+        target: target.to_string(),
+        status: if dry_run { "would-build" } else { "built" }.to_string(),
+        modified_seconds: if dry_run { target_mtime } else { file_mtime(target) },
+        dependencies,
+    });
     built.push(target.to_string());
+    Ok(())
+}
+
+fn write_build_manifest(path: &str, records: &[BuildRecord]) -> Result<(), String> {
+    let path = CString::new(path)
+        .map_err(|_| String::from("manifest path contains a NUL byte"))?;
+    let descriptor = open(&path, O_WRONLY | O_CREAT | O_TRUNC)
+        .map_err(|error| format!("cannot create build manifest ({error})"))?;
+    let mut output = String::from(
+        "OCTAGRAM-BUILD-MANIFEST\\t1\\n# target\\tstatus\\tmtime_unix\\tdependencies\\n",
+    );
+    for record in records {
+        let modified = record.modified_seconds
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| String::from("unknown"));
+        output.push_str(&format!(
+            "{}\\t{}\\t{}\\t{}\\n",
+            record.target, record.status, modified, record.dependencies
+        ));
+    }
+    let result = write_all(descriptor, output.as_bytes())
+        .map_err(|error| format!("cannot write build manifest ({error})"));
+    let close_result = close(descriptor)
+        .map_err(|error| format!("cannot close build manifest ({error})"));
+    result?;
+    close_result?;
     Ok(())
 }
 

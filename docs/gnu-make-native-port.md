@@ -154,6 +154,8 @@ limits required by the strict no-host-headers build. More missing declarations
 or implementations will be added only when the upstream configure/build
 probes demonstrate they are needed.
 
+The bootstrap now sets `GNULIB_URL` to the GitHub mirror `coreutils/gnulib` while retaining the upstream `GNULIB_REVISION=stable-202301` pin. This avoids the intermittent Savannah HTTP 500 seen in CI. It also removes an incomplete `user/third_party/gnu-make/gnulib` checkout (one without `gnulib-tool`) before retrying, because GNU Make's bootstrap otherwise mistakes the empty directory left by a failed fetch for a usable checkout. The mirror exposes the pinned `stable-202301` branch; the source revision remains selected by GNU Make's own `bootstrap.conf`.
+
 The first compile attempt exposed three target-header mismatches. The OCTAGRAM
 `unistd.h` now advertises POSIX via `_POSIX_VERSION`, preventing GNU Make's
 legacy zero-argument `getcwd` declaration from conflicting with the POSIX

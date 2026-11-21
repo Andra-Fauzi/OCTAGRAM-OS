@@ -2399,15 +2399,15 @@ fn run_toolchain_command(command: &str, current_dir: &str, arguments: &str) {
             read_toolchain_file,
         ),
         "ld" => {
-            let all_elf = inputs
-                .iter()
-                .all(|(_, bytes)| crate::toolchain::is_elf_object(bytes));
-            if all_elf {
+            let all_elf_inputs = inputs.iter().all(|(_, bytes)| {
+                crate::toolchain::is_elf_object(bytes) || bytes.starts_with(b"!<arch>\\n")
+            });
+            if all_elf_inputs {
                 let objects = inputs
                     .iter()
                     .map(|(_, bytes)| bytes.as_slice())
                     .collect::<Vec<_>>();
-                crate::toolchain::link_elf_objects(&objects)
+                crate::toolchain::link_elf_inputs(&objects)
             } else if inputs.len() == 1 {
                 crate::toolchain::link(&inputs[0].1)
             } else {

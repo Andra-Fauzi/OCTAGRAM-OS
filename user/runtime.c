@@ -3514,6 +3514,28 @@ int mkstemp(char *template)
     return -1;
 }
 
+/* POSIX tmpfile: unlink the unique file while its descriptor remains open. */
+FILE *tmpfile(void)
+{
+    char path[] = "/tmp/octagram-tmp-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) return NULL;
+    if (unlink(path) < 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return NULL;
+    }
+    FILE *stream = fdopen(fd, "w+");
+    if (stream == NULL) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return NULL;
+    }
+    return stream;
+}
+
 int open(const char *path, int flags, ...)
 {
     mode_t mode = 0644;

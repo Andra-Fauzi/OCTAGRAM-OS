@@ -26,6 +26,7 @@ int fflush(FILE *stream);
 int setvbuf(FILE *stream, char *buffer, int mode, size_t size);
 void perror(const char *message);
 FILE *fdopen(int fd, const char *mode);
+FILE *tmpfile(void);
 FILE *fopen(const char *path, const char *mode);
 FILE *freopen(const char *path, const char *mode, FILE *stream);
 int rename(const char *source, const char *target);

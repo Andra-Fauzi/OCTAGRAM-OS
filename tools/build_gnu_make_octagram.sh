@@ -91,6 +91,7 @@ CFLAGS_PARTS=(
     -march=x86-64 -mtune=generic -mno-avx -mno-avx2
     -mno-avx512f -mno-mmx -msse2 -mfpmath=387
     -DOCTAGRAM_TLS_ERRNO -DOCTAGRAM_GNU_MAKE_ERRNO_ACCESSOR
+    -DNO_OUTPUT_SYNC
     -Dalloca=__builtin_alloca
     -nostdinc -isystem "$GCC_INTERNAL"
 )

@@ -30,6 +30,7 @@ double atof(const char *text);
 float strtof(const char *text, char **end);
 long double strtold(const char *text, char **end);
 char *getenv(const char *name);
+int mkstemp(char *template);
 int setenv(const char *name, const char *value, int overwrite);
 int unsetenv(const char *name);
 int putenv(char *entry);

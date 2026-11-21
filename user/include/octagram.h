@@ -19,6 +19,7 @@ char *getenv(const char *name);
 #define OCT_O_TRUNC  (1u << 9)
 #define OCT_O_APPEND (1u << 10)
 #define OCT_O_NONBLOCK (1u << 11)
+#define OCT_O_EXCL (1u << 12)
 #define OCT_AT_FDCWD (-100)
 #define OCT_AT_SYMLINK_NOFOLLOW (1u << 8)
 #define OCT_AT_REMOVEDIR (1u << 9)

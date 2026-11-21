@@ -3461,6 +3461,59 @@ int unsetenv(const char *name)
     return install_environment(new_environment);
 }
 
+/*
+ * Create a unique temporary file. O_EXCL is enforced by the kernel while
+ * holding the VFS lock, so a pre-existing path cannot be overwritten.
+ */
+int mkstemp(char *template)
+{
+    static uint64_t sequence;
+    static const char alphabet[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+    if (template == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    size_t length = strlen(template);
+    if (length < 6) {
+        errno = EINVAL;
+        return -1;
+    }
+    char *suffix = template + length - 6;
+    for (size_t i = 0; i < 6; ++i) {
+        if (suffix[i] != 'X') {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+
+    struct timespec now = {0, 0};
+    (void)clock_gettime(CLOCK_REALTIME, &now);
+    uint64_t seed = ((uint64_t)(uint32_t)getpid() << 32) ^
+                    (uint64_t)now.tv_sec ^
+                    ((uint64_t)now.tv_nsec << 1);
+
+    for (unsigned int attempt = 0; attempt < 256; ++attempt) {
+        uint64_t value = seed +
+            __atomic_add_fetch(&sequence, 1, __ATOMIC_RELAXED) +
+            ((uint64_t)attempt * UINT64_C(0x9e3779b97f4a7c15));
+        for (size_t i = 0; i < 6; ++i) {
+            suffix[i] = alphabet[value % 36u];
+            value /= 36u;
+        }
+        int fd = open(template, O_RDWR | O_CREAT | O_EXCL, 0600);
+        if (fd >= 0) {
+            return fd;
+        }
+        if (errno != EEXIST) {
+            return -1;
+        }
+    }
+
+    errno = EEXIST;
+    return -1;
+}
+
 int open(const char *path, int flags, ...)
 {
     mode_t mode = 0644;

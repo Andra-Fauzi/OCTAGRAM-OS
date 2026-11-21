@@ -409,7 +409,7 @@ implementasi TCP penuh.
 menyediakan `dns_server()` dan resolver IPv4 A-record `dns_lookup()`.
 
 `open` menerima mode akses `OCT_O_RDONLY=0`, `OCT_O_WRONLY=1`,
-`OCT_O_RDWR=2` dan flag `OCT_O_CREAT`, `OCT_O_TRUNC`, `OCT_O_APPEND` dari
+`OCT_O_RDWR=2` dan flag `OCT_O_CREAT`, `OCT_O_EXCL`, `OCT_O_TRUNC`, `OCT_O_APPEND` dari
 header. Argumen `mode` hanya dipakai saat membuat file dan dikurangi dengan
 umask proses; nilai awal umask adalah `022`. `mkdir` juga menerima mode dan
 menerapkan umask. Jika filesystem tidak mendukung permission per-file, mode saat

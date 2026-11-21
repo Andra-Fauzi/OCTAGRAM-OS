@@ -397,6 +397,7 @@ const O_CREAT: u64 = 1 << 8;
 const O_TRUNC: u64 = 1 << 9;
 const O_APPEND: u64 = 1 << 10;
 const O_NONBLOCK: u64 = 1 << 11;
+const O_EXCL: u64 = 1 << 12;
 const O_CLOEXEC: u64 = 1 << 19;
 const FD_CLOEXEC: u32 = 1;
 const F_DUPFD: u64 = 0;
@@ -5928,8 +5929,11 @@ fn syscall_openat(dirfd: u64, path_address: u64, flags: u64, mode: u64) -> Resul
 }
 
 fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32> {
-    const ALLOWED_FLAGS: u64 = O_ACCESS_MASK | O_CREAT | O_TRUNC | O_APPEND | O_NONBLOCK;
+    const ALLOWED_FLAGS: u64 = O_ACCESS_MASK | O_CREAT | O_TRUNC | O_APPEND | O_NONBLOCK | O_EXCL;
     if flags & !ALLOWED_FLAGS != 0 || flags & O_ACCESS_MASK == 3 {
+        return Err(EINVAL);
+    }
+    if flags & O_EXCL != 0 && flags & O_CREAT == 0 {
         return Err(EINVAL);
     }
     if flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND) != 0 {
@@ -5997,6 +6001,9 @@ fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32
     let size = match fs::with_vfs(|vfs| {
         let mut created = false;
         let metadata = match vfs.metadata(&path) {
+            Ok(_) if flags & O_CREAT != 0 && flags & O_EXCL != 0 => {
+                return Err(FsError::AlreadyExists);
+            }
             Ok(metadata) => metadata,
             Err(FsError::NotFound) if flags & O_CREAT != 0 => {
                 vfs.create_file(&path)?;

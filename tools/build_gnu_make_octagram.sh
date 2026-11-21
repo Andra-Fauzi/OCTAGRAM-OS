@@ -103,6 +103,8 @@ echo "GNU-MAKE-OCTAGRAM: configure target=$TARGET build=$BUILD_TRIPLET"
 # Keep the cross result deterministic. unistd.h advertises POSIX so GNU Make
 # does not declare its legacy zero-argument getcwd prototype.
 export ac_cv_func_getcwd=yes
+# The OCTAGRAM libc now provides mkstemp() backed by atomic O_CREAT|O_EXCL.
+export ac_cv_func_mkstemp=yes
 
 if ! "$SRC/configure" \
     --srcdir="$SRC" \

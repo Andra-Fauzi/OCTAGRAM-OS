@@ -3257,17 +3257,18 @@ mod tests {
     fn rename_fixture_symbol(object: &mut [u8], symbol_index: usize, name: &[u8]) {
         // The fixture's .symtab starts at 0x140 and its string table at 0x220.
         let symbol = 0x140 + symbol_index * 24;
-        let name_offset = 7;
+        // Append rather than overwrite the fixture's existing names: both
+        // symbols share this string table, and replacing "message" in place
+        // would corrupt the other symbol's name.
+        let name_offset = 15;
         object[symbol..symbol + 4].copy_from_slice(&(name_offset as u32).to_le_bytes());
         let strings = 0x220;
         object[strings + name_offset..strings + name_offset + name.len()]
             .copy_from_slice(name);
         object[strings + name_offset + name.len()] = 0;
-        // The original fixture's string table is 15 bytes; "external" needs
-        // one additional byte including its terminating NUL.
         let string_table_size_field = 0x240 + 5 * 64 + 32;
         object[string_table_size_field..string_table_size_field + 8]
-            .copy_from_slice(&16u64.to_le_bytes());
+            .copy_from_slice(&((name_offset + name.len() + 1) as u64).to_le_bytes());
     }
 
     #[test]
@@ -3281,6 +3282,9 @@ mod tests {
         let mut provider = relocatable_object();
         // Export the provider's text symbol as "external", not a second entry.
         rename_fixture_symbol(&mut provider, 1, b"external");
+        // Keep the provider's unrelated "message" data symbol local so it
+        // cannot collide with the caller's symbol table.
+        provider[0x140 + 2 * 24 + 4] = 0x01;
 
         let executable = super::link_elf_objects(&[&caller, &provider]).unwrap();
         assert_eq!(&executable[..4], b"\x7fELF");

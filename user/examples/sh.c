@@ -188,7 +188,7 @@ static int is_builtin(const char *name)
 {
     return !strcmp(name, ":") || !strcmp(name, "true") ||
            !strcmp(name, "false") || !strcmp(name, "echo") ||
-           !strcmp(name, "pwd") || !strcmp(name, "cd") ||
+           !strcmp(name, "pwd") || !strcmp(name, "cat") || !strcmp(name, "cd") ||
            !strcmp(name, "export") || !strcmp(name, "unset") ||
            !strcmp(name, "exit") || !strcmp(name, "exec");
 }
@@ -222,6 +222,44 @@ static int run_builtin(char **argv)
             return 1;
         }
         puts(path);
+        return 0;
+    }
+    if (!strcmp(name, "cat")) {
+        char buffer[1024];
+        int first = 1;
+        do {
+            int fd = argv[1] ? open(argv[first], O_RDONLY) : STDIN_FILENO;
+            if (fd < 0) {
+                perror(argv[first]);
+                return 1;
+            }
+            for (;;) {
+                ssize_t bytes = read(fd, buffer, sizeof(buffer));
+                if (bytes == 0)
+                    break;
+                if (bytes < 0) {
+                    perror("cat");
+                    if (fd != STDIN_FILENO) close(fd);
+                    return 1;
+                }
+                ssize_t offset = 0;
+                while (offset < bytes) {
+                    ssize_t written = write(STDOUT_FILENO, buffer + offset,
+                                            (size_t)(bytes - offset));
+                    if (written <= 0) {
+                        perror("cat");
+                        if (fd != STDIN_FILENO) close(fd);
+                        return 1;
+                    }
+                    offset += written;
+                }
+            }
+            if (fd != STDIN_FILENO)
+                close(fd);
+            if (!argv[1])
+                break;
+            ++first;
+        } while (argv[first]);
         return 0;
     }
     if (!strcmp(name, "cd")) {

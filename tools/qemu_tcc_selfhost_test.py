@@ -415,7 +415,83 @@ def main():
         print(serial_text()[-6000:])
         return 1
 
-    print("GNU-MAKE-OCTAGRAM-PASS: upstream GNU Make 4.4.1 version, dry-run, forced TinyCC build, and guest ELF execution passed")
+    # Exercise GNU Make's own automatic-variable expansion rather than only
+    # the bootstrap make implementation.
+    output_offset = len(serial_text())
+    send_line("/usr/bin/gmake -C /share/octagram -n automatic-vars-check")
+    if not wait_for_after("echo automatic:automatic-vars-check first:hello.c newer:hello.c order:order-only-dep", output_offset, 60):
+        print("GNU-MAKE-AUTOMATIC-VARS-FAIL: GNU Make expanded automatic variables incorrectly")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("GNU-MAKE-AUTOMATIC-VARS-FAIL: automatic variable dry-run failed")
+        print(serial_text()[-6000:])
+        return 1
+
+    # A phony target must run on every invocation, even if a file with the
+    # same name exists in the working directory.
+    for attempt in range(2):
+        output_offset = len(serial_text())
+        send_line("/usr/bin/gmake -C /share/octagram phony-check")
+        if not wait_for_after("tcc -c message.c -o phony-check", output_offset, 60):
+            print("GNU-MAKE-PHONY-FAIL: GNU Make skipped a declared phony target")
+            print(serial_text()[-6000:])
+            return 1
+        if not wait_for_after("program exited with status 0", output_offset, 60):
+            print("GNU-MAKE-PHONY-FAIL: phony recipe did not exit successfully")
+            print(serial_text()[-6000:])
+            return 1
+
+    output_offset = len(serial_text())
+    send_line("/usr/bin/gmake -C /share/octagram order-only-check-run")
+    if not wait_for_after("tcc -c message.c -o order-only-check", output_offset, 60):
+        print("GNU-MAKE-ORDER-ONLY-FAIL: initial order-only target recipe did not run")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 60):
+        print("GNU-MAKE-ORDER-ONLY-FAIL: initial order-only build failed")
+        print(serial_text()[-6000:])
+        return 1
+
+    time.sleep(1.2)
+    touch_offset = len(serial_text())
+    send_line("touch /share/octagram/order-only-dep")
+    if not wait_for_after("octagram:/ $", touch_offset, 30):
+        print("GNU-MAKE-ORDER-ONLY-FAIL: could not refresh order-only prerequisite")
+        print(serial_text()[-6000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("/usr/bin/gmake -C /share/octagram order-only-check-run")
+    if not wait_for_after("program exited with status 0", output_offset, 60):
+        print("GNU-MAKE-ORDER-ONLY-FAIL: second order-only invocation failed")
+        print(serial_text()[-6000:])
+        return 1
+    order_output = serial_text()[output_offset:]
+    if "tcc -c message.c -o order-only-check" in order_output:
+        print("GNU-MAKE-ORDER-ONLY-FAIL: newer order-only prerequisite rebuilt its target")
+        print(order_output[-4000:])
+        return 1
+
+    # Repeating the default target must be a no-op when every output is fresh.
+    output_offset = len(serial_text())
+    send_line("/usr/bin/gmake -C /share/octagram")
+    if not wait_for_after("program exited with status 0", output_offset, 60):
+        print("GNU-MAKE-INCREMENTAL-FAIL: second GNU Make invocation failed")
+        print(serial_text()[-6000:])
+        return 1
+    incremental_output = serial_text()[output_offset:]
+    if any(command in incremental_output for command in (
+        "tcc -c hello.c -o hello.o",
+        "tcc -c message.c -o message.o",
+        "tcc -ar rcs libmessage.a message.o",
+        "tcc hello.o libmessage.a -o hello.elf",
+    )):
+        print("GNU-MAKE-INCREMENTAL-FAIL: up-to-date target unexpectedly rebuilt")
+        print(incremental_output[-4000:])
+        return 1
+
+    print("GNU-MAKE-OCTAGRAM-PASS: upstream GNU Make 4.4.1 version, dry-run, automatic variables, phony/order-only, incremental build, forced TinyCC build, and guest ELF execution passed")
     print("TCC-SELFHOST-PASS: TinyCC compile/run, Make build, up-to-date skip, newer-prerequisite rebuild, and -B force passed")
     print(serial_text()[-4000:])
     return 0

@@ -2640,7 +2640,7 @@ fn parse_ar_archive(bytes: &[u8]) -> Result<Vec<Vec<u8>>, ToolchainError> {
         }
         let size_text = core::str::from_utf8(&header[48..58])
             .map_err(|_| ToolchainError::InvalidElfObject)?.trim();
-        let size = usize::from_str_radix(size_text, 8)
+        let size = size_text.parse::<usize>()
             .map_err(|_| ToolchainError::InvalidElfObject)?;
         let data_start = header_end;
         let data_end = data_start.checked_add(size).ok_or(ToolchainError::OutOfBounds)?;
@@ -3502,7 +3502,7 @@ mod tests {
             header[28..29].copy_from_slice(b"0");
             header[34..35].copy_from_slice(b"0");
             header[40..46].copy_from_slice(b"100644");
-            let size = alloc::format!("{:o}", object.len());
+            let size = alloc::format!("{}", object.len());
             header[48..48 + size.len()].copy_from_slice(size.as_bytes());
             header[58] = 0x60;
             header[59] = b'\n';

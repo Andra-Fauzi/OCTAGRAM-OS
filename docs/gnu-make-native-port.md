@@ -127,3 +127,33 @@ OCTAGRAM config header and cross-build; add/confirm the missing libc APIs;
 provide a spawnable `/bin/sh`; then run the upstream Make test subset under
 QEMU. Do not install upstream GNU Make as `/bin/make` until recipe execution
 and child status handling pass those tests.
+
+
+## Cross-build implementation (21 November 2026)
+
+The first reproducible cross-build driver is
+`tools/build_gnu_make_octagram.sh`. It:
+
+1. bootstraps the upstream Autotools files and GNU Make's pinned gnulib
+   revision from `bootstrap.conf`;
+2. teaches the generated `config.sub` the OCTAGRAM OS token;
+3. configures with `--host=x86_64-unknown-octagram`, NLS/Guile/load and
+   posix_spawn disabled for the first pass;
+4. uses only the OCTAGRAM userspace headers plus GCC's compiler-internal
+   headers (`-nostdinc` prevents accidental use of Linux system headers);
+5. links against OCTAGRAM's existing CRT/runtime with its static linker script;
+6. verifies the result is an x86_64 static ELF without a host interpreter or
+   dynamic section.
+
+The generated executable is kept at
+`user/build/gnu-make-octagram/make`; this is a build artifact and does not
+replace the current bootstrap `/bin/make`.
+
+The target libc header `user/include/limits.h` now defines the x86_64/POSIX
+limits required by the strict no-host-headers build. More missing declarations
+or implementations will be added only when the upstream configure/build
+probes demonstrate they are needed.
+
+CI runs this cross-build after the existing userland CRT/runtime build. A
+successful compile is only the first gate: QEMU execution, recipe shell
+integration, and upstream regression tests remain separate gates.

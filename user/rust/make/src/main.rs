@@ -671,6 +671,7 @@ fn build_target(
         status: if dry_run { "would-build" } else { "built" }.to_string(),
         modified_seconds: if dry_run { target_mtime } else { file_mtime(target) },
         size_bytes: file_size(target),
+        sha256: file_sha256(target),
         dependencies,
     });
     built.push(target.to_string());

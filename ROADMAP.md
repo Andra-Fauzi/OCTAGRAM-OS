@@ -320,7 +320,8 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     digest kernel), dan diverifikasi saat read-back image
   - [x] Layout A/B di image builder: ESP + root A + root B, salinan kernel per
     slot, entri Limine per slot, journal A known-good di kedua root, dan
-    verifikasi read-back ketiga partisi (host tests; `mkimage file ... ab`)
+    verifikasi read-back ketiga partisi (host tests; `mkimage file ... ab` dan
+    `mkimage sataN MKIMAGE-ERASE ab`)
   - [ ] Pemilihan slot oleh bootloader dari journal, penanda boot sukses, uji
     mati listrik, dan bootstrap berulang
 

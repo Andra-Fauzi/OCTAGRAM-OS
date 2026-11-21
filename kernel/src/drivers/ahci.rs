@@ -70,7 +70,15 @@ const SATA_SIG_ATA: u32 = 0x0000_0101;
 const ATA_IDENTIFY: u8 = 0xEC;
 const ATA_READ_DMA_EXT: u8 = 0x25;
 const ATA_WRITE_DMA_EXT: u8 = 0x35;
-const ATA_TIMEOUT: usize = 100_000_000;
+/// Polling every cycle hammers the port register and, under emulation, costs a
+/// slow MMIO exit per read without giving the device time to finish. Wait a
+/// little between polls instead, so one command costs a handful of reads.
+const ATA_POLL_DELAY: usize = 4_096;
+const ATA_POLL_ATTEMPTS: usize = 200_000;
+/// Sectors transferred by one DMA command. Batching turns a 32 KiB request
+/// into a single SATA command instead of 64, which is what made image building
+/// on a real disk unbearably slow.
+const DMA_SECTORS: usize = 64;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -123,7 +131,7 @@ impl CommandTable {
 }
 
 #[repr(C, align(4096))]
-struct DmaBuffer([u8; SECTOR_SIZE]);
+struct DmaBuffer([u8; SECTOR_SIZE * DMA_SECTORS]);
 
 struct PortState {
     port_regs: usize,
@@ -150,7 +158,7 @@ impl PortState {
                 command_list: Box::new(CommandList::new()),
                 received_fis: Box::new(ReceivedFis([0; 256])),
                 command_table: Box::new(CommandTable::new()),
-                buffer: Box::new(DmaBuffer([0; SECTOR_SIZE])),
+                buffer: Box::new(DmaBuffer([0; SECTOR_SIZE * DMA_SECTORS])),
                 sector_count: 0,
             };
             let command_list_phys = physical_address(&*state.command_list as *const _ as usize)?;
@@ -168,8 +176,8 @@ impl PortState {
                 read_reg(port_regs, PORT_CMD) | PORT_CMD_FRE | PORT_CMD_ST,
             );
 
-            state.issue_command(ATA_IDENTIFY, 0, false)?;
-            let identify = &state.buffer.0;
+            state.issue_command(ATA_IDENTIFY, 0, 1, false)?;
+            let identify = &state.buffer.0[..SECTOR_SIZE];
             if u16::from_le_bytes([identify[166], identify[167]]) & (1 << 10) == 0 {
                 return Err(BlockError::Io);
             }
@@ -185,6 +193,7 @@ impl PortState {
         &mut self,
         command: u8,
         lba: u64,
+        count: u16,
         write: bool,
     ) -> Result<(), BlockError> {
         unsafe {
@@ -203,13 +212,17 @@ impl PortState {
             self.command_table.command_fis[8] = (lba >> 24) as u8;
             self.command_table.command_fis[9] = (lba >> 32) as u8;
             self.command_table.command_fis[10] = (lba >> 40) as u8;
-            if command != ATA_IDENTIFY {
-                self.command_table.command_fis[12] = 1;
-            }
+            let byte_count = if command == ATA_IDENTIFY {
+                SECTOR_SIZE
+            } else {
+                self.command_table.command_fis[12] = count as u8;
+                self.command_table.command_fis[13] = (count >> 8) as u8;
+                SECTOR_SIZE * count as usize
+            };
             self.command_table.prdt[0] = PrdtEntry {
                 data_base: buffer_phys as u64,
                 reserved: 0,
-                byte_count_and_interrupt: (SECTOR_SIZE as u32 - 1) | (1 << 31),
+                byte_count_and_interrupt: (byte_count as u32 - 1) | (1 << 31),
             };
 
             let header = &mut self.command_list.0[0];
@@ -221,18 +234,18 @@ impl PortState {
 
             write_reg(self.port_regs, PORT_IS, u32::MAX);
             write_reg(self.port_regs, PORT_CI, 1);
-            let mut timeout = ATA_TIMEOUT;
+            let mut attempts = 0usize;
             while read_reg(self.port_regs, PORT_CI) & 1 != 0 {
                 if read_reg(self.port_regs, PORT_TFD) & PORT_TFD_ERR != 0
                     || read_reg(self.port_regs, PORT_IS) & PORT_IS_TFES != 0
                 {
                     return Err(BlockError::Io);
                 }
-                timeout -= 1;
-                if timeout == 0 {
+                attempts += 1;
+                if attempts == ATA_POLL_ATTEMPTS {
                     return Err(BlockError::NotReady);
                 }
-                core::hint::spin_loop();
+                idle(ATA_POLL_DELAY);
             }
             if read_reg(self.port_regs, PORT_TFD) & PORT_TFD_ERR != 0
                 || read_reg(self.port_regs, PORT_IS) & PORT_IS_TFES != 0
@@ -263,9 +276,20 @@ impl BlockDevice for AhciDevice {
     fn read_sectors(&self, lba: u64, buffer: &mut [u8]) -> Result<(), BlockError> {
         validate_range(lba, buffer.len(), self.sector_count())?;
         let mut state = self.state.lock();
-        for (index, output) in buffer.chunks_exact_mut(SECTOR_SIZE).enumerate() {
-            unsafe { state.issue_command(ATA_READ_DMA_EXT, lba + index as u64, false) }?;
-            output.copy_from_slice(&state.buffer.0);
+        let mut offset = 0usize;
+        while offset < buffer.len() {
+            let batch = ((buffer.len() - offset) / SECTOR_SIZE).min(DMA_SECTORS);
+            unsafe {
+                state.issue_command(
+                    ATA_READ_DMA_EXT,
+                    lba + (offset / SECTOR_SIZE) as u64,
+                    batch as u16,
+                    false,
+                )
+            }?;
+            let bytes = batch * SECTOR_SIZE;
+            buffer[offset..offset + bytes].copy_from_slice(&state.buffer.0[..bytes]);
+            offset += bytes;
         }
         Ok(())
     }
@@ -273,9 +297,20 @@ impl BlockDevice for AhciDevice {
     fn write_sectors(&self, lba: u64, buffer: &[u8]) -> Result<(), BlockError> {
         validate_range(lba, buffer.len(), self.sector_count())?;
         let mut state = self.state.lock();
-        for (index, input) in buffer.chunks_exact(SECTOR_SIZE).enumerate() {
-            state.buffer.0.copy_from_slice(input);
-            unsafe { state.issue_command(ATA_WRITE_DMA_EXT, lba + index as u64, true) }?;
+        let mut offset = 0usize;
+        while offset < buffer.len() {
+            let batch = ((buffer.len() - offset) / SECTOR_SIZE).min(DMA_SECTORS);
+            let bytes = batch * SECTOR_SIZE;
+            state.buffer.0[..bytes].copy_from_slice(&buffer[offset..offset + bytes]);
+            unsafe {
+                state.issue_command(
+                    ATA_WRITE_DMA_EXT,
+                    lba + (offset / SECTOR_SIZE) as u64,
+                    batch as u16,
+                    true,
+                )
+            }?;
+            offset += bytes;
         }
         Ok(())
     }
@@ -375,15 +410,22 @@ fn physical_address(virtual_address: usize) -> Result<u64, BlockError> {
 }
 
 unsafe fn wait_clear(base: usize, offset: usize, mask: u32) -> Result<(), BlockError> {
-    let mut timeout = ATA_TIMEOUT;
+    let mut attempts = 0usize;
     while unsafe { read_reg(base, offset) } & mask != 0 {
-        timeout -= 1;
-        if timeout == 0 {
+        attempts += 1;
+        if attempts == ATA_POLL_ATTEMPTS {
             return Err(BlockError::NotReady);
         }
-        core::hint::spin_loop();
+        idle(ATA_POLL_DELAY);
     }
     Ok(())
+}
+
+/// Burn a short, bounded amount of CPU without touching device registers.
+fn idle(iterations: usize) {
+    for _ in 0..iterations {
+        core::hint::spin_loop();
+    }
 }
 
 unsafe fn read_reg(base: usize, offset: usize) -> u32 {

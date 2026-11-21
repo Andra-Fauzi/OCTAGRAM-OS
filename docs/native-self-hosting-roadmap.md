@@ -1118,7 +1118,7 @@ bukan dari file Live yang kebetulan dimuat Limine:
   read-back menghasilkan `ImageError::Verification`.
 - Manifest mencatat LBA/ukuran partisi, ukuran dan SHA-256 kernel, loader, serta
   konfigurasi boot; manifest ditulis ke ESP dan root dan digest-nya dilaporkan.
-- Perintah shell `mkimage <sataN> MKIMAGE-ERASE` memakai kernel yang sedang
+- Perintah shell `mkimage <sataN> MKIMAGE-ERASE [ab]` memakai kernel yang sedang
   berjalan dan `BOOTX64.EFI` preload Limine, menolak root aktif, device yang
   ter-mount, dan disk sumber boot lewat `installer::ensure_safe_format_target`.
 
@@ -1191,10 +1191,21 @@ yang menyatakan slot A known-good dengan digest kernel; verifikasi read-back
 me-mount ulang ketiga partisi, membandingkan semua file, mem-parse journal, dan
 memeriksa tabel partisi berisi tiga entri.
 - Perintah `mkimage file <path> <mib> ab` membangun image dua slot berbasis file
-(mode tanpa `ab` tetap satu root).
+(mode tanpa `ab` tetap satu root), dan `mkimage <sataN> MKIMAGE-ERASE ab`
+memakai layout yang sama pada disk SATA/AHCI nyata.
+- Driver AHCI memindahkan 64 sektor (32 KiB) per perintah DMA dan memberi jeda
+antara pembacaan register status, sehingga pembangunan image pada disk tidak
+lagi memakan satu perintah SATA per sektor.
 
 Status: host test `builds_an_ab_image_with_both_root_slots` (image builder) dan
 `ab_layout_has_two_equal_root_slots` (partition) lulus; seluruh suite kernel
-408 test lulus. **Belum** ada pemilihan entri Limine berdasarkan journal,
+408 test lulus. Uji guest QEMU (21 November 2026, disk target 256 MiB di
+`/dev/shm`) menjalankan `mkimage sata0 MKIMAGE-ERASE ab`; hasil di disk sudah
+diperiksa dari host: GPT berisi tiga entri (ESP 80 MiB di LBA 2048, root A dan
+root B masing-masing 178176 sektor), kedua superblok EXT2 valid (`0xef53`, 8192
+inode, 22272 blok), dan boot sector ESP adalah FAT32 valid. Build penuh beserta
+verifikasi read-back **belum** selesai dalam waktu uji: di TCG setiap perintah
+AHCI tetap sangat lambat (puluhan KB/detik), jadi boot dari image hasil builder
+masih terbuka. **Belum** ada pemilihan entri Limine berdasarkan journal,
 penanda boot sukses, atau uji boot QEMU/firmware; entri pertama (slot A) masih
 yang dipilih bootloader.

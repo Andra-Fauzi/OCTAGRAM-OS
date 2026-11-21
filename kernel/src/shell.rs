@@ -1877,14 +1877,20 @@ fn run_mkimage_command(arguments: &str) {
         run_mkimage_file(&words);
         return;
     }
-    let mut parts = arguments.split_whitespace();
-    let (Some(device_name), Some(confirmation), None) = (parts.next(), parts.next(), parts.next())
+    let words = arguments.split_whitespace().collect::<Vec<_>>();
+    let two_slots = words.len() == 3 && words[2] == "ab";
+    let (Some(device_name), Some(confirmation)) = (words.first().copied(), words.get(1).copied())
     else {
-        crate::println!("usage: mkimage <sata-device> MKIMAGE-ERASE");
+        crate::println!("usage: mkimage <sata-device> MKIMAGE-ERASE [ab]");
         crate::println!("       mkimage file <absolute-path.img> <size-mib> [ab]");
         crate::println!("Builds and verifies a bootable GPT/FAT32/EXT2 image.");
         return;
     };
+    if words.len() != 2 && !two_slots {
+        crate::println!("usage: mkimage <sata-device> MKIMAGE-ERASE [ab]");
+        crate::println!("       mkimage file <absolute-path.img> <size-mib> [ab]");
+        return;
+    }
     if confirmation != "MKIMAGE-ERASE" {
         crate::println!("mkimage: destructive confirmation is required");
         crate::println!("rerun with mkimage {device_name} MKIMAGE-ERASE");
@@ -1917,24 +1923,40 @@ fn run_mkimage_command(arguments: &str) {
         return;
     };
 
-    crate::println!("Building native image on {device_name}...");
-    match crate::image_builder::build_image(
-        device,
-        crate::image_builder::ImageAssets {
-            kernel,
-            bootloader,
-            boot_config: include_bytes!("../../limine.conf"),
-        },
-    ) {
-        Ok(report) => {
-            crate::println!("ESP: FAT32 at LBA {} ({} sectors)", report.esp_first_lba, report.esp_sectors);
-            crate::println!("Root: EXT2 at LBA {} ({} sectors)", report.root_first_lba, report.root_sectors);
-            crate::println!("kernel sha256: {}", report.kernel_sha256);
-            crate::println!("loader sha256: {}", report.bootloader_sha256);
-            crate::println!("manifest sha256: {}", report.manifest_sha256);
-            crate::println!("Image read-back verification passed.");
+    let assets = crate::image_builder::ImageAssets {
+        kernel,
+        bootloader,
+        boot_config: include_bytes!("../../limine.conf"),
+    };
+    crate::println!(
+        "Building native image on {device_name} ({} slot)...",
+        if two_slots { "A/B" } else { "single" }
+    );
+    if two_slots {
+        match crate::image_builder::build_ab_image(device, assets) {
+            Ok(report) => {
+                crate::println!("ESP: FAT32 at LBA {} ({} sectors)", report.esp_first_lba, report.esp_sectors);
+                crate::println!("Root A: EXT2 at LBA {} ({} sectors)", report.root_a_first_lba, report.root_a_sectors);
+                crate::println!("Root B: EXT2 at LBA {} ({} sectors)", report.root_b_first_lba, report.root_b_sectors);
+                crate::println!("kernel sha256: {}", report.kernel_sha256);
+                crate::println!("loader sha256: {}", report.bootloader_sha256);
+                crate::println!("manifest sha256: {}", report.manifest_sha256);
+                crate::println!("A/B image read-back verification passed: {device_name}");
+            }
+            Err(error) => crate::println!("mkimage: {error:?}"),
         }
-        Err(error) => crate::println!("mkimage: {error:?}"),
+    } else {
+        match crate::image_builder::build_image(device, assets) {
+            Ok(report) => {
+                crate::println!("ESP: FAT32 at LBA {} ({} sectors)", report.esp_first_lba, report.esp_sectors);
+                crate::println!("Root: EXT2 at LBA {} ({} sectors)", report.root_first_lba, report.root_sectors);
+                crate::println!("kernel sha256: {}", report.kernel_sha256);
+                crate::println!("loader sha256: {}", report.bootloader_sha256);
+                crate::println!("manifest sha256: {}", report.manifest_sha256);
+                crate::println!("Image read-back verification passed: {device_name}");
+            }
+            Err(error) => crate::println!("mkimage: {error:?}"),
+        }
     }
 }
 

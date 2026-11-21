@@ -413,7 +413,7 @@ def main():
     # calculated by the host test runner, while OCTAGRAM hashes the file
     # through repeated 1 KiB read syscalls.
     sha_payload = "a" * 100
-    sha_expected = hashlib.sha256((sha_payload + "\\n").encode()).hexdigest()
+    sha_expected = hashlib.sha256((sha_payload + "\n").encode()).hexdigest()
     output_offset = len(serial_text())
     send_line("echo %s > /tmp/octagram-sha256-multiblock" % sha_payload)
     if not wait_for_after("octagram:/ $", output_offset, 30):
@@ -422,7 +422,7 @@ def main():
         return 1
 
     output_offset = len(serial_text())
-    send_line("make --manifest /tmp/octagram-sha256-multiblock.manifest /tmp/octagram-sha256-multiblock")
+    send_line("make -C /share/octagram --manifest /tmp/octagram-sha256-multiblock.manifest /tmp/octagram-sha256-multiblock")
     if not wait_for_after("program exited with status 0", output_offset, 30):
         print("MAKE-SHA256-MULTIBLOCK-FAIL: manifest generation failed")
         print(serial_text()[-5000:])

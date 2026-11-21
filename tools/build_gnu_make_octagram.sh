@@ -63,6 +63,7 @@ CFLAGS_PARTS=(
     -march=x86-64 -mtune=generic -mno-avx -mno-avx2
     -mno-avx512f -mno-mmx -msse2 -mfpmath=387
     -DOCTAGRAM_TLS_ERRNO -DOCTAGRAM_GNU_MAKE_ERRNO_ACCESSOR
+    -Dalloca=__builtin_alloca
     -nostdinc -isystem "$GCC_INTERNAL"
 )
 printf -v CFLAGS '%s ' "${CFLAGS_PARTS[@]}"
@@ -71,7 +72,7 @@ export LDFLAGS="-nostdlib -static -Wl,--gc-sections -Wl,-T,$USER/linker.ld"
 export LIBS="$USER/build/crt0.o $USER/build/runtime.o"
 
 echo "GNU-MAKE-OCTAGRAM: configure target=$TARGET build=$BUILD_TRIPLET"
-if ! "$SRC/configure" \
+# The OCTAGRAM headers expose POSIX declarations; avoid GNU Make\x27s\n# legacy non-POSIX getcwd prototype. The target intentionally has no\n# system ar.h, so use GNU Make\x27s built-in portable archive layout.\nexport ac_cv_header_ar_h=no\nexport ac_cv_func_getcwd=yes\n\nif ! "$SRC/configure" \
     --srcdir="$SRC" \
     --build="$BUILD_TRIPLET" \
     --host="$TARGET" \

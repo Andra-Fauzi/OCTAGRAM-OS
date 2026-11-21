@@ -11,7 +11,7 @@ menulis ELF64 x86_64 langsung ke VFS. Perintah shell:
 
 ```
 as input.s -o output.o     # assembler toolchain mini
-ld input.o -o output.elf   # link objek toolchain mini atau ELF64 relocatable
+ld input.o [more.o ...] -o output.elf # link objek mini atau ELF64 relocatable
 cc input.c -o output.elf   # compile C-subset dengan include
 ```
 
@@ -37,9 +37,10 @@ bukan pengganti GCC.
 ### Linking ELF64 relocatable (`tcc -c`)
 
 `ld` mendeteksi objek ELF lewat magic `\x7fELF` dan memakai
-`toolchain::link_elf_object`; objek format toolchain mini (`OCTOBJ1`) tetap
-memakai jalur lama. Linker ELF menerima satu objek `ET_REL` x86_64 dan
-menghasilkan executable statis dengan dua segmen:
+`toolchain::link_elf_objects`; objek format toolchain mini (`OCTOBJ1`) tetap
+memakai jalur lama. Linker ELF menerima satu atau beberapa objek `ET_REL`
+x86_64, menyelesaikan simbol global/weak lintas object, dan menghasilkan
+executable statis dengan dua segmen:
 
 | Segmen | Isi | Flag |
 | --- | --- | --- |
@@ -47,7 +48,8 @@ menghasilkan executable statis dengan dua segmen:
 | data | section `SHF_ALLOC` non-eksekusi (`.data`, `.rodata`) dan `.bss` | `R|W` |
 
 Relokasi yang didukung: `R_X86_64_64`, `PC32`, `PLT32`, `32`, dan `32S`.
-Relokasi lain gagal dengan `UnsupportedRelocation` alih-alih menghasilkan binary
+Definisi global kuat ganda, simbol kuat undefined, COMMON, GOT/PLT/TLS, dan
+arsip `.a` belum didukung. Relokasi lain gagal dengan `UnsupportedRelocation` alih-alih menghasilkan binary
 rusak. Simbol undefined dianggap error (`UndefinedSymbol`), common symbol
 ditolak (`UnsupportedCommonSymbol`), dan entry point diambil dari simbol
 `_start` (`NoEntryPoint` bila tidak ada). `.bss` ditempatkan setelah data

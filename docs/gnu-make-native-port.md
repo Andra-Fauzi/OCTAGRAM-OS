@@ -156,6 +156,8 @@ probes demonstrate they are needed.
 
 The bootstrap now sets `GNULIB_URL` to the GitHub mirror `coreutils/gnulib` while retaining the upstream `GNULIB_REVISION=stable-202301` pin. This avoids the intermittent Savannah HTTP 500 seen in CI. It also removes an incomplete `user/third_party/gnu-make/gnulib` checkout (one without `gnulib-tool`) before retrying, because GNU Make's bootstrap otherwise mistakes the empty directory left by a failed fetch for a usable checkout. The mirror exposes the pinned `stable-202301` branch; the source revision remains selected by GNU Make's own `bootstrap.conf`.
 
+A subsequent compile reached upstream GNU Make C sources and identified additional libc ABI gaps. OCTAGRAM now declares `getloadavg` with the POSIX unsized array parameter, defines `CHAR_MIN`/`CHAR_MAX` so GNU Make does not fall back to a signed negative left shift, and provides `atof` and `ctime` declarations/implementations. The build driver force-includes the target `time.h` because upstream `main.c` calls `ctime` without including that header itself. These are compatibility fixes for the target runtime; the cross-build still needs a green CI run.
+
 The first compile attempt exposed three target-header mismatches. The OCTAGRAM
 `unistd.h` now advertises POSIX via `_POSIX_VERSION`, preventing GNU Make's
 legacy zero-argument `getcwd` declaration from conflicting with the POSIX

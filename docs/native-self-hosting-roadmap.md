@@ -839,25 +839,51 @@ Tahap berikutnya adalah archive extraction dan perluasan ABI ELF.
 3. M7: slot A/B, verifikasi sebelum set boot berikutnya, rollback otomatis bila
    boot gagal, dan laporan self-hosting yang memisahkan hasil host, QEMU, dan
    hardware.
-\n\n## 12. M3.1 — Import GNU Make upstream (21 November 2026)\n\nGNU Make 4.4.1 telah dipin sebagai submodule di\n`user/third_party/gnu-make`. CI mengambil submodule secara rekursif dan\nmenjalankan `tools/check_gnu_make_source.py` untuk memastikan commit dan\nfile sumber inti sesuai. Ini baru tahap impor sumber; belum ada executable\nGNU Make untuk OCTAGRAM. Porting ABI, build native, tes QEMU, dan penggantian\n`/bin/make` masih berstatus belum selesai. Lihat\n`docs/gnu-make-native-port.md`.\n
-
-### M3.2 — GNU Make cross-build
-
-- [x] Add a reproducible Autotools/gnulib bootstrap and OCTAGRAM cross-build
-  driver at `tools/build_gnu_make_octagram.sh`.
-- [x] Add an OCTAGRAM-owned `limits.h` and compile with `-nostdinc` so
-  Linux system headers cannot silently satisfy target header checks.
-- [ ] Get the upstream GNU Make 4.4.1 cross-build green in CI.
-- [ ] Boot and execute the produced ELF in QEMU.
-- [x] Add the first native `/bin/sh` executable and embed it in the initial VFS.\n- [ ] Pass the new QEMU tests for `sh -c`, pipelines, and redirection.\n- [ ] Extend shell grammar/runtime until real GNU Make recipes and configure scripts work.\n- [ ] Boot and execute the produced GNU Make ELF in QEMU.
 
 
-## M3.1 update — GNU Make guest integration
+## M3.1 — Import GNU Make upstream (21 November 2026)
 
-The upstream GNU Make cross-build is now embedded separately as
-`/usr/bin/gmake`; the existing bootstrap `/bin/make` is intentionally kept
-for compatibility during the transition. The QEMU TinyCC self-hosting test
-now runs GNU Make 4.4.1 in the guest, checks its version, parses the existing
-C build Makefile with `-n`, forces compile/archive/link recipes with `-B`,
-and executes the resulting ELF. The milestone is complete only when the
-`GNU-MAKE-OCTAGRAM-PASS` marker is observed in QEMU CI.
+- [x] Pin GNU Make 4.4.1 as a submodule at `user/third_party/gnu-make`.
+- [x] Verify the pinned source and core upstream files in CI.
+- [x] Add the OCTAGRAM native shell executable and embed it in the initial VFS.
+- [x] Add a reproducible OCTAGRAM cross-build driver and target-owned headers.
+
+## M3.2 — GNU Make cross-build and VFS integration
+
+- [x] Bootstrap upstream Autotools/gnulib and build GNU Make 4.4.1 for
+  `x86_64-unknown-octagram` using `-nostdinc`.
+- [x] Verify the output is a static x86_64 ELF without a host interpreter or
+  dynamic section.
+- [x] Embed the result separately at `/usr/bin/gmake`; keep bootstrap
+  `/bin/make` unchanged until runtime compatibility is proven.
+- [ ] Execute `/usr/bin/gmake --version` successfully in QEMU.
+- [ ] Parse the TinyCC Makefile with GNU Make `-n` in QEMU.
+- [ ] Execute GNU Make recipes (`-B`) through native `/bin/sh`, then run
+  the generated ELF.
+- [ ] Add dependency/incremental, phony, order-only, and automatic-variable
+  guest tests for upstream GNU Make.
+- [ ] Replace or alias `/bin/make` only after the full guest test matrix passes.
+
+### M3.2 verification update — 21 November 2026
+
+The host build job completed successfully in CI run
+[44877885636](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44877885636).
+This proves the cross-build, static ELF checks, kernel build, and ISO build.
+It does **not** prove guest execution.
+
+The QEMU TinyCC test confirms the existing native TinyCC, ELF linker,
+archive handling, and bootstrap `/bin/make` tests still pass. The first
+upstream GNU Make invocation, `/usr/bin/gmake --version`, faults before
+printing its version:
+
+```text
+User page fault error_code=0x4 rip=0x4134ee address=0x41f
+bytes=[49, 8b, 3f, 5b, 4d, 89, f8, 41]
+```
+
+Therefore GNU Make guest execution remains unchecked. The next diagnostic
+step is to capture all saved general-purpose registers at the page fault,
+identify the invalid pointer used by the instruction, and trace it to the
+GNU Make runtime/libc interface or ELF loading behavior. Do not mark M3.2
+runtime items complete until the `GNU-MAKE-OCTAGRAM-PASS` marker appears
+in QEMU CI.

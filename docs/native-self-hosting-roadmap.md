@@ -889,4 +889,5 @@ through `r15`). CI now disassembles the GNU Make ELF around that exact RIP
 and prints nearby symbols, so the next fix can target the responsible code
 path instead of guessing at TLS or the ELF loader. Do not mark M3.2
 runtime items complete until the `GNU-MAKE-OCTAGRAM-PASS` marker appears
-in QEMU CI.
+in QEMU CI. The CI host job now also emits disassembly and nearby symbols
+for GNU Make at the observed fault RIP (`0x4134ee`).

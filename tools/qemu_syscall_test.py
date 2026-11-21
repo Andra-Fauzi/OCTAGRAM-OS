@@ -13,6 +13,7 @@ KEY_NAMES = {
     "_": "shift-minus",
     " ": "spc",
     "\n": "ret",
+    "'": "apostrophe",
 }
 
 
@@ -76,7 +77,9 @@ def main():
 
     def send_line(text):
         for character in text:
-            key = KEY_NAMES.get(character, character)
+            key = KEY_NAMES.get(character)
+            if key is None:
+                key = "shift-" + character.lower() if character.isupper() else character
             monitor.sendall(("sendkey %s\n" % key).encode())
             time.sleep(0.06)
         monitor.sendall(b"sendkey ret\n")

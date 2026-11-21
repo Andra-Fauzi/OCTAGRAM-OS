@@ -3250,7 +3250,7 @@ mod tests {
     fn rename_fixture_symbol(object: &mut [u8], symbol_index: usize, name: &[u8]) {
         // The fixture's .symtab starts at 0x140 and its string table at 0x220.
         let symbol = 0x140 + symbol_index * 24;
-        let name_offset = 7 + (symbol_index - 2) * 8;
+        let name_offset = 7;
         object[symbol..symbol + 4].copy_from_slice(&(name_offset as u32).to_le_bytes());
         let strings = 0x220;
         object[strings + name_offset..strings + name_offset + name.len()]

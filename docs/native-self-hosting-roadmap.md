@@ -849,4 +849,4 @@ Tahap berikutnya adalah archive extraction dan perluasan ABI ELF.
   Linux system headers cannot silently satisfy target header checks.
 - [ ] Get the upstream GNU Make 4.4.1 cross-build green in CI.
 - [ ] Boot and execute the produced ELF in QEMU.
-- [ ] Add a native `/bin/sh` executable and validate Make recipe execution.
+- [x] Add the first native `/bin/sh` executable and embed it in the initial VFS.\n- [ ] Pass the new QEMU tests for `sh -c`, pipelines, and redirection.\n- [ ] Extend shell grammar/runtime until real GNU Make recipes and configure scripts work.\n- [ ] Boot and execute the produced GNU Make ELF in QEMU.

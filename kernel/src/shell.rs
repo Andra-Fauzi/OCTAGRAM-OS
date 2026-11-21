@@ -2400,7 +2400,7 @@ fn run_toolchain_command(command: &str, current_dir: &str, arguments: &str) {
         ),
         "ld" => {
             let all_elf_inputs = inputs.iter().all(|(_, bytes)| {
-                crate::toolchain::is_elf_object(bytes) || bytes.starts_with(b"!<arch>\\n")
+                crate::toolchain::is_elf_object(bytes) || bytes.starts_with(b"!<arch>\n")
             });
             if all_elf_inputs {
                 let objects = inputs

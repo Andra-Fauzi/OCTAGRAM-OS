@@ -105,6 +105,55 @@ def main():
         print(serial_text()[-4000:])
         return 1
 
+    # Exercise the first native userspace shell through the same VFS path
+    # that GNU Make will use as $(SHELL). This validates -c, fork/exec, pipes,
+    # output redirection, append redirection, and the shell's cat builtin.
+    shell_offset = len(serial_text())
+    send_line("run /bin/sh -c 'echo SH-NATIVE-PASS'")
+    if not wait_for_after("SH-NATIVE-PASS", shell_offset, 30):
+        print("SH-NATIVE-FAIL: /bin/sh -c did not execute its builtin")
+        print(serial_text()[-4000:])
+        return 1
+    if not wait_for_after("program exited with status 0", shell_offset, 30):
+        print("SH-NATIVE-FAIL: simple command returned nonzero")
+        print(serial_text()[-4000:])
+        return 1
+    if not wait_prompt(30):
+        print("SH-NATIVE-FAIL: kernel shell did not return")
+        return 1
+    print("SH-NATIVE-COMMAND-PASS")
+
+    shell_offset = len(serial_text())
+    send_line("run /bin/sh -c 'echo SH-PIPE-PASS | cat'")
+    if not wait_for_after("SH-PIPE-PASS", shell_offset, 30):
+        print("SH-PIPE-FAIL: pipeline did not pass stdin to cat")
+        print(serial_text()[-4000:])
+        return 1
+    if not wait_for_after("program exited with status 0", shell_offset, 30):
+        print("SH-PIPE-FAIL: pipeline returned nonzero")
+        print(serial_text()[-4000:])
+        return 1
+    if not wait_prompt(30):
+        print("SH-PIPE-FAIL: kernel shell did not return")
+        return 1
+    print("SH-PIPE-PASS")
+
+    shell_offset = len(serial_text())
+    send_line("run /bin/sh -c 'echo SH-REDIR-PASS > /tmp/sh-native-test; echo SH-APPEND-PASS >> /tmp/sh-native-test'")
+    if not wait_for_after("program exited with status 0", shell_offset, 30):
+        print("SH-REDIR-FAIL: redirection command returned nonzero")
+        print(serial_text()[-4000:])
+        return 1
+    if not wait_prompt(30):
+        print("SH-REDIR-FAIL: kernel shell did not return")
+        return 1
+    send_line("cat /tmp/sh-native-test")
+    if not wait_for_after("SH-REDIR-PASS", shell_offset, 30) or not wait_for_after("SH-APPEND-PASS", shell_offset, 30):
+        print("SH-REDIR-FAIL: output or append redirection was not persisted")
+        print(serial_text()[-4000:])
+        return 1
+    print("SH-REDIR-PASS")
+
     # Rust host bootstrap depends on these OS services. These binaries were
     # already part of the image, but compiling them on the host is not enough:
     # execute them in the guest and require their success markers and exit code.

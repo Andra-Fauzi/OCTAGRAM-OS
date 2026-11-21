@@ -1,6 +1,8 @@
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::{Cell, RefCell};
 
 use crate::fs::{DirectoryEntry, FileSystem, FsError, Metadata, NodeType, normalize_path};
 
@@ -115,11 +117,35 @@ impl LongName {
     }
 }
 
+/// A contiguous write-back window. Every FAT32 write used to be one block-device
+/// command per sector: a FAT entry update alone touched the FAT twice per copy,
+/// and file data was copied sector by sector. On a real disk (and even more so
+/// under emulation) that dominates every image build, so metadata edits stay in
+/// this window and sequential sectors are flushed as one multi-sector write.
+const CACHE_SECTORS: usize = 64;
+
+struct CachedRange {
+    start_lba: u64,
+    sectors: usize,
+    data: Box<[u8; SECTOR_SIZE * CACHE_SECTORS]>,
+    dirty: bool,
+}
+
 pub struct Fat32 {
     device: BlockDeviceRef,
     geometry: Geometry,
     next_free_cluster: u32,
     free_cluster_count: Option<u32>,
+    cache: RefCell<Option<CachedRange>>,
+    fsinfo_dirty: Cell<bool>,
+}
+
+impl Drop for Fat32 {
+    fn drop(&mut self) {
+        // A mounted filesystem must not lose its last cached sector when it is
+        // unmounted; the image builder re-mounts the partition to verify it.
+        let _ = self.flush();
+    }
 }
 
 impl Fat32 {
@@ -246,7 +272,44 @@ impl Fat32 {
             geometry,
             next_free_cluster,
             free_cluster_count,
+            cache: RefCell::new(None),
+            fsinfo_dirty: Cell::new(false),
         })
+    }
+
+    /// Write back the cached sector and any pending FSInfo update.
+    pub fn flush(&self) -> Result<(), FsError> {
+        self.flush_sector()?;
+        if self.fsinfo_dirty.replace(false) {
+            self.write_fsinfo_now()?;
+            self.flush_sector()?;
+        }
+        Ok(())
+    }
+
+    fn flush_sector(&self) -> Result<(), FsError> {
+        let Some(entry) = self.cache.borrow_mut().take() else {
+            return Ok(());
+        };
+        if !entry.dirty {
+            return Ok(());
+        }
+        let length = entry.sectors * SECTOR_SIZE;
+        let result = self
+            .geometry
+            .partition_start
+            .checked_add(entry.start_lba)
+            .ok_or(FsError::IoError)
+            .and_then(|absolute_lba| {
+                self.device
+                    .write_sectors(absolute_lba, &entry.data[..length])
+                    .map_err(|_| FsError::IoError)
+            });
+        if result.is_err() {
+            // Keep the dirty data so a retry can still persist it.
+            *self.cache.borrow_mut() = Some(entry);
+        }
+        result
     }
 
     fn read_sector(
@@ -257,28 +320,69 @@ impl Fat32 {
         if relative_lba >= self.geometry.partition_sectors {
             return Err(FsError::IoError);
         }
+        if let Some(entry) = self.cache.borrow().as_ref()
+            && relative_lba >= entry.start_lba
+            && relative_lba < entry.start_lba + entry.sectors as u64
+        {
+            let offset = (relative_lba - entry.start_lba) as usize * SECTOR_SIZE;
+            buffer.copy_from_slice(&entry.data[offset..offset + SECTOR_SIZE]);
+            return Ok(());
+        }
+        self.flush_sector()?;
         let absolute_lba = self
             .geometry
             .partition_start
             .checked_add(relative_lba)
             .ok_or(FsError::IoError)?;
+        let remaining = self.geometry.partition_sectors - relative_lba;
+        let sectors = remaining.min(CACHE_SECTORS as u64) as usize;
+        let mut data = Box::new([0u8; SECTOR_SIZE * CACHE_SECTORS]);
         self.device
-            .read_sectors(absolute_lba, buffer)
-            .map_err(|_| FsError::IoError)
+            .read_sectors(absolute_lba, &mut data[..sectors * SECTOR_SIZE])
+            .map_err(|_| FsError::IoError)?;
+        buffer.copy_from_slice(&data[..SECTOR_SIZE]);
+        *self.cache.borrow_mut() = Some(CachedRange {
+            start_lba: relative_lba,
+            sectors,
+            data,
+            dirty: false,
+        });
+        Ok(())
     }
 
     fn write_sector(&self, relative_lba: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), FsError> {
         if relative_lba >= self.geometry.partition_sectors {
             return Err(FsError::IoError);
         }
-        let absolute_lba = self
-            .geometry
-            .partition_start
-            .checked_add(relative_lba)
-            .ok_or(FsError::IoError)?;
-        self.device
-            .write_sectors(absolute_lba, buffer)
-            .map_err(|_| FsError::IoError)
+        {
+            let mut cache = self.cache.borrow_mut();
+            if let Some(entry) = cache.as_mut() {
+                let end = entry.start_lba + entry.sectors as u64;
+                if relative_lba >= entry.start_lba && relative_lba < end {
+                    let offset = (relative_lba - entry.start_lba) as usize * SECTOR_SIZE;
+                    entry.data[offset..offset + SECTOR_SIZE].copy_from_slice(buffer);
+                    entry.dirty = true;
+                    return Ok(());
+                }
+                if relative_lba == end && entry.sectors < CACHE_SECTORS {
+                    let offset = entry.sectors * SECTOR_SIZE;
+                    entry.data[offset..offset + SECTOR_SIZE].copy_from_slice(buffer);
+                    entry.sectors += 1;
+                    entry.dirty = true;
+                    return Ok(());
+                }
+            }
+        }
+        self.flush_sector()?;
+        let mut data = Box::new([0u8; SECTOR_SIZE * CACHE_SECTORS]);
+        data[..SECTOR_SIZE].copy_from_slice(buffer);
+        *self.cache.borrow_mut() = Some(CachedRange {
+            start_lba: relative_lba,
+            sectors: 1,
+            data,
+            dirty: true,
+        });
+        Ok(())
     }
 
     fn fat_entry(&self, cluster: u32) -> Result<u32, FsError> {
@@ -346,7 +450,16 @@ impl Fat32 {
         Ok(())
     }
 
+    /// FSInfo only carries hints, so it is written with the next flush instead
+    /// of once per allocated cluster.
     fn write_fsinfo(&self) -> Result<(), FsError> {
+        if self.geometry.fsinfo_sector.is_some() {
+            self.fsinfo_dirty.set(true);
+        }
+        Ok(())
+    }
+
+    fn write_fsinfo_now(&self) -> Result<(), FsError> {
         let Some(sector_lba) = self.geometry.fsinfo_sector else {
             return Ok(());
         };
@@ -923,6 +1036,7 @@ impl FileSystem for Fat32 {
             self.rollback_new_clusters(existing_last, &new_clusters)?;
             return Err(error);
         }
+        self.flush()?;
         Ok(data.len())
     }
 
@@ -982,7 +1096,7 @@ impl FileSystem for Fat32 {
                 self.rollback_new_clusters(existing_last, &new_clusters)?;
                 return Err(error);
             }
-            return Ok(());
+            return self.flush();
         }
 
         let first_cluster = if required_clusters == 0 {
@@ -998,12 +1112,14 @@ impl FileSystem for Fat32 {
             }
             self.release_clusters(&tail)?;
         }
-        Ok(())
+        self.flush()
     }
 
     fn create_file(&mut self, path: &str) -> Result<(), FsError> {
         let (parent_cluster, name) = self.parent_directory(path)?;
-        self.insert_entry(parent_cluster, &name, 0x20, 0, 0)
+        let result = self.insert_entry(parent_cluster, &name, 0x20, 0, 0);
+        self.flush()?;
+        result
     }
 
     fn create_dir(&mut self, path: &str) -> Result<(), FsError> {
@@ -1043,14 +1159,16 @@ impl FileSystem for Fat32 {
             self.release_clusters(&[cluster])?;
             return Err(error);
         }
-        match self.insert_entry(parent_cluster, &name, 0x10, cluster, 0) {
+        let result = match self.insert_entry(parent_cluster, &name, 0x10, cluster, 0) {
             Ok(()) => Ok(()),
             Err(error @ (FsError::AlreadyExists | FsError::NoSpace)) => {
                 self.release_clusters(&[cluster])?;
                 Err(error)
             }
             Err(error) => Err(error),
-        }
+        };
+        self.flush()?;
+        result
     }
 
     fn remove(&mut self, path: &str) -> Result<(), FsError> {
@@ -1076,7 +1194,7 @@ impl FileSystem for Fat32 {
             let chain = self.cluster_chain(record.first_cluster)?;
             self.release_clusters(&chain)?;
         }
-        Ok(())
+        self.flush()
     }
 
     fn read_dir(&self, path: &str) -> Result<Vec<DirectoryEntry>, FsError> {

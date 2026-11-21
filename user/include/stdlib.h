@@ -26,6 +26,7 @@ long strtol(const char *text, char **end, int base);
 unsigned long long strtoull(const char *text, char **end, int base);
 long long strtoll(const char *text, char **end, int base);
 double strtod(const char *text, char **end);
+double atof(const char *text);
 float strtof(const char *text, char **end);
 long double strtold(const char *text, char **end);
 char *getenv(const char *name);

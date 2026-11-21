@@ -350,6 +350,28 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
+    # The native bootstrap Make can emit a machine-readable build graph
+    # report. Verify both file creation and the persisted target/dependency
+    # status by reading it back through the guest shell.
+    output_offset = len(serial_text())
+    send_line("make -C /share/octagram --manifest /share/octagram/native-build.manifest")
+    if not wait_for_after("program exited with status 0", output_offset, 60):
+        print("MAKE-MANIFEST-FAIL: native Make could not write its build manifest")
+        print(serial_text()[-6000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("cat /share/octagram/native-build.manifest")
+    if not wait_for_after("hello.elf\\tup-to-date", output_offset, 30):
+        print("MAKE-MANIFEST-FAIL: manifest omitted the up-to-date executable record")
+        print(serial_text()[-6000:])
+        return 1
+    manifest_output = serial_text()[output_offset:]
+    if "OCTAGRAM-BUILD-MANIFEST\\t1" not in manifest_output or "hello.o libmessage.a" not in manifest_output:
+        print("MAKE-MANIFEST-FAIL: manifest header or dependency graph is incomplete")
+        print(manifest_output[-6000:])
+        return 1
+
     # Run the upstream GNU Make 4.4.1 binary, separately from the small
     # bootstrap make currently installed at /bin/make.
     output_offset = len(serial_text())

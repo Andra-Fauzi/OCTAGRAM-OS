@@ -41,6 +41,7 @@ int clock_gettime(clockid_t clock_id, struct timespec *time_value);
 int clock_getres(clockid_t clock_id, struct timespec *resolution);
 struct tm *gmtime(const time_t *time_value);
 struct tm *localtime(const time_t *time_value);
+char *ctime(const time_t *time_value);
 struct tm *gmtime_r(const time_t *time_value, struct tm *result);
 struct tm *localtime_r(const time_t *time_value, struct tm *result);
 int nanosleep(const struct timespec *request, struct timespec *remaining);

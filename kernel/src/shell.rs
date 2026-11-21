@@ -2064,11 +2064,71 @@ fn run_selfupdate_command(arguments: &str) {
             }
         }
         _ => {
-            crate::println!("usage: selfupdate [status|init]");
-            crate::println!(
-                "Policy: install into the inactive slot, verify, then switch; failed boots roll back."
-            );
+            let mut parts = arguments.split_whitespace();
+            match (parts.next(), parts.next(), parts.next()) {
+                (Some("selection"), Some(slot), None) => run_selfupdate_selection(slot),
+                _ => {
+                    crate::println!("usage: selfupdate [status|init|selection <a|b>]");
+                    crate::println!(
+                        "Policy: install into the inactive slot, verify, then switch; failed boots roll back."
+                    );
+                }
+            }
         }
+    }
+}
+
+/// Point the bootloader at `slot` by rewriting the Limine configuration on the
+/// EFI system partition of the disk that holds the persistent root.
+fn run_selfupdate_selection(slot: &str) {
+    let index = match slot {
+        "a" | "A" => 1u8,
+        "b" | "B" => 2u8,
+        _ => {
+            crate::println!("usage: selfupdate selection <a|b>");
+            return;
+        }
+    };
+    let Some(disk_name) = crate::fs::persistent_root_device() else {
+        crate::println!("selfupdate: no persistent root; cannot locate the boot disk");
+        return;
+    };
+    let Some(disk) = block::get(&disk_name) else {
+        crate::println!("selfupdate: boot disk `{disk_name}` is not available");
+        return;
+    };
+    let partitions = match partition::read_gpt_partitions(disk.as_ref()) {
+        Ok(partitions) => partitions,
+        Err(error) => {
+            crate::println!("selfupdate: cannot read the partition table: {error:?}");
+            return;
+        }
+    };
+    let Some(esp) = partitions
+        .iter()
+        .find(|part| part.type_guid == partition::EFI_SYSTEM_PARTITION_GUID)
+    else {
+        crate::println!("selfupdate: no EFI system partition on {disk_name}");
+        return;
+    };
+    let device: BlockDeviceRef = match PartitionDevice::new(
+        disk.clone(),
+        format!("{disk_name}p{}", esp.index),
+        esp.first_lba,
+        esp.sector_count(),
+    ) {
+        Ok(device) => Arc::new(device),
+        Err(error) => {
+            crate::println!("selfupdate: {error:?}");
+            return;
+        }
+    };
+    match crate::image_builder::update_boot_selection(device, index) {
+        Ok(()) => crate::println!(
+            "selfupdate: next boot uses slot {} (journal unchanged)",
+            if index == 2 { "B" } else { "A" }
+        ),
+        Err(error) => crate::println!("selfupdate: {error:?}"),
     }
 }
 

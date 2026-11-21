@@ -388,6 +388,35 @@ pub struct AbImageReport {
     pub manifest_sha256: String,
 }
 
+/// Limine configuration for the two slots. `slot` picks the entry the
+/// bootloader boots by default (1 = A, 2 = B); every entry tells the kernel
+/// which root to mount through `octagram.slot=`.
+pub fn render_ab_boot_config(slot: u8) -> String {
+    let default_entry = if slot == 2 { 2 } else { 1 };
+    format!(
+        "timeout: 3\ndefault_entry: {default_entry}\n\n\
+         /OCTAGRAM Slot A\n    protocol: limine\n    kernel_path: boot():/boot/slots/a/kernel\n    \
+         module_path: boot():/EFI/BOOT/BOOTX64.EFI\n    cmdline: octagram.slot=a\n\n\
+         /OCTAGRAM Slot B\n    protocol: limine\n    kernel_path: boot():/boot/slots/b/kernel\n    \
+         module_path: boot():/EFI/BOOT/BOOTX64.EFI\n    cmdline: octagram.slot=b\n"
+    )
+}
+
+/// Point the bootloader at `slot` by rewriting the configuration on the ESP.
+/// The image builder seeds the journal; this keeps the boot selection that
+/// accompanies a slot switch in the same place.
+pub fn update_boot_selection(esp: BlockDeviceRef, slot: u8) -> Result<(), ImageError> {
+    const CONFIG_PATH: &str = "/boot/limine/limine.conf";
+    let mut efi = Fat32::mount(esp)?;
+    match efi.create_file(CONFIG_PATH) {
+        Ok(()) | Err(FsError::AlreadyExists) => {}
+        Err(error) => return Err(error.into()),
+    }
+    efi.truncate(CONFIG_PATH, 0)?;
+    efi.write(CONFIG_PATH, 0, render_ab_boot_config(slot).as_bytes())?;
+    Ok(())
+}
+
 /// Build an A/B image: one ESP with a kernel copy per slot, plus two equal EXT2
 /// root partitions.
 ///
@@ -457,9 +486,7 @@ pub fn build_ab_image(
         }
     }
 
-    let boot_config = format!(
-        "timeout: 3\n\n/OCTAGRAM Slot A\n    protocol: limine\n    kernel_path: boot():/boot/slots/a/kernel\n    module_path: boot():/EFI/BOOT/BOOTX64.EFI\n\n/OCTAGRAM Slot B\n    protocol: limine\n    kernel_path: boot():/boot/slots/b/kernel\n    module_path: boot():/EFI/BOOT/BOOTX64.EFI\n"
-    );
+    let boot_config = render_ab_boot_config(1);
     let kernel_sha256 = sha256::digest_hex(kernel);
     let bootloader_sha256 = sha256::digest_hex(bootloader);
     let manifest = format!(
@@ -617,6 +644,20 @@ fn same_partition(left: &partition::GptPartition, right: &partition::GptPartitio
 mod tests {
     use super::{ImageAssets, ImageError, build_image};
     use crate::fs::FileSystem;
+
+    #[test]
+    fn boot_config_selects_the_requested_slot() {
+        let slot_a = super::render_ab_boot_config(1);
+        let slot_b = super::render_ab_boot_config(2);
+        assert!(slot_a.contains("default_entry: 1"));
+        assert!(slot_b.contains("default_entry: 2"));
+        for config in [&slot_a, &slot_b] {
+            assert!(config.contains("cmdline: octagram.slot=a"));
+            assert!(config.contains("cmdline: octagram.slot=b"));
+            assert!(config.contains("kernel_path: boot():/boot/slots/a/kernel"));
+            assert!(config.contains("kernel_path: boot():/boot/slots/b/kernel"));
+        }
+    }
     use crate::sha256;
     use crate::storage::{
         block::{BlockDevice, BlockError, SECTOR_SIZE},

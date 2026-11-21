@@ -1225,7 +1225,24 @@ Status: host test `builds_an_ab_image_with_both_root_slots` (image builder) dan
 QEMU: bangun image A/B pada disk SATA di guest, boot image itu lewat UEFI/OVMF,
 root persisten dipilih dari `sata0p2`, lalu `selfupdate status` melaporkan
 `active=A ... A: known-good B: empty (unverified)` dari journal yang di-seed
-image builder. Uji guest QEMU (21 November 2026, disk target 256 MiB di
+image builder.
+
+Pemilihan slot juga sudah diimplementasikan (21 November 2026):
+
+- `render_ab_boot_config(slot)` menghasilkan `default_entry` (1 = A, 2 = B) dan
+  setiap entri meneruskan `cmdline: octagram.slot=a|b`; `build_ab_image` memakai
+  slot A sebagai default.
+- Kernel membaca cmdline executable dari Limine (`ExecutableCmdlineRequest`),
+  lalu `discover_persistent_root` memilih partisi root yang penanda
+  `/etc/octagram-root`-nya cocok dengan slot yang diminta (fallback ke root
+  pertama bila tidak ada yang cocok, dengan pesan peringatan).
+- `selfupdate selection <a|b>` menulis ulang `/boot/limine/limine.conf` pada ESP
+  disk boot (`image_builder::update_boot_selection`), tanpa mengubah journal.
+- Uji QEMU memverifikasi rantainya: setelah `selection b`, boot ulang memakai
+  kernel slot B dan log menunjukkan root dipilih dari `sata0p3`.
+
+Yang **belum**: pemilihan otomatis dari journal (switch saat ini masih perintah
+manual), penanda boot sukses, uji mati listrik, dan bootstrap berulang. Uji guest QEMU (21 November 2026, disk target 256 MiB di
 `/dev/shm`) menjalankan `mkimage sata0 MKIMAGE-ERASE ab`; hasil di disk sudah
 diperiksa dari host: GPT berisi tiga entri (ESP 80 MiB di LBA 2048, root A dan
 root B masing-masing 178176 sektor), kedua superblok EXT2 valid (`0xef53`, 8192

@@ -675,6 +675,14 @@ pub fn persistent_root_device() -> Option<String> {
 /// USB devices are excluded so the Live installer flash drive can never become
 /// the installed root by accident.
 fn discover_persistent_root() -> Option<(String, Box<dyn FileSystem>)> {
+    let requested_slot = crate::boot_slot();
+    if let Some(slot) = requested_slot {
+        crate::println!(
+            "[rootfs] bootloader requested slot {}",
+            if slot == 2 { "B" } else { "A" }
+        );
+    }
+    let mut fallback: Option<(String, String, Box<dyn FileSystem>)> = None;
     for info in block::list() {
         if !info.name.starts_with("sata") {
             continue;
@@ -699,20 +707,26 @@ fn discover_persistent_root() -> Option<(String, Box<dyn FileSystem>)> {
                 };
                 let partition_ref = Arc::new(partition_device);
                 if let Ok(filesystem) = Ext2::mount(partition_ref.clone())
-                    && filesystem.metadata("/etc/octagram-root").is_ok()
+                    && let Some(root) = consider_root(
+                        Box::new(filesystem),
+                        &info.name,
+                        &part_name,
+                        requested_slot,
+                        &mut fallback,
+                    )
                 {
-                    crate::println!("[rootfs] persistent EXT2 root selected from {part_name}");
-                    let root_name = info.name.clone();
-                    let _ = PERSISTENT_ROOT_DEVICE.call_once(|| root_name);
-                    return Some((info.name, Box::new(filesystem)));
+                    return Some(root);
                 }
                 if let Ok(filesystem) = Fat32::mount(partition_ref)
-                    && filesystem.metadata("/etc/octagram-root").is_ok()
+                    && let Some(root) = consider_root(
+                        Box::new(filesystem),
+                        &info.name,
+                        &part_name,
+                        requested_slot,
+                        &mut fallback,
+                    )
                 {
-                    crate::println!("[rootfs] persistent FAT32 root selected from {part_name}");
-                    let root_name = info.name.clone();
-                    let _ = PERSISTENT_ROOT_DEVICE.call_once(|| root_name);
-                    return Some((info.name, Box::new(filesystem)));
+                    return Some(root);
                 }
             }
             continue;
@@ -735,6 +749,61 @@ fn discover_persistent_root() -> Option<(String, Box<dyn FileSystem>)> {
             let _ = PERSISTENT_ROOT_DEVICE.call_once(|| root_name);
             return Some((info.name, Box::new(filesystem)));
         }
+    }
+    if let Some((disk_name, part_name, filesystem)) = fallback {
+        crate::println!(
+            "[rootfs] persistent {} root selected from {part_name} (requested slot unavailable)",
+            filesystem.name().to_uppercase()
+        );
+        let _ = PERSISTENT_ROOT_DEVICE.call_once(|| disk_name.clone());
+        return Some((disk_name, filesystem));
+    }
+    None
+}
+
+/// Accept a mounted root only when it is the slot the bootloader asked for;
+/// otherwise remember it as a fallback for images without slot cmdlines.
+fn consider_root(
+    filesystem: Box<dyn FileSystem>,
+    disk_name: &str,
+    part_name: &str,
+    requested_slot: Option<u8>,
+    fallback: &mut Option<(String, String, Box<dyn FileSystem>)>,
+) -> Option<(String, Box<dyn FileSystem>)> {
+    if filesystem.metadata("/etc/octagram-root").is_err() {
+        return None;
+    }
+    if let Some(want) = requested_slot
+        && read_slot_marker(filesystem.as_ref()) != Some(want)
+    {
+        if fallback.is_none() {
+            *fallback = Some((
+                String::from(disk_name),
+                String::from(part_name),
+                filesystem,
+            ));
+        }
+        return None;
+    }
+    crate::println!(
+        "[rootfs] persistent {} root selected from {part_name}",
+        filesystem.name().to_uppercase()
+    );
+    let _ = PERSISTENT_ROOT_DEVICE.call_once(|| String::from(disk_name));
+    Some((String::from(disk_name), filesystem))
+}
+
+/// The marker is a small multi-line file ("OCTAGRAM-OS persistent root v1",
+/// filesystem and slot lines), so look for the slot line anywhere in it.
+fn read_slot_marker(filesystem: &dyn FileSystem) -> Option<u8> {
+    let mut buffer = [0u8; 192];
+    let read = filesystem.read("/etc/octagram-root", 0, &mut buffer).ok()?;
+    let content = &buffer[..read];
+    if content.windows(6).any(|window| window == b"slot=A") {
+        return Some(1);
+    }
+    if content.windows(6).any(|window| window == b"slot=B") {
+        return Some(2);
     }
     None
 }

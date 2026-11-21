@@ -173,6 +173,44 @@ def boot_image(sessionExtra, serial, monitor):
         stop(session.process)
 
 
+def select_slot(sessionExtra, serial, monitor):
+    session = Session(serial, monitor)
+    session.process = start_qemu(serial, monitor, sessionExtra)
+    try:
+        if not session.wait_for("octagram:/ $", 0, BOOT_TIMEOUT):
+            print("SELECT-FAIL: no shell to run the selection command")
+            return False
+        offset = len(session.text())
+        session.send_line("selfupdate selection b")
+        if not session.wait_for("next boot uses slot B", offset, 90):
+            print("SELECT-FAIL: the boot selection was not rewritten")
+            print("\n".join(session.text()[offset:].splitlines()[-20:]))
+            return False
+        print("BOOT-SELECTION-B-PASS", flush=True)
+        return True
+    finally:
+        stop(session.process)
+
+
+def boot_selected_slot(sessionExtra, serial, monitor):
+    session = Session(serial, monitor)
+    session.process = start_qemu(serial, monitor, sessionExtra)
+    try:
+        if not session.wait_for("octagram:/ $", 0, BOOT_TIMEOUT):
+            print("BOOT-B-FAIL: the selected slot did not reach a shell")
+            print("\n".join(session.text().splitlines()[-40:]))
+            return False
+        output = session.text()
+        if "persistent EXT2 root selected from sata0p3" not in output:
+            print("BOOT-B-FAIL: the kernel did not mount slot B root (sata0p3)")
+            print("\n".join(output.splitlines()[-40:]))
+            return False
+        print("BOOT-SLOT-B-ROOT-PASS", flush=True)
+        return True
+    finally:
+        stop(session.process)
+
+
 def main():
     if not os.path.exists(ISO):
         print("SKIP: %s not found (run `make all RUST_PROFILE=release` first)" % ISO)
@@ -212,8 +250,12 @@ def main():
         ]
         if not boot_image(firmware + disk_args, serial, monitor):
             return 1
+        if not select_slot(firmware + disk_args, serial, monitor):
+            return 1
+        if not boot_selected_slot(firmware + disk_args, serial, monitor):
+            return 1
 
-    print("=== A/B IMAGE BUILD AND BOOT PASS ===", flush=True)
+    print("=== A/B IMAGE BUILD, BOOT, AND SLOT SELECTION PASS ===", flush=True)
     return 0
 
 

@@ -325,8 +325,11 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     `mkimage sataN MKIMAGE-ERASE ab`)
   - [x] Image A/B hasil `mkimage ... ab` di-boot di QEMU/UEFI: kernel memilih
     root EXT2 persisten `sata0p2` dan journal melaporkan slot A `known-good`
-  - [ ] Pemilihan slot oleh bootloader dari journal, penanda boot sukses, uji
-    mati listrik, dan bootstrap berulang
+  - [x] Pemilihan entri boot: `default_entry` plus `cmdline: octagram.slot=`
+    per entri, kernel memasang root sesuai slot, dan `selfupdate selection
+    <a|b>` menulis ulang config di ESP (QEMU: boot ulang memakai root slot B)
+  - [ ] Pemilihan otomatis dari journal, penanda boot sukses, uji mati listrik,
+    dan bootstrap berulang
 
 Status awal pada branch roadmap: fondasi userspace, TinyCC, toolchain mini,
 Rust `no_std`, ELF loader, dan installer persisten sudah ada. Tidak ada milestone

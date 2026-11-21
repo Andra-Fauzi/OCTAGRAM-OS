@@ -5,7 +5,7 @@ use core::arch::asm;
 
 use limine::BaseRevision;
 use limine::request::{
-    ExecutableFileRequest, RequestsEndMarker, RequestsStartMarker,
+    ExecutableCmdlineRequest, ExecutableFileRequest, RequestsEndMarker, RequestsStartMarker,
     StackSizeRequest,
 };
 
@@ -25,6 +25,28 @@ static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(
 #[used]
 #[unsafe(link_section = ".requests")]
 pub static EXECUTABLE_FILE_REQUEST: ExecutableFileRequest = ExecutableFileRequest::new();
+
+/// Cmdline of the bootloader entry that loaded this kernel. The A/B image sets
+/// `octagram.slot=a` or `octagram.slot=b` so the kernel mounts the matching
+/// root partition instead of always taking the first one on the disk.
+#[used]
+#[unsafe(link_section = ".requests")]
+static EXECUTABLE_CMDLINE_REQUEST: ExecutableCmdlineRequest = ExecutableCmdlineRequest::new();
+
+/// Slot requested by the bootloader entry, as 1 = A and 2 = B.
+pub fn boot_slot() -> Option<u8> {
+    let response = EXECUTABLE_CMDLINE_REQUEST.get_response()?;
+    for token in response.cmdline().to_bytes().split(|byte| *byte == b' ') {
+        if let Some(value) = token.strip_prefix(b"octagram.slot=") {
+            return match value {
+                b"a" | b"A" => Some(1),
+                b"b" | b"B" => Some(2),
+                _ => None,
+            };
+        }
+    }
+    None
+}
 
 /// Define the stand and end markers for Limine requests.
 #[used]

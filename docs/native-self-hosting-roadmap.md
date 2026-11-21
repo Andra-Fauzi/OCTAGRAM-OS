@@ -942,3 +942,30 @@ CI sebagai lulus.
 4. Setelah test matrix GNU Make stabil, lanjutkan build orchestrator/manifest
    native dan audit dependency bootstrap rustc. Rust runtime yang berjalan
    sebagai ELF native tetap bukan bukti bahwa `rustc` atau Cargo sudah native.
+
+## 14. M3.2 — GNU Make guest semantics diperluas (21 November 2026)
+
+Validasi sebelumnya pada commit `6c5ab65006ae926a3c2a123779be6df98786c774`
+berhasil seluruhnya: host build, kernel/libc tests, ISO, QEMU TinyCC/GNU Make,
+dan QEMU syscall compatibility. GitHub Actions
+[run 44894990743](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44894990743)
+berstatus **success**.
+
+Pada commit `3b586ec91b91435ea9c883f684d77f93a6af75a3`, guest test GNU Make
+4.4.1 diperluas untuk menguji langsung binary upstream `/usr/bin/gmake`:
+
+- [ ] automatic variables `$@`, `$<`, `$?`, `$|` melalui dry-run;
+- [ ] `.PHONY` tetap menjalankan recipe pada dua pemanggilan;
+- [ ] order-only prerequisite yang lebih baru tidak memaksa rebuild target;
+- [ ] default target kedua kali tidak menjalankan recipe ketika output up-to-date;
+- [ ] seluruh tes lama tetap: versi, parser/dry-run, `-B`, TinyCC recipe, dan eksekusi ELF.
+
+Item di atas **baru ditambahkan sebagai pengujian** dan belum boleh ditandai
+QEMU-tested sebelum workflow pada commit tersebut selesai. Test ini memakai
+fixture `/share/octagram` yang sama dan timestamp EXT2 dengan resolusi satu
+detik; jeda eksplisit dipertahankan sebelum menyegarkan prerequisite.
+
+Setelah matrix GNU Make ini stabil, langkah selanjutnya bukan langsung
+mengklaim GNU Make penuh, melainkan menambahkan manifest build deterministik
+dan dependency graph untuk native build orchestrator. M4 tetap memerlukan
+jalur compiler Rust native yang terpisah.

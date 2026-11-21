@@ -80,7 +80,7 @@ fn run(argc: i32, argv: *const *const u8) -> Result<i32, String> {
             "--help" | "-h" => {
                 write_all(
                     STDOUT,
-                    b"usage: make [-B] [-n] [-s] [-p] [-j1] [-C directory] [-f file] [NAME=value] [target...]\n\
+                    b"usage: make [-B] [-n] [-s] [-p] [-j1] [-C directory] [-f file] [--manifest file] [NAME=value] [target...]\n\
 -p/--print-database prints variables and rules without building.\n\
 Supported Makefile features: includes, explicit dependencies, single-stem pattern rules, \n\
 variables, $@/$</$^/$*, .PHONY, and timestamp-based incremental rebuilds.\n\
@@ -674,14 +674,14 @@ fn write_build_manifest(path: &str, records: &[BuildRecord]) -> Result<(), Strin
     let descriptor = open(&path, O_WRONLY | O_CREAT | O_TRUNC)
         .map_err(|error| format!("cannot create build manifest ({error})"))?;
     let mut output = String::from(
-        "OCTAGRAM-BUILD-MANIFEST\\t1\\n# target\\tstatus\\tmtime_unix\\tdependencies\\n",
+        "OCTAGRAM-BUILD-MANIFEST\t1\n# target\tstatus\tmtime_unix\tdependencies\n",
     );
     for record in records {
         let modified = record.modified_seconds
             .map(|value| value.to_string())
             .unwrap_or_else(|| String::from("unknown"));
         output.push_str(&format!(
-            "{}\\t{}\\t{}\\t{}\\n",
+            "{}\t{}\t{}\t{}\n",
             record.target, record.status, modified, record.dependencies
         ));
     }

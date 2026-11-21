@@ -371,6 +371,17 @@ def main():
         print("MAKE-MANIFEST-FAIL: manifest header or dependency graph is incomplete")
         print(manifest_output[-6000:])
         return 1
+    manifest_lines = manifest_output.splitlines()
+    if "# target\tstatus\tmtime_unix\tsize_bytes\tdependencies" not in manifest_lines:
+        print("MAKE-MANIFEST-FAIL: manifest is missing its size column")
+        print(manifest_output[-6000:])
+        return 1
+    hello_record = next((line.split("\t") for line in manifest_lines if line.startswith("hello.elf\t")), None)
+    if hello_record is None or len(hello_record) != 5 or not hello_record[3].isdigit() or hello_record[4] != "hello.o libmessage.a":
+        print("MAKE-MANIFEST-FAIL: executable size/dependency record is malformed")
+        print(manifest_output[-6000:])
+        return 1
+    print("MAKE-MANIFEST-OCTAGRAM-PASS: target status, mtime, size, and dependency graph verified")
 
     # Run the upstream GNU Make 4.4.1 binary, separately from the small
     # bootstrap make currently installed at /bin/make.

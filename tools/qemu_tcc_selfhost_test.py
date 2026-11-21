@@ -366,10 +366,12 @@ def main():
     # The bootstrap make tests above already produced all outputs. Advance
     # the source timestamps so upstream GNU Make has real work to plan instead
     # of correctly reporting that the default target is already up to date.
+    # `touch` is a shell builtin, so success is signalled by the next prompt,
+    # not by the external-program exit-status message.
     for source in ("hello.c", "message.c"):
         output_offset = len(serial_text())
         send_line("touch /share/octagram/%s" % source)
-        if not wait_for_after("program exited with status 0", output_offset, 30):
+        if not wait_for_after("octagram:/ $", output_offset, 30):
             print("GNU-MAKE-SETUP-FAIL: could not refresh %s before dry-run" % source)
             print(serial_text()[-6000:])
             return 1

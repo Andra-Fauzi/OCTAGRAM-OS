@@ -4938,7 +4938,7 @@ char *getlogin(void)
     return login;
 }
 
-int getloadavg(double load[3], int count)
+int getloadavg(double load[], int count)
 {
     if (load == NULL || count < 0 || count > 3) {
         errno = count < 0 ? EINVAL : EFAULT;

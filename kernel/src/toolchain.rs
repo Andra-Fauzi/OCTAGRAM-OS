@@ -2547,6 +2547,226 @@ pub fn is_elf_object(bytes: &[u8]) -> bool {
     bytes.len() >= ELF_HEADER_SIZE && bytes.get(..4) == Some(b"\x7fELF".as_slice())
 }
 
+
+const MAX_ARCHIVE_MEMBERS: usize = 256;
+const AR_GLOBAL_MAGIC: &[u8; 8] = b"!<arch>\n";
+
+/// Link ELF objects and standard Unix ar archives. Archive members are selected
+/// lazily: only members defining currently unresolved strong symbols are added.
+pub fn link_elf_inputs(inputs: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
+    if inputs.is_empty() || inputs.len() > MAX_ELF_LINKED_OBJECTS {
+        return Err(ToolchainError::InvalidElfObject);
+    }
+    let mut selected: Vec<Vec<u8>> = Vec::new();
+    let mut archives: Vec<Vec<Vec<u8>>> = Vec::new();
+    for input in inputs {
+        if is_elf_object(input) {
+            selected.push(input.to_vec());
+        } else if input.starts_with(AR_GLOBAL_MAGIC) {
+            archives.push(parse_ar_archive(input)?);
+        } else {
+            return Err(ToolchainError::InvalidElfObject);
+        }
+    }
+    if selected.len() > MAX_ELF_LINKED_OBJECTS {
+        return Err(ToolchainError::InvalidElfObject);
+    }
+
+    let mut defined = alloc::collections::BTreeSet::<Vec<u8>>::new();
+    let mut unresolved = alloc::collections::BTreeSet::<Vec<u8>>::new();
+    for object in &selected {
+        let (definitions, references) = elf_global_symbols(object)?;
+        for name in definitions {
+            defined.insert(name);
+        }
+        for name in references {
+            if !defined.contains(&name) {
+                unresolved.insert(name);
+            }
+        }
+        unresolved.retain(|name| !defined.contains(name));
+    }
+
+    for archive in archives {
+        let mut included = alloc::vec![false; archive.len()];
+        loop {
+            let mut changed = false;
+            for (index, member) in archive.iter().enumerate() {
+                if included[index] {
+                    continue;
+                }
+                let (definitions, references) = elf_global_symbols(member)?;
+                if !definitions.iter().any(|name| unresolved.contains(name)) {
+                    continue;
+                }
+                if selected.len() >= MAX_ELF_LINKED_OBJECTS {
+                    return Err(ToolchainError::InvalidElfObject);
+                }
+                for name in definitions {
+                    defined.insert(name);
+                }
+                unresolved.retain(|name| !defined.contains(name));
+                for name in references {
+                    if !defined.contains(&name) {
+                        unresolved.insert(name);
+                    }
+                }
+                unresolved.retain(|name| !defined.contains(name));
+                selected.push(member.clone());
+                included[index] = true;
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+    let objects = selected.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    link_elf_objects(&objects)
+}
+
+fn parse_ar_archive(bytes: &[u8]) -> Result<Vec<Vec<u8>>, ToolchainError> {
+    if bytes.len() < AR_GLOBAL_MAGIC.len() || !bytes.starts_with(AR_GLOBAL_MAGIC) {
+        return Err(ToolchainError::InvalidElfObject);
+    }
+    let mut offset = AR_GLOBAL_MAGIC.len();
+    let mut long_names: Option<&[u8]> = None;
+    let mut members = Vec::new();
+    while offset < bytes.len() {
+        let header_end = offset.checked_add(60).ok_or(ToolchainError::OutOfBounds)?;
+        let header = bytes.get(offset..header_end).ok_or(ToolchainError::InvalidElfObject)?;
+        if header[58] != 0x60 || header[59] != b'\n' {
+            return Err(ToolchainError::InvalidElfObject);
+        }
+        let size_text = core::str::from_utf8(&header[48..58])
+            .map_err(|_| ToolchainError::InvalidElfObject)?.trim();
+        let size = usize::from_str_radix(size_text, 8)
+            .map_err(|_| ToolchainError::InvalidElfObject)?;
+        let data_start = header_end;
+        let data_end = data_start.checked_add(size).ok_or(ToolchainError::OutOfBounds)?;
+        let data = bytes.get(data_start..data_end).ok_or(ToolchainError::InvalidElfObject)?;
+        let name = core::str::from_utf8(&header[..16])
+            .map_err(|_| ToolchainError::InvalidElfObject)?.trim();
+
+        if name == "//" {
+            long_names = Some(data);
+        } else if name != "/" && name != "/SYM64/" && !name.is_empty() {
+            let object = if let Some(length) = name.strip_prefix("#1/") {
+                let name_length = length.parse::<usize>().map_err(|_| ToolchainError::InvalidElfObject)?;
+                data.get(name_length..).ok_or(ToolchainError::InvalidElfObject)?
+            } else if let Some(position) = name.strip_prefix('/') {
+                if !position.is_empty() && position.bytes().all(|byte| byte.is_ascii_digit()) {
+                    let name_offset = position.parse::<usize>().map_err(|_| ToolchainError::InvalidElfObject)?;
+                    let table = long_names.ok_or(ToolchainError::InvalidElfObject)?;
+                    let tail = table.get(name_offset..).ok_or(ToolchainError::InvalidElfObject)?;
+                    let _name_end = tail.windows(2).position(|pair| pair == b"/\n")
+                        .or_else(|| tail.iter().position(|byte| *byte == 0))
+                        .ok_or(ToolchainError::InvalidElfObject)?;
+                    data
+                } else {
+                    data
+                }
+            } else {
+                data
+            };
+            if !is_elf_object(object) || object.get(4) != Some(&2)
+                || object.get(5) != Some(&1) || elf_u16(object, 16)? != ELF_ET_REL
+            {
+                return Err(ToolchainError::InvalidElfObject);
+            }
+            members.push(object.to_vec());
+            if members.len() > MAX_ARCHIVE_MEMBERS {
+                return Err(ToolchainError::InvalidElfObject);
+            }
+        }
+        offset = data_end;
+        if offset & 1 != 0 {
+            offset = offset.checked_add(1).ok_or(ToolchainError::OutOfBounds)?;
+        }
+    }
+    if members.is_empty() {
+        return Err(ToolchainError::InvalidElfObject);
+    }
+    Ok(members)
+}
+
+fn elf_global_symbols(object: &[u8]) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), ToolchainError> {
+    if object.len() > MAX_ELF_OBJECT_SIZE || !is_elf_object(object)
+        || object.get(4) != Some(&2) || object.get(5) != Some(&1)
+        || elf_u16(object, 16)? != ELF_ET_REL || elf_u16(object, 18)? != ELF_EM_X86_64
+    {
+        return Err(ToolchainError::InvalidElfObject);
+    }
+    let section_offset = usize::try_from(elf_u64(object, 40)?)
+        .map_err(|_| ToolchainError::InvalidElfObject)?;
+    let entry_size = elf_u16(object, 58)? as usize;
+    let section_count = elf_u16(object, 60)? as usize;
+    if entry_size != ELF_HEADER_SIZE || section_count == 0 || section_count > 96 {
+        return Err(ToolchainError::InvalidElfObject);
+    }
+    let table_end = section_offset.checked_add(section_count.checked_mul(entry_size)
+        .ok_or(ToolchainError::OutOfBounds)?).ok_or(ToolchainError::OutOfBounds)?;
+    if table_end > object.len() {
+        return Err(ToolchainError::InvalidElfObject);
+    }
+    let mut symtab = None;
+    for index in 0..section_count {
+        let base = section_offset + index * entry_size;
+        if elf_u32(object, base + 4)? == ELF_SHT_SYMTAB {
+            if symtab.is_some() {
+                return Err(ToolchainError::InvalidElfObject);
+            }
+            symtab = Some((
+                usize::try_from(elf_u64(object, base + 24)?).map_err(|_| ToolchainError::InvalidElfObject)?,
+                usize::try_from(elf_u64(object, base + 32)?).map_err(|_| ToolchainError::InvalidElfObject)?,
+                elf_u32(object, base + 40)? as usize,
+            ));
+        }
+    }
+    let (sym_offset, sym_size, string_index) = symtab.ok_or(ToolchainError::InvalidElfObject)?;
+    if sym_size % ELF_SYMBOL_SIZE != 0 || string_index >= section_count {
+        return Err(ToolchainError::InvalidElfObject);
+    }
+    let string_header = section_offset + string_index * entry_size;
+    if elf_u32(object, string_header + 4)? != ELF_SHT_STRTAB {
+        return Err(ToolchainError::InvalidElfObject);
+    }
+    let string_offset = usize::try_from(elf_u64(object, string_header + 24)?)
+        .map_err(|_| ToolchainError::InvalidElfObject)?;
+    let string_size = usize::try_from(elf_u64(object, string_header + 32)?)
+        .map_err(|_| ToolchainError::InvalidElfObject)?;
+    let strings = object.get(string_offset..string_offset.checked_add(string_size)
+        .ok_or(ToolchainError::OutOfBounds)?).ok_or(ToolchainError::InvalidElfObject)?;
+    let symbols = object.get(sym_offset..sym_offset.checked_add(sym_size)
+        .ok_or(ToolchainError::OutOfBounds)?).ok_or(ToolchainError::InvalidElfObject)?;
+
+    let mut definitions = Vec::new();
+    let mut references = Vec::new();
+    for symbol in symbols.chunks_exact(ELF_SYMBOL_SIZE) {
+        let name_offset = u32::from_le_bytes(symbol[..4].try_into().unwrap()) as usize;
+        let binding = symbol[4] >> 4;
+        let section_index = u16::from_le_bytes(symbol[6..8].try_into().unwrap());
+        if binding == 0 || binding > 2 || name_offset >= strings.len() {
+            continue;
+        }
+        let tail = &strings[name_offset..];
+        let length = tail.iter().position(|byte| *byte == 0)
+            .ok_or(ToolchainError::InvalidElfObject)?;
+        if length == 0 {
+            continue;
+        }
+        let name = tail[..length].to_vec();
+        if section_index == ELF_SHN_UNDEF {
+            if binding == 1 {
+                references.push(name);
+            }
+        } else if section_index != ELF_SHN_COMMON {
+            definitions.push(name);
+        }
+    }
+    Ok((definitions, references))
+}
+
 fn elf_u16(bytes: &[u8], offset: usize) -> Result<u16, ToolchainError> {
     let field = bytes
         .get(offset..offset + 2)
@@ -3269,6 +3489,58 @@ mod tests {
         let string_table_size_field = 0x240 + 5 * 64 + 32;
         object[string_table_size_field..string_table_size_field + 8]
             .copy_from_slice(&((name_offset + name.len() + 1) as u64).to_le_bytes());
+    }
+
+
+    fn archive_with_members(members: &[(&str, &[u8])]) -> alloc::vec::Vec<u8> {
+        let mut archive = b"!<arch>\n".to_vec();
+        for (name, object) in members {
+            let mut header = [b' '; 60];
+            let member_name = alloc::format!("{name}/");
+            header[..member_name.len()].copy_from_slice(member_name.as_bytes());
+            header[16..17].copy_from_slice(b"0");
+            header[28..29].copy_from_slice(b"0");
+            header[34..35].copy_from_slice(b"0");
+            header[40..46].copy_from_slice(b"100644");
+            let size = alloc::format!("{:o}", object.len());
+            header[48..48 + size.len()].copy_from_slice(size.as_bytes());
+            header[58] = 0x60;
+            header[59] = b'\n';
+            archive.extend_from_slice(&header);
+            archive.extend_from_slice(object);
+            if object.len() & 1 != 0 {
+                archive.push(b'\n');
+            }
+        }
+        archive
+    }
+
+    #[test]
+    fn extracts_only_archive_members_needed_by_unresolved_symbols() {
+        let mut caller = relocatable_object();
+        rename_fixture_symbol(&mut caller, 2, b"external");
+        caller[0x140 + 2 * 24 + 6..0x140 + 2 * 24 + 8]
+            .copy_from_slice(&0u16.to_le_bytes());
+        let mut provider = relocatable_object();
+        rename_fixture_symbol(&mut provider, 1, b"external");
+        provider[0x140 + 2 * 24 + 4] = 0x01;
+        let unrelated_duplicate = relocatable_object();
+        let archive = archive_with_members(&[
+            ("provider.o", &provider),
+            ("unused.o", &unrelated_duplicate),
+        ]);
+        let executable = super::link_elf_inputs(&[&caller, &archive]).unwrap();
+        assert_eq!(&executable[..4], b"\x7fELF");
+        let resolved = u32::from_le_bytes(executable[0x1001..0x1005].try_into().unwrap());
+        assert_eq!(resolved, 0x400010);
+    }
+
+    #[test]
+    fn rejects_malformed_static_archives() {
+        assert_eq!(
+            super::link_elf_inputs(&[b"!<arch>\ninvalid"]),
+            Err(ToolchainError::InvalidElfObject)
+        );
     }
 
     #[test]

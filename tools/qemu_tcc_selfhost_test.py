@@ -177,6 +177,13 @@ def main():
         return 1
 
     output_offset = len(serial_text())
+    send_line("make -C /share/octagram -n automatic-vars-check")
+    if not wait_for_after("automatic:automatic-vars-check first:hello.c newer:hello.c order:order-only-dep", output_offset, 30):
+        print("MAKE-AUTOMATIC-VARS-FAIL: $@, $<, $?, or $| expanded incorrectly")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
     send_line("make -C /share/octagram -j1 -n")
     if not wait_for_after("tcc hello.o libmessage.a -o hello.elf", output_offset, 30):
         print("MAKE-SERIAL-FAIL: native make rejected -j1")

@@ -154,6 +154,15 @@ limits required by the strict no-host-headers build. More missing declarations
 or implementations will be added only when the upstream configure/build
 probes demonstrate they are needed.
 
+The first compile attempt exposed three target-header mismatches. The OCTAGRAM
+`unistd.h` now advertises POSIX via `_POSIX_VERSION`, preventing GNU Make's
+legacy zero-argument `getcwd` declaration from conflicting with the POSIX
+prototype. `user/include/ar.h` provides the traditional System V archive header
+used by upstream `arscan.c`, and the cross-build maps `alloca` to GCC's compiler
+builtin because this freestanding target does not ship a host `alloca.h`. The
+CI build has not yet passed; these changes are being validated by the next
+workflow run.
+
 CI runs this cross-build after the existing userland CRT/runtime build. A
 successful compile is only the first gate: QEMU execution, recipe shell
 integration, and upstream regression tests remain separate gates.

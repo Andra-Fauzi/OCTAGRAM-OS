@@ -149,10 +149,108 @@ jobs:
           if [ -f user/build/gnu-make-octagram/make ]; then
             echo "GNU Make ELF headers and entry point:"
             readelf -h user/build/gnu-make-octagram/make
-            echo "GNU Make instructions around the observed guest fault 0x4134ee:"
+            echo "GNU Make main() disassembly, including the code before the observed guest fault:"
+            objdump -d --disassemble=main user/build/gnu-make-octagram/make || true
+            echo "GNU Make guile_gmake_setup() disassembly:"
+            objdump -d --disassemble=guile_gmake_setup user/build/gnu-make-octagram/make || true
+            echo "GNU Make relevant function symbols:"
+            nm -n user/build/gnu-make-octagram/make | grep -E ' (main|guile_gmake_setup)
+          else
+            echo "GNU Make guest ELF was not produced"
+          fi
+      - name: Check build artifact manifest
+        run: make manifest-check
+
+      - name: Upload bootable ISO for guest tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: octagram-iso
+          path: OCTAGRAM-x86_64.iso
+          if-no-files-found: error
+          retention-days: 7
+
+  # Status QEMU dipisahkan dari status build host: kegagalan guest test tidak
+  # menyembunyikan hasil kompilasi dan unit test host, dan sebaliknya.
+  qemu-smoke-tests:
+    runs-on: ubuntu-latest
+    needs: host-build-and-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 python3
+
+      - name: Download bootable ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: octagram-iso
+          path: .
+
+      - name: QEMU native TinyCC compile and run smoke test
+        shell: bash
+        run: |
+          rm -f /tmp/serial-tcc.log /tmp/mon-tcc.sock
+          qemu-system-x86_64 \
+            -M q35 \
+            -cdrom OCTAGRAM-x86_64.iso \
+            -boot d \
+            -m 2G \
+            -display none \
+            -serial file:/tmp/serial-tcc.log \
+            -monitor unix:/tmp/mon-tcc.sock,server,nowait \
+            -no-reboot -no-shutdown \
+            >/tmp/qemu-tcc.stderr 2>&1 &
+          qemu_pid=$!
+          trap 'kill "$qemu_pid" 2>/dev/null || true' EXIT
+          MON=/tmp/mon-tcc.sock SERIAL=/tmp/serial-tcc.log python3 tools/qemu_tcc_selfhost_test.py
+
+      - name: QEMU syscall compatibility smoke test
+        shell: bash
+        run: |
+          rm -f /tmp/serial.log /tmp/mon.sock
+          qemu-system-x86_64 \
+            -M q35 \
+            -cdrom OCTAGRAM-x86_64.iso \
+            -boot d \
+            -m 2G \
+            -display none \
+            -serial file:/tmp/serial.log \
+            -monitor unix:/tmp/mon.sock,server,nowait \
+            -no-reboot -no-shutdown \
+            >/tmp/qemu.stderr 2>&1 &
+          qemu_pid=$!
+          trap 'kill "$qemu_pid" 2>/dev/null || true' EXIT
+          python3 tools/qemu_syscall_test.py
+
+  # Ringkasan tiga tingkat status yang diminta kontrak M0: build host, QEMU, dan
+  # hardware. Hardware tidak dijalankan di runner tanpa mesin fisik; statusnya
+  # dilaporkan eksplisit, bukan dianggap lulus.
+  status-summary:
+    runs-on: ubuntu-latest
+    needs: [host-build-and-tests, qemu-smoke-tests]
+    if: always()
+    steps:
+      - name: Report host, QEMU, and hardware status
+        env:
+          HOST_RESULT: ${{ needs.host-build-and-tests.result }}
+          QEMU_RESULT: ${{ needs.qemu-smoke-tests.result }}
+        run: |
+          echo "STATUS build-host=${HOST_RESULT}"
+          echo "STATUS qemu=${QEMU_RESULT}"
+          echo "STATUS hardware=not-run (tidak ada runner hardware di CI)"
+          echo "STATUS manifest=build/manifest.json (diperiksa oleh make manifest-check)"
+          if [ "${HOST_RESULT}" != "success" ] || [ "${QEMU_RESULT}" != "success" ]; then
+            echo "STATUS overall=failed"
+            exit 1
+          fi
+          echo "STATUS overall=passed"
+
+ || true
+            echo "GNU Make focused instructions around the observed guest fault 0x4134ee:"
             objdump -d --start-address=0x4134c0 --stop-address=0x413520 user/build/gnu-make-octagram/make || true
-            echo "GNU Make symbols near the fault address:"
-            nm -n user/build/gnu-make-octagram/make | awk '$1 >= "00000000004134a0" && $1 <= "0000000000413540" { print }' || true
           else
             echo "GNU Make guest ELF was not produced"
           fi

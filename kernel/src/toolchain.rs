@@ -40,6 +40,7 @@ pub enum ToolchainError {
     UnsupportedRelocation,
     RelocationOverflow,
     UndefinedSymbol,
+    DuplicateSymbol,
     UnsupportedCommonSymbol,
     NoEntryPoint,
 }
@@ -2503,6 +2504,7 @@ fn tokenize_c(source: &str) -> Result<Vec<CToken>, ToolchainError> {
 
 const ELF_SHT_PROGBITS: u32 = 1;
 const ELF_SHT_SYMTAB: u32 = 2;
+const ELF_SHT_STRTAB: u32 = 3;
 const ELF_SHT_RELA: u32 = 4;
 const ELF_SHT_NOBITS: u32 = 8;
 const ELF_SHF_ALLOC: u64 = 0x2;
@@ -2520,6 +2522,8 @@ const ELF_PF_X: u32 = 1;
 const ELF_SYMBOL_SIZE: usize = 24;
 const ELF_RELA_SIZE: usize = 24;
 const MAX_ELF_OBJECT_SIZE: usize = 8 * 1024 * 1024;
+const MAX_ELF_LINKED_SIZE: usize = 16 * 1024 * 1024;
+const MAX_ELF_LINKED_OBJECTS: usize = 32;
 
 #[derive(Clone, Copy)]
 struct ElfSection {
@@ -2582,213 +2586,434 @@ fn align_up(value: usize, alignment: usize) -> Result<usize, ToolchainError> {
 ///
 /// Supported relocations: `R_X86_64_64`, `PC32`, `PLT32`, `32`, `32S`. Anything
 /// else fails loudly instead of producing a silently broken binary.
+
+/// Link one ELF64 relocatable object. Kept as a convenience wrapper around the
+/// multi-object linker so existing callers retain their original interface.
 pub fn link_elf_object(object: &[u8]) -> Result<Vec<u8>, ToolchainError> {
-    if object.len() > MAX_ELF_OBJECT_SIZE
-        || !is_elf_object(object)
-        || object[4] != 2
-        || object[5] != 1
-        || elf_u16(object, 16)? != ELF_ET_REL
-        || elf_u16(object, 18)? != ELF_EM_X86_64
-    {
-        return Err(ToolchainError::InvalidElfObject);
-    }
-    let section_offset = elf_u64(object, 40)? as usize;
-    let section_entry_size = elf_u16(object, 58)? as usize;
-    let section_count = elf_u16(object, 60)? as usize;
-    let section_name_index = elf_u16(object, 62)? as usize;
-    if section_count == 0
-        || section_count > 96
-        || section_entry_size != ELF_HEADER_SIZE
-        || section_name_index >= section_count
-    {
+    link_elf_objects(&[object])
+}
+
+/// Link multiple ELF64 x86_64 relocatable objects into one static OCTAGRAM
+/// executable. Global and weak symbols are resolved across object boundaries.
+///
+/// Supported relocations: R_X86_64_64, PC32, PLT32, 32, and 32S. GOT/PLT
+/// construction, TLS relocations, COMMON symbols, and archives are deliberately
+/// rejected until their ABI and extraction rules are implemented.
+pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
+    if objects.is_empty() || objects.len() > MAX_ELF_LINKED_OBJECTS {
         return Err(ToolchainError::InvalidElfObject);
     }
 
-    let mut sections = Vec::with_capacity(section_count);
-    for index in 0..section_count {
-        let base = section_offset
-            .checked_add(index * ELF_HEADER_SIZE)
-            .ok_or(ToolchainError::OutOfBounds)?;
-        let section = ElfSection {
-            section_type: elf_u32(object, base + 4)?,
-            flags: elf_u64(object, base + 8)?,
-            offset: elf_u64(object, base + 24)? as usize,
-            size: elf_u64(object, base + 32)? as usize,
-            link: elf_u32(object, base + 40)?,
-            info: elf_u32(object, base + 44)?,
-            alignment: elf_u64(object, base + 48)? as usize,
-        };
-        if section.section_type != ELF_SHT_NOBITS {
-            let end = section
-                .offset
-                .checked_add(section.size)
-                .ok_or(ToolchainError::OutOfBounds)?;
-            if end > object.len() {
-                return Err(ToolchainError::InvalidElfObject);
-            }
-        }
-        sections.push(section);
+    struct ParsedObject {
+        sections: Vec<ElfSection>,
+        placements: Vec<Option<ElfPlacement>>,
+        symtab_index: usize,
+        symtab: ElfSection,
+        strings: ElfSection,
+    }
+    struct LocalSymbol {
+        name: Vec<u8>,
+        binding: u8,
+        value: Option<u64>,
     }
 
+    let mut parsed_objects = Vec::with_capacity(objects.len());
     let mut text = Vec::new();
     let mut data = Vec::new();
-    let mut memory_end = 0usize;
-    let mut placements = alloc::vec![None; section_count];
-    for (index, section) in sections.iter().enumerate() {
-        if section.flags & ELF_SHF_ALLOC == 0 || index == 0 {
-            continue;
+    let mut bss_size = 0usize;
+
+    // Pass 1: validate each ET_REL object and lay out all allocated sections.
+    for object in objects {
+        if object.len() > MAX_ELF_OBJECT_SIZE
+            || !is_elf_object(object)
+            || object[4] != 2
+            || object[5] != 1
+            || object[6] != 1
+            || elf_u16(object, 16)? != ELF_ET_REL
+            || elf_u16(object, 18)? != ELF_EM_X86_64
+        {
+            return Err(ToolchainError::InvalidElfObject);
         }
-        let alignment = section.alignment.max(1);
-        if section.section_type == ELF_SHT_NOBITS {
-            let start = align_up(memory_end, alignment)?;
-            placements[index] = Some(ElfPlacement::Bss(start));
-            memory_end = start
-                .checked_add(section.size)
+
+        let section_offset = usize::try_from(elf_u64(object, 40)?)
+            .map_err(|_| ToolchainError::InvalidElfObject)?;
+        let section_entry_size = elf_u16(object, 58)? as usize;
+        let section_count = elf_u16(object, 60)? as usize;
+        let section_name_index = elf_u16(object, 62)? as usize;
+        let section_table_size = section_count
+            .checked_mul(ELF_HEADER_SIZE)
+            .ok_or(ToolchainError::OutOfBounds)?;
+        if section_count == 0
+            || section_count > 96
+            || section_entry_size != ELF_HEADER_SIZE
+            || section_name_index >= section_count
+            || section_offset
+                .checked_add(section_table_size)
+                .is_none_or(|end| end > object.len())
+        {
+            return Err(ToolchainError::InvalidElfObject);
+        }
+
+        let mut sections = Vec::with_capacity(section_count);
+        for index in 0..section_count {
+            let base = section_offset
+                .checked_add(index * ELF_HEADER_SIZE)
                 .ok_or(ToolchainError::OutOfBounds)?;
-            continue;
+            let section = ElfSection {
+                section_type: elf_u32(object, base + 4)?,
+                flags: elf_u64(object, base + 8)?,
+                offset: usize::try_from(elf_u64(object, base + 24)?)
+                    .map_err(|_| ToolchainError::InvalidElfObject)?,
+                size: usize::try_from(elf_u64(object, base + 32)?)
+                    .map_err(|_| ToolchainError::InvalidElfObject)?,
+                link: elf_u32(object, base + 40)?,
+                info: elf_u32(object, base + 44)?,
+                alignment: usize::try_from(elf_u64(object, base + 48)?)
+                    .map_err(|_| ToolchainError::InvalidElfObject)?,
+            };
+            if section.section_type != ELF_SHT_NOBITS {
+                let end = section
+                    .offset
+                    .checked_add(section.size)
+                    .ok_or(ToolchainError::OutOfBounds)?;
+                if end > object.len() {
+                    return Err(ToolchainError::InvalidElfObject);
+                }
+            }
+            sections.push(section);
         }
-        if section.section_type != ELF_SHT_PROGBITS {
-            continue;
+
+        let mut placements = alloc::vec![None; section_count];
+        for (index, section) in sections.iter().enumerate() {
+            if section.flags & ELF_SHF_ALLOC == 0 || index == 0 {
+                continue;
+            }
+            let alignment = section.alignment.max(1);
+            if section.section_type == ELF_SHT_NOBITS {
+                let start = align_up(bss_size, alignment)?;
+                placements[index] = Some(ElfPlacement::Bss(start));
+                bss_size = start
+                    .checked_add(section.size)
+                    .ok_or(ToolchainError::OutOfBounds)?;
+            } else if section.section_type == ELF_SHT_PROGBITS {
+                let source = object
+                    .get(section.offset..section.offset + section.size)
+                    .ok_or(ToolchainError::InvalidElfObject)?;
+                if section.flags & ELF_SHF_EXECINSTR != 0 {
+                    let start = align_up(text.len(), alignment)?;
+                    text.resize(start, 0);
+                    text.extend_from_slice(source);
+                    placements[index] = Some(ElfPlacement::Text(start));
+                } else {
+                    let start = align_up(data.len(), alignment)?;
+                    data.resize(start, 0);
+                    data.extend_from_slice(source);
+                    placements[index] = Some(ElfPlacement::Data(start));
+                }
+            }
+            let linked_size = text
+                .len()
+                .checked_add(data.len())
+                .and_then(|size| size.checked_add(bss_size))
+                .ok_or(ToolchainError::OutOfBounds)?;
+            if linked_size > MAX_ELF_LINKED_SIZE {
+                return Err(ToolchainError::OutOfBounds);
+            }
         }
-        let source = &object[section.offset..section.offset + section.size];
-        if section.flags & ELF_SHF_EXECINSTR != 0 {
-            let start = align_up(text.len(), alignment)?;
-            text.resize(start, 0);
-            text.extend_from_slice(source);
-            placements[index] = Some(ElfPlacement::Text(start));
-        } else {
-            let start = align_up(data.len(), alignment)?;
-            data.resize(start, 0);
-            data.extend_from_slice(source);
-            placements[index] = Some(ElfPlacement::Data(start));
+
+        let symtab_index = sections
+            .iter()
+            .position(|section| section.section_type == ELF_SHT_SYMTAB)
+            .ok_or(ToolchainError::InvalidElfObject)?;
+        let symtab = sections[symtab_index];
+        if symtab.size % ELF_SYMBOL_SIZE != 0 || symtab.link as usize >= section_count {
+            return Err(ToolchainError::InvalidElfObject);
         }
+        let strings = sections[symtab.link as usize];
+        if strings.section_type != ELF_SHT_STRTAB {
+            return Err(ToolchainError::InvalidElfObject);
+        }
+        parsed_objects.push(ParsedObject {
+            sections,
+            placements,
+            symtab_index,
+            symtab,
+            strings,
+        });
     }
+
     if text.is_empty() {
         return Err(ToolchainError::InvalidElfObject);
     }
-    memory_end = memory_end.max(data.len());
 
-    let text_offset = ELF_LOAD_OFFSET;
     let text_size = text.len();
     let data_vaddr = ELF_BASE
         .checked_add(align_up(text_size, 0x1000)? as u64)
         .ok_or(ToolchainError::OutOfBounds)?;
-    let data_offset = align_up(text_offset + text_size, 0x1000)?;
-    let data_memory_size = memory_end.max(data.len());
+    let data_memory_size = data
+        .len()
+        .checked_add(bss_size)
+        .ok_or(ToolchainError::OutOfBounds)?;
 
-    let symtab_index = sections
-        .iter()
-        .position(|section| section.section_type == ELF_SHT_SYMTAB)
-        .ok_or(ToolchainError::InvalidElfObject)?;
-    let symtab = sections[symtab_index];
-    if symtab.size % ELF_SYMBOL_SIZE != 0 || symtab.link as usize >= section_count {
-        return Err(ToolchainError::InvalidElfObject);
-    }
-    let strings = sections[symtab.link as usize];
-    let symbol_count = symtab.size / ELF_SYMBOL_SIZE;
-    let mut symbol_values = Vec::with_capacity(symbol_count);
+    // Pass 2: resolve every defined symbol to its final virtual address and
+    // build the global symbol table before applying any relocation.
+    let mut object_symbols: Vec<Vec<LocalSymbol>> = Vec::with_capacity(objects.len());
+    let mut global_symbols: BTreeMap<Vec<u8>, (u64, bool)> = BTreeMap::new();
     let mut entry = None;
-    for symbol in 0..symbol_count {
-        let base = symtab.offset + symbol * ELF_SYMBOL_SIZE;
-        let name_offset = elf_u32(object, base)? as usize;
-        let section_index = elf_u16(object, base + 6)?;
-        let value = elf_u64(object, base + 8)?;
-        let resolved = match section_index {
-            ELF_SHN_UNDEF => None,
-            ELF_SHN_ABS => Some(value),
-            ELF_SHN_COMMON => return Err(ToolchainError::UnsupportedCommonSymbol),
-            index => {
-                let placement = placements
-                    .get(index as usize)
-                    .copied()
-                    .flatten()
-                    .ok_or(ToolchainError::InvalidElfObject)?;
-                Some(match placement {
-                    ElfPlacement::Text(start) => ELF_BASE + start as u64 + value,
-                    ElfPlacement::Data(start) => data_vaddr + start as u64 + value,
-                    ElfPlacement::Bss(start) => data_vaddr + start as u64 + value,
-                })
+
+    for (object, parsed) in objects.iter().zip(parsed_objects.iter()) {
+        let symbol_count = parsed.symtab.size / ELF_SYMBOL_SIZE;
+        let mut symbols = Vec::with_capacity(symbol_count);
+        for symbol_index in 0..symbol_count {
+            let base = parsed
+                .symtab
+                .offset
+                .checked_add(symbol_index * ELF_SYMBOL_SIZE)
+                .ok_or(ToolchainError::OutOfBounds)?;
+            let name_offset = elf_u32(object, base)? as usize;
+            let info = *object
+                .get(base + 4)
+                .ok_or(ToolchainError::InvalidElfObject)?;
+            let binding = info >> 4;
+            if binding > 2 {
+                return Err(ToolchainError::InvalidElfObject);
             }
-        };
-        if entry.is_none()
-            && symbol_name_is(object, strings, name_offset, b"_start")
-            && resolved.is_some()
-        {
-            entry = resolved;
+            let section_index = elf_u16(object, base + 6)?;
+            let symbol_value = elf_u64(object, base + 8)?;
+            let name_start = parsed
+                .strings
+                .offset
+                .checked_add(name_offset)
+                .ok_or(ToolchainError::OutOfBounds)?;
+            let strings_end = parsed
+                .strings
+                .offset
+                .checked_add(parsed.strings.size)
+                .ok_or(ToolchainError::OutOfBounds)?;
+            if name_offset >= parsed.strings.size {
+                return Err(ToolchainError::InvalidElfObject);
+            }
+            let name_tail = object
+                .get(name_start..strings_end)
+                .ok_or(ToolchainError::InvalidElfObject)?;
+            let name_length = name_tail
+                .iter()
+                .position(|byte| *byte == 0)
+                .ok_or(ToolchainError::InvalidElfObject)?;
+            let name = name_tail[..name_length].to_vec();
+
+            let value = match section_index {
+                ELF_SHN_UNDEF => None,
+                ELF_SHN_ABS => Some(symbol_value),
+                ELF_SHN_COMMON => return Err(ToolchainError::UnsupportedCommonSymbol),
+                index => {
+                    let section_index = index as usize;
+                    let section = parsed
+                        .sections
+                        .get(section_index)
+                        .ok_or(ToolchainError::InvalidElfObject)?;
+                    let placement = parsed
+                        .placements
+                        .get(section_index)
+                        .copied()
+                        .flatten()
+                        .ok_or(ToolchainError::InvalidElfObject)?;
+                    if symbol_value > section.size as u64 {
+                        return Err(ToolchainError::InvalidElfObject);
+                    }
+                    let relative = symbol_value;
+                    Some(match placement {
+                        ElfPlacement::Text(start) => ELF_BASE
+                            .checked_add(start as u64)
+                            .and_then(|base| base.checked_add(relative))
+                            .ok_or(ToolchainError::OutOfBounds)?,
+                        ElfPlacement::Data(start) => data_vaddr
+                            .checked_add(start as u64)
+                            .and_then(|base| base.checked_add(relative))
+                            .ok_or(ToolchainError::OutOfBounds)?,
+                        ElfPlacement::Bss(start) => data_vaddr
+                            .checked_add(data.len() as u64)
+                            .and_then(|base| base.checked_add(start as u64))
+                            .and_then(|base| base.checked_add(relative))
+                            .ok_or(ToolchainError::OutOfBounds)?,
+                    })
+                }
+            };
+
+            if name.as_slice() == b"_start" {
+                if let Some(value) = value {
+                    if entry.replace(value).is_some() {
+                        return Err(ToolchainError::DuplicateSymbol);
+                    }
+                }
+            }
+
+            if binding != 0
+                && !name.is_empty()
+                && let Some(value) = value
+            {
+                let is_weak = binding == 2;
+                match global_symbols.get(&name).copied() {
+                    None => {
+                        global_symbols.insert(name.clone(), (value, is_weak));
+                    }
+                    Some((_existing, true)) if !is_weak => {
+                        global_symbols.insert(name.clone(), (value, false));
+                    }
+                    Some((_existing, false)) if is_weak => {}
+                    Some((_existing, true)) if is_weak => {}
+                    Some((_existing, false)) if !is_weak => {
+                        return Err(ToolchainError::DuplicateSymbol);
+                    }
+                }
+            }
+
+            symbols.push(LocalSymbol {
+                name,
+                binding,
+                value,
+            });
         }
-        symbol_values.push(resolved);
+        object_symbols.push(symbols);
     }
 
-    for section in sections.iter() {
-        if section.section_type != ELF_SHT_RELA || section.link as usize != symtab_index {
-            continue;
-        }
-        let target_index = section.info as usize;
-        let Some(placement) = placements.get(target_index).copied().flatten() else {
-            return Err(ToolchainError::InvalidElfObject);
-        };
-        if matches!(placement, ElfPlacement::Bss(_)) {
-            return Err(ToolchainError::InvalidElfObject);
-        }
-        if section.size % ELF_RELA_SIZE != 0 {
-            return Err(ToolchainError::InvalidElfObject);
-        }
-        let count = section.size / ELF_RELA_SIZE;
-        for relocation in 0..count {
-            let base = section.offset + relocation * ELF_RELA_SIZE;
-            let relocation_offset = elf_u64(object, base)? as usize;
-            let info = elf_u64(object, base + 8)?;
-            let addend = elf_u64(object, base + 16)? as i64;
-            let kind = info as u32;
-            if kind == 0 {
+    // Pass 3: apply RELA entries after all inter-object references can resolve.
+    for (object_index, (object, parsed)) in
+        objects.iter().zip(parsed_objects.iter()).enumerate()
+    {
+        let symbols = &object_symbols[object_index];
+        for section in &parsed.sections {
+            if section.section_type != ELF_SHT_RELA
+                || section.link as usize != parsed.symtab_index
+            {
                 continue;
             }
-            let symbol_index = (info >> 32) as usize;
-            let symbol = symbol_values
-                .get(symbol_index)
-                .copied()
-                .ok_or(ToolchainError::InvalidElfObject)?;
-            let Some(symbol) = symbol else {
-                return Err(ToolchainError::UndefinedSymbol);
+            let target_index = section.info as usize;
+            let Some(placement) = parsed.placements.get(target_index).copied().flatten() else {
+                // Relocations against non-allocated metadata (for example
+                // .eh_frame) are intentionally omitted from the final image.
+                continue;
             };
-            let (buffer, section_vaddr, start) = match placement {
-                ElfPlacement::Text(start) => (&mut text, ELF_BASE, start),
-                ElfPlacement::Data(start) => (&mut data, data_vaddr, start),
-                ElfPlacement::Bss(_) => return Err(ToolchainError::InvalidElfObject),
-            };
-            let position = start
-                .checked_add(relocation_offset)
-                .ok_or(ToolchainError::OutOfBounds)?;
-            let place = section_vaddr
-                .checked_add(start as u64)
-                .and_then(|base| base.checked_add(relocation_offset as u64))
-                .ok_or(ToolchainError::OutOfBounds)?;
-            apply_elf_relocation(buffer, position, kind, symbol, addend, place)?;
+            if matches!(placement, ElfPlacement::Bss(_))
+                || section.size % ELF_RELA_SIZE != 0
+            {
+                return Err(ToolchainError::InvalidElfObject);
+            }
+            let target_size = parsed.sections[target_index].size;
+            let count = section.size / ELF_RELA_SIZE;
+            for relocation in 0..count {
+                let base = section
+                    .offset
+                    .checked_add(relocation * ELF_RELA_SIZE)
+                    .ok_or(ToolchainError::OutOfBounds)?;
+                let relocation_offset = usize::try_from(elf_u64(object, base)?)
+                    .map_err(|_| ToolchainError::InvalidElfObject)?;
+                let info = elf_u64(object, base + 8)?;
+                let addend = elf_u64(object, base + 16)? as i64;
+                let kind = info as u32;
+                if kind == 0 {
+                    continue;
+                }
+                let symbol_index = usize::try_from(info >> 32)
+                    .map_err(|_| ToolchainError::InvalidElfObject)?;
+                let symbol = symbols
+                    .get(symbol_index)
+                    .ok_or(ToolchainError::InvalidElfObject)?;
+                let symbol_value = if symbol.binding == 0 {
+                    symbol.value.ok_or(ToolchainError::UndefinedSymbol)?
+                } else if let Some((value, _)) = global_symbols.get(&symbol.name) {
+                    *value
+                } else if symbol.binding == 2 {
+                    0
+                } else {
+                    return Err(ToolchainError::UndefinedSymbol);
+                };
+
+                let relocation_size = match kind {
+                    1 => 8,
+                    2 | 4 | 10 | 11 => 4,
+                    _ => return Err(ToolchainError::UnsupportedRelocation),
+                };
+                if relocation_offset
+                    .checked_add(relocation_size)
+                    .is_none_or(|end| end > target_size)
+                {
+                    return Err(ToolchainError::OutOfBounds);
+                }
+
+                match placement {
+                    ElfPlacement::Text(start) => {
+                        let position = start
+                            .checked_add(relocation_offset)
+                            .ok_or(ToolchainError::OutOfBounds)?;
+                        let place = ELF_BASE
+                            .checked_add(position as u64)
+                            .ok_or(ToolchainError::OutOfBounds)?;
+                        apply_elf_relocation(
+                            &mut text,
+                            position,
+                            kind,
+                            symbol_value,
+                            addend,
+                            place,
+                        )?;
+                    }
+                    ElfPlacement::Data(start) => {
+                        let position = start
+                            .checked_add(relocation_offset)
+                            .ok_or(ToolchainError::OutOfBounds)?;
+                        let place = data_vaddr
+                            .checked_add(position as u64)
+                            .ok_or(ToolchainError::OutOfBounds)?;
+                        apply_elf_relocation(
+                            &mut data,
+                            position,
+                            kind,
+                            symbol_value,
+                            addend,
+                            place,
+                        )?;
+                    }
+                    ElfPlacement::Bss(_) => return Err(ToolchainError::InvalidElfObject),
+                }
+            }
         }
     }
 
-    let Some(entry) = entry else {
-        return Err(ToolchainError::NoEntryPoint);
-    };
+    let entry = entry.ok_or(ToolchainError::NoEntryPoint)?;
     if entry < ELF_BASE || entry >= ELF_BASE + text_size as u64 {
         return Err(ToolchainError::InvalidElfObject);
     }
 
     let segment_count = if data_memory_size == 0 { 1 } else { 2 };
+    let data_offset = align_up(
+        ELF_LOAD_OFFSET
+            .checked_add(text_size)
+            .ok_or(ToolchainError::OutOfBounds)?,
+        0x1000,
+    )?;
     let file_size = if segment_count == 2 {
-        data_offset + data.len()
+        data_offset
+            .checked_add(data.len())
+            .ok_or(ToolchainError::OutOfBounds)?
     } else {
-        text_offset + text.len()
+        ELF_LOAD_OFFSET
+            .checked_add(text_size)
+            .ok_or(ToolchainError::OutOfBounds)?
     };
+    if file_size > MAX_ELF_LINKED_SIZE {
+        return Err(ToolchainError::OutOfBounds);
+    }
+
     let mut executable = Vec::with_capacity(file_size);
-    executable.resize(text_offset, 0);
+    executable.resize(ELF_LOAD_OFFSET, 0);
     executable.extend_from_slice(&text);
     if segment_count == 2 {
         executable.resize(data_offset, 0);
         executable.extend_from_slice(&data);
     }
 
-    executable[..4].copy_from_slice(b"\x7fELF");
+    executable[..4].copy_from_slice(b"\\x7fELF");
     executable[4] = 2;
     executable[5] = 1;
     executable[6] = 1;
@@ -2804,7 +3029,7 @@ pub fn link_elf_object(object: &[u8]) -> Result<Vec<u8>, ToolchainError> {
     let text_header = ELF_HEADER_SIZE;
     put_u32(&mut executable, text_header, ELF_PT_LOAD);
     put_u32(&mut executable, text_header + 4, ELF_PF_R | ELF_PF_X);
-    put_u64(&mut executable, text_header + 8, text_offset as u64);
+    put_u64(&mut executable, text_header + 8, ELF_LOAD_OFFSET as u64);
     put_u64(&mut executable, text_header + 16, ELF_BASE);
     put_u64(&mut executable, text_header + 24, ELF_BASE);
     put_u64(&mut executable, text_header + 32, text_size as u64);
@@ -2865,9 +3090,17 @@ fn apply_elf_relocation(
                 .ok_or(ToolchainError::OutOfBounds)?;
             slot.copy_from_slice(&value.to_le_bytes());
         }
-        10 | 11 => {
+        10 => {
             let value = (symbol as i64).wrapping_add(addend);
             let value = u32::try_from(value).map_err(|_| ToolchainError::RelocationOverflow)?;
+            let slot = buffer
+                .get_mut(offset..offset + 4)
+                .ok_or(ToolchainError::OutOfBounds)?;
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
+        11 => {
+            let value = (symbol as i64).wrapping_add(addend);
+            let value = i32::try_from(value).map_err(|_| ToolchainError::RelocationOverflow)?;
             let slot = buffer
                 .get_mut(offset..offset + 4)
                 .ok_or(ToolchainError::OutOfBounds)?;

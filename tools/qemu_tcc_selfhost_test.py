@@ -363,6 +363,17 @@ def main():
         print(serial_text()[-6000:])
         return 1
 
+    # The bootstrap make tests above already produced all outputs. Advance
+    # the source timestamps so upstream GNU Make has real work to plan instead
+    # of correctly reporting that the default target is already up to date.
+    for source in ("hello.c", "message.c"):
+        output_offset = len(serial_text())
+        send_line("touch /share/octagram/%s" % source)
+        if not wait_for_after("program exited with status 0", output_offset, 30):
+            print("GNU-MAKE-SETUP-FAIL: could not refresh %s before dry-run" % source)
+            print(serial_text()[-6000:])
+            return 1
+
     output_offset = len(serial_text())
     send_line("/usr/bin/gmake -C /share/octagram -n")
     if not wait_for_after("tcc hello.o libmessage.a -o hello.elf", output_offset, 60):

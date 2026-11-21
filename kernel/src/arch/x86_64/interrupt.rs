@@ -243,10 +243,12 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                     "User fault task pid={pid} tid={tid} is_thread={is_thread} initial_tls={initial_tls:#x} process_tls={process_tls:#x} actual_fs={actual_fs:#x}"
                 );
                 crate::println!(
-                    "User fault regs rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rsi={:#x} rdi={:#x} rbp={:#x} rsp={:#x}",
+                    "User fault regs rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rsi={:#x} rdi={:#x} rbp={:#x} rsp={:#x} r8={:#x} r9={:#x} r10={:#x} r11={:#x} r12={:#x} r13={:#x} r14={:#x} r15={:#x}",
                     frame.rax, frame.rbx, frame.rcx, frame.rdx,
                     frame.rsi, frame.rdi, frame.rbp,
-                    frame.stack_frame.stack_pointer
+                    frame.stack_frame.stack_pointer,
+                    frame.r8, frame.r9, frame.r10, frame.r11,
+                    frame.r12, frame.r13, frame.r14, frame.r15
                 );
             } else {
                 crate::println!(

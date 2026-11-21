@@ -2690,10 +2690,16 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
             }
             let alignment = section.alignment.max(1);
             if section.section_type == ELF_SHT_NOBITS {
-                let start = align_up(bss_size, alignment)?;
+                let start = align_up(
+                    data.len()
+                        .checked_add(bss_size)
+                        .ok_or(ToolchainError::OutOfBounds)?,
+                    alignment,
+                )?;
                 placements[index] = Some(ElfPlacement::Bss(start));
                 bss_size = start
                     .checked_add(section.size)
+                    .and_then(|end| end.checked_sub(data.len()))
                     .ok_or(ToolchainError::OutOfBounds)?;
             } else if section.section_type == ELF_SHT_PROGBITS {
                 let source = object
@@ -2832,8 +2838,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                             .and_then(|base| base.checked_add(relative))
                             .ok_or(ToolchainError::OutOfBounds)?,
                         ElfPlacement::Bss(start) => data_vaddr
-                            .checked_add(data.len() as u64)
-                            .and_then(|base| base.checked_add(start as u64))
+                            .checked_add(start as u64)
                             .and_then(|base| base.checked_add(relative))
                             .ok_or(ToolchainError::OutOfBounds)?,
                     })

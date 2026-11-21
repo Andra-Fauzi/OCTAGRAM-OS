@@ -114,7 +114,7 @@ void sync(void);
 int gethostname(char *name, size_t size);
 size_t confstr(int name, char *buffer, size_t size);
 char *getlogin(void);
-int getloadavg(double load[3], int count);
+int getloadavg(double load[], int count);
 int lockf(int fd, int operation, off_t length);
 int mkfifo(const char *path, mode_t mode);
 int mkfifoat(int dirfd, const char *path, mode_t mode);

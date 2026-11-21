@@ -3256,6 +3256,11 @@ mod tests {
         object[strings + name_offset..strings + name_offset + name.len()]
             .copy_from_slice(name);
         object[strings + name_offset + name.len()] = 0;
+        // The original fixture's string table is 15 bytes; "external" needs
+        // one additional byte including its terminating NUL.
+        let string_table_size_field = 0x240 + 5 * 64 + 32;
+        object[string_table_size_field..string_table_size_field + 8]
+            .copy_from_slice(&16u64.to_le_bytes());
     }
 
     #[test]

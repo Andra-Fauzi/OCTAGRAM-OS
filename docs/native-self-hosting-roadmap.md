@@ -840,3 +840,13 @@ Tahap berikutnya adalah archive extraction dan perluasan ABI ELF.
    boot gagal, dan laporan self-hosting yang memisahkan hasil host, QEMU, dan
    hardware.
 \n\n## 12. M3.1 — Import GNU Make upstream (21 November 2026)\n\nGNU Make 4.4.1 telah dipin sebagai submodule di\n`user/third_party/gnu-make`. CI mengambil submodule secara rekursif dan\nmenjalankan `tools/check_gnu_make_source.py` untuk memastikan commit dan\nfile sumber inti sesuai. Ini baru tahap impor sumber; belum ada executable\nGNU Make untuk OCTAGRAM. Porting ABI, build native, tes QEMU, dan penggantian\n`/bin/make` masih berstatus belum selesai. Lihat\n`docs/gnu-make-native-port.md`.\n
+
+### M3.2 — GNU Make cross-build
+
+- [x] Add a reproducible Autotools/gnulib bootstrap and OCTAGRAM cross-build
+  driver at `tools/build_gnu_make_octagram.sh`.
+- [x] Add an OCTAGRAM-owned `limits.h` and compile with `-nostdinc` so
+  Linux system headers cannot silently satisfy target header checks.
+- [ ] Get the upstream GNU Make 4.4.1 cross-build green in CI.
+- [ ] Boot and execute the produced ELF in QEMU.
+- [ ] Add a native `/bin/sh` executable and validate Make recipe execution.

@@ -3274,6 +3274,11 @@ double strtod(const char *text, char **end)
     return (double)strtold(text, end);
 }
 
+double atof(const char *text)
+{
+    return strtod(text, NULL);
+}
+
 float strtof(const char *text, char **end)
 {
     return (float)strtold(text, end);
@@ -6939,6 +6944,28 @@ struct tm *gmtime(const time_t *time_value)
 struct tm *localtime(const time_t *time_value)
 {
     return gmtime(time_value);
+}
+
+char *ctime(const time_t *time_value)
+{
+    static char buffer[32];
+    static const char *weekdays[] = {
+        "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
+    };
+    static const char *months[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    struct tm *value = localtime(time_value);
+    if (value == NULL || value->tm_wday < 0 || value->tm_wday > 6 ||
+        value->tm_mon < 0 || value->tm_mon > 11) {
+        errno = EINVAL;
+        return NULL;
+    }
+    snprintf(buffer, sizeof(buffer), "%s %s %2d %02d:%02d:%02d %d\n",
+             weekdays[value->tm_wday], months[value->tm_mon], value->tm_mday,
+             value->tm_hour, value->tm_min, value->tm_sec, value->tm_year + 1900);
+    return buffer;
 }
 
 struct tm *gmtime_r(const time_t *time_value, struct tm *result)

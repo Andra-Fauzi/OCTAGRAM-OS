@@ -65,7 +65,7 @@ export LDFLAGS="-nostdlib -static -Wl,--gc-sections -Wl,-T,$USER/linker.ld"
 export LIBS="$USER/build/crt0.o $USER/build/runtime.o"
 
 echo "GNU-MAKE-OCTAGRAM: configure target=$TARGET build=$BUILD_TRIPLET"
-"$SRC/configure" \
+if ! "$SRC/configure" \
     --srcdir="$SRC" \
     --build="$BUILD_TRIPLET" \
     --host="$TARGET" \
@@ -73,7 +73,13 @@ echo "GNU-MAKE-OCTAGRAM: configure target=$TARGET build=$BUILD_TRIPLET"
     --disable-nls \
     --without-guile \
     --disable-load \
-    --disable-posix-spawn
+    --disable-posix-spawn; then
+    if [[ -f config.log ]]; then
+        echo "GNU-MAKE-OCTAGRAM: configure diagnostics (last 100 lines of config.log):" >&2
+        tail -n 100 config.log >&2
+    fi
+    fail "upstream configure failed"
+fi
 
 echo "GNU-MAKE-OCTAGRAM: compile upstream GNU Make"
 make -j2 V=1

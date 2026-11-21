@@ -47,6 +47,7 @@ static void check(int condition, const char *what)
 
 static uint32_t futex_word;
 static volatile int futex_result;
+static volatile int futex_timeout_started;
 static uint32_t futex_bitset_word;
 static volatile int futex_bitset_result;
 static uint32_t futex_requeue_source;
@@ -66,6 +67,7 @@ static void *futex_timeout_waiter(void *argument)
     struct timespec timeout;
     timeout.tv_sec = 0;
     timeout.tv_nsec = 50 * 1000 * 1000;
+    __sync_lock_test_and_set(&futex_timeout_started, 1);
     futex_result = (int)oct_futex_wait_timeout(
         &futex_word, 0, (const struct oct_timespec *)&timeout);
     return NULL;
@@ -424,11 +426,22 @@ int main(void)
 
     futex_word = 0;
     futex_result = -999;
+    futex_timeout_started = 0;
     check(pthread_create(&futex_thread, NULL, futex_timeout_waiter, NULL) == 0,
           "pthread_create(futex timeout waiter)");
+    for (int wait = 0; wait < 1000 &&
+         __atomic_load_n(&futex_timeout_started, __ATOMIC_ACQUIRE) == 0; ++wait) {
+        usleep(1000);
+    }
+    check(__atomic_load_n(&futex_timeout_started, __ATOMIC_ACQUIRE) != 0,
+          "futex timeout waiter entered syscall before timeout interval");
     usleep(150000);
     check(pthread_join(futex_thread, NULL) == 0,
           "pthread_join(futex timeout waiter)");
+    if (futex_result != -ETIMEDOUT) {
+        printf("     futex timeout returned %d (expected %d)\\n",
+               (int)futex_result, -ETIMEDOUT);
+    }
     check(futex_result == -ETIMEDOUT,
           "futex WAIT timeout returns ETIMEDOUT");
 

@@ -26,6 +26,16 @@ static inline int isalnum(int character)
     return isalpha(character) || isdigit(character);
 }
 
+static inline int iscntrl(int character)
+{
+    return (character >= 0 && character < 32) || character == 127;
+}
+
+static inline int isprint(int character)
+{
+    return character >= 32 && character <= 126;
+}
+
 static inline int ispunct(int character)
 {
     return character >= '!' && character <= '~' && !isalnum(character);

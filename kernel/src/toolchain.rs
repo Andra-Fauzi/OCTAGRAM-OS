@@ -2862,13 +2862,15 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                     None => {
                         global_symbols.insert(name.clone(), (value, is_weak));
                     }
-                    Some((_existing, true)) if !is_weak => {
-                        global_symbols.insert(name.clone(), (value, false));
+                    Some((_existing, true)) => {
+                        if !is_weak {
+                            global_symbols.insert(name.clone(), (value, false));
+                        }
                     }
-                    Some((_existing, false)) if is_weak => {}
-                    Some((_existing, true)) if is_weak => {}
-                    Some((_existing, false)) if !is_weak => {
-                        return Err(ToolchainError::DuplicateSymbol);
+                    Some((_existing, false)) => {
+                        if !is_weak {
+                            return Err(ToolchainError::DuplicateSymbol);
+                        }
                     }
                 }
             }

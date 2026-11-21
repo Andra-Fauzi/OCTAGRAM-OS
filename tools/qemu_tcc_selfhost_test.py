@@ -1,3 +1,4 @@
+import hashlib
 import os
 import socket
 import sys
@@ -407,6 +408,35 @@ def main():
         print(serial_text()[-5000:])
         return 1
     print("MAKE-SHA256-OCTAGRAM-PASS: streaming SHA-256 matches the known empty-file digest")
+
+    # Exercise a non-empty multi-block SHA-256 input. The known digest is
+    # calculated by the host test runner, while OCTAGRAM hashes the file
+    # through repeated 1 KiB read syscalls.
+    sha_payload = "a" * 100
+    sha_expected = hashlib.sha256((sha_payload + "\\n").encode()).hexdigest()
+    output_offset = len(serial_text())
+    send_line("echo %s > /tmp/octagram-sha256-multiblock" % sha_payload)
+    if not wait_for_after("octagram:/ $", output_offset, 30):
+        print("MAKE-SHA256-MULTIBLOCK-FAIL: could not write the non-empty fixture")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("make --manifest /tmp/octagram-sha256-multiblock.manifest /tmp/octagram-sha256-multiblock")
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("MAKE-SHA256-MULTIBLOCK-FAIL: manifest generation failed")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("cat /tmp/octagram-sha256-multiblock.manifest")
+    if not wait_for_after(sha_expected, output_offset, 30):
+        print("MAKE-SHA256-MULTIBLOCK-FAIL: non-empty multi-block digest differs from host SHA-256")
+        print("expected: %s" % sha_expected)
+        print(serial_text()[-5000:])
+        return 1
+    print("MAKE-SHA256-MULTIBLOCK-PASS: non-empty multi-block digest matches host hashlib")
+
 
 
     # Run the upstream GNU Make 4.4.1 binary, separately from the small

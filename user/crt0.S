@@ -35,6 +35,9 @@ _start:
 .Lh_errno_ready:
     pop %rsi
     pop %rdi
+    /* Runtime initialization may clobber caller-saved RDX. Recompute envp
+       from the original initial stack immediately before entering main(). */
+    lea 16(%rsp,%rdi,8), %rdx
     call main
     mov %rax, %rdi
     mov exit@GOTPCREL(%rip), %rax

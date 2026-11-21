@@ -995,7 +995,10 @@ Branch: feature/native-self-hosting.
 
 ### Status verifikasi
 
-- QEMU-tested: manifest versi 1 (mtime, ukuran, dependency graph) lulus
-  pada workflow 44897407783. SHA-256 versi 2 masih menunggu CI baru.
+- [x] Manifest v2 (status, mtime, ukuran, dependency graph, SHA-256) lulus
+  QEMU pada workflow [44902290133](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44902290133).
+- [x] SHA-256 file kosong cocok dengan digest standar.
+- [ ] Tambahkan verifikasi file non-kosong multi-block pada workflow berikutnya
+  (uji baru ditambahkan pada commit `87ea9ff`).
 - Belum diklaim: reproducible build penuh, hash seluruh input compiler,
   validasi dependency graph lintas direktori, dan parallel build.

@@ -31,4 +31,16 @@ typedef signed long intmax_t;
 #define UINTPTR_MAX UINT64_MAX
 #define SIZE_MAX UINT64_MAX
 
+/* C99 integer-constant macros for the x86_64 OCTAGRAM ABI. */
+#define INT8_C(value) value
+#define UINT8_C(value) value##U
+#define INT16_C(value) value
+#define UINT16_C(value) value##U
+#define INT32_C(value) value
+#define UINT32_C(value) value##U
+#define INT64_C(value) value##L
+#define UINT64_C(value) value##UL
+#define INTMAX_C(value) value##L
+#define UINTMAX_C(value) value##UL
+
 #endif

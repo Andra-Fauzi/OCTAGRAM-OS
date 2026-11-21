@@ -59,7 +59,8 @@ export CPPFLAGS="-I$USER/include -I$SRC/src -I$SRC/lib -I$SRC/gl -D_GNU_SOURCE=1
 export CFLAGS="-std=gnu11 -O2 -Wall -Wextra -ffreestanding -fno-builtin \
 -fno-stack-protector -fno-pie -fno-pic -mno-red-zone -mcmodel=small \
 -march=x86-64 -mtune=generic -mno-avx -mno-avx2 -mno-avx512f -mno-mmx \
--msse2 -mfpmath=387 -DOCTAGRAM_TLS_ERRNO -nostdinc -isystem $GCC_INTERNAL"
+-msse2 -mfpmath=387 -DOCTAGRAM_TLS_ERRNO \\
+-DOCTAGRAM_GNU_MAKE_ERRNO_ACCESSOR -nostdinc -isystem $GCC_INTERNAL"
 export LDFLAGS="-nostdlib -static -Wl,--gc-sections -Wl,-T,$USER/linker.ld"
 export LIBS="$USER/build/crt0.o $USER/build/runtime.o"
 

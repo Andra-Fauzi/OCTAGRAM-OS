@@ -2575,16 +2575,18 @@ pub fn link_elf_inputs(inputs: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
     let mut defined = alloc::collections::BTreeSet::<Vec<u8>>::new();
     let mut unresolved = alloc::collections::BTreeSet::<Vec<u8>>::new();
     for object in &selected {
-        let (definitions, references) = elf_global_symbols(object)?;
+        let (definitions, _) = elf_global_symbols(object)?;
         for name in definitions {
             defined.insert(name);
         }
+    }
+    for object in &selected {
+        let (_, references) = elf_global_symbols(object)?;
         for name in references {
             if !defined.contains(&name) {
                 unresolved.insert(name);
             }
         }
-        unresolved.retain(|name| !defined.contains(name));
     }
 
     for archive in archives {

@@ -25,3 +25,7 @@ order-only-check: message.o | order-only-dep
 
 order-only-dep:
 	$(CC) -c message.c -o order-only-dep
+
+.PHONY: automatic-vars-check
+automatic-vars-check: hello.c | order-only-dep
+	echo automatic:$@ first:$< newer:$? order:$|

@@ -25,6 +25,7 @@ struct BuildRecord {
     target: String,
     status: String,
     modified_seconds: Option<u64>,
+    size_bytes: Option<u64>,
     dependencies: String,
 }
 
@@ -591,6 +592,7 @@ fn build_target(
                 target: target.to_string(),
                 status: if is_phony { "phony" } else { "source" }.to_string(),
                 modified_seconds: file_mtime(target),
+                size_bytes: file_size(target),
                 dependencies: String::new(),
             });
             return Ok(());
@@ -618,6 +620,7 @@ fn build_target(
             target: target.to_string(),
             status: "aggregate".to_string(),
             modified_seconds: file_mtime(target),
+            size_bytes: file_size(target),
             dependencies,
         });
         built.push(target.to_string());
@@ -634,6 +637,7 @@ fn build_target(
             target: target.to_string(),
             status: "up-to-date".to_string(),
             modified_seconds: target_mtime,
+            size_bytes: file_size(target),
             dependencies,
         });
         built.push(target.to_string());
@@ -662,6 +666,7 @@ fn build_target(
         target: target.to_string(),
         status: if dry_run { "would-build" } else { "built" }.to_string(),
         modified_seconds: if dry_run { target_mtime } else { file_mtime(target) },
+        size_bytes: file_size(target),
         dependencies,
     });
     built.push(target.to_string());
@@ -674,15 +679,18 @@ fn write_build_manifest(path: &str, records: &[BuildRecord]) -> Result<(), Strin
     let descriptor = open(&path, O_WRONLY | O_CREAT | O_TRUNC)
         .map_err(|error| format!("cannot create build manifest ({error})"))?;
     let mut output = String::from(
-        "OCTAGRAM-BUILD-MANIFEST\t1\n# target\tstatus\tmtime_unix\tdependencies\n",
+        "OCTAGRAM-BUILD-MANIFEST\t1\n# target\tstatus\tmtime_unix\tsize_bytes\tdependencies\n",
     );
     for record in records {
         let modified = record.modified_seconds
             .map(|value| value.to_string())
             .unwrap_or_else(|| String::from("unknown"));
+        let size = record.size_bytes
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| String::from("unknown"));
         output.push_str(&format!(
-            "{}\t{}\t{}\t{}\n",
-            record.target, record.status, modified, record.dependencies
+            "{}\t{}\t{}\t{}\t{}\n",
+            record.target, record.status, modified, size, record.dependencies
         ));
     }
     let result = write_all(descriptor, output.as_bytes())
@@ -927,6 +935,11 @@ fn file_exists(path: &str) -> bool {
 }
 
 /// Return EXT2/VFS mtime when it is known. Zero is the ABI's "unknown" value.
+fn file_size(path: &str) -> Option<u64> {
+    let path = CString::new(path).ok()?;
+    stat_path(&path).ok().map(|metadata| metadata.size)
+}
+
 fn file_mtime(path: &str) -> Option<u64> {
     let path = CString::new(path).ok()?;
     let metadata = stat_path(&path).ok()?;

@@ -106,6 +106,37 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
+    # Exercise the shell's native ELF linker with two independent TinyCC
+    # objects and a cross-object PLT32/PC32 call relocation.
+    for command, label in (
+        ("tcc -c /share/octagram/ld-main.c -o /tmp/ld-main.o", "LD-MAIN-COMPILE"),
+        ("tcc -c /share/octagram/ld-helper.c -o /tmp/ld-helper.o", "LD-HELPER-COMPILE"),
+    ):
+        output_offset = len(serial_text())
+        send_line(command)
+        if not wait_for_after("program exited with status 0", output_offset, 60):
+            print("%s-FAIL: TinyCC did not produce its relocatable object" % label)
+            print(serial_text()[-5000:])
+            return 1
+
+    output_offset = len(serial_text())
+    send_line("ld /tmp/ld-main.o /tmp/ld-helper.o -o /tmp/ld-multi.elf")
+    if not wait_for_after("ld: wrote", output_offset, 60):
+        print("LD-MULTI-LINK-FAIL: native ld rejected multiple ELF objects")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("ld: entry point", output_offset, 5):
+        print("LD-MULTI-LINK-FAIL: native ld did not report an ELF entry point")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("run /tmp/ld-multi.elf")
+    if not wait_for_after("program exited with status 0", output_offset, 60):
+        print("LD-MULTI-RUN-FAIL: multi-object ELF did not exit successfully")
+        print(serial_text()[-5000:])
+        return 1
+
     output_offset = len(serial_text())
     send_line("make -C /share/octagram -n")
     if not wait_for_after("tcc hello.o libmessage.a -o hello.elf", output_offset, 30):

@@ -294,7 +294,12 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
   EXT2, pipeline/redirection teks, pencarian editor, uji persistensi reboot;
   menunggu verifikasi QEMU)
 - [ ] M2: native C toolchain (TinyCC + assembler/linker) teruji end-to-end
+  - [x] TinyCC compile/run, multi-file object/archive via TinyCC, extended libc smoke (QEMU)
+  - [x] Native `ld` ELF64 multi-object symbol resolution (host tests + QEMU smoke added; CI pending)
+  - [ ] Archive extraction, GOT/PLT/TLS relocations, canonical `cc/as/ld` interface
 - [ ] M3: native build orchestrator dengan dependency dan incremental rebuild
+  - [x] Make serial, include, single-stem pattern, `.PHONY`, order-only, incremental mtime rebuild, `-B` (QEMU)
+  - [ ] Build manifest native dan full shell recipe semantics
 - [ ] M4: bootstrap `rustc`, Rust `core/alloc`, lalu Cargo native/offline
 - [ ] M5: build kernel Rust sepenuhnya dari dalam OCTAGRAM
 - [ ] M6: native disk/boot image builder dan installer

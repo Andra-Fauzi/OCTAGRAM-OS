@@ -2358,37 +2358,62 @@ fn configure_persistent_home(current_dir: &str, arguments: &str) {
 }
 
 fn run_toolchain_command(command: &str, current_dir: &str, arguments: &str) {
-    let mut parts = arguments.split_whitespace();
-    let (Some(input), Some("-o"), Some(output), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
+    let parts = arguments.split_whitespace().collect::<Vec<_>>();
+    let Some(output_index) = parts.iter().position(|part| *part == "-o") else {
+        crate::println!("usage: {command} <input> [input ...] -o <output>");
+        return;
+    };
+    if output_index == 0 || output_index + 2 != parts.len() {
+        crate::println!("usage: {command} <input> [input ...] -o <output>");
+        return;
+    }
+    if command != "ld" && output_index != 1 {
         crate::println!("usage: {command} <input> -o <output>");
         return;
-    };
-    let (Some(input), Some(output)) = (
-        resolve_path(current_dir, input),
-        resolve_path(current_dir, output),
-    ) else {
-        crate::println!("{command}: invalid path");
-        return;
-    };
-    let source = match read_toolchain_file(&input) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            print_fs_error(command, &input, error);
+    }
+
+    let mut inputs = Vec::with_capacity(output_index);
+    for input in &parts[..output_index] {
+        let Some(path) = resolve_path(current_dir, input) else {
+            crate::println!("{command}: invalid input path: {input}");
             return;
-        }
-    };
-    let result = match command {
-        "as" => crate::toolchain::assemble(&source),
-        "ld" => {
-            if crate::toolchain::is_elf_object(&source) {
-                crate::toolchain::link_elf_object(&source)
-            } else {
-                crate::toolchain::link(&source)
+        };
+        match read_toolchain_file(&path) {
+            Ok(bytes) => inputs.push((path, bytes)),
+            Err(error) => {
+                print_fs_error(command, input, error);
+                return;
             }
         }
-        "cc" => crate::toolchain::compile_with_includes(&source, &input, read_toolchain_file),
+    }
+    let Some(output) = resolve_path(current_dir, parts[output_index + 1]) else {
+        crate::println!("{command}: invalid output path");
+        return;
+    };
+
+    let result = match command {
+        "as" => crate::toolchain::assemble(&inputs[0].1),
+        "cc" => crate::toolchain::compile_with_includes(
+            &inputs[0].1,
+            &inputs[0].0,
+            read_toolchain_file,
+        ),
+        "ld" => {
+            let all_elf = inputs
+                .iter()
+                .all(|(_, bytes)| crate::toolchain::is_elf_object(bytes));
+            if all_elf {
+                let objects = inputs
+                    .iter()
+                    .map(|(_, bytes)| bytes.as_slice())
+                    .collect::<Vec<_>>();
+                crate::toolchain::link_elf_objects(&objects)
+            } else if inputs.len() == 1 {
+                crate::toolchain::link(&inputs[0].1)
+            } else {
+                Err(crate::toolchain::ToolchainError::InvalidElfObject)
+            }
+        }
         _ => return,
     };
     let output_bytes = match result {

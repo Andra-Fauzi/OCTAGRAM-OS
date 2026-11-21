@@ -29,6 +29,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::{Mutex, Once};
 
 const MAKE_ELF: &[u8] = include_bytes!("../../../user/rust/build/make.elf");
+const GNU_MAKE_ELF: &[u8] = include_bytes!("../../../user/build/gnu-make-octagram/make");
 const RUST_HELLO_ELF: &[u8] = include_bytes!("../../../user/rust/build/rust_hello.elf");
 const RUST_HELLO_OCTAGRAM_ELF: &[u8] =
     include_bytes!("../../../user/rust/build/rust_hello_octagram.elf");
@@ -804,6 +805,7 @@ pub fn init() {
             .expect("mounting the device filesystem must succeed");
         seed_file(&mut vfs, "/bin/sh", SH_ELF, 0o755);
         seed_file(&mut vfs, "/bin/make", MAKE_ELF, 0o755);
+        seed_file(&mut vfs, "/usr/bin/gmake", GNU_MAKE_ELF, 0o755);
         seed_file(&mut vfs, "/bin/rust-hello", RUST_HELLO_ELF, 0o755);
         seed_file(
             &mut vfs,
@@ -954,6 +956,13 @@ mod tests {
     fn initial_vfs_contains_make_and_tcc_toolchain() {
         super::init();
         super::with_vfs(|vfs| {
+            let gmake = vfs.metadata("/usr/bin/gmake").unwrap();
+            assert_eq!(gmake.permissions, 0o755);
+            assert!(gmake.len > 0);
+            let mut gmake_magic = [0; 4];
+            assert_eq!(vfs.read("/usr/bin/gmake", 0, &mut gmake_magic), Ok(4));
+            assert_eq!(&gmake_magic, b"\x7FELF");
+
             let make = vfs.metadata("/bin/make").unwrap();
             assert_eq!(make.permissions, 0o755);
             assert!(make.len > 0);

@@ -170,3 +170,17 @@ workflow run.
 CI runs this cross-build after the existing userland CRT/runtime build. A
 successful compile is only the first gate: QEMU execution, recipe shell
 integration, and upstream regression tests remain separate gates.
+
+
+## Native VFS integration and first guest execution
+
+The host build now embeds the cross-built upstream binary from
+`user/build/gnu-make-octagram/make` into the initial VFS as
+`/usr/bin/gmake`. The existing `/bin/make` bootstrap utility remains in
+place until GNU Make passes the guest tests.
+
+The QEMU TinyCC self-hosting test invokes `/usr/bin/gmake` inside OCTAGRAM:
+it checks `--version`, parses the existing TinyCC Makefile with `-n`,
+forces all compile/archive/link recipes with `-B`, then runs the produced
+ELF. This is the first runtime gate for the upstream GNU Make port. It does
+not yet establish full POSIX shell or GNU Make compatibility.

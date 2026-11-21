@@ -350,6 +350,59 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
+    # Run the upstream GNU Make 4.4.1 binary, separately from the small
+    # bootstrap make currently installed at /bin/make.
+    output_offset = len(serial_text())
+    send_line("/usr/bin/gmake --version")
+    if not wait_for_after("GNU Make 4.4.1", output_offset, 30):
+        print("GNU-MAKE-VERSION-FAIL: upstream GNU Make did not start")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("GNU-MAKE-VERSION-FAIL: --version did not exit successfully")
+        print(serial_text()[-6000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("/usr/bin/gmake -C /share/octagram -n")
+    if not wait_for_after("tcc hello.o libmessage.a -o hello.elf", output_offset, 60):
+        print("GNU-MAKE-DRY-RUN-FAIL: upstream GNU Make did not parse the native Makefile")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("GNU-MAKE-DRY-RUN-FAIL: upstream GNU Make dry-run failed")
+        print(serial_text()[-6000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("/usr/bin/gmake -B -C /share/octagram")
+    gnu_make_recipes = (
+        "tcc -c hello.c -o hello.o",
+        "tcc -c message.c -o message.o",
+        "tcc -ar rcs libmessage.a message.o",
+        "tcc hello.o libmessage.a -o hello.elf",
+    )
+    if not all(wait_for_after(command, output_offset, 60) for command in gnu_make_recipes):
+        print("GNU-MAKE-BUILD-FAIL: GNU Make did not execute all TinyCC recipes")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 180):
+        print("GNU-MAKE-BUILD-FAIL: upstream GNU Make build did not exit successfully")
+        print(serial_text()[-6000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("run /share/octagram/hello.elf")
+    if not wait_for_after("Built inside OCTAGRAM!", output_offset, 60):
+        print("GNU-MAKE-RUN-FAIL: executable produced by GNU Make did not run")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("GNU-MAKE-RUN-FAIL: executable produced by GNU Make returned failure")
+        print(serial_text()[-6000:])
+        return 1
+
+    print("GNU-MAKE-OCTAGRAM-PASS: upstream GNU Make 4.4.1 version, dry-run, forced TinyCC build, and guest ELF execution passed")
     print("TCC-SELFHOST-PASS: TinyCC compile/run, Make build, up-to-date skip, newer-prerequisite rebuild, and -B force passed")
     print(serial_text()[-4000:])
     return 0

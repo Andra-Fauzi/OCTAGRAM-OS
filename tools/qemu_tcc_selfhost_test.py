@@ -367,21 +367,47 @@ def main():
         print(serial_text()[-6000:])
         return 1
     manifest_output = serial_text()[output_offset:]
-    if "OCTAGRAM-BUILD-MANIFEST\t1" not in manifest_output or "hello.o libmessage.a" not in manifest_output:
+    if "OCTAGRAM-BUILD-MANIFEST\t2" not in manifest_output or "hello.o libmessage.a" not in manifest_output:
         print("MAKE-MANIFEST-FAIL: manifest header or dependency graph is incomplete")
         print(manifest_output[-6000:])
         return 1
     manifest_lines = manifest_output.splitlines()
-    if "# target\tstatus\tmtime_unix\tsize_bytes\tdependencies" not in manifest_lines:
+    if "# target\tstatus\tmtime_unix\tsize_bytes\tsha256\tdependencies" not in manifest_lines:
         print("MAKE-MANIFEST-FAIL: manifest is missing its size column")
         print(manifest_output[-6000:])
         return 1
     hello_record = next((line.split("\t") for line in manifest_lines if line.startswith("hello.elf\t")), None)
-    if hello_record is None or len(hello_record) != 5 or not hello_record[3].isdigit() or hello_record[4] != "hello.o libmessage.a":
+    if hello_record is None or len(hello_record) != 6 or not hello_record[3].isdigit() or len(hello_record[4]) != 64 or hello_record[5] != "hello.o libmessage.a":
         print("MAKE-MANIFEST-FAIL: executable size/dependency record is malformed")
         print(manifest_output[-6000:])
         return 1
     print("MAKE-MANIFEST-OCTAGRAM-PASS: target status, mtime, size, and dependency graph verified")
+
+    # Verify the digest implementation against the published SHA-256 of an
+    # empty file. This catches padding/length and hex-encoding mistakes.
+    output_offset = len(serial_text())
+    send_line("touch /tmp/octagram-sha256-probe")
+    if not wait_for_after("octagram:/ $", output_offset, 15):
+        print("MAKE-SHA256-FAIL: could not create the empty digest probe")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("make -C /share/octagram --manifest /tmp/octagram-sha256.manifest /tmp/octagram-sha256-probe")
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("MAKE-SHA256-FAIL: manifest generation for digest probe failed")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("cat /tmp/octagram-sha256.manifest")
+    expected_empty_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    if not wait_for_after(expected_empty_sha256, output_offset, 30):
+        print("MAKE-SHA256-FAIL: empty-file SHA-256 does not match the known digest")
+        print(serial_text()[-5000:])
+        return 1
+    print("MAKE-SHA256-OCTAGRAM-PASS: streaming SHA-256 matches the known empty-file digest")
+
 
     # Run the upstream GNU Make 4.4.1 binary, separately from the small
     # bootstrap make currently installed at /bin/make.

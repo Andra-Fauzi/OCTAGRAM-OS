@@ -449,7 +449,7 @@ fn get_variable<'a>(variables: &'a [(String, String)], name: &str) -> Option<&'a
 fn expand(
     source: &str,
     variables: &[(String, String)],
-    automatic: Option<(&str, &str, &str, &str)>,
+    automatic: Option<(&str, &str, &str, &str, &str, &str)>,
     depth: usize,
 ) -> Result<String, String> {
     if depth > 16 {
@@ -471,10 +471,12 @@ fn expand(
                 output.push('$');
                 continue;
             }
-            '@' => automatic.map(|(target, _, _, _)| target).unwrap_or(""),
-            '<' => automatic.map(|(_, first, _, _)| first).unwrap_or(""),
-            '^' => automatic.map(|(_, _, all, _)| all).unwrap_or(""),
-            '*' => automatic.map(|(_, _, _, stem)| stem).unwrap_or(""),
+            '@' => automatic.map(|(target, _, _, _, _, _)| target).unwrap_or(""),
+            '<' => automatic.map(|(_, first, _, _, _, _)| first).unwrap_or(""),
+            '^' => automatic.map(|(_, _, all, _, _, _)| all).unwrap_or(""),
+            '*' => automatic.map(|(_, _, _, stem, _, _)| stem).unwrap_or(""),
+            '?' => automatic.map(|(_, _, _, _, newer, _)| newer).unwrap_or(""),
+            '|' => automatic.map(|(_, _, _, _, _, order_only)| order_only).unwrap_or(""),
             '(' | '{' => {
                 let closing = if next == '(' { ')' } else { '}' };
                 let mut name = String::new();
@@ -599,12 +601,25 @@ fn build_target(
 
     let first = rule.dependencies.first().map(String::as_str).unwrap_or("");
     let all = rule.dependencies.join(" ");
+    let newer = rule
+        .dependencies
+        .iter()
+        .zip(&prerequisite_mtimes)
+        .filter(|(_, modified)| {
+            target_mtime.is_none_or(|target_time| modified.is_none_or(|time| time > target_time))
+        })
+        .map(|(dependency, _)| dependency.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let order_only = rule.order_only_dependencies.join(" ");
     for recipe in &rule.recipes {
         run_recipe(
             recipe,
             &rule.target,
             first,
             &all,
+            &newer,
+            &order_only,
             &makefile.variables,
             rule.stem.as_deref().unwrap_or(""),
             dry_run,
@@ -620,6 +635,8 @@ fn run_recipe(
     target: &str,
     first_dependency: &str,
     all_dependencies: &str,
+    newer_dependencies: &str,
+    order_only_dependencies: &str,
     variables: &[(String, String)],
     stem: &str,
     dry_run: bool,
@@ -644,7 +661,7 @@ fn run_recipe(
     let expanded = expand(
         recipe,
         variables,
-        Some((target, first_dependency, all_dependencies, stem)),
+        Some((target, first_dependency, all_dependencies, stem, newer_dependencies, order_only_dependencies)),
         0,
     )?;
     let commands = split_recipe_commands(&expanded)?;

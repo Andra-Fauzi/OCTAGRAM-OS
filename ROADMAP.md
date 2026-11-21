@@ -296,14 +296,33 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
 - [ ] M2: native C toolchain (TinyCC + assembler/linker) teruji end-to-end
   - [x] TinyCC compile/run, multi-file object/archive via TinyCC, extended libc smoke (QEMU)
   - [x] Native `ld` ELF64 multi-object symbol resolution (host tests + QEMU smoke added; CI pending)
-  - [ ] Archive extraction, GOT/PLT/TLS relocations, canonical `cc/as/ld` interface
+  - [x] Lazy static archive extraction in native `ld` (host tests + QEMU smoke)
+  - [x] PC-relative GOT relocations `GOTPCREL`/`GOTPCRELX`/`REX_GOTPCRELX`/`GOTPC32` dengan slot writable per simbol (host tests)
+  - [x] Static TLS local-exec: template `PT_TLS` dari `.tdata`/`.tbss`, relokasi `TPOFF32`/`TPOFF64`, dan initial-exec `GOTTPOFF` (host tests)
+  - [ ] PLT dinamis, dynamic TLS (`TLSGD`/`TLSLD`), dan antarmuka `cc/as/ld` canonical
 - [ ] M3: native build orchestrator dengan dependency dan incremental rebuild
   - [x] Make serial, include, single-stem pattern, `.PHONY`, order-only, incremental mtime rebuild, `-B` (QEMU)
   - [ ] Build manifest native dan full shell recipe semantics
 - [ ] M4: bootstrap `rustc`, Rust `core/alloc`, lalu Cargo native/offline
 - [ ] M5: build kernel Rust sepenuhnya dari dalam OCTAGRAM
 - [ ] M6: native disk/boot image builder dan installer
+  - [x] Builder image native: GPT + FAT32 ESP + EXT2 root, manifest SHA-256,
+    verifikasi read-back byte-per-byte, perintah `mkimage` (host tests)
+  - [x] Image berbasis file lewat `FileDisk` + `mkimage file <path> <mib>`
+    (host tests, termasuk build image penuh ke file VFS)
+  - [ ] Boot QEMU dari image hasil builder dan verifikasi entry boot Limine pada
+    firmware nyata
 - [ ] M7: A/B update, verifikasi, rollback, dan bootstrap proof
+  - [x] Policy engine A/B + journal 128 byte ber-SHA-256 (`selfupdate`): hanya
+    slot nonaktif, switch wajib setelah verifikasi, rollback setelah 3 boot
+    gagal, promosi known-good (host tests)
+  - [x] Journal di-seed oleh image builder dan installer (slot A known-good +
+    digest kernel), dan diverifikasi saat read-back image
+  - [x] Layout A/B di image builder: ESP + root A + root B, salinan kernel per
+    slot, entri Limine per slot, journal A known-good di kedua root, dan
+    verifikasi read-back ketiga partisi (host tests; `mkimage file ... ab`)
+  - [ ] Pemilihan slot oleh bootloader dari journal, penanda boot sukses, uji
+    mati listrik, dan bootstrap berulang
 
 Status awal pada branch roadmap: fondasi userspace, TinyCC, toolchain mini,
 Rust `no_std`, ELF loader, dan installer persisten sudah ada. Tidak ada milestone

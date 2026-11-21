@@ -12,6 +12,7 @@ use crate::storage::{
     block::{self, BlockDevice, BlockDeviceRef},
     ext2::Ext2,
     fat32::Fat32,
+    file_disk::FileDisk,
     partition::{self, LINUX_FILESYSTEM_GUID, PartitionDevice},
 };
 
@@ -152,6 +153,8 @@ async fn execute(
         "sched" => show_scheduler_status(),
         "mkfs.fat" => format_fat32_device(arguments),
         "mkfs.ext2" => format_ext2_device(arguments),
+        "mkimage" => run_mkimage_command(arguments),
+        "selfupdate" => run_selfupdate_command(arguments),
         "as" => run_toolchain_command("as", current_dir, arguments),
         "ld" => run_toolchain_command("ld", current_dir, arguments),
         "cc" => run_toolchain_command("cc", current_dir, arguments),
@@ -1860,6 +1863,205 @@ fn format_fat32_device(arguments: &str) {
         Ok(()) => crate::println!("Formatted {device_name} as FAT32"),
         Err(error) => crate::println!("mkfs.fat: {device_name}: {error:?}"),
     }
+}
+
+/// Build a bootable image on a target disk from explicit boot assets.
+///
+/// Unlike `installer`, this does not use the Live install path: it writes the
+/// GPT layout, formats both filesystems, copies the running kernel and UEFI
+/// loader, records a SHA-256 manifest, and verifies the result by reading it
+/// back before reporting success.
+fn run_mkimage_command(arguments: &str) {
+    let words = arguments.split_whitespace().collect::<Vec<_>>();
+    if words.first().is_some_and(|word| *word == "file") {
+        run_mkimage_file(&words);
+        return;
+    }
+    let mut parts = arguments.split_whitespace();
+    let (Some(device_name), Some(confirmation), None) = (parts.next(), parts.next(), parts.next())
+    else {
+        crate::println!("usage: mkimage <sata-device> MKIMAGE-ERASE");
+        crate::println!("       mkimage file <absolute-path.img> <size-mib> [ab]");
+        crate::println!("Builds and verifies a bootable GPT/FAT32/EXT2 image.");
+        return;
+    };
+    if confirmation != "MKIMAGE-ERASE" {
+        crate::println!("mkimage: destructive confirmation is required");
+        crate::println!("rerun with mkimage {device_name} MKIMAGE-ERASE");
+        return;
+    }
+    if !device_name.starts_with("sata") {
+        crate::println!("mkimage: only internal SATA/AHCI devices (sataN) are supported");
+        return;
+    }
+    if crate::fs::persistent_root_device().as_deref() == Some(device_name) {
+        crate::println!("mkimage: refusing to overwrite the disk that currently contains /");
+        return;
+    }
+    if is_block_device_mounted(device_name) {
+        crate::println!("mkimage: {device_name} has a mounted filesystem; run umount first");
+        return;
+    }
+    let Some(device) = block::get(device_name) else {
+        crate::println!("mkimage: storage device `{device_name}` not found (try `devices`)");
+        return;
+    };
+    if let Err(error) = crate::installer::ensure_safe_format_target(device.as_ref()) {
+        crate::println!("mkimage: {error}");
+        return;
+    }
+    let Some((kernel, bootloader)) = crate::installer::live_boot_files() else {
+        crate::println!(
+            "mkimage: Limine did not provide the running kernel and BOOTX64.EFI module"
+        );
+        return;
+    };
+
+    crate::println!("Building native image on {device_name}...");
+    match crate::image_builder::build_image(
+        device,
+        crate::image_builder::ImageAssets {
+            kernel,
+            bootloader,
+            boot_config: include_bytes!("../../limine.conf"),
+        },
+    ) {
+        Ok(report) => {
+            crate::println!("ESP: FAT32 at LBA {} ({} sectors)", report.esp_first_lba, report.esp_sectors);
+            crate::println!("Root: EXT2 at LBA {} ({} sectors)", report.root_first_lba, report.root_sectors);
+            crate::println!("kernel sha256: {}", report.kernel_sha256);
+            crate::println!("loader sha256: {}", report.bootloader_sha256);
+            crate::println!("manifest sha256: {}", report.manifest_sha256);
+            crate::println!("Image read-back verification passed.");
+        }
+        Err(error) => crate::println!("mkimage: {error:?}"),
+    }
+}
+
+/// Build a bootable image file instead of writing a physical disk.
+///
+/// The file is created fresh (never overwritten) and grows as the builder
+/// writes sectors, so a produced image can be copied to USB or attached to a
+/// VM without a destructive disk operation.
+fn run_mkimage_file(words: &[&str]) {
+    let two_slots = words.len() == 4 && words[3] == "ab";
+    if words.len() != 3 && !two_slots {
+        crate::println!("usage: mkimage file <absolute-path.img> <size-mib> [ab]");
+        return;
+    }
+    let path = words[1];
+    if !path.starts_with('/') {
+        crate::println!("mkimage: image path must be absolute");
+        return;
+    }
+    let Ok(size_mib) = words[2].parse::<u64>() else {
+        crate::println!("mkimage: image size must be an integer number of MiB");
+        return;
+    };
+    let sectors = size_mib.saturating_mul(1024 * 1024 / block::SECTOR_SIZE as u64);
+    let minimum_mib = crate::image_builder::MIN_IMAGE_SECTORS * block::SECTOR_SIZE as u64
+        / (1024 * 1024);
+    if sectors < crate::image_builder::MIN_IMAGE_SECTORS {
+        crate::println!("mkimage: image size must be at least {minimum_mib} MiB");
+        return;
+    }
+    let disk = match FileDisk::create(path, sectors) {
+        Ok(disk) => disk,
+        Err(error) => {
+            crate::println!("mkimage: cannot create {path}: {error:?}");
+            return;
+        }
+    };
+    let Some((kernel, bootloader)) = crate::installer::live_boot_files() else {
+        crate::println!(
+            "mkimage: Limine did not provide the running kernel and BOOTX64.EFI module"
+        );
+        return;
+    };
+
+    let assets = crate::image_builder::ImageAssets {
+        kernel,
+        bootloader,
+        boot_config: include_bytes!("../../limine.conf"),
+    };
+    crate::println!(
+        "Building native image file {path} ({size_mib} MiB, {} slot)...",
+        if two_slots { "A/B" } else { "single" }
+    );
+    if two_slots {
+        match crate::image_builder::build_ab_image(Arc::new(disk), assets) {
+            Ok(report) => {
+                crate::println!("ESP: FAT32 at LBA {} ({} sectors)", report.esp_first_lba, report.esp_sectors);
+                crate::println!("Root A: EXT2 at LBA {} ({} sectors)", report.root_a_first_lba, report.root_a_sectors);
+                crate::println!("Root B: EXT2 at LBA {} ({} sectors)", report.root_b_first_lba, report.root_b_sectors);
+                crate::println!("kernel sha256: {}", report.kernel_sha256);
+                crate::println!("loader sha256: {}", report.bootloader_sha256);
+                crate::println!("manifest sha256: {}", report.manifest_sha256);
+                crate::println!("A/B image read-back verification passed: {path}");
+            }
+            Err(error) => crate::println!("mkimage: {error:?}"),
+        }
+    } else {
+        match crate::image_builder::build_image(Arc::new(disk), assets) {
+            Ok(report) => {
+                crate::println!("ESP: FAT32 at LBA {} ({} sectors)", report.esp_first_lba, report.esp_sectors);
+                crate::println!("Root: EXT2 at LBA {} ({} sectors)", report.root_first_lba, report.root_sectors);
+                crate::println!("kernel sha256: {}", report.kernel_sha256);
+                crate::println!("loader sha256: {}", report.bootloader_sha256);
+                crate::println!("manifest sha256: {}", report.manifest_sha256);
+                crate::println!("Image read-back verification passed: {path}");
+            }
+            Err(error) => crate::println!("mkimage: {error:?}"),
+        }
+    }
+}
+
+fn run_selfupdate_command(arguments: &str) {
+    match arguments.trim() {
+        "" | "status" => match read_update_journal() {
+            Ok(Some(journal)) => crate::println!("selfupdate: {}", journal.summary()),
+            Ok(None) => crate::println!(
+                "selfupdate: no journal at {} (run `selfupdate init`)",
+                crate::selfupdate::JOURNAL_PATH
+            ),
+            Err(error) => crate::println!("selfupdate: {error:?}"),
+        },
+        "init" => {
+            let journal = crate::selfupdate::UpdateJournal::new();
+            match write_toolchain_file(
+                crate::selfupdate::JOURNAL_PATH,
+                &journal.to_bytes(),
+                false,
+            ) {
+                Ok(()) => crate::println!(
+                    "selfupdate: initialized {} ({})",
+                    crate::selfupdate::JOURNAL_PATH,
+                    journal.summary()
+                ),
+                Err(error) => crate::println!("selfupdate: {error:?}"),
+            }
+        }
+        _ => {
+            crate::println!("usage: selfupdate [status|init]");
+            crate::println!(
+                "Policy: install into the inactive slot, verify, then switch; failed boots roll back."
+            );
+        }
+    }
+}
+
+fn read_update_journal() -> Result<Option<crate::selfupdate::UpdateJournal>, FsError> {
+    with_vfs(|vfs| match vfs.metadata(crate::selfupdate::JOURNAL_PATH) {
+        Ok(metadata) if metadata.node_type == NodeType::File => {
+            let bytes = read_file_limited(vfs, crate::selfupdate::JOURNAL_PATH, 128)?;
+            crate::selfupdate::UpdateJournal::from_bytes(&bytes)
+                .map(Some)
+                .map_err(|_| FsError::InvalidData)
+        }
+        Ok(_) => Err(FsError::IsDirectory),
+        Err(FsError::NotFound) => Ok(None),
+        Err(error) => Err(error),
+    })
 }
 
 fn list_kernel_drivers() {

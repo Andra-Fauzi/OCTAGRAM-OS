@@ -310,6 +310,15 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
             .map_err(|error| format!("writing {description} failed: {error:?}"))?;
     }
     crate::terminal::terminal_show_task_progress("Write root files", root_files.len() as u64, root_files.len() as u64);
+    // A freshly installed system has exactly one verified slot: A.
+    let mut journal = crate::selfupdate::UpdateJournal::new();
+    journal.mark_known_good(crate::selfupdate::Slot::A, crate::sha256::digest(kernel));
+    write_file(
+        &mut root,
+        crate::selfupdate::JOURNAL_PATH,
+        &journal.to_bytes(),
+    )
+    .map_err(|error| format!("writing update journal failed: {error:?}"))?;
     crate::println!("");
 
     crate::println!("Verifying installed filesystems...");
@@ -322,7 +331,12 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     }
     crate::terminal::terminal_show_task_progress("Verify EFI files", efi_paths.len() as u64, efi_paths.len() as u64);
     crate::println!("");
-    let root_paths = ["/etc/octagram-root", "/etc/os-release", "/home/octagram/.profile"];
+    let root_paths = [
+        "/etc/octagram-root",
+        "/etc/os-release",
+        "/home/octagram/.profile",
+        crate::selfupdate::JOURNAL_PATH,
+    ];
     for (index, path) in root_paths.iter().enumerate() {
         crate::terminal::terminal_show_task_progress("Verify root files", index as u64, root_paths.len() as u64);
         if root.metadata(path).is_err() {
@@ -439,7 +453,8 @@ fn write_file_with_progress(
     Ok(())
 }
 
-fn live_boot_files() -> Option<(&'static [u8], &'static [u8])> {
+/// Running kernel ELF and the UEFI loader Limine preloaded, when available.
+pub(crate) fn live_boot_files() -> Option<(&'static [u8], &'static [u8])> {
     let executable_response = crate::EXECUTABLE_FILE_REQUEST.get_response()?;
     let executable = executable_response.file();
     let kernel_size = usize::try_from(executable.size()).ok()?;

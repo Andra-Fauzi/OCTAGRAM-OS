@@ -45,23 +45,30 @@ executable statis dengan dua segmen:
 | Segmen | Isi | Flag |
 | --- | --- | --- |
 | teks | section `SHF_ALLOC` + `SHF_EXECINSTR` (`.text`) | `R|X` |
-| data | section `SHF_ALLOC` non-eksekusi (`.data`, `.rodata`) dan `.bss` | `R|W` |
+| data | section `SHF_ALLOC` non-eksekusi (`.data`, `.rodata`), GOT, template TLS, dan `.bss` | `R|W` |
+| TLS | `PT_TLS` untuk section `SHF_TLS` (`.tdata` + `.tbss`) | `R` |
 
-Relokasi yang didukung: `R_X86_64_64`, `PC32`, `PLT32`, `32`, dan `32S`.
-Definisi global kuat ganda, simbol kuat undefined, COMMON, GOT/PLT/TLS, dan
-arsip `.a` belum didukung. Relokasi lain gagal dengan `UnsupportedRelocation` alih-alih menghasilkan binary
-rusak. Simbol undefined dianggap error (`UndefinedSymbol`), common symbol
-ditolak (`UnsupportedCommonSymbol`), dan entry point diambil dari simbol
-`_start` (`NoEntryPoint` bila tidak ada). `.bss` ditempatkan setelah data
-dengan `p_memsz` lebih besar dari `p_filesz`.
+Relokasi yang didukung: `R_X86_64_64`, `PC32`, `PLT32`, `32`, `32S`,
+`GOTPCREL`/`GOTPCRELX`/`REX_GOTPCRELX`/`GOTPC32` (slot GOT writable per simbol),
+TLS local-exec `TPOFF32`/`TPOFF64`, serta initial-exec `GOTTPOFF` (slot berisi
+`S - TP`; template `PT_TLS`, thread pointer di aligned end blok sesuai
+`user/runtime.c`). Definisi global kuat ganda, simbol
+kuat undefined, COMMON, PLT dinamis, dynamic TLS (`TLSGD`/`TLSLD`/`GOTTPOFF`),
+dan arsip gagal dengan error spesifik: arsip `.a` justru didukung lewat
+`link_elf_inputs` (ekstraksi lazy per member). Relokasi lain gagal dengan
+`UnsupportedRelocation` alih-alih menghasilkan binary rusak. Simbol undefined
+non-weak dianggap error (`UndefinedSymbol`), common symbol ditolak
+(`UnsupportedCommonSymbol`), dan entry point diambil dari simbol `_start`
+(`NoEntryPoint` bila tidak ada). `.bss` ditempatkan setelah data dengan
+`p_memsz` lebih besar dari `p_filesz`.
 
-Batasan yang masih ada: satu objek per pemanggilan `ld` (belum ada penggabungan
-beberapa objek atau arsip `.a` lewat linker ini), tanpa dukungan relocation
-GOT/PLT/TLS, dan tanpa simbol lokal bernama sama pada banyak objek.
+Batasan yang masih ada: PLT dinamis dan dynamic TLS (`TLSGD`/`TLSLD`) belum ada;
+`TPOFF`/`GOTTPOFF` hanya berlaku di dalam satu executable statis, dan program
+hasil `ld` native belum otomatis menyertakan bootstrap TLS `crt0`/runtime.
 
 Uji host: `cargo +nightly test ... toolchain::tests::` mencakup link objek
-`ET_REL` dua segmen (relokasi `R_X86_64_32` terhadap `.data`) dan penolakan
-objek tanpa simbol `_start`.
+`ET_REL` multi-segmen, resolusi simbol lintas objek, ekstraksi arsip, relokasi
+GOT, template TLS + `TPOFF64`, dan penolakan objek tanpa simbol `_start`.
 
 Setelah menulis output, `ld` mencetak `ld: entry point 0x…` dari `e_entry` ELF
 hasil link. Baris ini dipakai untuk membandingkan alamat entry dengan RIP pada

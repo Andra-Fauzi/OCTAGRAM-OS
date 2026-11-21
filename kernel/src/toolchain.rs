@@ -2516,6 +2516,8 @@ const ELF_ET_REL: u16 = 1;
 const ELF_ET_EXEC: u16 = 2;
 const ELF_EM_X86_64: u16 = 62;
 const ELF_PT_LOAD: u32 = 1;
+const ELF_PT_TLS: u32 = 7;
+const ELF_SHF_TLS: u64 = 0x400;
 const ELF_PF_R: u32 = 4;
 const ELF_PF_W: u32 = 2;
 const ELF_PF_X: u32 = 1;
@@ -2541,6 +2543,8 @@ enum ElfPlacement {
     Text(usize),
     Data(usize),
     Bss(usize),
+    /// Offset inside the static TLS template (`.tdata` + `.tbss`).
+    Tls(usize),
 }
 
 pub fn is_elf_object(bytes: &[u8]) -> bool {
@@ -2818,9 +2822,16 @@ pub fn link_elf_object(object: &[u8]) -> Result<Vec<u8>, ToolchainError> {
 /// Link multiple ELF64 x86_64 relocatable objects into one static OCTAGRAM
 /// executable. Global and weak symbols are resolved across object boundaries.
 ///
-/// Supported relocations: R_X86_64_64, PC32, PLT32, 32, and 32S. GOT/PLT
-/// construction, TLS relocations, COMMON symbols, and archives are deliberately
-/// rejected until their ABI and extraction rules are implemented.
+/// Supported relocations: R_X86_64_64, PC32, PLT32, 32, 32S, the PC-relative
+/// GOT forms (GOTPCREL, GOTPCRELX, REX_GOTPCRELX, GOTPC32), the static TLS
+/// local-exec forms (TPOFF64, TPOFF32), and initial-exec TLS (`GOTTPOFF`, where
+/// the GOT slot holds `S - TP`). TLS sections are collected into a
+/// `PT_TLS` template inside the writable data segment; the runtime in
+/// `user/runtime.c` copies that template and sets the thread pointer to the
+/// aligned end of the block, matching the `TPOFF` convention below.
+/// Dynamic PLT construction, dynamic TLS (`TLSGD`/`TLSLD`/`GOTTPOFF`), and
+/// COMMON symbols remain rejected; static archives are handled by
+/// [`link_elf_inputs`].
 pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
     if objects.is_empty() || objects.len() > MAX_ELF_LINKED_OBJECTS {
         return Err(ToolchainError::InvalidElfObject);
@@ -2843,6 +2854,9 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
     let mut text = Vec::new();
     let mut data = Vec::new();
     let mut bss_size = 0usize;
+    let mut tls_data = Vec::new();
+    let mut tls_bss_size = 0usize;
+    let mut tls_alignment = 1usize;
 
     // Pass 1: validate each ET_REL object and lay out all allocated sections.
     for object in objects {
@@ -2911,6 +2925,39 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                 continue;
             }
             let alignment = section.alignment.max(1);
+            if section.flags & ELF_SHF_TLS != 0 {
+                tls_alignment = tls_alignment.max(alignment);
+                if section.section_type == ELF_SHT_NOBITS {
+                    let start = align_up(
+                        tls_data
+                            .len()
+                            .checked_add(tls_bss_size)
+                            .ok_or(ToolchainError::OutOfBounds)?,
+                        alignment,
+                    )?;
+                    placements[index] = Some(ElfPlacement::Tls(start));
+                    tls_bss_size = start
+                        .checked_add(section.size)
+                        .and_then(|end| end.checked_sub(tls_data.len()))
+                        .ok_or(ToolchainError::OutOfBounds)?;
+                } else if section.section_type == ELF_SHT_PROGBITS {
+                    let source = object
+                        .get(section.offset..section.offset + section.size)
+                        .ok_or(ToolchainError::InvalidElfObject)?;
+                    let start = align_up(tls_data.len(), alignment)?;
+                    tls_data.resize(start, 0);
+                    tls_data.extend_from_slice(source);
+                    placements[index] = Some(ElfPlacement::Tls(start));
+                }
+                if tls_data
+                    .len()
+                    .checked_add(tls_bss_size)
+                    .is_none_or(|size| size > MAX_ELF_LINKED_SIZE)
+                {
+                    return Err(ToolchainError::OutOfBounds);
+                }
+                continue;
+            }
             if section.section_type == ELF_SHT_NOBITS {
                 let start = align_up(
                     data.len()
@@ -2974,13 +3021,191 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
         return Err(ToolchainError::InvalidElfObject);
     }
 
+    // Pass 1b: reserve one writable GOT slot per distinct symbol referenced by
+    // a PC-relative GOT relocation. Slots live at the end of the data image and
+    // before BSS, so every symbol address resolved below already accounts for
+    // them.
+    struct GotEntry {
+        object_index: usize,
+        symbol_index: usize,
+        data_offset: usize,
+        address: u64,
+        /// Initial-exec TLS (`GOTTPOFF`): the slot holds `S - TP`, not `S`.
+        tpoff: bool,
+    }
+    let mut got_entries: Vec<GotEntry> = Vec::new();
+    let mut got_by_name: BTreeMap<(Vec<u8>, bool), usize> = BTreeMap::new();
+    let mut got_by_local: BTreeMap<(usize, usize, bool), usize> = BTreeMap::new();
+    for (object_index, (object, parsed)) in objects.iter().zip(parsed_objects.iter()).enumerate() {
+        for section in &parsed.sections {
+            if section.section_type != ELF_SHT_RELA
+                || section.link as usize != parsed.symtab_index
+                || parsed
+                    .placements
+                    .get(section.info as usize)
+                    .is_none_or(|placement| placement.is_none())
+            {
+                continue;
+            }
+            if section.size % ELF_RELA_SIZE != 0 {
+                return Err(ToolchainError::InvalidElfObject);
+            }
+            for relocation in 0..section.size / ELF_RELA_SIZE {
+                let base = section
+                    .offset
+                    .checked_add(relocation * ELF_RELA_SIZE)
+                    .ok_or(ToolchainError::OutOfBounds)?;
+                let info = elf_u64(object, base + 8)?;
+                let kind = info as u32;
+                if !matches!(kind, 9 | 22 | 26 | 41 | 42) {
+                    continue;
+                }
+                let tpoff = kind == 22;
+                let symbol_index = usize::try_from(info >> 32)
+                    .map_err(|_| ToolchainError::InvalidElfObject)?;
+                let symbol_base = parsed
+                    .symtab
+                    .offset
+                    .checked_add(
+                        symbol_index
+                            .checked_mul(ELF_SYMBOL_SIZE)
+                            .ok_or(ToolchainError::OutOfBounds)?,
+                    )
+                    .ok_or(ToolchainError::OutOfBounds)?;
+                let symbol = object
+                    .get(symbol_base..symbol_base + ELF_SYMBOL_SIZE)
+                    .ok_or(ToolchainError::InvalidElfObject)?;
+                let binding = symbol[4] >> 4;
+                if binding > 2 {
+                    return Err(ToolchainError::InvalidElfObject);
+                }
+                let name_offset =
+                    u32::from_le_bytes(symbol[..4].try_into().unwrap()) as usize;
+                if name_offset >= parsed.strings.size {
+                    return Err(ToolchainError::InvalidElfObject);
+                }
+                let name_start = parsed
+                    .strings
+                    .offset
+                    .checked_add(name_offset)
+                    .ok_or(ToolchainError::OutOfBounds)?;
+                let name_end = parsed
+                    .strings
+                    .offset
+                    .checked_add(parsed.strings.size)
+                    .ok_or(ToolchainError::OutOfBounds)?;
+                let tail = object
+                    .get(name_start..name_end)
+                    .ok_or(ToolchainError::InvalidElfObject)?;
+                let length = tail
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .ok_or(ToolchainError::InvalidElfObject)?;
+                let name = tail[..length].to_vec();
+                let duplicate = if binding == 0 {
+                    got_by_local.contains_key(&(object_index, symbol_index, tpoff))
+                } else {
+                    got_by_name.contains_key(&(name.clone(), tpoff))
+                };
+                if duplicate {
+                    continue;
+                }
+                let index = got_entries.len();
+                if binding == 0 {
+                    got_by_local.insert((object_index, symbol_index, tpoff), index);
+                } else {
+                    got_by_name.insert((name.clone(), tpoff), index);
+                }
+                got_entries.push(GotEntry {
+                    object_index,
+                    symbol_index,
+                    data_offset: 0,
+                    address: 0,
+                    tpoff,
+                });
+            }
+        }
+    }
+    if !got_entries.is_empty() {
+        let data_len_before = data.len();
+        let got_start = align_up(data_len_before, 8)?;
+        data.resize(got_start, 0);
+        for (index, entry) in got_entries.iter_mut().enumerate() {
+            entry.data_offset = got_start
+                .checked_add(index.checked_mul(8).ok_or(ToolchainError::OutOfBounds)?)
+                .ok_or(ToolchainError::OutOfBounds)?;
+            let slot_end = entry
+                .data_offset
+                .checked_add(8)
+                .ok_or(ToolchainError::OutOfBounds)?;
+            data.resize(slot_end, 0);
+        }
+        // BSS offsets are relative to the data base, so growing the file-backed
+        // data image shifts every BSS placement by the same amount.
+        let shift = data
+            .len()
+            .checked_sub(data_len_before)
+            .ok_or(ToolchainError::OutOfBounds)?;
+        for parsed in parsed_objects.iter_mut() {
+            for placement in parsed.placements.iter_mut() {
+                if let Some(ElfPlacement::Bss(start)) = placement {
+                    *start = start
+                        .checked_add(shift)
+                        .ok_or(ToolchainError::OutOfBounds)?;
+                }
+            }
+        }
+    }
+
+    // Place the file-backed part of the TLS template at the end of the data
+    // image. BSS offsets are relative to the data base, so they shift again.
+    let tls_filesz = tls_data.len();
+    let tls_memsz = tls_filesz
+        .checked_add(tls_bss_size)
+        .ok_or(ToolchainError::OutOfBounds)?;
+    let tls_alignment = tls_alignment.max(1);
+    if tls_memsz > 0
+        && (!tls_alignment.is_power_of_two() || tls_alignment > 4096)
+    {
+        // user/runtime.c rejects these values too; fail at link time instead.
+        return Err(ToolchainError::InvalidElfObject);
+    }
+    let mut tls_offset_in_data = 0usize;
+    if tls_memsz > 0 {
+        let data_len_before = data.len();
+        let start = align_up(data_len_before, tls_alignment)?;
+        data.resize(start, 0);
+        data.extend_from_slice(&tls_data);
+        tls_offset_in_data = start;
+        let shift = data
+            .len()
+            .checked_sub(data_len_before)
+            .ok_or(ToolchainError::OutOfBounds)?;
+        for parsed in parsed_objects.iter_mut() {
+            for placement in parsed.placements.iter_mut() {
+                if let Some(ElfPlacement::Bss(start)) = placement {
+                    *start = start
+                        .checked_add(shift)
+                        .ok_or(ToolchainError::OutOfBounds)?;
+                }
+            }
+        }
+    }
+    // The thread pointer sits at the aligned end of the TLS block, so a symbol
+    // at template offset O has TPOFF = O - aligned_size.
+    let tls_aligned_size = align_up(tls_memsz, tls_alignment)?;
+
     let text_size = text.len();
     let data_vaddr = ELF_BASE
         .checked_add(align_up(text_size, 0x1000)? as u64)
         .ok_or(ToolchainError::OutOfBounds)?;
+    let tls_vaddr = data_vaddr
+        .checked_add(tls_offset_in_data as u64)
+        .ok_or(ToolchainError::OutOfBounds)?;
     let data_memory_size = data
         .len()
         .checked_add(bss_size)
+        .and_then(|size| size.checked_add(tls_bss_size))
         .ok_or(ToolchainError::OutOfBounds)?;
 
     // Pass 2: resolve every defined symbol to its final virtual address and
@@ -3063,6 +3288,10 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                             .checked_add(start as u64)
                             .and_then(|base| base.checked_add(relative))
                             .ok_or(ToolchainError::OutOfBounds)?,
+                        ElfPlacement::Tls(start) => tls_vaddr
+                            .checked_add(start as u64)
+                            .and_then(|base| base.checked_add(relative))
+                            .ok_or(ToolchainError::OutOfBounds)?,
                     })
                 }
             };
@@ -3106,6 +3335,46 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
         object_symbols.push(symbols);
     }
 
+    // Fill every GOT slot with the final address of the symbol it represents and
+    // record where the slot itself lives.
+    for got in got_entries.iter_mut() {
+        let symbol = &object_symbols[got.object_index][got.symbol_index];
+        let value = if symbol.binding == 0 {
+            symbol.value.ok_or(ToolchainError::UndefinedSymbol)?
+        } else if let Some((value, _)) = global_symbols.get(&symbol.name) {
+            *value
+        } else if symbol.binding == 2 {
+            0
+        } else {
+            return Err(ToolchainError::UndefinedSymbol);
+        };
+        got.address = data_vaddr
+            .checked_add(got.data_offset as u64)
+            .ok_or(ToolchainError::OutOfBounds)?;
+        // Initial-exec TLS slots hold the offset from the thread pointer, not
+        // the symbol address, so GOTTPOFF and GOTPCREL never share a slot.
+        let slot_value = if got.tpoff {
+            if tls_memsz == 0 {
+                return Err(ToolchainError::UnsupportedRelocation);
+            }
+            let tls_end = tls_vaddr
+                .checked_add(tls_memsz as u64)
+                .ok_or(ToolchainError::OutOfBounds)?;
+            if value < tls_vaddr || value > tls_end {
+                return Err(ToolchainError::InvalidElfObject);
+            }
+            (value as i64)
+                .wrapping_sub(tls_vaddr as i64)
+                .wrapping_sub(tls_aligned_size as i64) as u64
+        } else {
+            value
+        };
+        let slot = data
+            .get_mut(got.data_offset..got.data_offset + 8)
+            .ok_or(ToolchainError::OutOfBounds)?;
+        slot.copy_from_slice(&slot_value.to_le_bytes());
+    }
+
     // Pass 3: apply RELA entries after all inter-object references can resolve.
     for (object_index, (object, parsed)) in
         objects.iter().zip(parsed_objects.iter()).enumerate()
@@ -3123,7 +3392,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                 // .eh_frame) are intentionally omitted from the final image.
                 continue;
             };
-            if matches!(placement, ElfPlacement::Bss(_))
+            if matches!(placement, ElfPlacement::Bss(_) | ElfPlacement::Tls(_))
                 || section.size % ELF_RELA_SIZE != 0
             {
                 return Err(ToolchainError::InvalidElfObject);
@@ -3159,8 +3428,8 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                 };
 
                 let relocation_size = match kind {
-                    1 => 8,
-                    2 | 4 | 10 | 11 => 4,
+                    1 | 18 => 8,
+                    2 | 4 | 9 | 10 | 11 | 22 | 23 | 26 | 41 | 42 => 4,
                     _ => return Err(ToolchainError::UnsupportedRelocation),
                 };
                 if relocation_offset
@@ -3170,6 +3439,68 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                     return Err(ToolchainError::OutOfBounds);
                 }
 
+                // Static TLS local-exec: the thread pointer is the aligned end
+                // of the block, so TPOFF = (S - tls_vaddr) + A - aligned_size.
+                if matches!(kind, 18 | 23) {
+                    if tls_memsz == 0 {
+                        return Err(ToolchainError::UnsupportedRelocation);
+                    }
+                    let tls_end = tls_vaddr
+                        .checked_add(tls_memsz as u64)
+                        .ok_or(ToolchainError::OutOfBounds)?;
+                    if symbol_value < tls_vaddr || symbol_value > tls_end {
+                        return Err(ToolchainError::InvalidElfObject);
+                    }
+                    let offset = (symbol_value as i64)
+                        .wrapping_sub(tls_vaddr as i64)
+                        .wrapping_add(addend)
+                        .wrapping_sub(tls_aligned_size as i64);
+                    let (buffer, position) = match placement {
+                        ElfPlacement::Text(start) => (
+                            &mut text,
+                            start
+                                .checked_add(relocation_offset)
+                                .ok_or(ToolchainError::OutOfBounds)?,
+                        ),
+                        ElfPlacement::Data(start) => (
+                            &mut data,
+                            start
+                                .checked_add(relocation_offset)
+                                .ok_or(ToolchainError::OutOfBounds)?,
+                        ),
+                        _ => return Err(ToolchainError::InvalidElfObject),
+                    };
+                    if kind == 18 {
+                        let slot = buffer
+                            .get_mut(position..position + 8)
+                            .ok_or(ToolchainError::OutOfBounds)?;
+                        slot.copy_from_slice(&offset.to_le_bytes());
+                    } else {
+                        let value = i32::try_from(offset)
+                            .map_err(|_| ToolchainError::RelocationOverflow)?;
+                        let slot = buffer
+                            .get_mut(position..position + 4)
+                            .ok_or(ToolchainError::OutOfBounds)?;
+                        slot.copy_from_slice(&value.to_le_bytes());
+                    }
+                    continue;
+                }
+
+                let got_address = if matches!(kind, 9 | 22 | 26 | 41 | 42) {
+                    let tpoff = kind == 22;
+                    let index = if symbol.binding == 0 {
+                        got_by_local
+                            .get(&(object_index, symbol_index, tpoff))
+                            .copied()
+                    } else {
+                        got_by_name.get(&(symbol.name.clone(), tpoff)).copied()
+                    }
+                    .ok_or(ToolchainError::InvalidElfObject)?;
+                    Some(got_entries[index].address)
+                } else {
+                    None
+                };
+
                 match placement {
                     ElfPlacement::Text(start) => {
                         let position = start
@@ -3178,14 +3509,18 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                         let place = ELF_BASE
                             .checked_add(position as u64)
                             .ok_or(ToolchainError::OutOfBounds)?;
-                        apply_elf_relocation(
-                            &mut text,
-                            position,
-                            kind,
-                            symbol_value,
-                            addend,
-                            place,
-                        )?;
+                        if let Some(slot) = got_address {
+                            apply_elf_got_relocation(&mut text, position, slot, addend, place)?;
+                        } else {
+                            apply_elf_relocation(
+                                &mut text,
+                                position,
+                                kind,
+                                symbol_value,
+                                addend,
+                                place,
+                            )?;
+                        }
                     }
                     ElfPlacement::Data(start) => {
                         let position = start
@@ -3194,16 +3529,22 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                         let place = data_vaddr
                             .checked_add(position as u64)
                             .ok_or(ToolchainError::OutOfBounds)?;
-                        apply_elf_relocation(
-                            &mut data,
-                            position,
-                            kind,
-                            symbol_value,
-                            addend,
-                            place,
-                        )?;
+                        if let Some(slot) = got_address {
+                            apply_elf_got_relocation(&mut data, position, slot, addend, place)?;
+                        } else {
+                            apply_elf_relocation(
+                                &mut data,
+                                position,
+                                kind,
+                                symbol_value,
+                                addend,
+                                place,
+                            )?;
+                        }
                     }
-                    ElfPlacement::Bss(_) => return Err(ToolchainError::InvalidElfObject),
+                    ElfPlacement::Bss(_) | ElfPlacement::Tls(_) => {
+                        return Err(ToolchainError::InvalidElfObject)
+                    }
                 }
             }
         }
@@ -3214,14 +3555,16 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
         return Err(ToolchainError::InvalidElfObject);
     }
 
-    let segment_count = if data_memory_size == 0 { 1 } else { 2 };
+    let data_segment = data_memory_size != 0;
+    let tls_segment = tls_memsz != 0;
+    let segment_count = 1 + usize::from(data_segment) + usize::from(tls_segment);
     let data_offset = align_up(
         ELF_LOAD_OFFSET
             .checked_add(text_size)
             .ok_or(ToolchainError::OutOfBounds)?,
         0x1000,
     )?;
-    let file_size = if segment_count == 2 {
+    let file_size = if data_segment {
         data_offset
             .checked_add(data.len())
             .ok_or(ToolchainError::OutOfBounds)?
@@ -3237,7 +3580,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
     let mut executable = Vec::with_capacity(file_size);
     executable.resize(ELF_LOAD_OFFSET, 0);
     executable.extend_from_slice(&text);
-    if segment_count == 2 {
+    if data_segment {
         executable.resize(data_offset, 0);
         executable.extend_from_slice(&data);
     }
@@ -3265,7 +3608,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
     put_u64(&mut executable, text_header + 40, text_size as u64);
     put_u64(&mut executable, text_header + 48, 0x1000);
 
-    if segment_count == 2 {
+    if data_segment {
         let data_header = ELF_HEADER_SIZE + PROGRAM_HEADER_SIZE;
         put_u32(&mut executable, data_header, ELF_PT_LOAD);
         put_u32(&mut executable, data_header + 4, ELF_PF_R | ELF_PF_W);
@@ -3275,6 +3618,25 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
         put_u64(&mut executable, data_header + 32, data.len() as u64);
         put_u64(&mut executable, data_header + 40, data_memory_size as u64);
         put_u64(&mut executable, data_header + 48, 0x1000);
+    }
+    if tls_segment {
+        // Text is always first, data (when present) second, TLS last.
+        let tls_header = ELF_HEADER_SIZE
+            + (1 + usize::from(data_segment)) * PROGRAM_HEADER_SIZE;
+        put_u32(&mut executable, tls_header, ELF_PT_TLS);
+        put_u32(&mut executable, tls_header + 4, ELF_PF_R);
+        put_u64(
+            &mut executable,
+            tls_header + 8,
+            data_offset
+                .checked_add(tls_offset_in_data)
+                .ok_or(ToolchainError::OutOfBounds)? as u64,
+        );
+        put_u64(&mut executable, tls_header + 16, tls_vaddr);
+        put_u64(&mut executable, tls_header + 24, tls_vaddr);
+        put_u64(&mut executable, tls_header + 32, tls_filesz as u64);
+        put_u64(&mut executable, tls_header + 40, tls_memsz as u64);
+        put_u64(&mut executable, tls_header + 48, tls_alignment as u64);
     }
     Ok(executable)
 }
@@ -3291,6 +3653,26 @@ fn symbol_name_is(object: &[u8], strings: ElfSection, offset: usize, expected: &
         index += 1;
     }
     &object[start..index] == expected
+}
+
+/// Apply a PC-relative relocation that targets a GOT slot instead of the
+/// symbol itself (`G + A - P`, truncated to 32 bits).
+fn apply_elf_got_relocation(
+    buffer: &mut [u8],
+    offset: usize,
+    slot: u64,
+    addend: i64,
+    place: u64,
+) -> Result<(), ToolchainError> {
+    let value = (slot as i64)
+        .wrapping_add(addend)
+        .wrapping_sub(place as i64);
+    let value = i32::try_from(value).map_err(|_| ToolchainError::RelocationOverflow)?;
+    let slot = buffer
+        .get_mut(offset..offset + 4)
+        .ok_or(ToolchainError::OutOfBounds)?;
+    slot.copy_from_slice(&value.to_le_bytes());
+    Ok(())
 }
 
 fn apply_elf_relocation(
@@ -3476,6 +3858,114 @@ mod tests {
         assert_eq!(&executable[0x2000..0x2008], b"OCTAGRAM");
     }
 
+    /// ET_REL object with `_start` in `.text`, an 8-byte `.tdata` symbol, an
+    /// 8-byte `.tbss`, and one `R_X86_64_TPOFF64` relocation against the TLS
+    /// symbol.
+    fn tls_object() -> alloc::vec::Vec<u8> {
+        const HEADER: usize = 64;
+        const SECTION: usize = 64;
+        const COUNT: usize = 7;
+        let mut object = alloc::vec![0u8; 0x400];
+        object[..4].copy_from_slice(b"\x7fELF");
+        object[4] = 2;
+        object[5] = 1;
+        object[6] = 1;
+        put_elf16(&mut object, 16, 1); // ET_REL
+        put_elf16(&mut object, 18, 62); // x86_64
+        put_elf32(&mut object, 20, 1);
+        put_elf64(&mut object, 40, 0x240);
+        put_elf16(&mut object, 52, HEADER as u16);
+        put_elf16(&mut object, 58, SECTION as u16);
+        put_elf16(&mut object, 60, COUNT as u16);
+        put_elf16(&mut object, 62, 6); // .shstrtab
+
+        let text_offset = 0x100;
+        let tdata_offset = 0x120;
+        let symtab_offset = 0x140;
+        let rela_offset = 0x1a0;
+        let shstrtab_offset = 0x1e0;
+        object[tdata_offset..tdata_offset + 8].fill(0x11);
+        object[shstrtab_offset..shstrtab_offset + 12].copy_from_slice(b"_start\0vars\0");
+
+        let mut write_section = |index: usize, section_type: u32, flags: u64, offset: usize, size: usize, link: u32, info: u32, alignment: usize, entry_size: usize| {
+            let base = 0x240 + index * SECTION;
+            put_elf32(&mut object, base, 1);
+            put_elf32(&mut object, base + 4, section_type);
+            put_elf64(&mut object, base + 8, flags);
+            put_elf64(&mut object, base + 24, offset as u64);
+            put_elf64(&mut object, base + 32, size as u64);
+            put_elf32(&mut object, base + 40, link);
+            put_elf32(&mut object, base + 44, info);
+            put_elf64(&mut object, base + 48, alignment as u64);
+            put_elf64(&mut object, base + 56, entry_size as u64);
+        };
+        write_section(1, 1, 0x6, text_offset, 16, 0, 0, 16, 0); // .text
+        write_section(2, 1, 0x403, tdata_offset, 8, 0, 0, 8, 0); // .tdata (TLS)
+        write_section(3, 8, 0x403, 0, 8, 0, 0, 8, 0); // .tbss (TLS, NOBITS)
+        write_section(4, 4, 0, rela_offset, 48, 5, 1, 8, 24); // .rela.text
+        write_section(5, 2, 0, symtab_offset, 72, 6, 1, 8, 24); // .symtab
+        write_section(6, 3, 0, shstrtab_offset, 12, 0, 0, 1, 0); // .shstrtab
+
+        let symbol = |index: usize| symtab_offset + index * 24;
+        put_elf32(&mut object, symbol(1), 0);
+        object[symbol(1) + 4] = 0x12; // STB_GLOBAL | STT_FUNC
+        put_elf16(&mut object, symbol(1) + 6, 1);
+        put_elf32(&mut object, symbol(2), 7);
+        object[symbol(2) + 4] = 0x11; // STB_GLOBAL | STT_OBJECT
+        put_elf16(&mut object, symbol(2) + 6, 2);
+
+        put_elf64(&mut object, rela_offset, 0); // r_offset: first text bytes
+        let info = (2u64 << 32) | 18; // R_X86_64_TPOFF64 against vars
+        put_elf64(&mut object, rela_offset + 8, info);
+        put_elf64(&mut object, rela_offset + 16, 0);
+        put_elf64(&mut object, rela_offset + 24, 8); // second text slot
+        let info = (2u64 << 32) | 22; // R_X86_64_GOTTPOFF against vars
+        put_elf64(&mut object, rela_offset + 32, info);
+        put_elf64(&mut object, rela_offset + 40, 0);
+        object
+    }
+
+    #[test]
+    fn links_static_tls_template_and_tpoff_relocations() {
+        let executable = link_elf_object(&tls_object()).unwrap();
+        let u16_at = |offset| u16::from_le_bytes([executable[offset], executable[offset + 1]]);
+        let u32_at = |offset| {
+            u32::from_le_bytes(executable[offset..offset + 4].try_into().unwrap())
+        };
+        let u64_at = |offset| {
+            u64::from_le_bytes(executable[offset..offset + 8].try_into().unwrap())
+        };
+
+        // text, data, and one PT_TLS program header.
+        assert_eq!(u16_at(56), 3);
+        let data_header = 64 + 56;
+        // 8-byte GOTTPOFF slot + 8-byte .tdata; .tbss only adds memory.
+        assert_eq!(u64_at(data_header + 32), 16);
+        assert_eq!(u64_at(data_header + 40), 24);
+
+        let tls_header = 64 + 2 * 56;
+        assert_eq!(u32_at(tls_header), 7); // PT_TLS
+        assert_eq!(u64_at(tls_header + 8), 0x2008); // template after the GOT
+        assert_eq!(u64_at(tls_header + 16), 0x401008); // template vaddr
+        assert_eq!(u64_at(tls_header + 32), 8); // filesz
+        assert_eq!(u64_at(tls_header + 40), 16); // memsz
+        assert_eq!(u64_at(tls_header + 48), 8); // alignment
+
+        // The symbol is at template offset 0 and the thread pointer is the
+        // aligned end of the 16-byte block, so TPOFF = -16.
+        let text = &executable[0x1000..0x1010];
+        assert_eq!(i64::from_le_bytes(text[..8].try_into().unwrap()), -16);
+        // Initial-exec GOTTPOFF: the slot holds S - TP, and the instruction gets
+        // GOT + A - P = 0x401000 + 0 - 0x400008.
+        let got = &executable[0x2000..0x2008];
+        assert_eq!(i64::from_le_bytes(got.try_into().unwrap()), -16);
+        assert_eq!(
+            i32::from_le_bytes(text[8..12].try_into().unwrap()),
+            0x401000 - 0x400008
+        );
+        assert_eq!(&executable[0x2008..0x2010], &[0x11u8; 8]);
+    }
+
     fn rename_fixture_symbol(object: &mut [u8], symbol_index: usize, name: &[u8]) {
         // The fixture's .symtab starts at 0x140 and its string table at 0x220.
         let symbol = 0x140 + symbol_index * 24;
@@ -3542,6 +4032,66 @@ mod tests {
         assert_eq!(
             super::link_elf_inputs(&[b"!<arch>\ninvalid"]),
             Err(ToolchainError::InvalidElfObject)
+        );
+    }
+
+    fn set_fixture_relocation_kind(object: &mut [u8], kind: u32) {
+        // The fixture has one RELA entry at 0x200 that targets symbol 2.
+        object[0x200 + 8..0x200 + 16]
+            .copy_from_slice(&((2u64 << 32) | kind as u64).to_le_bytes());
+    }
+
+    #[test]
+    fn relocates_gotpcrel_through_a_writable_got_entry() {
+        let mut object = relocatable_object();
+        // Swap the fixture's absolute data reference for R_X86_64_GOTPCREL.
+        set_fixture_relocation_kind(&mut object, 9);
+        let executable = link_elf_object(&object).unwrap();
+        let u64_at = |offset: usize| {
+            u64::from_le_bytes(executable[offset..offset + 8].try_into().unwrap())
+        };
+        let u32_at = |offset: usize| {
+            u32::from_le_bytes(executable[offset..offset + 4].try_into().unwrap())
+        };
+        let data_vaddr = u64_at(64 + 56 + 16);
+        assert_eq!(data_vaddr, 0x401000);
+        // "OCTAGRAM" stays at the start of .data and the GOT slot follows it.
+        let got_address = data_vaddr + 8;
+        assert_eq!(u64_at(0x2000 + 8), data_vaddr);
+        // The site holds GOT + addend - P, so the instruction addresses the slot.
+        assert_eq!(u32_at(0x1001) as u64, got_address - 0x400001);
+        // The data segment is file-backed up to and including the GOT slot.
+        assert_eq!(u64_at(64 + 56 + 32), 16);
+    }
+
+    #[test]
+    fn relaxable_gotpcrel_variants_use_the_same_layout() {
+        let baseline = {
+            let mut object = relocatable_object();
+            set_fixture_relocation_kind(&mut object, 9);
+            link_elf_object(&object).unwrap()
+        };
+        for kind in [26u32, 41, 42] {
+            let mut object = relocatable_object();
+            set_fixture_relocation_kind(&mut object, kind);
+            assert_eq!(
+                link_elf_object(&object).unwrap(),
+                baseline,
+                "GOT relocation kind {kind} changed the layout"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_got_relocations_to_undefined_symbols() {
+        let mut object = relocatable_object();
+        rename_fixture_symbol(&mut object, 2, b"external");
+        object[0x140 + 2 * 24 + 6..0x140 + 2 * 24 + 8]
+            .copy_from_slice(&0u16.to_le_bytes());
+        set_fixture_relocation_kind(&mut object, 9);
+        assert_eq!(
+            link_elf_object(&object),
+            Err(ToolchainError::UndefinedSymbol)
         );
     }
 

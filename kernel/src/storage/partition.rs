@@ -214,54 +214,202 @@ pub fn create_octagram_gpt(
 /// Create the OCTAGRAM GPT layout and report completed sector writes.
 pub fn create_octagram_gpt_with_progress(
     device: &dyn BlockDevice,
-    mut progress: impl FnMut(u64, u64),
+    progress: impl FnMut(u64, u64),
 ) -> Result<(GptPartition, GptPartition), BlockError> {
     const ESP_SECTORS: u64 = 512 * 1024 * 1024 / SECTOR_SIZE as u64;
-    const FIRST_PARTITION_LBA: u64 = 2048;
     const MINIMUM_DISK_SECTORS: u64 = 16 * 1024 * 1024 * 1024 / SECTOR_SIZE as u64;
+    create_octagram_gpt_with_layout(
+        device,
+        ESP_SECTORS,
+        MINIMUM_DISK_SECTORS,
+        1024 * 1024,
+        progress,
+    )
+}
 
-    let total = device.sector_count();
-    if total < MINIMUM_DISK_SECTORS || total > u32::MAX as u64 * 1024 {
+/// Create an OCTAGRAM GPT layout (EFI System Partition followed by the EXT2
+/// root partition) with caller-selected minimum sizes.
+///
+/// This variant exists for the native image builder, which constructs smaller
+/// images than the 16 GiB minimum the destructive installer enforces. The
+/// resulting layout is byte-for-byte the same format as
+/// [`create_octagram_gpt_with_progress`].
+pub fn create_octagram_gpt_with_layout(
+    device: &dyn BlockDevice,
+    esp_sectors: u64,
+    minimum_disk_sectors: u64,
+    minimum_root_sectors: u64,
+    progress: impl FnMut(u64, u64),
+) -> Result<(GptPartition, GptPartition), BlockError> {
+    const FIRST_PARTITION_LBA: u64 = 2048;
+
+    let total = checked_total(device, esp_sectors, minimum_disk_sectors)?;
+    let last_usable = total - 1 - GPT_ENTRY_SECTORS - 1;
+    let esp_first = FIRST_PARTITION_LBA;
+    let esp_last = esp_first + esp_sectors - 1;
+    let root_first = align_lba(esp_last + 1, 2048);
+    if root_first >= last_usable || last_usable - root_first < minimum_root_sectors {
         return Err(BlockError::Unsupported);
     }
+    let root_last = ext2_capped_last(root_first, last_usable);
 
+    let seed = unique_seed(total);
+    let specs = [
+        GptSpec {
+            type_guid: EFI_SYSTEM_PARTITION_GUID,
+            unique_guid: guid_from_seed(seed ^ 0x4553502D4F435441),
+            first_lba: esp_first,
+            last_lba: esp_last,
+            name: "OCTAGRAM EFI",
+        },
+        GptSpec {
+            type_guid: LINUX_FILESYSTEM_GUID,
+            unique_guid: guid_from_seed(seed ^ 0x524F4F542D4F4354),
+            first_lba: root_first,
+            last_lba: root_last,
+            name: "OCTAGRAM ROOT",
+        },
+    ];
+    let parts = write_gpt(device, total, &specs, progress)?;
+    Ok((parts[0], parts[1]))
+}
+
+/// Create the A/B layout: ESP plus two equal EXT2 root slots.
+///
+/// Both root partitions use the standard Linux filesystem GUID and are sized
+/// equally from the space after the ESP, rounded down to 1 MiB with alignment
+/// gaps between them.
+pub fn create_octagram_gpt_ab_with_layout(
+    device: &dyn BlockDevice,
+    esp_sectors: u64,
+    minimum_disk_sectors: u64,
+    minimum_root_sectors: u64,
+    progress: impl FnMut(u64, u64),
+) -> Result<(GptPartition, GptPartition, GptPartition), BlockError> {
+    const FIRST_PARTITION_LBA: u64 = 2048;
+
+    let total = checked_total(device, esp_sectors, minimum_disk_sectors)?;
+    let last_usable = total - 1 - GPT_ENTRY_SECTORS - 1;
+    let esp_first = FIRST_PARTITION_LBA;
+    let esp_last = esp_first + esp_sectors - 1;
+    let root_a_first = align_lba(esp_last + 1, 2048);
+    let available = last_usable
+        .checked_sub(root_a_first)
+        .ok_or(BlockError::Unsupported)?;
+    let slot_sectors = align_lba(available.saturating_sub(2048) / 2, 2048);
+    if slot_sectors < minimum_root_sectors.max(2048) {
+        return Err(BlockError::Unsupported);
+    }
+    let root_a_last = root_a_first + slot_sectors - 1;
+    let root_b_first = align_lba(root_a_last + 1, 2048);
+    let root_b_last = root_b_first + slot_sectors - 1;
+    if root_b_last > last_usable {
+        return Err(BlockError::Unsupported);
+    }
+    let root_a_last = ext2_capped_last(root_a_first, root_a_last);
+    let root_b_last = ext2_capped_last(root_b_first, root_b_last);
+
+    let seed = unique_seed(total);
+    let specs = [
+        GptSpec {
+            type_guid: EFI_SYSTEM_PARTITION_GUID,
+            unique_guid: guid_from_seed(seed ^ 0x4553502D4F435441),
+            first_lba: esp_first,
+            last_lba: esp_last,
+            name: "OCTAGRAM EFI",
+        },
+        GptSpec {
+            type_guid: LINUX_FILESYSTEM_GUID,
+            unique_guid: guid_from_seed(seed ^ 0x524F4F542D4F4354),
+            first_lba: root_a_first,
+            last_lba: root_a_last,
+            name: "OCTAGRAM ROOT A",
+        },
+        GptSpec {
+            type_guid: LINUX_FILESYSTEM_GUID,
+            unique_guid: guid_from_seed(seed ^ 0x524F4F54425F3031),
+            first_lba: root_b_first,
+            last_lba: root_b_last,
+            name: "OCTAGRAM ROOT B",
+        },
+    ];
+    let parts = write_gpt(device, total, &specs, progress)?;
+    Ok((parts[0], parts[1], parts[2]))
+}
+
+fn checked_total(
+    device: &dyn BlockDevice,
+    esp_sectors: u64,
+    minimum_disk_sectors: u64,
+) -> Result<u64, BlockError> {
+    let total = device.sector_count();
+    if esp_sectors == 0
+        || esp_sectors >= total
+        || total < minimum_disk_sectors
+        || total > u32::MAX as u64 * 1024
+    {
+        return Err(BlockError::Unsupported);
+    }
+    Ok(total)
+}
+
+/// This EXT2 implementation supports up to `MAX_GROUPS` groups of 32,768
+/// 4 KiB blocks. Leave any excess capacity unallocated on very large disks.
+fn ext2_capped_last(first: u64, last: u64) -> u64 {
+    let ext2_max_blocks = 65_536u64 * 32_768u64;
+    let ext2_max_last = first.saturating_add(ext2_max_blocks * 8 - 1);
+    last.min(ext2_max_last)
+}
+
+struct GptSpec<'a> {
+    type_guid: [u8; 16],
+    unique_guid: [u8; 16],
+    first_lba: u64,
+    last_lba: u64,
+    name: &'a str,
+}
+
+/// Write a complete primary + backup GPT for the given partition descriptors.
+fn write_gpt(
+    device: &dyn BlockDevice,
+    total: u64,
+    specs: &[GptSpec<'_>],
+    mut progress: impl FnMut(u64, u64),
+) -> Result<Vec<GptPartition>, BlockError> {
+    const FIRST_PARTITION_LBA: u64 = 2048;
+
+    if specs.is_empty() || specs.len() > GPT_ENTRY_COUNT {
+        return Err(BlockError::Unsupported);
+    }
     let backup_header_lba = total - 1;
     let backup_entries_lba = backup_header_lba - GPT_ENTRY_SECTORS;
     let last_usable = backup_entries_lba - 1;
-    let esp_first = FIRST_PARTITION_LBA;
-    let esp_last = esp_first + ESP_SECTORS - 1;
-    let root_first = align_lba(esp_last + 1, 2048);
-    if root_first >= last_usable || last_usable - root_first < 1024 * 1024 {
-        return Err(BlockError::Unsupported);
+    let mut previous_last = FIRST_PARTITION_LBA - 1;
+    for spec in specs {
+        if spec.first_lba < FIRST_PARTITION_LBA
+            || spec.first_lba > spec.last_lba
+            || spec.last_lba > last_usable
+            || spec.first_lba <= previous_last
+        {
+            return Err(BlockError::OutOfRange);
+        }
+        previous_last = spec.last_lba;
     }
-    // This EXT2 implementation supports up to MAX_GROUPS groups of 32,768
-    // 4 KiB blocks. Leave any excess capacity unallocated on very large disks.
-    let ext2_max_blocks = 65_536u64 * 32_768u64;
-    let ext2_max_last = root_first.saturating_add(ext2_max_blocks * 8 - 1);
-    let root_last = last_usable.min(ext2_max_last);
 
     let seed = unique_seed(total);
     let disk_guid = guid_from_seed(seed ^ 0x4F4354414752414D);
-    let esp_guid = guid_from_seed(seed ^ 0x4553502D4F435441);
-    let root_guid = guid_from_seed(seed ^ 0x524F4F542D4F4354);
-
     let mut entries = alloc::vec![0u8; GPT_ENTRY_SIZE * GPT_ENTRY_COUNT];
-    write_partition_entry(
-        &mut entries[..GPT_ENTRY_SIZE],
-        &EFI_SYSTEM_PARTITION_GUID,
-        &esp_guid,
-        esp_first,
-        esp_last,
-        "OCTAGRAM EFI",
-    );
-    write_partition_entry(
-        &mut entries[GPT_ENTRY_SIZE..GPT_ENTRY_SIZE * 2],
-        &LINUX_FILESYSTEM_GUID,
-        &root_guid,
-        root_first,
-        root_last,
-        "OCTAGRAM ROOT",
-    );
+    for (index, spec) in specs.iter().enumerate() {
+        let start = index * GPT_ENTRY_SIZE;
+        write_partition_entry(
+            &mut entries[start..start + GPT_ENTRY_SIZE],
+            &spec.type_guid,
+            &spec.unique_guid,
+            spec.first_lba,
+            spec.last_lba,
+            spec.name,
+        );
+    }
     let entries_crc = crc32(&entries);
 
     let mut mbr = [0u8; SECTOR_SIZE];
@@ -270,7 +418,9 @@ pub fn create_octagram_gpt_with_progress(
     mbr[450] = 0xEE;
     mbr[451..454].copy_from_slice(&[0xFF, 0xFF, 0xFF]);
     mbr[454..458].copy_from_slice(&1u32.to_le_bytes());
-    mbr[458..462].copy_from_slice(&(total.saturating_sub(1).min(u32::MAX as u64) as u32).to_le_bytes());
+    mbr[458..462].copy_from_slice(
+        &(total.saturating_sub(1).min(u32::MAX as u64) as u32).to_le_bytes(),
+    );
     mbr[510..512].copy_from_slice(&[0x55, 0xAA]);
     let total_writes = GPT_ENTRY_SECTORS * 2 + 3;
     let mut completed_writes = 0u64;
@@ -319,24 +469,18 @@ pub fn create_octagram_gpt_with_progress(
     completed_writes += 1;
     progress(completed_writes, total_writes);
 
-    Ok((
-        GptPartition {
-            index: 1,
-            type_guid: EFI_SYSTEM_PARTITION_GUID,
-            unique_guid: esp_guid,
-            first_lba: esp_first,
-            last_lba: esp_last,
-        },
-        GptPartition {
-            index: 2,
-            type_guid: LINUX_FILESYSTEM_GUID,
-            unique_guid: root_guid,
-            first_lba: root_first,
-            last_lba: root_last,
-        },
-    ))
+    Ok(specs
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| GptPartition {
+            index: index as u32 + 1,
+            type_guid: spec.type_guid,
+            unique_guid: spec.unique_guid,
+            first_lba: spec.first_lba,
+            last_lba: spec.last_lba,
+        })
+        .collect())
 }
-
 fn make_header(
     current_lba: u64,
     backup_lba: u64,
@@ -560,5 +704,35 @@ mod tests {
         let disk = SparseDisk::new(1024 * 1024);
         assert_eq!(create_octagram_gpt(&disk), Err(BlockError::Unsupported));
         assert!(disk.data.lock().is_empty());
+    }
+
+    #[test]
+    fn ab_layout_has_two_equal_root_slots() {
+        const MIB: u64 = 1024 * 1024 / SECTOR_SIZE as u64;
+        let disk = SparseDisk::new(160 * MIB);
+        let (efi, root_a, root_b) = super::create_octagram_gpt_ab_with_layout(
+            &disk,
+            80 * MIB,
+            160 * MIB,
+            8 * MIB,
+            |_, _| {},
+        )
+        .unwrap();
+
+        assert_eq!(efi.index, 1);
+        assert_eq!(root_a.index, 2);
+        assert_eq!(root_b.index, 3);
+        assert_eq!(efi.type_guid, EFI_SYSTEM_PARTITION_GUID);
+        assert_eq!(root_a.type_guid, LINUX_FILESYSTEM_GUID);
+        assert_eq!(root_b.type_guid, LINUX_FILESYSTEM_GUID);
+        assert_eq!(root_a.sector_count(), root_b.sector_count());
+        assert!(root_a.last_lba < root_b.first_lba);
+        assert!(root_a.sector_count() >= 8 * MIB);
+
+        let partitions = read_gpt_partitions(&disk).unwrap();
+        assert_eq!(partitions.len(), 3);
+        assert_eq!(partitions[2].first_lba, root_b.first_lba);
+        assert_eq!(partitions[2].last_lba, root_b.last_lba);
+        assert!(partitions[2].last_lba < 160 * MIB);
     }
 }

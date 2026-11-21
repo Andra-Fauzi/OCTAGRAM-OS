@@ -443,8 +443,10 @@ Langkah berikut M4:
 - **Tidak** ada bukti bahwa `rustc` berjalan native di OCTAGRAM.
 - **Tidak** ada bukti bahwa Cargo berjalan native atau membangun workspace.
 - **Tidak** ada bukti bahwa kernel Rust dibangun dari dalam OCTAGRAM.
-- **Tidak** ada bukti bahwa ISO/disk image dibuat native.
-- **Tidak** ada bukti self-update A/B atau rollback.
+- **Tidak** ada bukti bahwa image hasil builder native berhasil di-boot;
+  builder hanya host-tested dan belum menghasilkan image berbasis file.
+- **Tidak** ada bukti self-update A/B atau rollback berjalan: policy engine dan
+  journal host-tested, tetapi belum terhubung ke bootloader atau boot nyata.
 
 Karena itu M4–M7 tetap belum selesai. Fokus berikutnya adalah riset dan
 bootstrap `rustc`, bukan memperluas installer atau mengklaim self-hosting
@@ -787,8 +789,9 @@ memanggil `toolchain::link_elf_objects` untuk satu atau beberapa ELF64 ET_REL:
 - menolak common symbol, relokasi tak dikenal, input malformed, ukuran berlebih,
   dan object tanpa `_start` alih-alih menghasilkan binary rusak.
 
-Batas yang masih ada: arsip `.a` belum diekstrak oleh `ld`; GOT/PLT/TLS
-relocations dan COMDAT/group sections belum didukung. QEMU smoke test multi-object
+Batas yang masih ada: arsip `.a` kini diekstrak secara lazy oleh `ld` dan GOT
+PC-relative sudah didukung (lihat bagian M2.1), sedangkan PLT dinamis, TLS
+relocations, dan COMDAT/group sections belum. QEMU smoke test multi-object
 sudah ditambahkan untuk compile dua source terpisah, link dengan `ld`, dan
 menjalankan ELF hasilnya.
 
@@ -800,12 +803,16 @@ Tahap berikutnya adalah archive extraction dan perluasan ABI ELF.
 
 ### M2 — archive extraction dan relocation coverage
 
-1. Tambahkan parser ar yang memvalidasi header/member bounds dan hanya menarik
-   member object yang menyediakan simbol undefined yang masih dibutuhkan.
+1. [x] Parser ar yang memvalidasi header/member bounds dan hanya menarik member
+   object yang menyediakan simbol undefined yang masih dibutuhkan (lihat
+   bagian M2.1).
 2. Tambahkan test QEMU untuk weak-symbol fallback, alignment, BSS, dan
    relocation overflow.
-3. Implementasikan relocation GOT/PLT/TLS secara terpisah setelah kontrak
-   dynamic/static linking ditentukan; PLT32 bukan bukti PLT dinamis tersedia.
+3. [x] Relokasi GOT PC-relative (`GOTPCREL`, `GOTPCRELX`, `REX_GOTPCRELX`,
+   `GOTPC32`) dengan slot writable di segmen data (host tests; lihat M2.1).
+4. [ ] Implementasikan PLT dinamis dan TLS (`TPOFF*`) secara terpisah setelah
+   kontrak dynamic/static linking ditentukan; PLT32 bukan bukti PLT dinamis
+   tersedia.
 
 ### M3 — manifest build native
 
@@ -834,11 +841,13 @@ Tahap berikutnya adalah archive extraction dan perluasan ABI ELF.
 1. M5: port langkah build kernel (linker script, symbol, section, entry) ke
    toolchain native dan bandingkan hash/behavior dengan kernel host-built.
 2. M6: image builder native (GPT + FAT32 ESP + EXT2 root, tulis bootloader dari
-   file yang disediakan image, verifikasi read-back) — `installer.rs` hanya
-   menulis ke disk target, belum menghasilkan image bootable.
+   file yang disediakan image, verifikasi read-back) — **sudah ada** di
+   `image_builder.rs` dan `mkimage` (host-tested). Sisa: image berbasis file dan
+   boot QEMU/firmware dari image tersebut (lihat M6.1).
 3. M7: slot A/B, verifikasi sebelum set boot berikutnya, rollback otomatis bila
-   boot gagal, dan laporan self-hosting yang memisahkan hasil host, QEMU, dan
-   hardware.
+   boot gagal — **policy engine dan journal sudah ada** (host-tested, lihat
+   M7.1). Sisa: dua partisi root A/B, journal dibaca bootloader, penanda boot
+   sukses, uji mati listrik, dan laporan self-hosting terpisah host/QEMU/hardware.
 
 
 ## M3.1 — Import GNU Make upstream (21 November 2026)
@@ -1002,3 +1011,190 @@ Branch: feature/native-self-hosting.
   (uji baru ditambahkan pada commit `87ea9ff`).
 - Belum diklaim: reproducible build penuh, hash seluruh input compiler,
   validasi dependency graph lintas direktori, dan parallel build.
+
+## M2.1 — Ekstraksi arsip dan relokasi GOT native (21 November 2026)
+
+### Ekstraksi arsip statis
+
+`ld` native menerima campuran object `ET_REL` dan arsip Unix lewat
+`toolchain::link_elf_inputs`:
+
+- header ar divalidasi (magic `!<arch>\n`, header 60 byte, batas member,
+  padding ganjil); hanya member ELF64 `ET_REL` x86_64 yang diterima, selain itu
+  `InvalidElfObject`;
+- tabel simbol ar (`/`, `/SYM64/`) diabaikan karena resolusi memakai symtab
+  setiap object;
+- nama panjang gaya GNU (`//` + `/offset`) dan `#1/<len>` didukung;
+- ekstraksi lazy dan berulang: member hanya diambil bila mendefinisikan simbol
+  kuat yang belum terselesaikan; setelah itu symbol set diperbarui dan scan
+  diulang sampai tidak ada member baru yang cocok, sehingga dependensi berantai
+  antar member ikut tertarik;
+- batas 256 member per arsip dan 32 object gabungan.
+
+Status: host test `extracts_only_archive_members_needed_by_unresolved_symbols`
+dan `rejects_malformed_static_archives` lulus. Jalur guest dicakup
+`tools/qemu_tcc_selfhost_test.py` (`LD-ARCHIVE-CREATE/LINK/RUN`); QEMU tidak
+tersedia di lingkungan pengembangan ini, jadi hasil workflow QEMU pada head ini
+belum dijalankan di sini.
+
+### Relokasi GOT PC-relative
+
+`ld` kini menangani `R_X86_64_GOTPCREL` (9), `GOTPCRELX` (41),
+`REX_GOTPCRELX` (42), dan `GOTPC32` (26):
+
+- satu slot GOT 8 byte per simbol unik, dialokasikan di akhir segmen data
+  (writable) sebelum BSS; offset BSS dan seluruh alamat simbol ikut digeser
+  sehingga simbol data/BSS tetap konsisten;
+- kunci dedup: nama untuk simbol global/weak, `(object, indeks simbol)` untuk
+  simbol lokal;
+- slot diisi alamat akhir simbol; simbol weak tak terdefinisi menjadi 0 dan
+  simbol kuat tak terdefinisi tetap `UndefinedSymbol`;
+- relokasi menulis `GOT + A - P` sebagai i32 dan melaporkan
+  `RelocationOverflow` bila tidak muat;
+- relaxation opcode `mov`→`lea` untuk varian `*X` sengaja tidak dilakukan:
+  linker mempertahankan indirection GOT, yang tetap benar walau kurang optimal.
+
+Status: host test `relocates_gotpcrel_through_a_writable_got_entry`,
+`relaxable_gotpcrel_variants_use_the_same_layout`, dan
+`rejects_got_relocations_to_undefined_symbols` lulus bersama seluruh 29 test
+`toolchain::`. Belum ada uji guest karena TinyCC non-PIC belum menghasilkan
+relokasi GOT, jadi status GOT adalah **host-tested only**.
+
+### Yang masih terbuka
+
+- PLT dinamis, dynamic TLS (`TLSGD`/`TLSLD`/`GOTTPOFF`),
+  `R_X86_64_GOT32`/`GOT64` absolut, COMDAT/group sections, dan common symbol.
+- Antarmuka `cc`/`as`/`ld` canonical belum disatukan; `cc`/`as` masih toolchain
+  mini kernel, sedangkan `tcc` menjalankan `/bin/tcc.elf`.
+- Test QEMU untuk weak-symbol fallback, alignment, BSS, dan relocation overflow
+  (butir M2 nomor 2) masih terbuka.
+
+## M2.2 — TLS statis di linker native (21 November 2026)
+
+`ld` native kini mengumpulkan section bertanda `SHF_TLS` menjadi satu template
+TLS dan menulis program header `PT_TLS`:
+
+- `.tdata` (PROGBITS) masuk ke template file-backed; `.tbss` (NOBITS) hanya
+  menambah `memsz`; alignment tiap section dihormati dan alignment terbesar
+  dipakai untuk header;
+- template ditempatkan di akhir segmen data writable, sehingga runtime dapat
+  menyalinnya dari `p_vaddr`; `p_filesz`/`p_memsz`/`p_align` diisi dari ukuran
+  template;
+- simbol TLS mendapat alamat `tls_vaddr + offset`, dan relokasi
+  `R_X86_64_TPOFF32` (23) / `TPOFF64` (18) menulis
+  `(S - tls_vaddr) + A - align_up(memsz, align)` — sesuai konvensi
+  `user/runtime.c`, yang menaruh thread pointer di akhir blok dan menginisialisasi
+  TCB pada `[TP]`;
+- initial-exec `R_X86_64_GOTTPOFF` (22) memakai slot GOT terpisah yang berisi
+  `S - TP`; slot `GOTTPOFF` tidak pernah dibagi dengan slot `GOTPCREL` untuk
+  simbol yang sama karena isinya berbeda, dan simbol non-TLS ditolak;
+- simbol di luar rentang template, template kosong, atau hasil yang tidak muat
+  i32 untuk `TPOFF32` dilaporkan sebagai error, bukan output rusak.
+
+Status: host test `links_static_tls_template_and_tpoff_relocations` lulus
+(3 program header, `PT_TLS` offset/vaddr/filesz/memsz/align, `TPOFF64 = -16`,
+slot `GOTTPOFF = -16`, displacement `GOT + A - P`, isi `.tdata`). **Belum ada uji guest**: program hasil `ld` native tidak otomatis
+menyertakan `crt0`/runtime TLS bootstrap, sehingga uji QEMU memerlukan program
+yang memanggil inisialisasi TLS sendiri. Dynamic TLS dan model initial-exec
+(`GOTTPOFF`) tetap ditolak secara eksplisit.
+
+## M6.1 — Native image builder dan verifikasi read-back (21 November 2026)
+
+`kernel/src/image_builder.rs` membangun image bootable dari aset eksplisit,
+bukan dari file Live yang kebetulan dimuat Limine:
+
+- `partition::create_octagram_gpt_with_layout` memparameterkan ukuran ESP,
+  ukuran disk minimum, dan root minimum. `installer` tetap memakai 512 MiB ESP
+  dan batas 16 GiB; builder memakai 80 MiB ESP (di atas minimum 65.525 cluster
+  FAT32) dan image minimum 160 MiB.
+- Alur: validasi aset (kernel harus `\x7fELF`, loader harus `MZ`, konfigurasi
+  tidak kosong) sebelum menulis sektor apa pun; tulis GPT; baca ulang GPT dan
+  cocokkan kedua entri; format FAT32 + EXT2; buat direktori; tulis
+  `/boot/kernel`, `/EFI/BOOT/BOOTX64.EFI`, `/boot/limine/limine.conf`, marker
+  root, dan manifest SHA-256.
+- Verifikasi tidak memakai objek filesystem in-memory: kedua partisi di-mount
+  ulang dari device, seluruh file dibaca kembali dan dibandingkan byte-per-byte,
+  digest kernel dihitung ulang, dan tabel partisi dibaca ulang. Kegagalan
+  read-back menghasilkan `ImageError::Verification`.
+- Manifest mencatat LBA/ukuran partisi, ukuran dan SHA-256 kernel, loader, serta
+  konfigurasi boot; manifest ditulis ke ESP dan root dan digest-nya dilaporkan.
+- Perintah shell `mkimage <sataN> MKIMAGE-ERASE` memakai kernel yang sedang
+  berjalan dan `BOOTX64.EFI` preload Limine, menolak root aktif, device yang
+  ter-mount, dan disk sumber boot lewat `installer::ensure_safe_format_target`.
+
+Status: 3 host test `image_builder::` lulus (build+verifikasi penuh pada
+memory disk 160 MiB, penolakan aset invalid sebelum menulis, penolakan loader
+non-PE), bersama test `storage::`. Image berbasis file ditambahkan di M6.2.
+**Belum** ada boot QEMU dari image hasil builder, dan entry boot Limine belum
+diverifikasi pada firmware nyata. Karena itu M6 belum selesai.
+
+## M6.2 — Image berbasis file (21 November 2026)
+
+`kernel/src/storage/file_disk.rs` menyediakan `BlockDevice` di atas file VFS:
+
+- file dibuat kosong lalu tumbuh saat sektor ditulis, sehingga build hanya
+  menyentuh sektor yang diperlukan sampai header GPT backup memperluas file ke
+  kapasitas penuh;
+- pembacaan melewati akhir file mengembalikan nol (semantik sparse image),
+  pembacaan parsial diulang sampai buffer penuh atau EOF;
+- `FileDisk::create` menolak menimpa file yang sudah ada; `open` memakai panjang
+  file sebagai kapasitas dan menolak panjang yang bukan kelipatan 512 byte;
+- perintah shell `mkimage file <absolute-path.img> <size-mib>` membuat image
+  baru (minimum 160 MiB), memakai kernel/loader Live, dan melaporkan manifest
+  SHA-256 setelah verifikasi read-back.
+
+Status: 3 host test `storage::file_disk::tests::` lulus, termasuk build image
+penuh 160 MiB ke file RamFs dan pembacaan kembali header GPT. **Belum** ada uji
+boot QEMU dari image file tersebut; langkah berikutnya adalah menjalankan
+`mkimage file`, menyalin image keluar, dan membuktikan boot Limine di QEMU.
+
+## M7.1 — A/B update policy engine dan journal (21 November 2026)
+
+`kernel/src/selfupdate.rs` mengimplementasikan aturan keselamatan update:
+
+- dua slot (`A`/`B`) dengan status `Empty`/`Installed`/`KnownGood`/`Failed`,
+  digest image, dan flag `verified`;
+- image hanya boleh dipasang ke slot **nonaktif**; update kedua ditolak selama
+  masih ada `pending`;
+- `request_boot_switch` menolak image yang belum diverifikasi, sehingga boot
+  berikutnya tidak pernah diarahkan ke image setengah tertulis;
+- kandidat mendapat maksimum 3 percobaan boot; setiap percobaan dicatat dan
+  setelah habis `rollback_required()` benar dan `boot_slot()` kembali ke slot
+  aktif/known-good;
+- `confirm_healthy` hanya dipanggil setelah boot sehat dan baru saat itu slot
+  kandidat menjadi aktif dan known-good; `rollback` menandai kandidat `Failed`;
+- journal tetap 128 byte dengan magic, versi, dan trailer SHA-256 sehingga
+  tulisan robek/ korup ditolak (`InvalidJournal`), bukan dipercaya.
+- Perintah shell `selfupdate status|init` membaca/menulis journal di
+  `/var/lib/octagram/update-journal`;
+- image builder menulis journal yang sudah berisi slot A sebagai known-good
+  dengan digest kernel, dan verifikasi read-back mem-parse journal itu lagi;
+  installer melakukan hal yang sama pada sistem yang baru dipasang.
+
+Status: 7 host test `selfupdate::` lulus (slot aktif, verifikasi wajib, rollback
+setelah percobaan habis, promosi known-good, round-trip journal, dan penolakan
+korupsi). **Belum** terhubung ke bootloader: Limine belum membaca journal dan
+belum ada penanda boot sukses. Layout A/B sudah tersedia di M7.2, tetapi belum
+ada uji mati listrik pada tahap kritis. M7 belum selesai.
+
+## M7.2 — Layout A/B dan image dua slot (21 November 2026)
+
+- `partition::create_octagram_gpt_ab_with_layout` menulis GPT dengan ESP lalu
+dua partisi root sama besar (dibulatkan ke bawah 1 MiB, dengan gap alignment),
+memakai GUID Linux filesystem untuk keduanya dan GUID unik berbeda.
+- `image_builder::build_ab_image` memformat FAT32 ESP dan EXT2 untuk kedua root,
+menulis salinan kernel ke `/boot/slots/a/kernel` dan `/boot/slots/b/kernel`,
+loader ke `/EFI/BOOT/BOOTX64.EFI`, serta `limine.conf` yang dihasilkan dengan
+satu entri per slot (`kernel_path` berbeda).
+- Tiap root mendapat marker `slot=A`/`slot=B`, manifest image, dan journal A/B
+yang menyatakan slot A known-good dengan digest kernel; verifikasi read-back
+me-mount ulang ketiga partisi, membandingkan semua file, mem-parse journal, dan
+memeriksa tabel partisi berisi tiga entri.
+- Perintah `mkimage file <path> <mib> ab` membangun image dua slot berbasis file
+(mode tanpa `ab` tetap satu root).
+
+Status: host test `builds_an_ab_image_with_both_root_slots` (image builder) dan
+`ab_layout_has_two_equal_root_slots` (partition) lulus; seluruh suite kernel
+408 test lulus. **Belum** ada pemilihan entri Limine berdasarkan journal,
+penanda boot sukses, atau uji boot QEMU/firmware; entri pertama (slot A) masih
+yang dipilih bootloader.

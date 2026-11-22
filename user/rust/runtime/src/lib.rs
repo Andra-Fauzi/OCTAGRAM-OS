@@ -632,38 +632,23 @@ pub fn exit(status: i32) -> ! {
 }
 
 #[cfg(not(test))]
-struct HeapGuard;
-
-#[cfg(not(test))]
-static HEAP_LOCKED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(not(test))]
-impl HeapGuard {
-    fn acquire() -> Self {
-        while HEAP_LOCKED
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            core::hint::spin_loop();
-        }
-        Self
-    }
-}
-
-#[cfg(not(test))]
-impl Drop for HeapGuard {
-    fn drop(&mut self) {
-        HEAP_LOCKED.store(false, Ordering::Release);
-    }
-}
-
 #[cfg(not(test))]
 struct MmapAllocator;
 
 #[cfg(not(test))]
-static mut HEAP_NEXT: usize = 0;
-#[cfg(not(test))]
-static mut HEAP_END: usize = 0;
+#[repr(C)]
+struct AllocationHeader {
+    mapping_base: *mut u8,
+    mapping_length: usize,
+}
+
+/// Compute a mapping size that leaves room for the allocation header and
+/// alignment padding. Kept separate so overflow behavior is host-testable.
+fn allocation_mapping_size(layout: Layout) -> Option<usize> {
+    core::mem::size_of::<AllocationHeader>()
+        .checked_add(layout.align().checked_sub(1)?)?
+        .checked_add(layout.size())
+}
 
 #[cfg(not(test))]
 unsafe impl GlobalAlloc for MmapAllocator {
@@ -672,67 +657,87 @@ unsafe impl GlobalAlloc for MmapAllocator {
             return layout.align() as *mut u8;
         }
 
-        let _guard = HeapGuard::acquire();
-        let Some(end) = layout.size().checked_add(layout.align() - 1) else {
+        let Some(length) = allocation_mapping_size(layout) else {
             return ptr::null_mut();
         };
-        let mut start = unsafe { HEAP_NEXT };
-        let mut limit = unsafe { HEAP_END };
-        let Some(aligned) = start
-            .checked_add(layout.align() - 1)
-            .map(|value| value & !(layout.align() - 1))
-        else {
-            return ptr::null_mut();
+        let result = unsafe {
+            syscall6(
+                16,
+                0,
+                length as u64,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                u64::MAX,
+                0,
+            )
         };
-        if aligned
-            .checked_add(layout.size())
-            .map_or(true, |end| end > limit)
-        {
-            let length = end.max(64 * 1024);
-            let result = unsafe {
-                syscall6(
-                    16,
-                    0,
-                    length as u64,
-                    PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS,
-                    u64::MAX,
-                    0,
-                )
-            };
-            if result < 0 {
-                return ptr::null_mut();
-            }
-            start = result as usize;
-            let Some(new_limit) = start.checked_add(length) else {
-                return ptr::null_mut();
-            };
-            limit = new_limit;
-        }
-        let Some(aligned) = start
-            .checked_add(layout.align() - 1)
-            .map(|value| value & !(layout.align() - 1))
-        else {
-            return ptr::null_mut();
-        };
-        let Some(new_next) = aligned.checked_add(layout.size()) else {
-            return ptr::null_mut();
-        };
-        if new_next > limit {
+        if result < 0 {
             return ptr::null_mut();
         }
+
+        let base = result as usize;
+        let Some(after_header) = base.checked_add(core::mem::size_of::<AllocationHeader>()) else {
+            let _ = unsafe { syscall2(17, base as u64, length as u64) };
+            return ptr::null_mut();
+        };
+        let alignment = layout.align().max(core::mem::align_of::<AllocationHeader>());
+        let Some(aligned) = after_header
+            .checked_add(alignment - 1)
+            .map(|value| value & !(alignment - 1))
+        else {
+            let _ = unsafe { syscall2(17, base as u64, length as u64) };
+            return ptr::null_mut();
+        };
+        let Some(end) = aligned.checked_add(layout.size()) else {
+            let _ = unsafe { syscall2(17, base as u64, length as u64) };
+            return ptr::null_mut();
+        };
+        let Some(mapping_end) = base.checked_add(length) else {
+            let _ = unsafe { syscall2(17, base as u64, length as u64) };
+            return ptr::null_mut();
+        };
+        if end > mapping_end {
+            let _ = unsafe { syscall2(17, base as u64, length as u64) };
+            return ptr::null_mut();
+        }
+
+        let user_pointer = aligned as *mut u8;
+        let header = unsafe {
+            user_pointer
+                .sub(core::mem::size_of::<AllocationHeader>())
+                .cast::<AllocationHeader>()
+        };
         unsafe {
-            HEAP_NEXT = new_next;
-            HEAP_END = limit;
+            header.write(AllocationHeader {
+                mapping_base: base as *mut u8,
+                mapping_length: length,
+            });
         }
-        aligned as *mut u8
+        user_pointer
     }
 
-    unsafe fn dealloc(&self, _pointer: *mut u8, _layout: Layout) {}
+    unsafe fn dealloc(&self, pointer: *mut u8, _layout: Layout) {
+        if pointer.is_null() {
+            return;
+        }
+        let header = unsafe {
+            pointer
+                .sub(core::mem::size_of::<AllocationHeader>())
+                .cast::<AllocationHeader>()
+                .read()
+        };
+        let _ = unsafe {
+            syscall2(
+                17,
+                header.mapping_base as u64,
+                header.mapping_length as u64,
+            )
+        };
+    }
 }
 
 #[cfg(not(test))]
-#[cfg_attr(not(test), global_allocator)]
+#[global_allocator]
 static ALLOCATOR: MmapAllocator = MmapAllocator;
 
 #[cfg(test)]
@@ -740,6 +745,21 @@ mod tests {
     extern crate std;
 
     use super::{build_dns_query, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen};
+
+    #[test]
+    fn allocation_mapping_size_accounts_for_alignment() {
+        let layout = Layout::from_size_align(123, 4096).unwrap();
+        assert_eq!(
+            super::allocation_mapping_size(layout),
+            Some(core::mem::size_of::<super::AllocationHeader>() + 4095 + 123)
+        );
+    }
+
+    #[test]
+    fn allocation_mapping_size_rejects_overflow() {
+        let layout = Layout::from_size_align(usize::MAX, 4096).unwrap();
+        assert_eq!(super::allocation_mapping_size(layout), None);
+    }
 
     #[test]
     fn freestanding_strlen_stops_at_nul() {

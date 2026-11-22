@@ -350,6 +350,9 @@ extern "C" {
     ) -> c_int;
     pub fn pthread_join(thread: pthread_t, retval: *mut *mut c_void) -> c_int;
     pub fn pthread_self() -> pthread_t;
+    pub fn pthread_attr_init(attributes: *mut pthread_attr_t) -> c_int;
+    pub fn pthread_attr_destroy(attributes: *mut pthread_attr_t) -> c_int;
+    pub fn pthread_attr_setstacksize(attributes: *mut pthread_attr_t, stack_size: size_t) -> c_int;
     pub fn pthread_detach(thread: pthread_t) -> c_int;
     pub fn pthread_mutex_init(mutex: *mut pthread_mutex_t, attr: *const pthread_mutexattr_t) -> c_int;
     pub fn pthread_mutex_destroy(mutex: *mut pthread_mutex_t) -> c_int;

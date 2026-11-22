@@ -65,6 +65,12 @@ Uji regresi untuk patch kompatibilitas C (tanpa perlu build mrustc):
 python3 -m unittest discover -s tools/mrustc_poc -p 'test_*.py'
 ```
 
+Uji host lengkap untuk rewrite dan helper bytewise AtomicU128:
+
+```sh
+bash tools/test_mrustc_compat_host.sh
+```
+
 ```sh
 # 1. Build mrustc + transpile core dan program PoC ke C (host, butuh g++, curl)
 bash tools/mrustc_poc/build_host.sh

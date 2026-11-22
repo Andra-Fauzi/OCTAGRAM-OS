@@ -227,6 +227,10 @@ not yet provide buffered I/O, path normalization, or the complete
 `std::os::fd` trait surface.
 
 
+## Child process ownership
+
+Runtime menyediakan `Child` untuk melacak PID anak langsung. `wait()` menunggu hingga anak selesai dan mengembalikan nilai mentah yang diberikan ke `exit(status)`; `try_wait()` memakai `WNOHANG` agar pemeriksaan tidak memblokir. `waitpid_with_options()` dan `WAIT_ANY_PID` juga tersedia untuk kebutuhan tingkat rendah. Smoke test guest menjalankan `fork`, menguji pemeriksaan nonblocking, lalu mereap anak dan memverifikasi status keluar. API ini belum setara dengan `std::process::Child`/`Command`; belum ada spawn error handshake atau abstraksi stdio command.
+
 ## Rust file-handle layer
 
 The octagram_runtime crate now exposes a small no_std File handle over OwnedFd: open/openat, descriptor borrowing, read/read_exact, write/write_all, seek, metadata, explicit close, and raw-fd ownership transfer. The exact-read and write-all loops handle partial progress; early EOF or a zero-progress write returns -EIO. This is not std::fs::File or a complete Rust standard library. Host tests cover partial I/O and ownership transfer; the guest smoke program exercises File::openat, metadata, exact read, seek, and close.

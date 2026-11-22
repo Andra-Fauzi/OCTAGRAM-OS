@@ -1369,6 +1369,10 @@ perubahan output mrustc diam-diam menghasilkan disk sumber yang tidak
 kompatibel. Validasi ini hanya mengeraskan harness host; **bukan** bukti bahwa
 placeholder setara secara semantik dengan instruksi CPU atau atomic 128-bit
 yang sesungguhnya.
+
+Empat uji regresi untuk patcher tersedia di `tools/mrustc_poc/test_patch_core.py`
+(rewrite dua fragmen, idempotensi, dan penolakan dua bentuk output yang berubah).
+Jalankan dengan `python3 -m unittest discover -s tools/mrustc_poc -p 'test_*.py'`.
 Stub matematika di `shim.c` sengaja tidak presisi karena program PoC tidak
 menyentuh jalur float; itu harus diganti implementasi nyata sebelum dipakai
 lebih jauh.

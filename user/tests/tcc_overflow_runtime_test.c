@@ -42,6 +42,20 @@ int main(void) {
                                  2, 1, 0, 8, 0)
                   == 0 && s64 == (long long)0x8000000000000000ULL, 8);
     if (error) return error;
+    error = check(__tcc_overflow(0x7fffffffffffffffULL, 1, &s64,
+                                 0, 1, 1, 8, 0)
+                  && s64 == (long long)0x8000000000000000ULL, 9);
+    if (error) return error;
+    error = check(__tcc_overflow(0x8000000000000000ULL, 1, &s64,
+                                 1, 0, 0, 8, 0)
+                  && s64 == 0x7fffffffffffffffLL, 10);
+    if (error) return error;
+    error = check(__tcc_overflow(0, 1, &u64, 1, 1, 1, 8, 1)
+                  && u64 == 0xffffffffffffffffULL, 11);
+    if (error) return error;
+    error = check(__tcc_overflow(0xffffffffffffffffULL, 1, &u64,
+                                 0, 1, 1, 8, 1) && u64 == 0, 12);
+    if (error) return error;
 
     return 0;
 }

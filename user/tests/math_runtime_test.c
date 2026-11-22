@@ -155,6 +155,12 @@ int main(void)
         return 36;
     if (nexttowardf(1.0f, 1.0L) != 1.0f || nanf("float") == nanf("float"))
         return 37;
+    if (nexttoward(1.0, (long double)NAN) ==
+        nexttoward(1.0, (long double)NAN))
+        return 43;
+    if (nexttowardf(1.0f, (long double)NAN) ==
+        nexttowardf(1.0f, (long double)NAN))
+        return 44;
 
     return 0;
 }

@@ -8,6 +8,8 @@
 #define FBIOGET_FSCREENINFO 0x4602
 #define FBIOBLANK           0x4611
 #define TIOCGWINSZ          0x5413
+#define FIOCLEX             0x5451
+#define FIONBIO             0x5421
 
 struct fb_bitfield {
     uint32_t offset;

@@ -642,10 +642,13 @@ struct AllocationHeader {
 
 /// Compute a mapping size that leaves room for the allocation header and
 /// alignment padding. Kept separate so overflow behavior is host-testable.
-fn allocation_mapping_size(layout: Layout) -> Option<usize> {
+fn allocation_mapping_size(size: usize, alignment: usize) -> Option<usize> {
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return None;
+    }
     core::mem::size_of::<AllocationHeader>()
-        .checked_add(layout.align().checked_sub(1)?)?
-        .checked_add(layout.size())
+        .checked_add(alignment - 1)?
+        .checked_add(size)
 }
 
 #[cfg(not(test))]
@@ -655,7 +658,7 @@ unsafe impl GlobalAlloc for MmapAllocator {
             return layout.align() as *mut u8;
         }
 
-        let Some(length) = allocation_mapping_size(layout) else {
+        let Some(length) = allocation_mapping_size(layout.size(), layout.align()) else {
             return ptr::null_mut();
         };
         let result = unsafe {
@@ -749,15 +752,14 @@ mod tests {
     fn allocation_mapping_size_accounts_for_alignment() {
         let layout = Layout::from_size_align(123, 4096).unwrap();
         assert_eq!(
-            super::allocation_mapping_size(layout),
+            super::allocation_mapping_size(layout.size(), layout.align()),
             Some(core::mem::size_of::<super::AllocationHeader>() + 4095 + 123)
         );
     }
 
     #[test]
     fn allocation_mapping_size_rejects_overflow() {
-        let layout = Layout::from_size_align(usize::MAX, 4096).unwrap();
-        assert_eq!(super::allocation_mapping_size(layout), None);
+        assert_eq!(super::allocation_mapping_size(usize::MAX, 4096), None);
     }
 
     #[test]

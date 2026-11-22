@@ -170,7 +170,7 @@ unsafe fn find_env_value(
 /// owned environment table and are intentionally not emulated here.
 pub fn getenv(name: &CStr) -> Option<&'static CStr> {
     let environment = unsafe { ptr::addr_of!(environ).read() };
-    let value = unsafe { find_env_value(environment.cast_const(), name.to_bytes()) };
+    let value = unsafe { find_env_value(environment as *const *const c_char, name.to_bytes()) };
     if value.is_null() {
         None
     } else {

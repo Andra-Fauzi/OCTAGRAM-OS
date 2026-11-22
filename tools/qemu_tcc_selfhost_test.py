@@ -108,6 +108,26 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
+    # Exercise GCC-compatible integer overflow builtins through the guest
+    # TinyCC parser and the support helper linked from libtcc1.a.
+    output_offset = len(serial_text())
+    send_line("tcc /tmp/tcc-overflow.c -o /tmp/tcc-overflow.elf")
+    if not wait_for_after("program exited with status 0", output_offset, 90):
+        print("TCC-OVERFLOW-COMPILE-FAIL: integer overflow builtins did not compile")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("run /tmp/tcc-overflow.elf")
+    if not wait_for_after("TCC-OVERFLOW-PASS", output_offset, 60):
+        print("TCC-OVERFLOW-RUN-FAIL: signed/unsigned overflow cases failed")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 15):
+        print("TCC-OVERFLOW-RUN-FAIL: overflow test did not exit successfully")
+        print(serial_text()[-5000:])
+        return 1
+
     # Exercise the shell's native ELF linker with two independent TinyCC
     # objects and a cross-object PLT32/PC32 call relocation.
     for command, label in (

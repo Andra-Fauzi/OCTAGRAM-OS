@@ -49,9 +49,18 @@ if [[ ! -d "$SRC/library" ]]; then
         --exclude='*/src/llvm-project/*' --exclude='*/src/tools/*'
 fi
 
-# The shipped patch only touches `compiler/`, so it is harmless here, but it
-# keeps the tree identical to a normal mrustc checkout.
-(cd "$SRC" && patch -p0 --forward <"$MRUSTC_DIR/rustc-$RUST_VERSION-src.patch") || true
+# Apply the mrustc compatibility patch exactly once. Do not mask arbitrary
+# patch failures: distinguish a clean tree, an already-patched tree, and a
+# source archive that no longer matches the patch.
+RUSTC_PATCH="$MRUSTC_DIR/rustc-$RUST_VERSION-src.patch"
+if (cd "$SRC" && patch --dry-run -p0 --forward <"$RUSTC_PATCH" >/dev/null 2>&1); then
+    (cd "$SRC" && patch -p0 --forward <"$RUSTC_PATCH")
+elif (cd "$SRC" && patch --dry-run -R -p0 <"$RUSTC_PATCH" >/dev/null 2>&1); then
+    echo "Rust source compatibility patch already applied"
+else
+    echo "ERROR: Rust $RUST_VERSION source does not match the mrustc patch" >&2
+    exit 1
+fi
 
 MRUSTC="$MRUSTC_DIR/bin/mrustc"
 

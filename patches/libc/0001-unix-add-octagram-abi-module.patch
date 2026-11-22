@@ -81,7 +81,7 @@ new file mode 100644
 index 000000000000..000000000000
 --- /dev/null
 +++ b/src/unix/octagram/mod.rs
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,230 @@
 +//! Initial raw bindings for the OCTAGRAM x86_64 userspace ABI.
 +//!
 +//! These definitions follow OCTAGRAM's public C headers. They intentionally

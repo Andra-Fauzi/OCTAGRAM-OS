@@ -315,6 +315,9 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
   - [x] Implementasi parser TinyCC untuk `__builtin_add_overflow`,
     `__builtin_sub_overflow`, dan `__builtin_mul_overflow`; runtime helper
     mendukung hasil signed/unsigned 8/16/32/64 bit dan tes host tersedia.
+  - [x] Tambahkan bytewise AtomicU128 PoC shim tanpa sintaks `__int128`;
+    host dan QEMU TinyCC menguji pola panggilan serta compare/mismatch. Ini
+    bukan primitive atomic; dukungan 128-bit yang nyata tetap terbuka.
   - [ ] Dukungan aritmetika integer 128-bit dan builtin overflow `__int128`
     (VT_QLONG TinyCC sekarang hanya representasi ABI, bukan tipe sumber).
   - [x] Tambahkan mnemonic assembler TinyCC `xgetbv` dengan encoding

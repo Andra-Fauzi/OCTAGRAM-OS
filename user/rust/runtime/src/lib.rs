@@ -1433,10 +1433,63 @@ pub fn execve(path: &CStr, argv: &[*const c_char], envp: &[*const c_char]) -> Re
     }
 }
 
-pub fn waitpid(pid: u64, status: Option<&mut u64>) -> Result<u64, i64> {
+/// Special target accepted by waitpid to wait for any direct child.
+pub const WAIT_ANY_PID: u64 = u64::MAX;
+/// Return immediately when the selected child has not exited yet.
+pub const WNOHANG: u64 = 1;
+
+/// Wait for a child using the OCTAGRAM waitpid options bitmask.
+pub fn waitpid_with_options(
+    pid: u64,
+    status: Option<&mut u64>,
+    options: u64,
+) -> Result<u64, i64> {
     let status_pointer = status.map_or(0, |value| value as *mut u64 as usize as u64);
-    let result = unsafe { syscall3(20, pid, status_pointer, 0) };
+    let result = unsafe { syscall3(20, pid, status_pointer, options) };
     checked_result(result).map(|value| value as u64)
+}
+
+/// Wait until a child exits, preserving the original simple API.
+pub fn waitpid(pid: u64, status: Option<&mut u64>) -> Result<u64, i64> {
+    waitpid_with_options(pid, status, 0)
+}
+
+/// A handle to a direct child process created by fork or another spawn API.
+///
+/// The status returned by wait methods is the raw 64-bit value passed by the
+/// child to exit; OCTAGRAM does not apply Linux wait-status bit encoding.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Child {
+    pid: Option<u64>,
+}
+
+impl Child {
+    /// Track a PID known to be a direct child of the current process.
+    pub const fn from_pid(pid: u64) -> Self { Self { pid: Some(pid) } }
+
+    /// Return the child's PID, or None after it has been reaped.
+    pub const fn id(&self) -> Option<u64> { self.pid }
+
+    /// Block until the child exits and return its raw exit value.
+    pub fn wait(&mut self) -> Result<u64, i64> {
+        let pid = self.pid.ok_or(-10)?;
+        let mut status = 0u64;
+        let reaped = waitpid(pid, Some(&mut status))?;
+        if reaped != pid { return Err(-10); }
+        self.pid = None;
+        Ok(status)
+    }
+
+    /// Check whether the child has exited without blocking.
+    pub fn try_wait(&mut self) -> Result<Option<u64>, i64> {
+        let pid = self.pid.ok_or(-10)?;
+        let mut status = 0u64;
+        let reaped = waitpid_with_options(pid, Some(&mut status), WNOHANG)?;
+        if reaped == 0 { return Ok(None); }
+        if reaped != pid { return Err(-10); }
+        self.pid = None;
+        Ok(Some(status))
+    }
 }
 
 pub fn exit(status: i32) -> ! {

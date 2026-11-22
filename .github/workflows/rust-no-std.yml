@@ -16,6 +16,10 @@ on:
     paths:
       - "user/rust/**"
       - "user/crt0.S"
+      - "user/include/**"
+      - "user/runtime.c"
+      - "tools/rust_libc_abi_surface.json"
+      - "tools/check_rust_libc_abi_surface.py"
       - ".github/workflows/rust-no-std.yml"
   workflow_dispatch:
 

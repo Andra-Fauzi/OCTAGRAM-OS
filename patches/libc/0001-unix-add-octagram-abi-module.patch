@@ -17,9 +17,9 @@ Upstream base: rust-lang/libc a03dd7c2e298b0ca482f30ce07efd3115938328e
 ---
  src/new/mod.rs              |  3 +++
  src/new/octagram/mod.rs     |  4 +++
- src/new/octagram/unistd.rs  |  6 ++++++
+ src/new/octagram/unistd.rs  |  7 +++++++
  src/unix/mod.rs             |  3 +++
- src/unix/octagram/mod.rs    | 139 ++++++++++++++++++++++++++++++++++++++++++++
+ src/unix/octagram/mod.rs    | 139 +++++++++++++++++++++++++++++++++++++++++++
  5 files changed, 155 insertions(+)
  create mode 100644 src/new/octagram/mod.rs
  create mode 100644 src/new/octagram/unistd.rs
@@ -54,7 +54,7 @@ new file mode 100644
 index 000000000000..000000000000
 --- /dev/null
 +++ b/src/new/octagram/unistd.rs
-@@ -0,0 +1,6 @@
+@@ -0,0 +1,7 @@
 +//! POSIX unistd constants for OCTAGRAM.
 +
 +use crate::prelude::*;
@@ -221,6 +221,5 @@ index 000000000000..000000000000
 +    flags: 0,
 +};
 +pub const PTHREAD_COND_INITIALIZER: pthread_cond_t = pthread_cond_t { sequence: 0 };
-+
 -- 
 2.43.0

@@ -22,18 +22,19 @@ di `docs/native-self-hosting-roadmap.md` bagian **M4.3**.
 
 1. `/include/stdint.h` guest tidak punya `int_leastN_t`/`uint_leastN_t`,
    sehingga `stdatomic.h` gagal sebelum `tcc` menyentuh kode `mrustc`.
-2. Guest tidak punya `math.h`/libm, sedangkan C `core` memakai
-   `fabs/sqrt/floor/ceil/trunc/round/pow/copysign/fma/exp/log2/cbrt/fdim`.
+2. Header publik `user/include/math.h` sekarang mendeklarasikan API math
+   yang dipakai C `core`; implementasi libm nyata masih belum tersedia.
 3. `tcc` tidak mengimplementasikan `__builtin_add_overflow`,
    `__builtin_sub_overflow`, `__builtin_mul_overflow` (1392 pemakaian di C
    `core`).
 4. `tcc` (a) tidak punya opcode assembler `xgetbv`, dan (b) tidak mendukung
    atomic 128-bit (`uint128_t _Atomic`).
 
-Semua celah di atas diatasi di sisi C hasil generate (`fix.h`, `math.h`,
-`shim.c`) — **tanpa** memodifikasi `tcc`. `fix.h`/`math.h`/`shim.c` di direktori
-ini adalah versi yang dipakai saat uji, dan sengaja menyatakan bahwa stub
-matematikanya tidak presisi karena jalur float tidak dipakai program PoC.
+Compat overflow/atomic dan stub libm pada PoC masih diatasi di sisi C hasil generate
+(`fix.h` dan `shim.c`) — **tanpa** memodifikasi `tcc`. Header `math.h` lokal di
+direktori ini tetap menjadi fixture PoC; header publik OCTAGRAM kini memiliki
+deklarasi API yang sesuai, tetapi belum menyediakan implementasi libm. Stub
+matematika tetap tidak presisi karena jalur float tidak dipakai program PoC.
 
 ## Menjalankan
 

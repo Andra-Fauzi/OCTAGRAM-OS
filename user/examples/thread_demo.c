@@ -85,6 +85,14 @@ int main(void)
     pthread_t threads[2];
     pthread_attr_t attributes;
     size_t configured_stack_size = 0;
+    pthread_mutexattr_t mutex_attributes;
+    if (pthread_mutexattr_init(&mutex_attributes) != 0
+        || pthread_mutexattr_settype(&mutex_attributes, PTHREAD_MUTEX_NORMAL) != 0
+        || pthread_mutexattr_settype(&mutex_attributes, -1) != EINVAL
+        || pthread_mutexattr_destroy(&mutex_attributes) != 0) {
+        return 1;
+    }
+
     if (pthread_attr_init(&attributes) != 0
         || pthread_attr_setstacksize(&attributes, 96u * 1024u) != 0
         || pthread_attr_getstacksize(&attributes, &configured_stack_size) != 0

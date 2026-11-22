@@ -71,7 +71,7 @@ jobs:
           git apply --check ../patches/rust-libc/0001-add-octagram-abi.patch
           git apply ../patches/rust-libc/0001-add-octagram-abi.patch
           cd ..
-          cargo +nightly check --manifest-path upstream-libc/Cargo.toml \
+          cargo +nightly -Zjson-target-spec check --manifest-path upstream-libc/Cargo.toml \
             --target user/rust/targets/x86_64-unknown-octagram.json \
             --no-default-features --features rustc-dep-of-std
 

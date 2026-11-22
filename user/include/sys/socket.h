@@ -14,6 +14,16 @@ struct sockaddr {
     char sa_data[14];
 };
 
+struct sockaddr_un {
+    sa_family_t sun_family;
+    char sun_path[108];
+};
+
+struct sockaddr_storage {
+    sa_family_t ss_family;
+    unsigned char __data[126];
+};
+
 #define AF_UNSPEC 0
 #define AF_INET 2
 #define AF_INET6 10
@@ -38,6 +48,10 @@ struct sockaddr {
 #define SO_TYPE 3
 #define SO_ERROR 4
 #define SO_KEEPALIVE 9
+#define SO_BROADCAST 6
+#define SO_RCVTIMEO 20
+#define SO_SNDTIMEO 21
+#define SOMAXCONN 128
 /* Reserved ABI value; OCTAGRAM currently rejects SO_LINGER with ENOPROTOOPT. */
 #define SO_LINGER 13
 

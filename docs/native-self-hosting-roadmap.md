@@ -1720,3 +1720,18 @@ crate upstream `libc`, bukan build `std`, dan bukan native rustc/Cargo.
 Langkah berikutnya adalah membuat modul `libc` target-specific dari kebutuhan
 PAL Unix yang terukur, lalu menguji kompilasi terhadap checkout upstream
 yang dipatok.
+
+## 27. CI untuk validasi patch upstream Rust (22 November 2026)
+
+- Menambahkan workflow `.github/workflows/rust-upstream-patches.yml`.
+- Workflow mengambil source Rust pada commit tetap
+  `342d74463af7dd3018ef6aa04dd5500c2deb5bd1` dengan sparse checkout untuk
+  `library/std/build.rs`.
+- Menjalankan `git apply --check`, menerapkan patch di checkout sementara,
+  lalu memastikan target `octagram` benar-benar muncul pada allowlist.
+- README patch menjelaskan cakupan dan batas tes ini.
+
+**Batas:** workflow ini memverifikasi patch dapat diterapkan pada source yang
+dipatok. Ia tidak membangun `std`, tidak membuktikan Unix PAL cocok, dan tidak
+menjalankan binary Rust di QEMU. Langkah berikutnya adalah audit simbol PAL
+dan ABI yang diperlukan, lalu patch libc target-specific dengan compile test.

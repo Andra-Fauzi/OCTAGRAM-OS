@@ -78,3 +78,20 @@ integrasi. Jangan menimpa make bawaan sebelum uji regresi selesai.
 4. Output marker, alokasi `Vec` lebih dari 1 MiB, `stat/open/read/close`
    semuanya berhasil.
 5. `make.elf` dapat menjalankan build sederhana dari dalam OCTAGRAM.
+
+## Continuous integration
+
+Workflow `.github/workflows/rust-no-std.yml` menjalankan pemeriksaan pada
+perubahan Rust userspace:
+
+- Memasang nightly, `rust-src`, LLD, binutils, dan Make.
+- Menjalankan `make -C user/rust clean all check` untuk membangun kedua ELF
+  dengan custom target OCTAGRAM.
+- Menjalankan unit test runtime pada target host Linux agar parser DNS dan
+  primitive memori dapat diuji tanpa menjalankan syscall guest.
+- Memeriksa format ELF dan program headers dari hasil build.
+
+Workflow ini baru menjadi gate setelah satu run CI benar-benar selesai dan
+lulus. Keberhasilan host unit test tidak menggantikan pengujian executable
+pada QEMU; syscall, allocator mmap, ELF loader, dan integrasi filesystem tetap
+memerlukan guest test.

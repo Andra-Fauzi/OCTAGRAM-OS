@@ -27,7 +27,7 @@ def main() -> int:
     require(data["target"]["pointer_bits"] == 64, "expected 64-bit target")
 
     require(data["upstream_libc"]["repository"] == "rust-lang/libc", "unexpected upstream libc repository")
-    require(data["upstream_libc"]["commit"] == "a03dd7c2e298b0ca482f30ce07efd3115938328e",
+    require(data["upstream_libc"]["base_commit"] == "a03dd7c2e298b0ca482f30ce07efd3115938328e",
             "upstream libc pin changed; audit the applicator before updating")
     for relative in (data["upstream_libc"]["applicator"], data["upstream_libc"]["target_module"]):
         require((ROOT / relative).is_file(), f"missing upstream libc integration input: {relative}")

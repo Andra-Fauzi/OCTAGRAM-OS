@@ -305,6 +305,77 @@ pub fn getcwd(buffer: &mut [u8]) -> Result<usize, i64> {
     checked_result(result)
 }
 
+/// POSIX-compatible clock identifiers exposed by the OCTAGRAM syscall ABI.
+pub const CLOCK_REALTIME: u64 = 0;
+pub const CLOCK_MONOTONIC: u64 = 1;
+
+/// 64-bit seconds/nanoseconds pair matching OCTAGRAM's C timespec ABI.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timespec {
+    pub tv_sec: i64,
+    pub tv_nsec: i64,
+}
+
+/// Read a clock using syscall 50. The kernel reports failures as -errno.
+pub fn clock_gettime(clock_id: u64) -> Result<Timespec, i64> {
+    let mut value = Timespec::default();
+    let result = unsafe {
+        syscall2(
+            50,
+            clock_id,
+            &mut value as *mut Timespec as usize as u64,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    if !(0..1_000_000_000).contains(&value.tv_nsec) || value.tv_sec < 0 {
+        return Err(-22);
+    }
+    Ok(value)
+}
+
+/// Return the current process identifier (syscall 11).
+pub fn getpid() -> Result<u64, i64> {
+    let result = unsafe { syscall0(11) };
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(result as u64)
+    }
+}
+
+/// Fill a buffer from the kernel random source (syscall 121).
+/// OCTAGRAM currently limits each request to 256 bytes.
+pub fn getrandom(buffer: &mut [u8], flags: u64) -> Result<usize, i64> {
+    let mut completed = 0usize;
+    while completed < buffer.len() {
+        let chunk = (buffer.len() - completed).min(256);
+        let result = unsafe {
+            syscall3(
+                121,
+                buffer[completed..].as_mut_ptr() as usize as u64,
+                chunk as u64,
+                flags,
+            )
+        };
+        if result < 0 {
+            return if completed == 0 {
+                Err(result)
+            } else {
+                Ok(completed)
+            };
+        }
+        let count = usize::try_from(result).map_err(|_| -5)?;
+        if count == 0 || count > chunk {
+            return if completed == 0 { Err(-5) } else { Ok(completed) };
+        }
+        completed += count;
+    }
+    Ok(completed)
+}
+
 pub fn chdir(path: &CStr) -> Result<(), i64> {
     let result = unsafe { syscall1(13, path.as_ptr() as usize as u64) };
     if result < 0 {
@@ -789,6 +860,20 @@ mod tests {
             None
         );
         assert_eq!(super::allocation_user_range(base, 4096, 8, 0), None);
+    }
+
+    #[test]
+    fn timespec_matches_octagram_c_abi() {
+        assert_eq!(core::mem::size_of::<super::Timespec>(), 16);
+        assert_eq!(core::mem::align_of::<super::Timespec>(), 8);
+        assert_eq!(core::mem::offset_of!(super::Timespec, tv_sec), 0);
+        assert_eq!(core::mem::offset_of!(super::Timespec, tv_nsec), 8);
+    }
+
+    #[test]
+    fn clock_ids_match_octagram_abi() {
+        assert_eq!(super::CLOCK_REALTIME, 0);
+        assert_eq!(super::CLOCK_MONOTONIC, 1);
     }
 
     #[test]

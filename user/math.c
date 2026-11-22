@@ -181,7 +181,11 @@ double nearbyint(double x)
         return rounded == 0.0 ? oct_signed_zero(oct_signbit(x)) : rounded;
     }
     integer = (long long)lower;
-    return (integer & 1LL) ? lower + 1.0 : lower;
+    if (integer & 1LL) {
+        double rounded = lower + 1.0;
+        return rounded == 0.0 ? oct_signed_zero(oct_signbit(x)) : rounded;
+    }
+    return lower;
 }
 
 double rint(double x)

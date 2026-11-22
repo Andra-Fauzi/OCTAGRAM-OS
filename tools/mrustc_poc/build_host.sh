@@ -15,6 +15,7 @@ SRC="$WORK/rustc-$RUST_VERSION-src"
 MRUSTC_DIR="$WORK/mrustc"
 IMAGE="$WORK/sources.img"
 
+python3 -m unittest discover -s "$ROOT/tools/mrustc_poc" -p 'test_*.py'
 mkdir -p "$WORK"
 
 if [[ ! -d "$MRUSTC_DIR" ]]; then

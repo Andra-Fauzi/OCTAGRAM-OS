@@ -85,6 +85,16 @@ def key_name(character):
 
 def main():
     global SERIAL, MONITOR
+    for path in (BOOT, SOURCES):
+        if not os.path.exists(path):
+            print("SKIP: missing %s" % path)
+            return 2
+    code = os.path.join(FIRMWARE_DIR, "ovmf-code-x86_64.fd")
+    vars_template = os.path.join(FIRMWARE_DIR, "ovmf-vars-x86_64.fd")
+    if not os.path.exists(code) or not os.path.exists(vars_template):
+        print("SKIP: OVMF firmware missing in %s" % FIRMWARE_DIR)
+        return 2
+
     if "OCTAGRAM_POC_SERIAL" not in os.environ:
         serial_fd, SERIAL = tempfile.mkstemp(
             prefix="octagram-mrustc-", suffix=".serial.log"
@@ -96,16 +106,6 @@ def main():
         )
         os.close(monitor_fd)
         os.unlink(MONITOR)
-
-    for path in (BOOT, SOURCES):
-        if not os.path.exists(path):
-            print("SKIP: missing %s" % path)
-            return 2
-    code = os.path.join(FIRMWARE_DIR, "ovmf-code-x86_64.fd")
-    vars_template = os.path.join(FIRMWARE_DIR, "ovmf-vars-x86_64.fd")
-    if not os.path.exists(code) or not os.path.exists(vars_template):
-        print("SKIP: OVMF firmware missing in %s" % FIRMWARE_DIR)
-        return 2
 
     for path in (SERIAL, MONITOR):
         try:

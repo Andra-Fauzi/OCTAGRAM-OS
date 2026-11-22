@@ -1363,7 +1363,9 @@ status berikut:
    8/16/32/64 bit dan menyimpan bit hasil, termasuk ketika overflow terjadi.
    Tes helper host tersedia; `qemu_test.py` kini lebih dahulu mengompilasi dan
    menjalankan source builtin kecil di guest. Implementasi builtin dibatasi
-   integer 8/16/32/64 bit; TinyCC belum memiliki tipe integer sumber 128-bit.
+   integer 8/16/32/64 bit; TinyCC belum memiliki tipe integer sumber 128-bit
+   (`VT_QLONG` saat ini hanya dipakai sebagai representasi ABI x86-64, bukan
+   tipe aritmetika C yang dapat diparse/dioperasikan).
    **Hasil QEMU belum dijalankan / diverifikasi dalam sesi ini.**
 4. **XGETBV assembler — implementasi ditambahkan.** Tabel assembler x86
    TinyCC mengenali mnemonic `xgetbv` dan mengeluarkan encoding tetap

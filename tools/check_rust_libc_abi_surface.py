@@ -48,6 +48,61 @@ def main() -> int:
     require("time_t tv_sec;" in timespec and "long tv_nsec;" in timespec,
             "timespec fields changed")
 
+    stat_header = read("user/include/sys/stat.h")
+    require(re.search(
+        r"struct\\s+stat\\s*\\{\\s*off_t\\s+st_size;\\s*mode_t\\s+st_mode;\\s*dev_t\\s+st_dev;\\s*ino_t\\s+st_ino;\\s*nlink_t\\s+st_nlink;\\s*uid_t\\s+st_uid;\\s*gid_t\\s+st_gid;\\s*time_t\\s+st_atime;\\s*time_t\\s+st_mtime;\\s*time_t\\s+st_ctime;\\s*blksize_t\\s+st_blksize;\\s*blkcnt_t\\s+st_blocks;",
+        stat_header, re.S) is not None,
+        "public struct stat field order changed")
+
+    socket_header = read("user/include/sys/socket.h")
+    require("typedef uint32_t socklen_t;" in socket_header
+            and "typedef uint16_t sa_family_t;" in socket_header
+            and re.search(r"struct\\s+sockaddr\\s*\\{\\s*sa_family_t\\s+sa_family;\\s*char\\s+sa_data\\[14\\];", socket_header, re.S) is not None,
+            "sockaddr ABI changed")
+
+    netdb = read("user/include/netdb.h")
+    require(re.search(r"struct\\s+addrinfo\\s*\\{\\s*int\\s+ai_flags;\\s*int\\s+ai_family;\\s*int\\s+ai_socktype;\\s*int\\s+ai_protocol;\\s*socklen_t\\s+ai_addrlen;\\s*struct\\s+sockaddr\\s*\\*ai_addr;\\s*char\\s*\\*ai_canonname;\\s*struct\\s+addrinfo\\s*\\*ai_next;", netdb, re.S) is not None,
+            "addrinfo field order changed")
+
+    pthread_header = read("user/include/pthread.h")
+    require("typedef uint64_t pthread_t;" in pthread_header
+            and "volatile unsigned int state;" in pthread_header
+            and "volatile unsigned int flags;" in pthread_header
+            and "uintptr_t opaque;" in pthread_header,
+            "pthread object ABI changed")
+
+    termios_header = read("user/include/termios.h")
+    require("typedef unsigned int tcflag_t;" in termios_header
+            and "typedef unsigned char cc_t;" in termios_header
+            and "typedef unsigned int speed_t;" in termios_header
+            and "cc_t c_cc[NCCS];" in termios_header and "#define NCCS 32" in termios_header,
+            "termios ABI changed")
+
+    semaphore_header = read("user/include/sys/semaphore.h")
+    require(re.search(r"typedef\\s+struct\\s*\\{\\s*volatile\\s+unsigned\\s+int\\s+count;", semaphore_header, re.S) is not None,
+            "sem_t ABI changed")
+
+    select_header = read("user/include/sys/select.h")
+    require("uint64_t bits[FD_SETSIZE / 64];" in select_header and "#define FD_SETSIZE 1024" in select_header,
+            "fd_set ABI changed")
+
+    signal_header = read("user/include/signal.h")
+    require("sigset_t sa_mask;" in signal_header
+            and "int sa_flags;" in signal_header
+            and "void (*sa_restorer)(void);" in signal_header,
+            "sigaction ABI changed")
+
+    module = read("patches/rust-libc/octagram/mod.rs")
+    for assertion in (
+        "core::mem::size_of::<stat>()",
+        "core::mem::size_of::<dirent>()",
+        "core::mem::size_of::<pthread_mutex_t>()",
+        "core::mem::size_of::<termios>()",
+        "core::mem::size_of::<sigaction>()",
+        "core::mem::size_of::<fd_set>()",
+    ):
+        require(assertion in module, f"missing compile-time ABI assertion: {assertion}")
+
     runtime = read("user/runtime.c")
     for field in ("result->st_size = (off_t)metadata.size;",
                   "result->st_mode = (mode_t)metadata.mode;",
@@ -64,7 +119,7 @@ def main() -> int:
     require(any("does not prove Rust std" in item for item in gaps),
             "must not overclaim Rust std compatibility")
 
-    print("RUST-LIBC-ABI-PASS: target types, oct_stat, dirent, timespec, stat translation, pthread limitation")
+    print("RUST-LIBC-ABI-PASS: scalar types, kernel/public records, pthread, socket, time, terminal and signal layouts")
     return 0
 
 

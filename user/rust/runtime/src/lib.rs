@@ -695,6 +695,23 @@ pub unsafe fn mprotect(address: NonNull<u8>, length: usize, protection: u64) -> 
 pub fn pipe2(flags: u64) -> Result<[i32; 2], i64> {
     let mut descriptors = [-1i32; 2];
     let result = unsafe { syscall2(98, descriptors.as_mut_ptr() as usize as u64, flags) };
+
+/// Create a pipe whose two descriptors are owned and closed on drop.
+pub fn pipe2_owned(flags: u64) -> Result<[OwnedFd; 2], i64> {
+    let descriptors = pipe2(flags)?;
+    if descriptors[0] < 0 || descriptors[1] < 0 {
+        if descriptors[0] >= 0 { let _ = close(descriptors[0] as u64); }
+        if descriptors[1] >= 0 { let _ = close(descriptors[1] as u64); }
+        return Err(-5);
+    }
+    // SAFETY: pipe2 returned two fresh descriptors owned by this caller.
+    Ok(unsafe {
+        [
+            OwnedFd::from_raw_fd(descriptors[0] as u64),
+            OwnedFd::from_raw_fd(descriptors[1] as u64),
+        ]
+    })
+}
     if result < 0 { Err(result) } else { Ok(descriptors) }
 }
 
@@ -1457,6 +1474,27 @@ fn decode_exec_handshake(bytes: &[u8], eof: bool) -> Result<Option<i64>, i64> {
     }
 }
 
+/// A standard-I/O source for a child process.
+///
+/// `Fd` borrows a descriptor for the duration of `spawn`;
+/// the parent retains ownership and should close it when no longer needed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stdio {
+    Inherit,
+    Fd(u64),
+}
+
+impl Stdio {
+    pub const fn from_fd(fd: u64) -> Self { Self::Fd(fd) }
+
+    const fn raw_fd(self) -> Option<u64> {
+        match self {
+            Self::Inherit => None,
+            Self::Fd(fd) => Some(fd),
+        }
+    }
+}
+
 /// A small process command builder for OCTAGRAM userspace.
 ///
 /// Argument and environment vectors must be NUL-terminated pointer arrays,
@@ -1466,7 +1504,7 @@ pub struct Command<'a> {
     path: &'a CStr,
     argv: &'a [*const c_char],
     envp: &'a [*const c_char],
-    stdio: [Option<u64>; 3],
+    stdio: [Stdio; 3],
 }
 
 impl<'a> Command<'a> {
@@ -1475,26 +1513,42 @@ impl<'a> Command<'a> {
         argv: &'a [*const c_char],
         envp: &'a [*const c_char],
     ) -> Self {
-        Self { path, argv, envp, stdio: [None, None, None] }
+        Self { path, argv, envp, stdio: [Stdio::Inherit; 3] }
     }
 
     pub const fn stdin_from(mut self, fd: u64) -> Self {
-        self.stdio[0] = Some(fd);
+        self.stdio[0] = Stdio::Fd(fd);
         self
     }
 
     pub const fn stdout_from(mut self, fd: u64) -> Self {
-        self.stdio[1] = Some(fd);
+        self.stdio[1] = Stdio::Fd(fd);
         self
     }
 
     pub const fn stderr_from(mut self, fd: u64) -> Self {
-        self.stdio[2] = Some(fd);
+        self.stdio[2] = Stdio::Fd(fd);
+        self
+    }
+
+    pub const fn stdin(mut self, stdio: Stdio) -> Self {
+        self.stdio[0] = stdio;
+        self
+    }
+
+    pub const fn stdout(mut self, stdio: Stdio) -> Self {
+        self.stdio[1] = stdio;
+        self
+    }
+
+    pub const fn stderr(mut self, stdio: Stdio) -> Self {
+        self.stdio[2] = stdio;
         self
     }
 
     pub fn spawn(&self) -> Result<Child, i64> {
-        spawn_with_stdio(self.path, self.argv, self.envp, self.stdio)
+        let stdio = self.stdio.map(Stdio::raw_fd);
+        spawn_with_stdio(self.path, self.argv, self.envp, stdio)
     }
 }
 

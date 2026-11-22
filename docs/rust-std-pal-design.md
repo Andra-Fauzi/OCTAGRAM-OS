@@ -234,3 +234,11 @@ membuktikan semua simbol PAL tersedia, dan belum membuktikan program
 `std` dapat dijalankan di QEMU. Tahap berikutnya adalah compile upstream
 `std` dengan patch target gate dan libc, lalu menyelesaikan setiap missing
 symbol/semantic mismatch yang muncul.
+
+## Upstream libc target integration status
+
+Upstream `rust-lang/libc` kini memiliki integrasi target OCTAGRAM yang dapat direproduksi pada commit upstream `a03dd7c2e298b0ca482f30ce07efd3115938328e`. Script `tools/apply_rust_libc_octagram.py` memeriksa commit tersebut dan menerapkan perubahan melalui exact anchors yang unik; modul ABI berada di `patches/rust-libc/octagram/mod.rs`. CI kemudian menjalankan cross-compile crate `libc` untuk `x86_64-unknown-octagram` menggunakan nightly dan `-Zbuild-std=core`.
+
+Compile gate ini lulus pada Rust no_std run [45045459269](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45045459269), bersama build userspace, runtime host unit tests, dan verifikasi ELF. Ini adalah bukti compile untuk crate `libc`, bukan bukti bahwa semua fungsi sudah punya implementasi/link symbol, bukan build Rust `std`, dan bukan native compiler/Cargo.
+
+Binding pthread rwlock, `statvfs`, dan `dladdr` generik dikecualikan karena OCTAGRAM belum menyediakan interface tersebut. Tipe dan layout lain tetap harus diuji terhadap header C dan syscall ABI; jangan menambahkan binding hanya agar crate lolos compile jika ABI atau implementasi runtime belum ada.

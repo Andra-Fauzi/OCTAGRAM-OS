@@ -7,7 +7,7 @@ RUST_TARGET := x86_64-unknown-octagram
 RUST_HELLO := build/rust_hello.elf
 RUST_MAKE := build/make.elf
 RUST_OCTAGRAM_HELLO := build/rust_hello_octagram.elf
-RUST_BUILD_FLAGS := +nightly -Z build-std=core,alloc
+RUST_BUILD_FLAGS := +nightly -Z unstable-options -Z build-std=core,alloc
 
 .PHONY: all clean make build-octagram check
 all: $(RUST_HELLO) $(RUST_MAKE)

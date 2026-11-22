@@ -82,9 +82,19 @@ s! {
         pub robustness: c_int,
     }
 
+    pub const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = pthread_mutex_t {
+        next: core::ptr::null_mut(),
+        state: 0,
+        flags: 0,
+    };
+
     pub struct pthread_condattr_t {
         pub opaque: c_int,
     }
+
+    pub const PTHREAD_COND_INITIALIZER: pthread_cond_t = pthread_cond_t {
+        sequence: 0,
+    };
 
     pub struct sockaddr {
         pub sa_family: sa_family_t,
@@ -258,6 +268,8 @@ pub const MAP_ANON: c_int = 0x20;
 pub const MAP_ANONYMOUS: c_int = MAP_ANON;
 
 pub const PTHREAD_MUTEX_STALLED: c_int = 0;
+pub const PTHREAD_MUTEX_NORMAL: c_int = 0;
+pub const PTHREAD_MUTEX_DEFAULT: c_int = PTHREAD_MUTEX_NORMAL;
 pub const PTHREAD_MUTEX_ROBUST: c_int = 1;
 pub const PTHREAD_CREATE_JOINABLE: c_int = 0;
 pub const PTHREAD_CREATE_DETACHED: c_int = 1;
@@ -344,6 +356,7 @@ extern "C" {
     pub fn pthread_detach(thread: pthread_t) -> c_int;
     pub fn pthread_mutex_init(mutex: *mut pthread_mutex_t, attr: *const pthread_mutexattr_t) -> c_int;
     pub fn pthread_mutex_destroy(mutex: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_mutexattr_settype(attributes: *mut pthread_mutexattr_t, kind: c_int) -> c_int;
     pub fn pthread_mutex_lock(mutex: *mut pthread_mutex_t) -> c_int;
     pub fn pthread_mutex_trylock(mutex: *mut pthread_mutex_t) -> c_int;
     pub fn pthread_mutex_unlock(mutex: *mut pthread_mutex_t) -> c_int;

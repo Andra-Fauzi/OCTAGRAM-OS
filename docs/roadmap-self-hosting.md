@@ -67,7 +67,7 @@ selesai jika bukti sesuai tersedia.
 | C compiler | TinyCC mengompilasi source terpisah menjadi object, membuat static archive, link ELF dari object + archive, lalu executable berjalan di QEMU | QEMU guest-tested untuk object, archive, link, dan eksekusi |
 | Mini toolchain | Compiler C-subset, assembler/linker mini tersedia | Terbatas, bukan GNU toolchain |
 | Native Make | Rust no_std; explicit graph, variables, `$@`, `$<`, `$^`, `$*`, `.PHONY`, `include`, single-stem pattern rules, `-n`, `-s`, `-j1`, mtime incremental, `-B` | QEMU-tested: included pattern rules, object/archive/link, skip, dependency rebuild, force, `.PHONY` |
-| Rust application | Workspace Rust no_std dapat di-cross-compile dari host | Bukan Rust compiler native |
+| Rust application | Custom target `x86_64-unknown-octagram`, runtime `no_std`, `core` + `alloc`, dan ELF userspace; build diarahkan ke custom target | Source/configuration committed; host build dan guest QEMU untuk perubahan terbaru masih menunggu verifikasi |
 | rustc | Belum terbukti berjalan di OCTAGRAM | Belum tersedia |
 | Cargo | Belum terbukti berjalan di OCTAGRAM | Belum tersedia |
 | Kernel build native | Kernel masih dibangun dengan host Rust/Cargo/LLVM | Belum tersedia |

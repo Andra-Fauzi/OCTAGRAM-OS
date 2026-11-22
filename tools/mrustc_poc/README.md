@@ -101,6 +101,10 @@ Sebelum kompilasi besar `libcore.c`, harness menjalankan tes kecil:
 `TCC-MATH-PASS` (libm dari `libc.a`), dan
 `TCC-ATOMIC128-SHIM-PASS` (helper bytewise non-atomic). Hasil tersebut
 memisahkan kegagalan fondasi dari kegagalan kompilasi seluruh core.
+Setiap tahap compile dan run pada harness QEMU juga menunggu status
+keluar `0` serta prompt shell kembali; marker PASS saja tidak cukup untuk
+meloloskan tahap. Ini mencegah artefak lama atau program yang mencetak marker
+tetapi gagal keluar dianggap sukses.
 
 ## Catatan
 

@@ -5,8 +5,23 @@
 extern "C" {
 #endif
 
-/* ISO C math declarations used by mrustc-generated core C.
- * This header declares the ABI only; libm implementations are separate. */
+/* Public declarations for OCTAGRAM's bootstrap math runtime.
+ * Transcendental functions are currently approximate, not correctly-rounded. */
+#ifndef HUGE_VAL
+#define HUGE_VAL (__builtin_huge_val())
+#endif
+#ifndef HUGE_VALF
+#define HUGE_VALF (__builtin_huge_valf())
+#endif
+#ifndef HUGE_VALL
+#define HUGE_VALL (__builtin_huge_vall())
+#endif
+#ifndef INFINITY
+#define INFINITY (__builtin_huge_valf())
+#endif
+#ifndef NAN
+#define NAN (__builtin_nanf(""))
+#endif
 double acos(double);
 double asin(double);
 double atan(double);

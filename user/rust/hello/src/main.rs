@@ -157,28 +157,25 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Err(_) => return 30,
     };
     let mut found_message = false;
-    let mut reached_eof = false;
-    for _ in 0..128 {
-        match directory.next_entry() {
-            Ok(Some(entry)) => {
-                if entry.d_reclen as usize != core::mem::size_of::<octagram_runtime::Dirent>() {
-                    let _ = directory.close();
-                    return 33;
-                }
-                let name_bytes = match entry.name_bytes() {
-                    Some(name) => name,
-                    None => {
-                        let _ = directory.close();
-                        return 34;
-                    }
-                };
-                if name_bytes == b"message.c" { found_message = true; }
+    let mut directory_error = false;
+    for entry_result in directory.into_iter() {
+        let entry = match entry_result {
+            Ok(entry) => entry,
+            Err(_) => {
+                directory_error = true;
+                break;
             }
-            Ok(None) => { reached_eof = true; break; }
-            Err(_) => break,
+        };
+        if entry.d_reclen as usize != core::mem::size_of::<octagram_runtime::Dirent>() {
+            return 33;
         }
+        let name_bytes = match entry.name_bytes() {
+            Some(name) => name,
+            None => return 34,
+        };
+        if name_bytes == b"message.c" { found_message = true; }
     }
-    if directory.close().is_err() || !found_message || !reached_eof {
+    if directory_error || !found_message {
         return 31;
     }
     if write_all(STDOUT, b"Rust runtime directory iteration: PASS\n").is_err() {

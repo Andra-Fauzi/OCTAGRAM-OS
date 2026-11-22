@@ -57,7 +57,10 @@ membutuhkan pengujian numerik lebih luas.
 `build_host.sh` sekarang memvalidasi bahwa keluaran `mrustc` masih memuat XGETBV
 asli, lalu hanya me-rewrite AtomicU128 yang belum didukung. Enam uji regresi
 memastikan XGETBV dipertahankan, patch idempoten, dan perubahan format yang tak
-dikenali ditolak.
+dikenali ditolak. Patch sumber Rust juga diterapkan secara fail-closed: script
+membedakan patch yang belum diterapkan, yang sudah diterapkan, dan source
+archive yang tidak cocok. Kegagalan patch tidak lagi disembunyikan oleh
+`|| true`.
 
 ## Menjalankan
 

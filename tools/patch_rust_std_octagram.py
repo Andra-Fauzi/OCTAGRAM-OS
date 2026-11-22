@@ -43,22 +43,6 @@ def main() -> int:
         "    #[cfg(target_os = \"octagram\")]\n"
         "    pub use crate::os::octagram::*;\n",
     )
-    replace_once(
-        unix_mod,
-        "pub mod ffi;\npub mod fs;\npub mod io;",
-        "pub mod ffi;\n#[cfg(not(target_os = \"octagram\"))]\npub mod fs;\npub mod io;",
-    )
-    for line in (
-        "    pub use super::fs::DirEntryExt;\n",
-        "    pub use super::fs::FileExt;\n",
-        "    pub use super::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};\n",
-    ):
-        replace_once(
-            unix_mod,
-            line,
-            "    #[cfg(not(target_os = \"octagram\"))]\n" + line,
-        )
-
     thread_unix = std / "sys/thread/unix.rs"
     thread_anchor = (
         "impl Drop for Thread {\n"
@@ -95,7 +79,7 @@ def main() -> int:
 
     target = std / "os/octagram"
     target.mkdir(parents=True, exist_ok=True)
-    for name in ("mod.rs", "raw.rs"):
+    for name in ("mod.rs", "raw.rs", "fs.rs"):
         destination = target / name
         if destination.exists():
             raise SystemExit(f"refusing to overwrite existing Rust std target file: {destination}")

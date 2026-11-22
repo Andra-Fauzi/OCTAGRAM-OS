@@ -1359,6 +1359,16 @@ Empat celah nyata yang tercatat:
 
 Semua di atas diatasi di sisi C (`tools/mrustc_poc/fix.h`, `math.h`, `shim.c`
 plus dua penggantian teks pada C hasil transpile) — tanpa memodifikasi `tcc`.
+
+Harness host kini memvalidasi dua rewrite yang dibutuhkan oleh keluaran `mrustc`:
+fragmen inline assembly `xgetbv` harus diganti dengan placeholder PoC, dan
+pemanggilan atomic 128-bit harus diarahkan ke helper `poc_cxchg128`. Jika
+fragmen sumber berubah dan rewrite tidak lagi cocok, atau instruksi/intrinsic
+lama masih tersisa, `build_host.sh` berhenti dengan error. Ini mencegah
+perubahan output mrustc diam-diam menghasilkan disk sumber yang tidak
+kompatibel. Validasi ini hanya mengeraskan harness host; **bukan** bukti bahwa
+placeholder setara secara semantik dengan instruksi CPU atau atomic 128-bit
+yang sesungguhnya.
 Stub matematika di `shim.c` sengaja tidak presisi karena program PoC tidak
 menyentuh jalur float; itu harus diganti implementasi nyata sebelum dipakai
 lebih jauh.

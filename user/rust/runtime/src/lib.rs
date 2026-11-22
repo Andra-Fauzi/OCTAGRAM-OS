@@ -18,6 +18,7 @@ pub const O_RDWR: u64 = 2;
 pub const O_CREAT: u64 = 1 << 8;
 pub const O_TRUNC: u64 = 1 << 9;
 pub const O_APPEND: u64 = 1 << 10;
+pub const O_CLOEXEC: u64 = 1 << 19;
 
 
 /// Freestanding C memory primitives required by Rust core/alloc when linking
@@ -1433,6 +1434,123 @@ pub fn execve(path: &CStr, argv: &[*const c_char], envp: &[*const c_char]) -> Re
     }
 }
 
+/// Decode the close-on-exec handshake sent by a child when execve fails.
+/// None means EOF without a payload: execve replaced the child image.
+fn decode_exec_handshake(bytes: &[u8], eof: bool) -> Result<Option<i64>, i64> {
+    if bytes.is_empty() && eof {
+        return Ok(None);
+    }
+    if bytes.len() != core::mem::size_of::<i64>() {
+        return Err(-5);
+    }
+    let mut encoded = [0u8; 8];
+    encoded.copy_from_slice(bytes);
+    let error = i64::from_le_bytes(encoded);
+    if error >= -(MAX_ERRNO as i64) && error < 0 {
+        Ok(Some(error))
+    } else {
+        Err(-5)
+    }
+}
+
+/// Spawn a program by forking, applying optional stdio descriptor mappings,
+/// then executing it. argv and envp must each include a trailing null pointer.
+/// The stdio array is [stdin, stdout, stderr]; None preserves the inherited fd.
+pub fn spawn(
+    path: &CStr,
+    argv: &[*const c_char],
+    envp: &[*const c_char],
+) -> Result<Child, i64> {
+    spawn_with_stdio(path, argv, envp, [None, None, None])
+}
+
+/// Spawn with explicit stdin/stdout/stderr descriptor sources.
+///
+/// A close-on-exec pipe reports the exact execve error to the parent. EOF
+/// without a payload means the kernel successfully replaced the child image.
+pub fn spawn_with_stdio(
+    path: &CStr,
+    argv: &[*const c_char],
+    envp: &[*const c_char],
+    stdio: [Option<u64>; 3],
+) -> Result<Child, i64> {
+    if argv.last().copied() != Some(ptr::null())
+        || envp.last().copied() != Some(ptr::null())
+    {
+        return Err(-22);
+    }
+
+    let descriptors = pipe2(O_CLOEXEC)?;
+    let read_fd = descriptors[0] as u64;
+    let write_fd = descriptors[1] as u64;
+    let pid = match fork() {
+        Ok(pid) => pid,
+        Err(error) => {
+            let _ = close(read_fd);
+            let _ = close(write_fd);
+            return Err(error);
+        }
+    };
+
+    if pid == 0 {
+        let _ = close(read_fd);
+        for (target, source) in stdio.iter().enumerate() {
+            if let Some(source) = source {
+                if let Err(error) = dup3(*source, target as u64, 0) {
+                    let _ = write_all(write_fd, &error.to_le_bytes());
+                    let _ = close(write_fd);
+                    exit(127);
+                }
+            }
+        }
+        if let Err(error) = execve(path, argv, envp) {
+            let _ = write_all(write_fd, &error.to_le_bytes());
+            let _ = close(write_fd);
+            exit(127);
+        }
+        // A successful execve does not return to this image.
+        exit(127);
+    }
+
+    let _ = close(write_fd);
+    let mut payload = [0u8; 8];
+    let mut received = 0usize;
+    let mut eof = false;
+    while received < payload.len() {
+        match read(read_fd, &mut payload[received..]) {
+            Ok(0) => { eof = true; break; }
+            Ok(count) if count <= payload.len() - received => received += count,
+            Ok(_) => {
+                let _ = close(read_fd);
+                let mut child = Child::from_pid(pid);
+                let _ = child.wait();
+                return Err(-5);
+            }
+            Err(error) => {
+                let _ = close(read_fd);
+                let mut child = Child::from_pid(pid);
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
+    }
+    let _ = close(read_fd);
+
+    match decode_exec_handshake(&payload[..received], eof) {
+        Ok(None) => Ok(Child::from_pid(pid)),
+        Ok(Some(error)) => {
+            let mut child = Child::from_pid(pid);
+            let _ = child.wait();
+            Err(error)
+        }
+        Err(error) => {
+            let mut child = Child::from_pid(pid);
+            let _ = child.wait();
+            Err(error)
+        }
+    }
+}
+
 /// Special target accepted by waitpid to wait for any direct child.
 pub const WAIT_ANY_PID: u64 = u64::MAX;
 /// Return immediately when the selected child has not exited yet.
@@ -1619,6 +1737,16 @@ mod tests {
 
     use super::{build_dns_query, find_env_value, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen, Dirent};
     use core::alloc::Layout;
+
+    #[test]
+    fn exec_handshake_distinguishes_success_failure_and_corruption() {
+        assert_eq!(super::decode_exec_handshake(&[], true), Ok(None));
+        assert_eq!(super::decode_exec_handshake(&(-2i64).to_le_bytes(), true), Ok(Some(-2)));
+        assert_eq!(super::decode_exec_handshake(&[], false), Err(-5));
+        assert_eq!(super::decode_exec_handshake(&[1, 2, 3], true), Err(-5));
+        assert_eq!(super::decode_exec_handshake(&0i64.to_le_bytes(), true), Err(-5));
+        assert_eq!(super::decode_exec_handshake(&(-4096i64).to_le_bytes(), true), Err(-5));
+    }
 
     #[test]
     fn environment_lookup_matches_exact_name_and_value() {

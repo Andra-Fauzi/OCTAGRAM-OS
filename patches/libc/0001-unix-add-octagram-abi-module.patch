@@ -15,7 +15,7 @@ Upstream base: rust-lang/libc a03dd7c2e298b0ca482f30ce07efd3115938328
 ---
  src/unix/mod.rs            |  3 +++
  src/unix/octagram/mod.rs   | 99 ++++++++++++++++++++++++++++++++++++++++++++++
- 2 files changed, 102 insertions(+)
+ 2 files changed, 105 insertions(+)
  create mode 100644 src/unix/octagram/mod.rs
 
 diff --git a/src/unix/mod.rs b/src/unix/mod.rs
@@ -37,7 +37,7 @@ new file mode 100644
 index 000000000000..000000000000
 --- /dev/null
 +++ b/src/unix/octagram/mod.rs
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,102 @@
 +//! Initial raw bindings for the OCTAGRAM x86_64 userspace ABI.
 +//!
 +//! These definitions follow OCTAGRAM's public C headers. They intentionally
@@ -56,8 +56,14 @@ index 000000000000..000000000000
 +pub type off_t = i64;
 +pub type pthread_t = u64;
 +pub type pthread_key_t = u32;
++pub type id_t = u32;
++pub type nfds_t = usize;
+pub type id_t = u32;
+pub type nfds_t = usize;
 +pub type rlim_t = u64;
 +pub type sa_family_t = u16;
++pub type sigset_t = u64;
+pub type sigset_t = u64;
 +pub type socklen_t = u32;
 +pub type speed_t = u32;
 +pub type suseconds_t = i64;

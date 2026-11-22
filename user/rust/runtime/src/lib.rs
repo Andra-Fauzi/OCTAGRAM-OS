@@ -403,6 +403,25 @@ pub struct Dirent {
     pub d_name: [c_char; 256],
 }
 
+impl Dirent {
+    /// Return the entry name only when the record length contains a
+    /// NUL-terminated name within the fixed OCTAGRAM ABI buffer.
+    pub fn name_bytes(&self) -> Option<&[u8]> {
+        let record_len = usize::from(self.d_reclen);
+        let name_offset = core::mem::offset_of!(Self, d_name);
+        if record_len > core::mem::size_of::<Self>() || record_len <= name_offset {
+            return None;
+        }
+
+        let name_capacity = record_len - name_offset;
+        let name = unsafe {
+            core::slice::from_raw_parts(self.d_name.as_ptr().cast::<u8>(), name_capacity)
+        };
+        let nul = name.iter().position(|byte| *byte == 0)?;
+        Some(&name[..nul])
+    }
+}
+
 /// Open a directory and return its descriptor (syscall 27).
 pub fn opendir(path: &CStr) -> Result<u64, i64> {
     let result = unsafe { syscall1(27, path.as_ptr() as usize as u64) };
@@ -1178,7 +1197,7 @@ static ALLOCATOR: MmapAllocator = MmapAllocator;
 mod tests {
     extern crate std;
 
-    use super::{build_dns_query, find_env_value, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen};
+    use super::{build_dns_query, find_env_value, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen, Dirent};
     use core::alloc::Layout;
 
     #[test]
@@ -1276,6 +1295,29 @@ mod tests {
         assert_eq!(core::mem::offset_of!(super::Dirent, d_reclen), 16);
         assert_eq!(core::mem::offset_of!(super::Dirent, d_type), 18);
         assert_eq!(core::mem::offset_of!(super::Dirent, d_name), 19);
+    }
+
+    #[test]
+    fn dirent_name_bytes_respects_record_length_and_terminator() {
+        let mut entry = Dirent {
+            d_ino: 1,
+            d_off: 2,
+            d_reclen: core::mem::size_of::<Dirent>() as u16,
+            d_type: 8,
+            d_name: [0; 256],
+        };
+        entry.d_name[..9].copy_from_slice(b"message.c");
+        assert_eq!(entry.name_bytes(), Some(&b"message.c"[..]));
+
+        entry.d_reclen = (core::mem::offset_of!(Dirent, d_name) + 4) as u16;
+        assert_eq!(entry.name_bytes(), None);
+
+        entry.d_reclen = (core::mem::offset_of!(Dirent, d_name) + 3) as u16;
+        entry.d_name[..3].copy_from_slice(b"abc");
+        assert_eq!(entry.name_bytes(), None);
+
+        entry.d_reclen = (core::mem::size_of::<Dirent>() + 1) as u16;
+        assert_eq!(entry.name_bytes(), None);
     }
 
     #[test]

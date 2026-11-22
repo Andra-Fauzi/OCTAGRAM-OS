@@ -188,3 +188,8 @@ compatibility. In particular, futex operation values, timeout clock semantics,
 thread cancellation, robust mutexes, descriptor inheritance, and failure
 semantics still require conformance tests before a Rust `std` backend can rely
 on them.
+
+
+### Safe Rust directory-entry name access
+
+The runtime now exposes `octagram_runtime::Dirent::name_bytes()`. It checks that `d_reclen` stays within the fixed C ABI record and that a NUL terminator occurs inside the record's name region. It returns a borrowed byte slice, avoiding repeated raw-pointer conversions in applications. Host unit tests cover a valid name, a record too short for its name, a missing terminator, and an oversized record. The QEMU directory smoke test uses this same accessor. This validates the Rust-side record boundary; it does not change the kernel directory ABI or claim full `std::fs` compatibility.

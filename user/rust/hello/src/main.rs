@@ -129,15 +129,12 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
                     let _ = closedir(directory_fd);
                     return 33;
                 }
-                let name_length = match entry.d_name.iter().position(|&byte| byte == 0) {
-                    Some(length) => length,
+                let name_bytes = match entry.name_bytes() {
+                    Some(name) => name,
                     None => {
                         let _ = closedir(directory_fd);
                         return 34;
                     }
-                };
-                let name_bytes = unsafe {
-                    core::slice::from_raw_parts(entry.d_name.as_ptr().cast::<u8>(), name_length)
                 };
                 if name_bytes == b"message.c" { found_message = true; }
             }

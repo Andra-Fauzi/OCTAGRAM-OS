@@ -23,6 +23,10 @@ if [[ ! -d "$MRUSTC_DIR/.git" ]]; then
     rm -rf "$MRUSTC_DIR"
     git clone --depth 1 --branch "$MRUSTC_REF" \
         https://github.com/thepowersgang/mrustc "$MRUSTC_DIR"
+else
+    # Reuse the checkout only as a cache; always resolve the requested ref.
+    git -C "$MRUSTC_DIR" fetch --depth 1 origin "$MRUSTC_REF"
+    git -C "$MRUSTC_DIR" checkout --detach FETCH_HEAD
 fi
 MRUSTC_COMMIT="$(git -C "$MRUSTC_DIR" rev-parse HEAD)"
 echo "MRUSTC-COMMIT: $MRUSTC_COMMIT"

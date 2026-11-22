@@ -1337,7 +1337,11 @@ sudah ada di dalam OCTAGRAM sebagai backend, tanpa LLVM.
   disk EXT2 256 MiB berisi sumber C untuk guest. Penerapan patch source Rust
   kini fail-closed: script membedakan patch yang belum diterapkan, sudah
   diterapkan, dan source archive yang tidak cocok; kegagalan patch tidak lagi
-  ditutupi dengan `|| true`.
+  ditutupi dengan `|| true`. Tahap transpile PoC menghapus `poc.c` lama,
+  memeriksa keluaran C segar dan entry point `main`, serta hanya mengizinkan
+  status `mrustc` nonzero bila C yang valid secara struktural sudah dihasilkan;
+  status nonzero tersebut dicatat sebagai kegagalan link host yang memang
+  dialihkan ke linker TinyCC guest.
 
 ### Status hambatan di sisi guest
 

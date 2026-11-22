@@ -316,6 +316,12 @@
       "header": "user/include/pthread.h",
       "status": "unsupported",
       "notes": "Returns ENOTSUP"
+    },
+    {
+      "symbol": "pthread_mutexattr_settype",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Rust std Unix PAL selects PTHREAD_MUTEX_NORMAL; OCTAGRAM validates this only supported mutex type"
     }
   ]
 }

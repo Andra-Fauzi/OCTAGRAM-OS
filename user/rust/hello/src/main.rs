@@ -12,7 +12,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
     close, closedir, clock_getres, clock_gettime, dup3, exit, fstat, fstatat, futex, getpid,
-    getrandom, lseek, mmap, mprotect, munmap, nanosleep, openat_owned, opendir, pipe2, read, readdir,
+    getrandom, mmap, mprotect, munmap, nanosleep, openat_owned, opendir, pipe2, read, readdir,
     stat_path, thread_create,
     thread_exit, thread_join, thread_self, write, write_all,
     AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,

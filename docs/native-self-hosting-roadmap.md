@@ -1336,46 +1336,38 @@ sudah ada di dalam OCTAGRAM sebagai backend, tanpa LLVM.
 - `tools/mrustc_poc/build_host.sh` mereproduksi seluruh rantai itu dan menulis
   disk EXT2 256 MiB berisi sumber C untuk guest.
 
-### Celah yang ditemukan di sisi guest (bukan di mrustc)
+### Status hambatan di sisi guest
 
-`tcc` guest diberi sumber C hasil transpile lewat `mount sata1 /mnt ext2` dan
-`tcc -I /mnt/src -include /mnt/src/fix.h ... -o /mnt/poc.elf`. Ia berhasil
-melewati preprocessor dan **227 ribu dari 587 ribu baris** sebelum berhenti.
-Empat celah nyata yang tercatat:
+`tcc` guest sebelumnya berhasil melewati preprocessor dan **227 ribu dari
+587 ribu baris** sebelum berhenti. Audit empat hambatan itu kini menghasilkan
+status berikut:
 
-1. `/include/stdint.h` guest tidak punya `int_leastN_t`/`uint_leastN_t`,
-   sehingga `/include/stdatomic.h` gagal lebih dulu. Ini bug header guest,
-   bukan batas `tcc`.
-2. Header publik guest `user/include/math.h` kini mendeklarasikan fungsi
-   matematika ISO C yang dipakai C `core`, termasuk
-   `fabs/sqrt/floor/ceil/trunc/round/pow/copysign/fma/exp/log2/cbrt/fdim`.
-   Namun implementasi libm belum tersedia; shim PoC masih menyediakan stub
-   tidak presisi untuk jalur float yang tidak disentuh program uji.
-3. `tcc` tidak mengimplementasikan `__builtin_add_overflow`,
-   `__builtin_sub_overflow`, dan `__builtin_mul_overflow` yang dipakai 1392
-   kali oleh C `core`.
-4. `tcc` (a) tidak punya opcode assembler `xgetbv`, dan (b) tidak mendukung
-   atomic 128-bit (`uint128_t _Atomic`) sehingga `compare_exchange` u128 gagal.
+1. **Header integer — diperbaiki di source.** `user/include/stdint.h`
+   menyediakan tipe `int_leastN_t`/`uint_leastN_t` dan
+   `int_fastN_t`/`uint_fastN_t`; pemeriksaan sintaks tersedia.
+2. **Libm — belum diperbaiki.** Header publik `user/include/math.h` sudah
+   mendeklarasikan API yang dipakai C `core`, tetapi implementasi matematika
+   nyata belum ada. Shim PoC masih memakai stub yang tidak presisi.
+3. **Overflow builtin — implementasi compiler ditambahkan.** Token
+   `__builtin_add_overflow`, `__builtin_sub_overflow`, dan
+   `__builtin_mul_overflow` kini dikenali di `tcctok.h` dan diturunkan oleh
+   parser `tccgen.c` ke helper `__tcc_overflow`. Helper di
+   `user/third_party/tinycc/lib/overflow.c` memeriksa rentang signed/unsigned
+   8/16/32/64 bit dan menyimpan bit hasil, termasuk ketika overflow terjadi.
+   Tes helper host tersedia; `qemu_test.py` kini lebih dahulu mengompilasi dan
+   menjalankan source builtin kecil di guest. **Hasil QEMU belum dijalankan /
+   diverifikasi dalam sesi ini.**
+4. **XGETBV dan atomic 128-bit — belum menjadi dukungan umum.** PoC masih
+   mengganti fragmen XGETBV dan AtomicU128 di C keluaran `mrustc`. Rewrite
+   tersebut tidak boleh dianggap implementasi instruksi CPU atau atomic
+   128-bit yang sesungguhnya.
 
-Semua di atas diatasi di sisi C (`tools/mrustc_poc/fix.h`, `math.h`, `shim.c`
-plus dua penggantian teks pada C hasil transpile) — tanpa memodifikasi `tcc`.
-
-Harness host kini memvalidasi dua rewrite yang dibutuhkan oleh keluaran `mrustc`:
-fragmen inline assembly `xgetbv` harus diganti dengan placeholder PoC, dan
-pemanggilan atomic 128-bit harus diarahkan ke helper `poc_cxchg128`. Jika
-fragmen sumber berubah dan rewrite tidak lagi cocok, atau instruksi/intrinsic
-lama masih tersisa, `build_host.sh` berhenti dengan error. Ini mencegah
-perubahan output mrustc diam-diam menghasilkan disk sumber yang tidak
-kompatibel. Validasi ini hanya mengeraskan harness host; **bukan** bukti bahwa
-placeholder setara secara semantik dengan instruksi CPU atau atomic 128-bit
-yang sesungguhnya.
-
-Empat uji regresi untuk patcher tersedia di `tools/mrustc_poc/test_patch_core.py`
-(rewrite dua fragmen, idempotensi, dan penolakan dua bentuk output yang berubah).
-Jalankan dengan `python3 -m unittest discover -s tools/mrustc_poc -p 'test_*.py'`.
-Stub matematika di `shim.c` sengaja tidak presisi karena program PoC tidak
-menyentuh jalur float; itu harus diganti implementasi nyata sebelum dipakai
-lebih jauh.
+Macro lama di `fix.h` yang memaksa ketiga overflow builtin selalu
+mengembalikan false sudah dihapus, sehingga PoC akan memakai implementasi
+TinyCC yang baru. Patcher `patch_core.py` tetap memvalidasi dua rewrite yang
+masih diperlukan: XGETBV dan AtomicU128. Jika format keluaran `mrustc`
+berubah, harness berhenti alih-alih meneruskan hasil yang tidak kompatibel.
+Empat tes regresi patcher ada di `test_patch_core.py`.
 
 ### Yang belum terbukti
 

@@ -40,7 +40,7 @@ int main(void) {
     error = check(__tcc_overflow((unsigned long long)0x8000000000000000ULL,
                                  (unsigned long long)-1, &s64,
                                  2, 1, 0, 8, 0)
-                  && s64 == (long long)0x8000000000000000ULL, 8);
+                  == 0 && s64 == (long long)0x8000000000000000ULL, 8);
     if (error) return error;
 
     return 0;

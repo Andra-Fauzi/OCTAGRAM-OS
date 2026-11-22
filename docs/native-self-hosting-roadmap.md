@@ -1634,7 +1634,7 @@ Validasi: run Rust no_std sebelumnya lulus untuk commit 4ed89d72 ([45039325350](
 - Guest smoke test diperbarui untuk memakai `for` langsung pada Directory, sehingga menguji dispatch `IntoIterator` standar, ownership stream, EOF, dan jalur error terminal.
 - `DirectoryIter` tetap mengimplementasikan `FusedIterator`; status terminal setelah EOF/error dijaga.
 
-Status: primitive iterator sekarang lebih idiomatis untuk no_std. Ini belum mengimplementasikan `std::fs::ReadDir`/`DirEntry` atau `PathBuf`.
+Status: primitive iterator dan adapter internal `DirEntry` kini tersedia untuk no_std. Ini belum mengimplementasikan `std::fs::ReadDir`/`std::fs::DirEntry`, `OsString`, atau `PathBuf`.
 
 ## 21. Owned DirEntry dan metadata relatif direktori (22 November 2026)
 

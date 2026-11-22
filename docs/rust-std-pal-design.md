@@ -41,7 +41,7 @@ menggunakan mrustc atau xrustc.
 | Directory | `opendir`, `readdir`, `closedir` | Implementasikan iterator `ReadDir`, dot entries, dan error terminal |
 | Path mutation | `mkdirat`, `unlinkat`, `renameat` | Mapping remove-file/remove-dir dan path edge cases |
 | VM | `mmap`, `munmap`, `mprotect`, `brk` | PAL allocator/VM dan mapping file yang teruji |
-| Process | `fork`, `execve`, `waitpid`, `pipe2`, `dup3` | Implementasi `Command`, stdio inheritance, status, spawn failure |
+| Process | `fork`, `execve`, `waitpid`, `pipe2`, `dup3`; `Child::wait/try_wait` | Implementasi `Command`, stdio inheritance, exec failure handshake, signal/status mapping |
 | Threads | `thread_create/join/exit`, FS TLS, `futex` | Integrasi `std::thread`, mutex/condvar, TLS destructor |
 | Clock/random | `clock_gettime`, `nanosleep`, `getrandom` | Monotonic/instant semantics, error propagation, entropy tests |
 | Dynamic loading | Loader ELF subset | Belum layak untuk mengasumsikan dylib Rust/LLVM; tentukan static-link strategy |
@@ -49,6 +49,10 @@ menggunakan mrustc atau xrustc.
 Nomor syscall dan keberadaan wrapper bukan bukti kompatibilitas semantik.
 Setiap baris harus memiliki test guest yang menguji sukses, error, batas,
 blocking, dan concurrency sesuai kebutuhan API Rust.
+
+## Child process ownership update
+
+Runtime kini menyediakan `Child`, pembungkus PID anak langsung dengan `wait()` dan `try_wait()`. `waitpid_with_options()` mengekspos flag `WNOHANG`, sedangkan `WAIT_ANY_PID` mewakili target semua anak. Status yang dikembalikan adalah nilai 64-bit mentah dari `exit(status)`, bukan encoding bit wait-status Linux. Smoke test guest melakukan `fork`, memeriksa jalur nonblocking, menunggu anak, dan memverifikasi status `42` serta konsumsi handle setelah reap. Ini belum menjadi `std::process::Child` dan belum mengimplementasikan `Command`/`posix_spawn`.
 
 ## Directory ownership update
 

@@ -178,6 +178,53 @@ pub fn getenv(name: &CStr) -> Option<&'static CStr> {
     }
 }
 
+/// Maximum errno value reserved by the OCTAGRAM syscall ABI.
+pub const MAX_ERRNO: i32 = 4095;
+
+/// A decoded negative errno returned by an OCTAGRAM syscall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SysError {
+    code: i32,
+}
+
+impl SysError {
+    /// Decode a syscall return value. Non-error values return None.
+    pub const fn from_return(value: i64) -> Option<Self> {
+        if value < 0 && value >= -(MAX_ERRNO as i64) {
+            Some(Self { code: (-value) as i32 })
+        } else {
+            None
+        }
+    }
+
+    /// Positive POSIX errno number.
+    pub const fn code(self) -> i32 { self.code }
+
+    /// Convert back to the OCTAGRAM syscall convention.
+    pub const fn to_return(self) -> i64 { -(self.code as i64) }
+
+    pub const fn is_interrupted(self) -> bool { self.code == 4 }
+    pub const fn is_would_block(self) -> bool { self.code == 11 }
+    pub const fn is_not_found(self) -> bool { self.code == 2 }
+    pub const fn is_permission_denied(self) -> bool {
+        self.code == 1 || self.code == 13
+    }
+}
+
+impl core::fmt::Display for SysError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "OCTAGRAM syscall error {}", self.code)
+    }
+}
+
+/// Decode a syscall result into a value or a typed OS error.
+pub const fn decode_syscall_result(value: i64) -> Result<i64, SysError> {
+    match SysError::from_return(value) {
+        Some(error) => Err(error),
+        None => Ok(value),
+    }
+}
+
 pub const PROT_READ: u64 = 1;
 pub const PROT_WRITE: u64 = 2;
 pub const PROT_EXEC: u64 = 4;
@@ -1316,6 +1363,31 @@ mod tests {
             None
         );
         assert_eq!(super::allocation_user_range(base, 4096, 8, 0), None);
+    }
+
+    #[test]
+    fn syscall_error_decoding_preserves_errno_semantics() {
+        let interrupted = super::SysError::from_return(-4).unwrap();
+        assert_eq!(interrupted.code(), 4);
+        assert_eq!(interrupted.to_return(), -4);
+        assert!(interrupted.is_interrupted());
+
+        let missing = super::SysError::from_return(-2).unwrap();
+        assert!(missing.is_not_found());
+        assert!(!missing.is_permission_denied());
+
+        let denied = super::SysError::from_return(-13).unwrap();
+        assert!(denied.is_permission_denied());
+        assert!(super::SysError::from_return(-1).unwrap().is_permission_denied());
+
+        let blocked = super::SysError::from_return(-11).unwrap();
+        assert!(blocked.is_would_block());
+
+        assert!(super::SysError::from_return(0).is_none());
+        assert!(super::SysError::from_return(17).is_none());
+        assert!(super::SysError::from_return(-4096).is_none());
+        assert_eq!(super::decode_syscall_result(23), Ok(23));
+        assert_eq!(super::decode_syscall_result(-2), Err(missing));
     }
 
     #[test]

@@ -453,6 +453,8 @@ double nextafter(double x, double y)
 
 double nexttoward(double x, long double y)
 {
+    if (y != y)
+        return (double)y;
     if ((long double)x == y)
         return (double)y;
     return nextafter(x, y > (long double)x ? oct_inf(0) : oct_inf(1));

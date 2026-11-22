@@ -86,9 +86,10 @@ debugfs -w -R "mkdir /src" "$IMAGE" >/dev/null 2>&1
 for file in libcore.c poc.c; do
     debugfs -w -R "write $WORK/$file /src/$file" "$IMAGE" >/dev/null 2>&1
 done
-for file in fix.h math.h shim.c poc.rs tcc_overflow_test.c; do
+for file in fix.h math.h shim.c poc.rs; do
     debugfs -w -R "write $ROOT/tools/mrustc_poc/$file /src/$file" "$IMAGE" >/dev/null 2>&1
 done
+debugfs -w -R "write $ROOT/user/examples/tcc_overflow.c /src/tcc_overflow.c" "$IMAGE" >/dev/null 2>&1
 
 echo "MRUSTC-C-POC-ARTIFACTS: $WORK"
 echo "SOURCE-IMAGE: $IMAGE"

@@ -1344,6 +1344,9 @@ sudah ada di dalam OCTAGRAM sebagai backend, tanpa LLVM.
   dialihkan ke linker TinyCC guest. Pemeriksaan struktur C dipisah ke
   `validate_poc_output.py` dan memiliki tes unit untuk output kosong, definisi
   `main`, fungsi non-main, serta komentar yang hanya menyebut `main`.
+  Artefak `libcore.c` dan `libcore.hir` juga dibersihkan sebelum transpile dan
+  diwajibkan muncul kembali sebelum patcher dijalankan, agar build tidak
+  memakai keluaran `core` dari percobaan sebelumnya.
 
 ### Status hambatan di sisi guest
 

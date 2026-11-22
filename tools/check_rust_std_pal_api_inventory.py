@@ -19,10 +19,10 @@ def main() -> int:
         symbol = entry["symbol"]
         header_path = ROOT / entry["header"]
         header = header_path.read_text(encoding="utf-8")
-        declaration = re.compile(r"\\b" + re.escape(symbol) + r"\\s*\\(")
+        declaration = re.compile(r"\b" + re.escape(symbol) + r"\s*\(")
         definition = re.compile(
-            r"(?m)^[\\w\\s\\*]+\\b" + re.escape(symbol)
-            + r"\\s*\\([^;{}]*\\)\\s*\\{"
+            r"(?m)^[\w\s\*]+\b" + re.escape(symbol)
+            + r"\s*\([^;{}]*\)\s*\{"
         )
         if not declaration.search(header):
             raise SystemExit(f"RUST-STD-PAL-FAIL: {symbol} missing declaration in {entry['header']}")

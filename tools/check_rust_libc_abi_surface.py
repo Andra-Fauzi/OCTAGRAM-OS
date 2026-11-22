@@ -70,6 +70,10 @@ def main() -> int:
     require(re.search(r"struct\s+addrinfo\s*\{\s*int\s+ai_flags;\s*int\s+ai_family;\s*int\s+ai_socktype;\s*int\s+ai_protocol;\s*socklen_t\s+ai_addrlen;\s*struct\s+sockaddr\s*\*ai_addr;\s*char\s*\*ai_canonname;\s*struct\s+addrinfo\s*\*ai_next;", netdb, re.S) is not None,
             "addrinfo field order changed")
 
+    require("#define MSG_PEEK 0x02" in socket_header
+            and "#define SO_LINGER 13" in socket_header,
+            "socket peek/linger constants changed")
+
     pthread_header = read("user/include/pthread.h")
     require("typedef uint64_t pthread_t;" in pthread_header
             and "volatile unsigned int state;" in pthread_header

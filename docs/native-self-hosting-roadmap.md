@@ -1346,12 +1346,13 @@ status berikut:
    menyediakan tipe `int_leastN_t`/`uint_leastN_t` dan
    `int_fastN_t`/`uint_fastN_t`; pemeriksaan sintaks tersedia.
 2. **Libm — bootstrap implementation tersedia.** `user/math.c` sekarang
-   menyediakan implementasi untuk semua simbol yang dideklarasikan oleh
-   `user/include/math.h`, dan objeknya dimasukkan ke `libc.a` yang dipakai
+   menyediakan implementasi untuk 112 simbol double/float yang dideklarasikan
+   oleh `user/include/math.h`; link test memastikan seluruh simbol tersedia.
+   Objek math dimasukkan ke `libc.a` yang dipakai
    TinyCC. Operasi bit IEEE-754 dasar (sign, abs, trunc, frexp/ldexp,
    nextafter, pembulatan) dibuat lewat manipulasi bit; sqrt memakai x87;
-   exp/log/trig/gamma/error-function memakai aproksimasi numerik. Tes host
-   tersedia lewat `make -C user math-test`, dan dua QEMU harness menguji
+   exp/log/trig/gamma/error-function memakai aproksimasi numerik. Tes host tersedia lewat `make -C user math-header-test math-test`, dan dua
+   QEMU harness menguji
    program yang menautkan fungsi dari archive. Ini **belum** correctly-rounded
    atau selengkap/sekokoh libm produksi; error numerik, domain dan rounding
    mode masih perlu diverifikasi lebih luas.

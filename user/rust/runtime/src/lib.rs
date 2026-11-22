@@ -1092,6 +1092,33 @@ impl File {
     pub fn close(self) -> Result<(), i64> { self.fd.close_owned() }
 }
 
+/// Owning iterator over a directory stream. The first read error is yielded
+/// once and terminates iteration; end-of-directory also terminates it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DirectoryIter {
+    directory: Directory,
+    finished: bool,
+}
+
+impl Iterator for DirectoryIter {
+    type Item = Result<Dirent, i64>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished { return None; }
+        match self.directory.next_entry() {
+            Ok(Some(entry)) => Some(Ok(entry)),
+            Ok(None) => {
+                self.finished = true;
+                None
+            }
+            Err(error) => {
+                self.finished = true;
+                Some(Err(error))
+            }
+        }
+    }
+}
+
 /// RAII directory stream for the OCTAGRAM snapshot-based readdir ABI.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Directory {
@@ -1120,6 +1147,11 @@ impl Directory {
     /// Close the directory stream explicitly.
     pub fn close(self) -> Result<(), i64> {
         self.fd.close_owned()
+    }
+
+    /// Consume this stream into an owning iterator.
+    pub fn into_iter(self) -> DirectoryIter {
+        DirectoryIter { directory: self, finished: false }
     }
 }
 

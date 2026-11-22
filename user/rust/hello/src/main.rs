@@ -292,10 +292,10 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     }
 
     // Exercise Command's close-on-exec handshake with a successful shell exec.
-    let shell_path = CStr::from_bytes_with_nul(b"/bin/sh\\0").unwrap();
-    let shell_arg0 = CStr::from_bytes_with_nul(b"sh\\0").unwrap();
-    let shell_arg1 = CStr::from_bytes_with_nul(b"-c\\0").unwrap();
-    let shell_arg2 = CStr::from_bytes_with_nul(b"exit 23\\0").unwrap();
+    let shell_path = CStr::from_bytes_with_nul(b"/bin/sh\0").unwrap();
+    let shell_arg0 = CStr::from_bytes_with_nul(b"sh\0").unwrap();
+    let shell_arg1 = CStr::from_bytes_with_nul(b"-c\0").unwrap();
+    let shell_arg2 = CStr::from_bytes_with_nul(b"exit 23\0").unwrap();
     let shell_argv = [
         shell_arg0.as_ptr(),
         shell_arg1.as_ptr(),
@@ -312,17 +312,17 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     }
 
     // A non-ELF source file must return execve's error, not a false spawn success.
-    let invalid_executable = match CStr::from_bytes_with_nul(b"/share/octagram/message.c\\0") {
+    let invalid_executable = match CStr::from_bytes_with_nul(b"/share/octagram/message.c\0") {
         Ok(path) => path,
         Err(_) => return 46,
     };
-    let invalid_arg = CStr::from_bytes_with_nul(b"message.c\\0").unwrap();
+    let invalid_arg = CStr::from_bytes_with_nul(b"message.c\0").unwrap();
     let invalid_argv = [invalid_arg.as_ptr(), core::ptr::null()];
     match Command::new(invalid_executable, &invalid_argv, &empty_env).spawn() {
         Err(error) if error < 0 => {}
         _ => return 47,
     }
-    if write_all(STDOUT, b"Rust runtime Command exec handshake: PASS\\n").is_err() {
+    if write_all(STDOUT, b"Rust runtime Command exec handshake: PASS\n").is_err() {
         return 48;
     }
 
@@ -331,7 +331,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(pipe) => pipe,
         Err(_) => return 49,
     };
-    let capture_arg2 = CStr::from_bytes_with_nul(b"printf OCTAGRAM-PIPE-PASS\\0").unwrap();
+    let capture_arg2 = CStr::from_bytes_with_nul(b"printf OCTAGRAM-PIPE-PASS\0").unwrap();
     let capture_argv = [
         shell_arg0.as_ptr(),
         shell_arg1.as_ptr(),
@@ -361,7 +361,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     {
         return 53;
     }
-    if write_all(STDOUT, b"Rust runtime Command stdout capture: PASS\\n").is_err() {
+    if write_all(STDOUT, b"Rust runtime Command stdout capture: PASS\n").is_err() {
         return 54;
     }
     // Create a real Rust thread with an owned stack mapping, then join it.

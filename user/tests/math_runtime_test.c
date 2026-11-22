@@ -63,6 +63,15 @@ int main(void)
     zero.value = nextafter(0.0, 1.0);
     if (zero.bits != 1)
         return 9;
+    zero.value = nextafter(0.0, -1.0);
+    if (zero.bits != UINT64_C(0x8000000000000001))
+        return 38;
+    zero.value = nextafter(INFINITY, 0.0);
+    if (zero.bits != UINT64_C(0x7fefffffffffffff))
+        return 39;
+    zero.value = nextafter(-INFINITY, 0.0);
+    if (zero.bits != UINT64_C(0xffefffffffffffff))
+        return 40;
     if (ilogb(8.0) != 3 || ilogb(zero.value) != -1074 ||
         ilogb(0.0) != FP_ILOGB0 || ilogb(NAN) != FP_ILOGBNAN ||
         ilogb(INFINITY) != INT_MAX)
@@ -136,6 +145,12 @@ int main(void)
     zero_float.value = nextafterf(0.0f, -1.0f);
     if (zero_float.bits != UINT32_C(0x80000001))
         return 35;
+    zero_float.value = nextafterf(INFINITY, 0.0f);
+    if (zero_float.bits != UINT32_C(0x7f7fffff))
+        return 41;
+    zero_float.value = nextafterf(-INFINITY, 0.0f);
+    if (zero_float.bits != UINT32_C(0xff7fffff))
+        return 42;
     if (remquof(7.0f, 2.0f, &quotient) != -1.0f || quotient != 4)
         return 36;
     if (nexttowardf(1.0f, 1.0L) != 1.0f || nanf("float") == nanf("float"))

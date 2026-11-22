@@ -41,7 +41,7 @@ menggunakan mrustc atau xrustc.
 | Directory | `opendir`, `readdir`, `closedir` | Implementasikan iterator `ReadDir`, dot entries, dan error terminal |
 | Path mutation | `mkdirat`, `unlinkat`, `renameat` | Mapping remove-file/remove-dir dan path edge cases |
 | VM | `mmap`, `munmap`, `mprotect`, `brk` | PAL allocator/VM dan mapping file yang teruji |
-| Process | `fork`, `execve`, `waitpid`, `pipe2`, `dup3`; `Child::wait/try_wait` | Implementasi `Command`, stdio inheritance, exec failure handshake, signal/status mapping |
+| Process | `fork`, `execve`, `waitpid`, `pipe2(O_CLOEXEC)`, `dup3`, `Child`, `Command::spawn` | Port ke `std::process`, signal/status mapping, full `Stdio`/`Command` semantics |
 | Threads | `thread_create/join/exit`, FS TLS, `futex` | Integrasi `std::thread`, mutex/condvar, TLS destructor |
 | Clock/random | `clock_gettime`, `nanosleep`, `getrandom` | Monotonic/instant semantics, error propagation, entropy tests |
 | Dynamic loading | Loader ELF subset | Belum layak untuk mengasumsikan dylib Rust/LLVM; tentukan static-link strategy |
@@ -53,6 +53,10 @@ blocking, dan concurrency sesuai kebutuhan API Rust.
 ## Child process ownership update
 
 Runtime kini menyediakan `Child`, pembungkus PID anak langsung dengan `wait()` dan `try_wait()`. `waitpid_with_options()` mengekspos flag `WNOHANG`, sedangkan `WAIT_ANY_PID` mewakili target semua anak. Status yang dikembalikan adalah nilai 64-bit mentah dari `exit(status)`, bukan encoding bit wait-status Linux. Smoke test guest melakukan `fork`, memeriksa jalur nonblocking, menunggu anak, dan memverifikasi status `42` serta konsumsi handle setelah reap. Ini belum menjadi `std::process::Child` dan belum mengimplementasikan `Command`/`posix_spawn`.
+
+## Command spawn dan exec handshake
+
+Runtime kini menyediakan `Command::new(path, argv, envp)`, konfigurasi descriptor melalui `stdin_from`/`stdout_from`/`stderr_from`, serta `spawn()`. Vektor `argv` dan `envp` wajib menyertakan pointer null terakhir. Implementasi membuat `pipe2(O_CLOEXEC)`, melakukan `fork`, menerapkan pemetaan descriptor di child, lalu memanggil `execve`. EOF pada pipe berarti image berhasil diganti; payload errno negatif berarti `execve` gagal. Parent mereap child pada jalur kegagalan. Smoke test guest menguji eksekusi `/bin/sh -c 'exit 23'` dan kegagalan menjalankan file sumber C sebagai executable. Ini fondasi untuk `std::process`, belum kompatibilitas penuh `Command` (termasuk `Stdio` abstraction, signal semantics, dan process groups).
 
 ## Directory ownership update
 

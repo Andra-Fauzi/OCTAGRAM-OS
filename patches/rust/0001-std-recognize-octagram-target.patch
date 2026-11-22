@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OCTAGRAM-OS contributors <dev@octagram.invalid>
+Date: Sun, 22 Nov 2026 20:00:00 +0700
+Subject: [PATCH 1/1] std: recognize OCTAGRAM as an OS with a Unix PAL
+
+This only permits build-std to attempt compiling std for OCTAGRAM.
+The target's Unix PAL and libc ABI still need dedicated implementations
+and conformance tests before std can be considered usable.
+
+Upstream base: rust-lang/rust 342d74463af7dd3018ef6aa04dd5500c2deb5bd1
+
+---
+ library/std/build.rs | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/library/std/build.rs b/library/std/build.rs
+index 00000000000..00000000000 100644
+--- a/library/std/build.rs
++++ b/library/std/build.rs
+@@ -72,6 +72,7 @@ fn main() {
+         || target_os == "uefi"
+         || target_os == "teeos"
+         || target_os == "zkvm"
++        || target_os == "octagram"
+         || target_os == "rtems"
+         || target_os == "nuttx"
+         || target_os == "cygwin"
+-- 
+2.43.0

@@ -79,6 +79,12 @@ static double oct_signed_zero(int negative)
     return oct_from_bits(negative ? OCT_D_SIGN : 0);
 }
 
+double nan(const char *tag)
+{
+    (void)tag;
+    return oct_qnan();
+}
+
 static int oct_is_integer(double x)
 {
     return !oct_isnan(x) && !oct_isinf(x) && trunc(x) == x;

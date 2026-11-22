@@ -19,6 +19,12 @@ extern "C" {
 #ifndef __builtin_nanf
 #define __builtin_nanf(ignored) (0.0F / 0.0F)
 #endif
+#ifndef FP_ILOGB0
+#define FP_ILOGB0 (-2147483647 - 1)
+#endif
+#ifndef FP_ILOGBNAN
+#define FP_ILOGBNAN (-2147483647 - 1)
+#endif
 #ifndef HUGE_VAL
 #define HUGE_VAL (__builtin_huge_val())
 #endif

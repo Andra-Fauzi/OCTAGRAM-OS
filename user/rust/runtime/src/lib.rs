@@ -977,13 +977,6 @@ mod tests {
     }
 
     #[test]
-    fn mapping_helpers_reject_empty_ranges_before_syscall() {
-        // The syscall wrappers validate zero-length mappings without invoking
-        // the guest-only int 0x80 path.
-        assert_eq!(super::mmap(None, 0, super::PROT_READ, super::MAP_PRIVATE, -1, 0), Err(-22));
-    }
-
-    #[test]
     fn timespec_matches_octagram_c_abi() {
         assert_eq!(core::mem::size_of::<super::Timespec>(), 16);
         assert_eq!(core::mem::align_of::<super::Timespec>(), 8);

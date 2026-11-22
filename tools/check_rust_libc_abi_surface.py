@@ -55,7 +55,7 @@ def main() -> int:
         require(field in runtime, f"stat translation no longer contains: {field}")
 
     pthread = read("user/runtime.c")
-    require(re.search(r"int pthread_detach\\(pthread_t thread\\).*?return ENOTSUP;", pthread, re.S) is not None,
+    require(re.search(r"int pthread_detach\(pthread_t thread\).*?return ENOTSUP;", pthread, re.S) is not None,
             "pthread_detach behavior changed; update capability notes")
 
     gaps = data.get("known_gaps", [])

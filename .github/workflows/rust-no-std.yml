@@ -11,6 +11,7 @@ on:
       - "user/runtime.c"
       - "tools/rust_libc_abi_surface.json"
       - "tools/check_rust_libc_abi_surface.py"
+      - "tools/apply_rust_libc_octagram.py"
       - "patches/rust-libc/**"
       - "tools/rust_std_pal_api_inventory.json"
       - "tools/check_rust_std_pal_api_inventory.py"
@@ -67,10 +68,7 @@ jobs:
       - name: Apply and compile OCTAGRAM upstream libc target
         run: |
           set -euo pipefail
-          cd upstream-libc
-          git apply --ignore-whitespace --check ../patches/rust-libc/0001-add-octagram-abi.patch
-          git apply --ignore-whitespace ../patches/rust-libc/0001-add-octagram-abi.patch
-          cd ..
+          python3 tools/apply_rust_libc_octagram.py upstream-libc
           cargo +nightly -Zjson-target-spec -Zbuild-std=core check \
             --manifest-path upstream-libc/Cargo.toml \
             --target user/rust/targets/x86_64-unknown-octagram.json \

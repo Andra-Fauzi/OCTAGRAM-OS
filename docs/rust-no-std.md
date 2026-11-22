@@ -227,6 +227,10 @@ not yet provide buffered I/O, path normalization, or the complete
 `std::os::fd` trait surface.
 
 
+## `Command::output`
+
+`Command::output()` menangkap stdout ke `CapturedOutput { status, stdout }`, membaca pipe sampai EOF, dan menunggu proses selesai. `status` adalah nilai keluar mentah OCTAGRAM. stderr tetap mengikuti konfigurasi `Stdio` dan secara default diwariskan; penangkapan stderr bersamaan belum tersedia.
+
 ## Owned pipe dan `Stdio`
 
 `pipe2_owned(flags)` membungkus kedua ujung pipe menjadi `OwnedFd`, sehingga descriptor tidak tertinggal terbuka ketika owner di-drop pada target OCTAGRAM. `Command` menerima sumber stdio `Stdio::Inherit` atau `Stdio::Fd(fd)` untuk stdin, stdout, dan stderr. Descriptor `Fd` dipinjam ketika `spawn()` dipanggil; kepemilikannya tetap di parent. Smoke test guest mengalihkan stdout shell ke pipe, menutup ujung tulis parent, membaca sampai EOF, lalu memeriksa isi dan exit status. API ini belum menyediakan capture otomatis untuk ketiga stream atau semantik penuh `std::process::Stdio`.

@@ -2,7 +2,7 @@ diff --git a/build.rs b/build.rs
 index 3ed9dd4..0000000 100644
 --- a/build.rs
 +++ b/build.rs
-@@ -101,7 +101,7 @@ const CHECK_CFG_EXTRA: &[(&str, &[&str])] = &[
+@@ -125,6 +125,6 @@ const CHECK_CFG_EXTRA: &[(&str, &[&str])] = &[
          "target_os",
          &[
 -            "switch", "aix", "ohos", "hurd", "rtems", "visionos", "nuttx", "cygwin", "qurt", "qnx",
@@ -28,7 +28,7 @@ diff --git a/src/unix/octagram/mod.rs b/src/unix/octagram/mod.rs
 new file mode 100644
 --- /dev/null
 +++ b/src/unix/octagram/mod.rs
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,253 @@
 +//! OCTAGRAM x86_64 userspace ABI.
 +//!
 +//! These definitions describe OCTAGRAM's public C ABI. They intentionally do

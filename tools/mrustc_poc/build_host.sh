@@ -65,11 +65,18 @@ fi
 MRUSTC="$MRUSTC_DIR/bin/mrustc"
 
 # `core` must exist first: mrustc cannot compile a `#![no_core]` crate on its
-# own (it fails with "Couldn't find component 0 of ::ops::RangeFull").
+# own (it fails with "Couldn't find component 0 of ::ops::RangeFull"). Remove
+# prior outputs so a successful exit cannot leave an old C/HIR artifact in use.
+rm -f "$WORK/libcore" "$WORK/libcore.c" "$WORK/libcore.hir" "$WORK/libcore.o"
 MRUSTC_TARGET_VER="$MRUSTC_TARGET_VER" "$MRUSTC" \
     --crate-name core --crate-type rlib --edition 2024 \
     --target x86_64-unknown-linux-gnu \
     -o "$WORK/libcore" "$SRC/library/core/src/lib.rs"
+
+if [[ ! -s "$WORK/libcore.c" || ! -s "$WORK/libcore.hir" ]]; then
+    echo "ERROR: mrustc did not emit fresh libcore.c and libcore.hir outputs" >&2
+    exit 1
+fi
 
 # mrustc may emit poc.c and then fail its own link step (it does not add
 # libcore.o to the link line). Remove stale outputs first so an old poc.c can

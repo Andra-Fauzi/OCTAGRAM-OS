@@ -107,6 +107,7 @@ jobs:
           make -C user cxa-test
           make -C user resolv-test
           make -C user ipv6-test
+          make -C user overflow-test
 
       - name: Build kernel
         run: make -C kernel KARCH=x86_64

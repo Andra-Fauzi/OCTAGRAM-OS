@@ -316,14 +316,19 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     `__builtin_sub_overflow`, dan `__builtin_mul_overflow`; runtime helper
     mendukung hasil signed/unsigned 8/16/32/64 bit dan tes host tersedia.
   - [x] Tambahkan mnemonic assembler TinyCC `xgetbv` dengan encoding
-    `0F 01 D0`; source compile-only tersedia dan terhubung ke dua QEMU harness.
+    `0F 01 D0`; source test mengompilasi/menautkan fungsi dan menjalankan
+    `main()` tanpa memanggil instruksi XGETBV; dua QEMU harness sudah disiapkan.
+  - [x] Tambahkan bootstrap libm `user/math.c` ke `libc.a`, dengan tes host
+    `make -C user math-test` dan program guest yang menguji link/runtime.
+  - [ ] Tingkatkan akurasi dan kesesuaian ISO libm; fungsi transendental kini
+    aproksimasi dan belum correctly-rounded atau tervalidasi luas.
   - [ ] Verifikasi di QEMU tes builtin overflow dan kompilasi inline asm XGETBV.
   - [ ] PoC `mrustc` end-to-end: C hasil transpile dikompilasi `tcc` di guest
     lalu dijalankan. Header publik `stdint.h` kini memiliki tipe C99 least/fast
     dan `math.h` menyediakan deklarasi fungsi matematika yang dipakai `core`;
-    target `make -C user stdint-test math-header-test overflow-test` menyiapkan
-    pemeriksaan header dan helper host. Implementasi libm nyata, dukungan atomic 128-bit, verifikasi QEMU,
-    dan pembuktian end-to-end masih terbuka.
+    target `make -C user stdint-test math-header-test overflow-test math-test`
+    menyiapkan tes header dan runtime host. Akurasi libm lanjutan, dukungan
+    atomic 128-bit, verifikasi QEMU, dan pembuktian end-to-end masih terbuka.
   - [ ] `rustc` native, `core`/`alloc` native, dan Cargo native/offline
 - [ ] M5: build kernel Rust sepenuhnya dari dalam OCTAGRAM
 - [ ] M6: native disk/boot image builder dan installer

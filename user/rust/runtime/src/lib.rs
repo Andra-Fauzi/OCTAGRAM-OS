@@ -447,6 +447,24 @@ pub fn lseek(fd: u64, offset: i64, whence: u64) -> Result<i64, i64> {
     if result < 0 { Err(result) } else { Ok(result) }
 }
 
+/// Resize an open file (syscall 9).
+pub fn ftruncate(fd: u64, length: u64) -> Result<(), i64> {
+    let result = unsafe { syscall2(9, fd, length) };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Flush file data and metadata to the filesystem (syscall 119).
+pub fn fsync(fd: u64) -> Result<(), i64> {
+    let result = unsafe { syscall1(119, fd) };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Flush file data without requiring metadata synchronization (syscall 120).
+pub fn fdatasync(fd: u64) -> Result<(), i64> {
+    let result = unsafe { syscall1(120, fd) };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
 /// Read from a descriptor at an explicit offset without changing its file position (syscall 102).
 pub fn pread(fd: u64, buffer: &mut [u8], offset: i64) -> Result<usize, i64> {
     let result = unsafe {
@@ -1015,6 +1033,14 @@ impl File {
     pub fn seek(&self, offset: i64, whence: u64) -> Result<i64, i64> {
         self.fd.seek(offset, whence)
     }
+    /// Resize this file. The new length is measured in bytes.
+    pub fn set_len(&self, length: u64) -> Result<(), i64> {
+        ftruncate(self.as_raw_fd(), length)
+    }
+    /// Flush file contents and metadata to the filesystem.
+    pub fn sync_all(&self) -> Result<(), i64> { fsync(self.as_raw_fd()) }
+    /// Flush file contents without requiring metadata synchronization.
+    pub fn sync_data(&self) -> Result<(), i64> { fdatasync(self.as_raw_fd()) }
     /// Read metadata for this open descriptor.
     pub fn metadata(&self) -> Result<FileStat, i64> { fstat(self.as_raw_fd()) }
     /// Transfer ownership of the raw descriptor to the caller.

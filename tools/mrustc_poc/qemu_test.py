@@ -191,10 +191,13 @@ def main():
             return 1
         print("TCC-OVERFLOW-PASS")
 
-        # Compile only: executing XGETBV depends on OSXSAVE/XCR0 setup.
+        # Compile and link the function, then run only main(). The function
+        # containing XGETBV remains uncalled because OSXSAVE/XCR0 may be off.
         offset = len(serial_text())
         send_line("tcc /mnt/src/tcc_xgetbv.c -o /mnt/tcc_xgetbv.elf")
-        if not wait_prompt(offset, 60):
+        if not wait_prompt(offset, 60) or not wait_for(
+            "program exited with status 0", offset, 60
+        ):
             print("TCC-XGETBV-ASSEMBLE-FAIL")
             print(serial_text()[offset:][-3000:])
             return 1
@@ -202,7 +205,9 @@ def main():
 
         offset = len(serial_text())
         send_line("run /mnt/tcc_xgetbv.elf")
-        if not wait_prompt(offset, 30):
+        if not wait_prompt(offset, 30) or not wait_for(
+            "program exited with status 0", offset, 30
+        ):
             print("TCC-XGETBV-RUN-FAIL")
             print(serial_text()[offset:][-2000:])
             return 1

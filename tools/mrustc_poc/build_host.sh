@@ -166,17 +166,20 @@ EOF
 e2fsck -fn "$IMAGE" >/dev/null
 VERIFY_DIR="$(mktemp -d "$WORK/source-image-verify.XXXXXX")"
 trap 'rm -rf "$VERIFY_DIR"' EXIT
-for file in libcore.c poc.c fix.h shim.c poc.rs tcc_overflow.c tcc_xgetbv.c tcc_math.c tcc_atomic128_shim.c; do
-    debugfs -R "dump /src/$file $VERIFY_DIR/$file" "$IMAGE" >/dev/null 2>&1
-    cmp "$VERIFY_DIR/$file" "$WORK/$file" 2>/dev/null || {
-        case "$file" in
-            libcore.c|poc.c) source="$WORK/$file" ;;
-            fix.h|shim.c|poc.rs) source="$ROOT/tools/mrustc_poc/$file" ;;
-            *) source="$ROOT/user/examples/$file" ;;
-        esac
-        cmp "$VERIFY_DIR/$file" "$source"
-    }
-done
+while read -r source destination; do
+    debugfs -R "dump /src/$destination $VERIFY_DIR/$destination" "$IMAGE" >/dev/null 2>&1
+    cmp "$VERIFY_DIR/$destination" "$source"
+done <<EOF
+$WORK/libcore.c libcore.c
+$WORK/poc.c poc.c
+$ROOT/tools/mrustc_poc/fix.h fix.h
+$ROOT/tools/mrustc_poc/shim.c shim.c
+$ROOT/tools/mrustc_poc/poc.rs poc.rs
+$ROOT/user/examples/tcc_overflow.c tcc_overflow.c
+$ROOT/user/examples/tcc_xgetbv.c tcc_xgetbv.c
+$ROOT/user/examples/tcc_math.c tcc_math.c
+$ROOT/user/examples/tcc_atomic128_shim.c tcc_atomic128_shim.c
+EOF
 echo "SOURCE-IMAGE-VERIFY-PASS: EXT2 clean; 9 payloads match source byte-for-byte"
 sha256sum "$WORK/libcore.c" "$WORK/poc.c" "$IMAGE"
 

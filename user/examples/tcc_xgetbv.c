@@ -12,3 +12,9 @@ unsigned long long octagram_read_xcr(unsigned int index)
                          : "c"(index));
     return ((unsigned long long)high << 32) | low;
 }
+
+/* Keep the XGETBV function in the object, but never invoke it in this test. */
+int main(void)
+{
+    return 0;
+}

@@ -717,6 +717,29 @@ pub fn pipe2_owned(flags: u64) -> Result<[OwnedFd; 2], i64> {
     })
 }
 
+/// poll(2)-compatible descriptor readiness record.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PollFd {
+    pub fd: i32,
+    pub events: i16,
+    pub revents: i16,
+}
+
+pub const POLLIN: i16 = 0x0001;
+pub const POLLOUT: i16 = 0x0004;
+pub const POLLERR: i16 = 0x0008;
+pub const POLLHUP: i16 = 0x0010;
+pub const POLLNVAL: i16 = 0x0020;
+
+/// Wait for descriptor readiness. The kernel caps each wait interval at 60s.
+pub fn poll(fds: &mut [PollFd], timeout_ms: u64) -> Result<usize, i64> {
+    let result = unsafe {
+        syscall3(97, fds.as_mut_ptr() as usize as u64, fds.len() as u64, timeout_ms)
+    };
+    checked_result(result)
+}
+
 /// Duplicate a descriptor onto a specific descriptor number.
 pub fn dup3(source: u64, target: u64, flags: u64) -> Result<u64, i64> {
     let result = unsafe { syscall3(99, source, target, flags) };
@@ -1481,6 +1504,7 @@ fn decode_exec_handshake(bytes: &[u8], eof: bool) -> Result<Option<i64>, i64> {
 pub struct CapturedOutput {
     pub status: u64,
     pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
 }
 
 /// A standard-I/O source for a child process.
@@ -1560,33 +1584,71 @@ impl<'a> Command<'a> {
         spawn_with_stdio(self.path, self.argv, self.envp, stdio)
     }
 
-    /// Spawn the command, capture stdout until EOF, then reap the child.
-    ///
-    /// Stderr follows this command's configured Stdio setting (inherited by
-    /// default). The returned status is OCTAGRAM's raw exit value.
+    /// Spawn the command, capture stdout and stderr without serial-pipe deadlock,
+    /// then reap the child. Status is OCTAGRAM's raw exit value.
     pub fn output(&self) -> Result<CapturedOutput, i64> {
-        let [read_end, write_end] = pipe2_owned(O_CLOEXEC)?;
+        let [stdout_read, stdout_write] = pipe2_owned(O_CLOEXEC)?;
+        let [stderr_read, stderr_write] = pipe2_owned(O_CLOEXEC)?;
         let mut stdio = self.stdio.map(Stdio::raw_fd);
-        stdio[1] = Some(write_end.as_raw_fd());
+        stdio[1] = Some(stdout_write.as_raw_fd());
+        stdio[2] = Some(stderr_write.as_raw_fd());
         let mut child = spawn_with_stdio(self.path, self.argv, self.envp, stdio)?;
-        drop(write_end);
+        drop(stdout_write);
+        drop(stderr_write);
 
         let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut stdout_open = true;
+        let mut stderr_open = true;
         let mut buffer = [0u8; 1024];
-        loop {
-            match read_end.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(count) => stdout.extend_from_slice(&buffer[..count]),
+        while stdout_open || stderr_open {
+            let mut descriptors = [
+                PollFd {
+                    fd: stdout_read.as_raw_fd() as i32,
+                    events: if stdout_open { POLLIN } else { 0 },
+                    revents: 0,
+                },
+                PollFd {
+                    fd: stderr_read.as_raw_fd() as i32,
+                    events: if stderr_open { POLLIN } else { 0 },
+                    revents: 0,
+                },
+            ];
+            match poll(&mut descriptors, 1000) {
+                Ok(_) => {}
                 Err(-4) => continue,
                 Err(error) => {
                     let _ = child.wait();
                     return Err(error);
                 }
             }
+
+            if stdout_open && descriptors[0].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL) != 0 {
+                match stdout_read.read(&mut buffer) {
+                    Ok(0) => stdout_open = false,
+                    Ok(count) => stdout.extend_from_slice(&buffer[..count]),
+                    Err(-4) => {}
+                    Err(error) => {
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                }
+            }
+            if stderr_open && descriptors[1].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL) != 0 {
+                match stderr_read.read(&mut buffer) {
+                    Ok(0) => stderr_open = false,
+                    Ok(count) => stderr.extend_from_slice(&buffer[..count]),
+                    Err(-4) => {}
+                    Err(error) => {
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                }
+            }
         }
 
         let status = child.wait()?;
-        Ok(CapturedOutput { status, stdout })
+        Ok(CapturedOutput { status, stdout, stderr })
     }
 }
 
@@ -1874,6 +1936,15 @@ mod tests {
 
     use super::{build_dns_query, find_env_value, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen, Dirent};
     use core::alloc::Layout;
+
+    #[test]
+    fn poll_fd_matches_kernel_abi_layout() {
+        assert_eq!(core::mem::size_of::<super::PollFd>(), 8);
+        assert_eq!(core::mem::align_of::<super::PollFd>(), 4);
+        assert_eq!(core::mem::offset_of!(super::PollFd, fd), 0);
+        assert_eq!(core::mem::offset_of!(super::PollFd, events), 4);
+        assert_eq!(core::mem::offset_of!(super::PollFd, revents), 6);
+    }
 
     #[test]
     fn command_stdio_builder_preserves_inherited_and_explicit_descriptors() {

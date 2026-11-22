@@ -282,3 +282,12 @@ new file mode 100644
 +    pub fn pthread_getspecific(key: pthread_key_t) -> *mut c_void;
 +    pub fn pthread_setspecific(key: pthread_key_t, value: *const c_void) -> c_int;
 +}
+diff --git a/src/new/mod.rs b/src/new/mod.rs
+index 9a6ce30..0000000 100644
+--- a/src/new/mod.rs
++++ b/src/new/mod.rs
+@@ -18,2 +18,4 @@
+ mod common;
++#[cfg(target_os = "octagram")]
++use common::posix::unistd;
+ 

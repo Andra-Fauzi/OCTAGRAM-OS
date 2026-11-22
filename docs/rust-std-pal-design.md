@@ -243,3 +243,23 @@ simbol PAL tersedia saat link/run, dan belum menghasilkan rustc atau Cargo
 native. Tahap berikutnya adalah percobaan `build-std=std` dan penyelesaian
 error PAL yang benar-benar muncul, dengan ABI setiap fungsi diverifikasi
 terhadap header serta runtime OCTAGRAM.
+
+### pthread mutex API required by the generic Unix PAL
+
+The pinned upstream Unix PAL mutex implementation explicitly initializes
+mutexes with `pthread_mutexattr_settype(PTHREAD_MUTEX_NORMAL)` and uses
+`PTHREAD_MUTEX_INITIALIZER` / `PTHREAD_COND_INITIALIZER` for static
+objects. OCTAGRAM now exposes these constants and initializers through the
+upstream libc target module. The C runtime implements
+`pthread_mutexattr_settype` as a validation-only operation: normal is the
+only supported type and all other values return `EINVAL`. The existing
+mutex ABI remains unchanged because its implementation already has normal,
+non-recursive behavior.
+
+`thread_demo` now exercises the normal attribute and rejects an invalid
+mutex type. Rust no_std CI run
+[45046390159](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45046390159)
+confirms the updated libc module still cross-compiles. C build and QEMU
+execution of the updated demo are tracked by POSIX Core Stage 1 separately.
+Recursive/error-checking mutexes and full thread lifecycle semantics remain
+unsupported; in particular `pthread_detach` still returns `ENOTSUP`.

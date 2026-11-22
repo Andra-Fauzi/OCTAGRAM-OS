@@ -1680,3 +1680,22 @@ aktivasi otomatis Rust `std`, dan bukan bukti `rustc`/Cargo berjalan native.
 Langkah M4 berikutnya tetap mengintegrasikan PAL upstream Rust dan libc
 OCTAGRAM pada checkout Rust yang dipatok, lalu membangun serta menjalankan
 program `std` pertama di QEMU.
+
+## 25. Patch awal untuk upstream Rust std build gate (22 November 2026)
+
+- Dibuat patch terpisah
+  [0001-std-recognize-octagram-target.patch](../patches/rust/0001-std-recognize-octagram-target.patch)
+  untuk upstream `rust-lang/rust` base
+  `342d74463af7dd3018ef6aa04dd5500c2deb5bd1`.
+- Patch menambahkan `target_os == "octagram"` pada allowlist
+  `library/std/build.rs`. Dengan `target_family = ["unix"]` pada target
+  OCTAGRAM, dispatcher PAL upstream memilih cabang Unix generik.
+- README patch series mencatat cara menerapkan patch pada checkout yang
+  dipatok dan batas integrasinya.
+
+**Belum tervalidasi sebagai patch yang diterapkan:** source Rust upstream
+belum di-vendor/checkout ke repository OCTAGRAM dan `git apply --check`
+serta build `std` belum dijalankan terhadap checkout tersebut. Ini hanya
+membuka gate build; crate `libc`, errno/constants ABI, dan PAL Unix tetap
+harus dipenuhi. Status `rust_std`, `rustc_host`, dan `cargo_host` tetap
+belum diimplementasikan. Referensi: [upstream std build.rs](https://github.com/rust-lang/rust/blob/342d74463af7dd3018ef6aa04dd5500c2deb5bd1/library/std/build.rs).

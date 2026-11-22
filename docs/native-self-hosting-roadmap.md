@@ -1627,3 +1627,11 @@ Validasi terkait: Rust no_std workflow run [45039201141](https://github.com/Andr
 - Dokumentasi PAL diperbaiki agar tidak lagi menyebut `CapturedOutput` belum memiliki adapter ExitStatus atau `Directory` belum mempunyai iterator. Keduanya sudah tersedia sebagai adapter awal, tetapi tetap belum setara penuh dengan API std.
 
 Validasi: run Rust no_std sebelumnya lulus untuk commit 4ed89d72 ([45039325350](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45039325350)). Perubahan FusedIterator pada commit 9d70dd15 dan dokumentasi berikutnya memerlukan CI terbaru. POSIX Core Stage 1 run [45039360299](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45039360299) masih berjalan saat pemeriksaan terakhir.
+
+## 20. IntoIterator standar untuk Directory (22 November 2026)
+
+- `Directory` kini mengimplementasikan `IntoIterator<Item = Result<Dirent, i64>>` dengan `DirectoryIter` sebagai associated IntoIter. Penggunaan dapat langsung memakai `for entry in directory { ... }`, tanpa memanggil metode inherent yang meniru nama trait.
+- Guest smoke test diperbarui untuk memakai `for` langsung pada Directory, sehingga menguji dispatch `IntoIterator` standar, ownership stream, EOF, dan jalur error terminal.
+- `DirectoryIter` tetap mengimplementasikan `FusedIterator`; status terminal setelah EOF/error dijaga.
+
+Status: primitive iterator sekarang lebih idiomatis untuk no_std. Ini belum mengimplementasikan `std::fs::ReadDir`/`DirEntry` atau `PathBuf`.

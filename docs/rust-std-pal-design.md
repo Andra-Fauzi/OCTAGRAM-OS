@@ -212,3 +212,25 @@ perlu membangun modul `libc` OCTAGRAM dengan tipe dan struktur yang diverifikasi
 lalu menjalankan compile test terhadap checkout upstream. Fitur PAL yang belum
 didukung harus diberi cfg/implementasi eksplisit; jangan mengarahkan target
 OCTAGRAM ke ABI Linux.
+
+## Patch awal upstream libc dan hasil compile
+
+Patch `patches/libc/0001-unix-add-octagram-abi-module.patch` sekarang
+mendaftarkan target OCTAGRAM pada modul Unix lama dan modul header baru
+upstream `libc`. Modul target mendefinisikan scalar aliases serta record C
+yang diperlukan oleh deklarasi Unix generik. API yang belum tersedia di
+OCTAGRAM—pthread rwlock, `statvfs`, `dladdr`, dan fungsi `sigaction()`
+generik—tidak diekspor untuk target ini.
+
+CI mengambil source `rust-lang/libc` pada commit tetap
+`a03dd7c2e298b0ca482f30ce07efd3115938328e`, menerapkan patch, lalu berhasil
+menjalankan `cargo check --lib --no-default-features -Zjson-target-spec
+-Zbuild-std=core` untuk target OCTAGRAM. Modul juga memuat compile-time layout
+assertions bagi struktur ABI utama.
+
+Hasil ini adalah milestone pertama yang terukur untuk crate upstream
+`libc`: **crate berhasil cross-compile**. Ini belum build `std`, belum
+membuktikan semua simbol PAL tersedia, dan belum membuktikan program
+`std` dapat dijalankan di QEMU. Tahap berikutnya adalah compile upstream
+`std` dengan patch target gate dan libc, lalu menyelesaikan setiap missing
+symbol/semantic mismatch yang muncul.

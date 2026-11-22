@@ -1314,8 +1314,10 @@ masih bisa dijalankan seluruhnya di dalam OCTAGRAM.
 
 ## M4.3 — Evaluasi `mrustc` sebagai jalur "Rust asli" (22 November 2026)
 
-Status: **belum lulus end-to-end; yang terbukti baru sisi host dan sebagian
-sisi guest.** Ini bukan `rustc` native, dan belum mengubah status M4/M5.
+Status: **lulus end-to-end untuk PoC** — C hasil transpile `mrustc`
+dikompilasi `tcc` di dalam OCTAGRAM dan programnya mencetak
+`mrustc-c-poc: 108`. Ini bukan `rustc` native dan belum mengubah status M5;
+yang terbukti adalah kelayakan jalur Rust→C→`tcc`, bukan compiler Rust utuh.
 
 Latar: port `rustc` utuh tidak realistis untuk sekarang (butuh `std`, target
 `core`/`alloc`, dynamic loading untuk proc-macro, dan backend LLVM; binary
@@ -1477,13 +1479,101 @@ source. Tujuh tes unit baru di `tools/mrustc_poc/test_qemu_test.py` mencakup
 format `file:line`, bentuk tanpa nomor baris, deduplikasi, batas entri, excerpt
 di luar jangkauan, dan file yang tidak ada; total 29 tes PoC lulus.
 
-Ini perbaikan build dan observabilitas. Belum ada bukti guest baru: status M4.3
-tetap belum lulus end-to-end dan `MRUSTC-C-POC-PASS` belum pernah tercetak.
+Itu perbaikan build dan observabilitas. Bukti guest end-to-end dicatat pada
+bagian berikutnya.
+
+### Perbaikan jalur host dan status QEMU (22 November 2026, lanjutan)
+
+Rantai host M4.3 kini dapat direproduksi ulang dari clean checkout, setelah dua
+bug harness diperbaiki:
+
+- `build_host.sh` meneruskan `--extern core="$WORK/libcore.hir"`, sedangkan
+  `HIR_Deserialise()` di mrustc menambahkan sendiri akhiran `.hir`
+  (`Reader in{ filename + ".hir" }`). Akibatnya mrustc mencari
+  `libcore.hir.hir` dan berhenti dengan
+  `Unable to deserialise crate metadata ...: Unable to open file`. Argumen
+  sekarang memakai `--extern core="$WORK/libcore"` tanpa akhiran.
+- `patch_core.py` masih mengasumsikan tepat satu fragmen `AtomicU128`.
+  Keluaran mrustc saat ini meng-emit satu fragmen per instansiasi
+  monomorphised (15 fragmen), sehingga patcher fail-closed dan build berhenti.
+  Patcher sekarang me-rewrite **semua** fragmen, tetap menolak keadaan campuran
+  patched+unpatched, dan tetap idempoten untuk file yang sudah dipatch.
+  Tes `test_patch_core.py` diperbarui (29 tes PoC lulus).
+
+Bukti lokal (WSL Ubuntu, rustc nightly 1.100, g++ 13):
+
+- `libcore.c` 34.568.514 byte dan `poc.c` 36.616 byte dihasilkan; validator
+  menemukan definisi `main`; patcher me-rewrite 15 fragmen AtomicU128.
+- `sources.img` EXT2 256 MiB dibuat dan diverifikasi (9 payload byte-per-byte,
+  `e2fsck -fn` bersih).
+- Image A/B 256 MiB dibuat lewat host test `writes_a_boot_image_from_real_artifacts`
+  (`BOOT-IMAGE`), memakai kernel release hasil build lokal.
+
+Status guest saat itu: `BOOT-FAIL: shell prompt never appeared` setelah
+`[rootfs] persistent EXT2 root selected from sata0p2`. **Diagnosis awalnya
+salah.** Shell memang dijalankan; yang terjadi adalah boot pertama image baru
+menyalin userspace embedded ke root EXT2 blok demi blok lewat AHCI emulasi,
+sehingga melewati batas 240 detik milik harness. Setelah root terisi, prompt
+muncul dalam 10–24 detik. Harness sekarang mencetak `BOOT-PROMPT: <detik>` dan
+memakai `OCTAGRAM_POC_BOOT_TIMEOUT` (default 600 detik).
+
+### Bukti end-to-end guest (22 November 2026, lanjutan)
+
+Setelah boot dan `mount sata1 /mnt ext2` berhasil, penulisan ke disk sumber
+justru gagal dengan `InvalidData` (`touch`, `mkdir`, dan output `tcc`).
+Dua bug nyata ditemukan dan diperbaiki:
+
+- **EXT2 menolak menulis filesystem buatan `mke2fs`.**
+  `update_superblock_counter()` memperbarui *setiap* backup superblock dan
+  memakai `checked_sub`, sedangkan `e2fsprogs` membiarkan counter pada backup
+  superblock bernilai nol (hanya primary yang otoritatif). Pengurangan 1 dari 0
+  menjadi `InvalidData`, sehingga alokasi inode/block gagal pada semua image
+  `mke2fs`. Sekarang mirror dengan counter nol dilewati; primary tetap
+  diperbarui. Regresi dijaga tes
+  `writes_when_backup_superblock_counters_are_zeroed`.
+- **`log2` tidak eksak untuk pangkat dua.** `log(8.0) * log2(e)` menghasilkan
+  `2.9999999999999996`, sehingga `TCC-MATH` guest keluar dengan status 3.
+  `log2()` kini memakai `frexp` dan mengembalikan eksponen langsung bila
+  mantissa `0.5`; `user/tests/math_runtime_test.c` menuntut `log2(8.0) == 3.0`
+  dan `pow(2.0, 10.0) == 1024.0` secara eksak.
+
+Dengan itu seluruh rantai guest lulus:
+
+```
+TCC-OVERFLOW-PASS
+TCC-XGETBV-ASSEMBLE-PASS / TCC-XGETBV-RUN-PASS
+TCC-MATH-PASS
+TCC-ATOMIC128-SHIM-PASS
+tcc -bench ... shim.c poc.c libcore.c   -> exit 0
+# 31401 idents, 588976 lines, 34652630 bytes
+# text 3794661, data.rw 67112, data.ro 86664, bss 68344
+run /mnt/poc.elf -> mrustc-c-poc: 108 (exit 0)
+MRUSTC-C-POC-PASS
+```
+
+Kompilasi 34,6 MB C itu memakan waktu beberapa menit di TCG (masih di bawah
+`OCTAGRAM_POC_COMPILE_TIMEOUT` 540 detik) dan menghasilkan ELF ±3,9 MB text.
+Untuk mencapai link, tiga jenis simbol runtime yang tidak di-emit `mrustc`
+harus disediakan oleh lapisan compat PoC:
+
+- `__rdl_alloc`/`__rdl_dealloc`/`__rdl_realloc`/`__rdl_alloc_zeroed`/`__rdl_oom`
+  (glue default allocator Rust untuk crate `no_std`; PoC tidak pernah
+  mengalokasi, jadi stub berhenti alih-alih mengembalikan pointer palsu),
+- trampoline panic `ZRG1cD3bin5panic0g` yang dipanggil `panic_impl` hasil
+generate tetapi tidak pernah didefinisikan,
+- `__builtin_bswap16/32/64` yang tidak dikenal TinyCC (diganti byte shuffle
+  murni di `fix.h`, hanya untuk `__TINYC__` agar GCC host tetap memakai
+  builtin aslinya).
+
+Yang **belum** dibuktikan: `mrustc` berjalan di dalam guest (ia C++ dan butuh
+C++ runtime; `tcc` hanya C), `std`/`alloc` di luar `core`, dan Cargo native.
+PoC ini juga memakai shim bytewise non-atomic untuk `AtomicU128` dan helper
+`__rdl_*` yang tidak berfungsi — keduanya tidak boleh dipakai kode nyata.
 
 ### Langkah berikutnya
 
-1. Selesaikan run QEMU sampai `MRUSTC-C-POC-PASS` (atau kumpulkan sisa celah
-   `tcc` yang muncul setelah baris 227 ribu).
+1. Perluas PoC ke `alloc`: sediakan allocator nyata untuk `__rdl_*` (bukan
+   stub yang berhenti) lalu transpile crate yang benar-benar mengalokasi.
 2. Lanjutkan validasi libm: jalankan tes host dan QEMU, tambah pengujian
    batas/domain/NaN/Inf/rounding, lalu tingkatkan akurasi aproksimasi.
    Header `stdint.h` sudah menyediakan tipe least/fast dan libm bootstrap

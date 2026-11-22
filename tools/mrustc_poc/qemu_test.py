@@ -22,12 +22,25 @@ import sys
 import tempfile
 import time
 
-QEMU = os.environ.get(
-    "QEMU_BIN", os.path.expanduser("~/qemu-root/usr/bin/qemu-system-x86_64")
+def first_existing_path(*candidates):
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+QEMU = (
+    os.environ.get("QEMU_BIN")
+    or shutil.which("qemu-system-x86_64")
+    or os.path.expanduser("~/qemu-root/usr/bin/qemu-system-x86_64")
 )
 FIRMWARE_DIR = os.environ.get("OCTAGRAM_OVMF_DIR", "edk2-ovmf")
-QEMU_DATA_DIR = os.environ.get(
-    "OCTAGRAM_QEMU_DATA", os.path.expanduser("~/qemu-root/usr/share/qemu")
+QEMU_DATA_DIR = (
+    os.environ.get("OCTAGRAM_QEMU_DATA")
+    or first_existing_path(
+        os.path.expanduser("~/qemu-root/usr/share/qemu"), "/usr/share/qemu"
+    )
+    or os.path.expanduser("~/qemu-root/usr/share/qemu")
 )
 WORK = os.environ.get("OCTAGRAM_POC_WORK", "/dev/shm/mrustc-poc")
 BOOT = os.environ.get("OCTAGRAM_POC_BOOT", "/dev/shm/octagram-xrustc.img")
@@ -37,6 +50,9 @@ MONITOR = os.environ.get("OCTAGRAM_POC_MONITOR", "/tmp/octagram-mrustc-monitor.s
 QEMU_LOG = os.environ.get("OCTAGRAM_POC_QEMU_LOG")
 MEMORY_MIB = os.environ.get("OCTAGRAM_POC_MEMORY", "2048")
 COMPILE_TIMEOUT = int(os.environ.get("OCTAGRAM_POC_COMPILE_TIMEOUT", "540"))
+# The first boot of a freshly built image seeds the embedded userspace into the
+# EXT2 root block by block, which takes several minutes on emulated AHCI.
+BOOT_TIMEOUT = int(os.environ.get("OCTAGRAM_POC_BOOT_TIMEOUT", "600"))
 
 KEY_NAMES = {
     " ": "spc",
@@ -292,10 +308,12 @@ def main():
         except OSError:
             pass
 
-        if not wait_for("octagram:", 0, 240):
+        boot_started = time.time()
+        if not wait_for("octagram:", 0, BOOT_TIMEOUT):
             print("BOOT-FAIL: shell prompt never appeared")
             print(serial_text()[-4000:])
             return 1
+        print("BOOT-PROMPT: %.1f s" % (time.time() - boot_started))
 
         mounted = False
         for disk in ("sata1", "ata1"):

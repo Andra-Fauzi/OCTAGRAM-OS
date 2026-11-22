@@ -38,17 +38,19 @@ class PatchCoreTests(unittest.TestCase):
             rewrite(XGETBV + "\n" + OBSOLETE_XGETBV_STUB + "\n" + ATOMIC128)
 
 
-    def test_rejects_duplicate_atomic128_fragments(self):
-        with self.assertRaisesRegex(ValueError, "exactly one"):
-            rewrite(XGETBV + "\n" + ATOMIC128 + "\n" + ATOMIC128)
+    def test_rewrites_every_monomorphised_atomic128_fragment(self):
+        source = XGETBV + "\n" + "\n".join([ATOMIC128] * 15)
+        result = rewrite(source)
+        self.assertNotIn(ATOMIC128, result)
+        self.assertEqual(result.count(ATOMIC128_REPLACEMENT), 15)
 
     def test_rejects_mixed_patched_and_unpatched_atomic128(self):
-        with self.assertRaisesRegex(ValueError, "exactly one"):
+        with self.assertRaisesRegex(ValueError, "refusing to mix"):
             rewrite(XGETBV + "\n" + ATOMIC128 + "\n" + ATOMIC128_REPLACEMENT)
 
-    def test_rejects_duplicate_replacement_fragments(self):
-        with self.assertRaisesRegex(ValueError, "exactly one"):
-            rewrite(XGETBV + "\n" + ATOMIC128_REPLACEMENT + "\n" + ATOMIC128_REPLACEMENT)
+    def test_accepts_multiple_replacement_fragments_idempotently(self):
+        source = XGETBV + "\n" + "\n".join([ATOMIC128_REPLACEMENT] * 15)
+        self.assertEqual(rewrite(source), source)
 
 
     def test_patch_file_replaces_valid_input_atomically(self):
@@ -64,9 +66,9 @@ class PatchCoreTests(unittest.TestCase):
     def test_patch_file_preserves_original_on_validation_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "libcore.c"
-            original = XGETBV + "\n" + ATOMIC128 + "\n" + ATOMIC128
+            original = XGETBV + "\n" + ATOMIC128 + "\n" + ATOMIC128_REPLACEMENT
             path.write_text(original)
-            with self.assertRaisesRegex(ValueError, "exactly one"):
+            with self.assertRaisesRegex(ValueError, "refusing to mix"):
                 patch_file(path)
             self.assertEqual(path.read_text(), original)
 

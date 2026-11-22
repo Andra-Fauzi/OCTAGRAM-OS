@@ -328,13 +328,15 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     program guest yang menguji link/runtime.
   - [ ] Tingkatkan akurasi dan kesesuaian ISO libm; fungsi transendental kini
     aproksimasi dan belum correctly-rounded atau tervalidasi luas.
-  - [ ] Verifikasi di QEMU tes builtin overflow dan kompilasi inline asm XGETBV.
-  - [ ] PoC `mrustc` end-to-end: C hasil transpile dikompilasi `tcc` di guest
-    lalu dijalankan. Header publik `stdint.h` kini memiliki tipe C99 least/fast
-    dan `math.h` menyediakan deklarasi fungsi matematika yang dipakai `core`;
-    target `make -C user stdint-test math-header-test overflow-test math-test`
-    menyiapkan tes header dan runtime host. Akurasi libm lanjutan, dukungan
-    atomic 128-bit, verifikasi QEMU, dan pembuktian end-to-end masih terbuka.
+  - [x] Verifikasi di QEMU tes builtin overflow dan kompilasi inline asm XGETBV
+    (`TCC-OVERFLOW-PASS`, `TCC-XGETBV-ASSEMBLE-PASS`, `TCC-XGETBV-RUN-PASS`).
+  - [x] PoC `mrustc` end-to-end: C hasil transpile (34,6 MB / 588.976 baris)
+    dikompilasi `tcc` di guest, ELF hasilnya berjalan dan mencetak
+    `mrustc-c-poc: 108` (`MRUSTC-C-POC-PASS`). Jalur ini juga memperbaiki bug
+    EXT2 pada image `mke2fs` (counter backup superblock nol) dan membuat
+    `log2` eksak untuk pangkat dua. Yang masih terbuka: allocator nyata untuk
+    `__rdl_*`, `alloc`/`std`, `mrustc` di dalam guest, dan atomic 128-bit asli.
+    Lihat `docs/native-self-hosting-roadmap.md` M4.3.
   - [ ] `rustc` native, `core`/`alloc` native, dan Cargo native/offline
 - [ ] M5: build kernel Rust sepenuhnya dari dalam OCTAGRAM
 - [ ] M6: native disk/boot image builder dan installer

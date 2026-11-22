@@ -580,6 +580,20 @@ double log(double x)
 
 double log2(double x)
 {
+    int exponent;
+    double mantissa;
+
+    if (oct_isnan(x) || x < 0.0)
+        return oct_qnan();
+    if (x == 0.0)
+        return oct_inf(1);
+    if (oct_isinf(x))
+        return x;
+    // Exact powers of two must stay exact: log(8) * log2(e) rounds to
+    // 2.9999999999999996, while frexp names the exponent directly.
+    mantissa = frexp(x, &exponent);
+    if (mantissa == 0.5)
+        return (double)(exponent - 1);
     return log(x) * oct_log2e;
 }
 

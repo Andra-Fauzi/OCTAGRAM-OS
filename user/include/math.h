@@ -53,6 +53,7 @@ double tanh(double);
 double exp(double);
 double frexp(double, int *);
 double ldexp(double, int);
+long double ldexpl(long double, int);
 double log(double);
 double log10(double);
 double modf(double, double *);

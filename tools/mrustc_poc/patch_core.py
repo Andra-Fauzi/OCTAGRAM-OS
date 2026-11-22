@@ -27,19 +27,20 @@ def rewrite(source: str) -> str:
 
     original_count = source.count(ATOMIC128)
     replacement_count = source.count(ATOMIC128_REPLACEMENT)
-    if original_count == 1 and replacement_count == 0:
-        source = source.replace(ATOMIC128, ATOMIC128_REPLACEMENT, 1)
-    elif original_count == 0 and replacement_count == 1:
-        # A previously patched output is accepted, but duplicate or mixed
-        # fragments indicate an upstream format change and must fail closed.
-        pass
-    elif original_count == 0 and replacement_count == 0:
-        raise ValueError("expected AtomicU128 fragment not found; mrustc output changed")
-    else:
+    if original_count > 0 and replacement_count > 0:
+        # Mixed state means a partial rewrite or an upstream format change; a
+        # half-patched translation unit must never reach the guest compiler.
         raise ValueError(
-            "expected exactly one unpatched or patched AtomicU128 fragment "
+            "refusing to mix patched and unpatched AtomicU128 fragments "
             f"(found original={original_count}, replacement={replacement_count})"
         )
+    if original_count == 0 and replacement_count == 0:
+        raise ValueError("expected AtomicU128 fragment not found; mrustc output changed")
+    # mrustc emits one fragment per monomorphised instantiation (currently 15),
+    # so every occurrence must be rewritten. Rewriting an already patched file
+    # is a no-op, which keeps the step idempotent.
+    if original_count > 0:
+        source = source.replace(ATOMIC128, ATOMIC128_REPLACEMENT)
 
     if XGETBV not in source:
         raise ValueError("XGETBV instruction was unexpectedly modified")

@@ -120,7 +120,7 @@ set +e
 MRUSTC_TARGET_VER="$MRUSTC_TARGET_VER" "$MRUSTC" \
     --crate-name poc --crate-type bin --edition 2021 \
     --target x86_64-unknown-linux-gnu \
-    --extern core="$WORK/libcore.hir" \
+    --extern core="$WORK/libcore" \
     -o "$WORK/poc" "$ROOT/tools/mrustc_poc/poc.rs"
 MRUSTC_STATUS=$?
 set -e

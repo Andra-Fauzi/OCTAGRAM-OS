@@ -5,8 +5,11 @@ paling berisiko sebelum investasi besar: apakah kode C yang dihasilkan `mrustc`
 (transpiler Rust → C, ditulis dalam C++) dapat dicerna `tcc` di dalam
 OCTAGRAM dan hasilnya berjalan.
 
-Status: **belum lulus end-to-end.** Rincian bukti dan celah yang ditemukan ada
-di `docs/native-self-hosting-roadmap.md` bagian **M4.3**.
+Status: **lulus end-to-end di QEMU** (`MRUSTC-C-POC-PASS`): `tcc` guest
+mengompilasi `libcore.c` 34,6 MB / 588.976 baris, lalu ELF hasil link mencetak
+`mrustc-c-poc: 108`. Ini membuktikan jalur Rust→C→`tcc`, bukan `rustc` native;
+status M5 tidak berubah. Rincian bukti dan celah yang tersisa ada di
+`docs/native-self-hosting-roadmap.md` bagian **M4.3**.
 
 ## Yang sudah terbukti (host)
 
@@ -113,6 +116,12 @@ tcc -I /mnt/src -include /mnt/src/fix.h /mnt/src/shim.c /mnt/src/poc.c \
 run /mnt/poc.elf          # diharapkan mencetak: mrustc-c-poc: 108
 ```
 
+Kompilasi besar membutuhkan beberapa menit di TCG dan melewati batas boot
+pertama image baru, yang menyalin userspace embedded ke root EXT2. Karena itu
+harness mencetak `BOOT-PROMPT: <detik>` dan menerima
+`OCTAGRAM_POC_BOOT_TIMEOUT` (default 600 detik); `QEMU_BIN` dan
+`OCTAGRAM_QEMU_DATA` juga dicari otomatis bila tidak diset.
+
 Sebelum kompilasi besar `libcore.c`, harness menjalankan tes kecil:
 `TCC-OVERFLOW-PASS` (overflow builtins), `TCC-XGETBV-ASSEMBLE-PASS`
 (encoding `0F 01 D0` ditemukan tanpa mengeksekusi instruksi),
@@ -152,6 +161,23 @@ TinyCC tidak mengeluarkan diagnostik sama sekali, harness mencetak
 `TCC-COMPILE-NO-DIAGNOSTIC` beserta batas waktu, sehingga timeout bisa
 dibedakan dari kesalahan source. Fitur ini hanya diagnostik: ia tidak menjadikan
 kompilasi gagal sebagai lulus.
+
+## Hook runtime compat
+
+`shim.c` menyediakan simbol yang diharapkan keluaran `mrustc` tetapi tidak
+pernah ia definisikan:
+
+- `__rdl_alloc`, `__rdl_dealloc`, `__rdl_realloc`, `__rdl_alloc_zeroed`, dan
+  `__rdl_oom` — glue default allocator Rust untuk crate `no_std`. PoC tidak
+  pernah mengalokasi, jadi stub ini berhenti (loop) alih-alih mengembalikan
+  pointer palsu. Ini **bukan** allocator.
+- `ZRG1cD3bin5panic0g` — trampoline panic yang dipanggil `panic_impl` hasil
+  generate. Nama mangled itu milik commit `mrustc` yang dipin; bila mrustc
+  berubah, link guest akan gagal dengan simbol yang jelas.
+
+`fix.h` menyediakan `__builtin_bswap16/32/64` untuk TinyCC, yang belum mengenal
+builtin tersebut; definisinya dibatasi `#ifdef __TINYC__` agar GCC host tetap
+memakai builtin aslinya.
 
 ## Catatan
 

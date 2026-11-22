@@ -520,6 +520,13 @@ impl Ext2 {
                 self.superblock.first_data_block + backup_group * self.superblock.blocks_per_group;
             let mut data = self.read_block(block_number)?;
             let old = read_u32(&data, offset_in_block)?;
+            // e2fsprogs leaves the backup superblock counters zeroed because
+            // only the primary superblock is authoritative. A zeroed mirror
+            // carries no usable count, so leave it alone instead of failing
+            // the whole write with an underflow.
+            if old == 0 {
+                continue;
+            }
             let updated = if delta < 0 {
                 old.checked_sub(delta.unsigned_abs() as u32)
             } else {
@@ -2341,6 +2348,27 @@ mod tests {
             self.bytes.lock()[start..end].copy_from_slice(buffer);
             Ok(())
         }
+    }
+
+    #[test]
+    fn writes_when_backup_superblock_counters_are_zeroed() {
+        // mke2fs leaves the backup superblock counters at zero; only the
+        // primary superblock is authoritative. Writing must still succeed.
+        let disk = Arc::new(MemoryDisk {
+            bytes: Mutex::new(vec![0; 160 * 1024 * 1024]),
+        });
+        Ext2::format(disk.as_ref()).expect("format");
+        {
+            let mut bytes = disk.bytes.lock();
+            let backup = 32_768 * 4096 + 1024;
+            bytes[backup + 12..backup + 20].fill(0);
+        }
+        let mut filesystem = Ext2::mount(disk).expect("mount");
+        filesystem.create_file("/probe.txt").expect("create file");
+        assert_eq!(filesystem.write("/probe.txt", 0, b"hello"), Ok(5));
+        let mut read_back = [0u8; 5];
+        assert_eq!(filesystem.read("/probe.txt", 0, &mut read_back), Ok(5));
+        assert_eq!(&read_back, b"hello");
     }
 
     fn test_disk() -> Arc<MemoryDisk> {

@@ -1699,3 +1699,24 @@ serta build `std` belum dijalankan terhadap checkout tersebut. Ini hanya
 membuka gate build; crate `libc`, errno/constants ABI, dan PAL Unix tetap
 harus dipenuhi. Status `rust_std`, `rustc_host`, dan `cargo_host` tetap
 belum diimplementasikan. Referensi: [upstream std build.rs](https://github.com/rust-lang/rust/blob/342d74463af7dd3018ef6aa04dd5500c2deb5bd1/library/std/build.rs).
+
+## 26. Audit ABI C untuk port libc upstream Rust (22 November 2026)
+
+- Menambahkan `tools/rust_libc_abi_surface.json` sebagai inventaris terstruktur
+  untuk scalar types, record kernel, ABI syscall, translasi libc, dan blocker.
+- Menambahkan `tools/check_rust_libc_abi_surface.py` untuk memeriksa bahwa
+  definisi `sys/types.h`, `oct_stat`, `dirent`, `timespec`, translasi
+  `struct stat`, dan batas `pthread_detach` tidak berubah diam-diam.
+- Workflow Rust no_std menjalankan validator tersebut dan memicu ulang CI
+  ketika header, runtime C, manifest, atau validator berubah.
+
+Temuan ABI penting: `oct_stat` kernel berukuran 16 byte dan tidak sama dengan
+`struct stat` publik; wrapper C melakukan translasi tetapi baru mengisi size,
+mode, dan mtime. `pthread_detach` mengembalikan `ENOTSUP`. Data ini menjadi
+input untuk modul `libc` upstream yang spesifik OCTAGRAM.
+
+**Batas:** ini audit dan CI guard untuk ABI C yang sudah ada, bukan implementasi
+crate upstream `libc`, bukan build `std`, dan bukan native rustc/Cargo.
+Langkah berikutnya adalah membuat modul `libc` target-specific dari kebutuhan
+PAL Unix yang terukur, lalu menguji kompilasi terhadap checkout upstream
+yang dipatok.

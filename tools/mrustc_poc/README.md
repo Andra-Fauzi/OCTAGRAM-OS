@@ -36,6 +36,10 @@ direktori ini tetap menjadi fixture PoC; header publik OCTAGRAM kini memiliki
 deklarasi API yang sesuai, tetapi belum menyediakan implementasi libm. Stub
 matematika tetap tidak presisi karena jalur float tidak dipakai program PoC.
 
+`build_host.sh` sekarang memvalidasi fragmen keluaran `mrustc` sebelum dan sesudah
+rewrite kompatibilitas `XGETBV`/`AtomicU128`. Jika format C yang dihasilkan berubah,
+script berhenti dengan error alih-alih meneruskan source yang belum dipatch.
+
 ## Menjalankan
 
 ```sh

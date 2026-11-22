@@ -1347,6 +1347,14 @@ sudah ada di dalam OCTAGRAM sebagai backend, tanpa LLVM.
   Artefak `libcore.c` dan `libcore.hir` juga dibersihkan sebelum transpile dan
   diwajibkan muncul kembali sebelum patcher dijalankan, agar build tidak
   memakai keluaran `core` dari percobaan sebelumnya.
+- Reproducibility dan integritas input bootstrap diperketat: `build_host.sh`
+  mencetak SHA commit mrustc yang dipakai (`MRUSTC-COMMIT`), menyediakan
+  `MRUSTC_REF` untuk memilih branch/tag saat clone, menolak titik patch
+  `alloc_system` yang hilang/duplikat/bercampur, memvalidasi arsip Rust sebelum
+  ekstraksi, mengekstrak ke staging bersih lalu memindahkannya hanya setelah
+  `library/core/src/lib.rs` terverifikasi, dan memeriksa keberadaan patch
+  kompatibilitas sebelum dry-run. Ini memperkuat build host, bukan bukti
+  compiler Rust native atau hasil QEMU.
 
 ### Status hambatan di sisi guest
 

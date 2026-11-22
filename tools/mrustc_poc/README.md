@@ -20,22 +20,25 @@ di `docs/native-self-hosting-roadmap.md` bagian **M4.3**.
 
 ## Celah yang ditemukan di sisi guest
 
-1. `/include/stdint.h` guest tidak punya `int_leastN_t`/`uint_leastN_t`,
-   sehingga `stdatomic.h` gagal sebelum `tcc` menyentuh kode `mrustc`.
-2. Header publik `user/include/math.h` sekarang mendeklarasikan API math
-   yang dipakai C `core`; implementasi libm nyata masih belum tersedia.
-3. TinyCC now recognizes and lowers `__builtin_add_overflow`,
-   `__builtin_sub_overflow`, and `__builtin_mul_overflow` to a runtime helper;
-   the small guest test exercises all three operations and several integer widths.
-4. `tcc` (a) tidak punya opcode assembler `xgetbv`, dan (b) tidak mendukung
-   atomic 128-bit (`uint128_t _Atomic`).
+1. Header publik `/include/stdint.h` sekarang menyediakan tipe C99
+   `int_leastN_t`/`uint_leastN_t` dan `int_fastN_t`/`uint_fastN_t`;
+   target pemeriksaan sintaks `stdint-test` tersedia.
+2. Header publik `user/include/math.h` mendeklarasikan API matematika yang
+   dipakai C `core`, tetapi implementasi libm nyata belum tersedia.
+3. TinyCC sekarang mengenali dan menurunkan `__builtin_add_overflow`,
+   `__builtin_sub_overflow`, dan `__builtin_mul_overflow` ke helper runtime
+   `__tcc_overflow`. Tes host helper tersedia dan QEMU harness menguji parser,
+   linker, hasil, serta overflow untuk beberapa lebar integer.
+4. `tcc` masih belum memiliki opcode assembler `xgetbv` dan belum mendukung
+   atomic 128-bit (`uint128_t _Atomic`); dua hal ini masih berupa rewrite
+   khusus PoC, bukan implementasi compiler/runtime umum.
 
-Overflow arithmetic is now implemented in TinyCC itself and the incorrect
-always-false macro replacements have been removed from `fix.h`. Atomic128 and
-math remain separate PoC compatibility gaps. Header `math.h` lokal di
-direktori ini tetap menjadi fixture PoC; header publik OCTAGRAM kini memiliki
-deklarasi API yang sesuai, tetapi belum menyediakan implementasi libm. Stub
-matematika tetap tidak presisi karena jalur float tidak dipakai program PoC.
+Helper overflow memakai aritmetika lebar untuk memeriksa rentang signed dan
+unsigned 8/16/32/64 bit, serta tetap menyimpan bit hasil terpotong saat overflow.
+Macro lama yang selalu mengembalikan false sudah dihapus dari `fix.h`.
+Status tes QEMU tetap harus dibuktikan; keberadaan harness bukan bukti PASS.
+Header `math.h` lokal di direktori ini tetap menjadi fixture PoC; stub
+matematika masih tidak presisi karena jalur float tidak dipakai program uji.
 
 `build_host.sh` sekarang memvalidasi fragmen keluaran `mrustc` sebelum dan sesudah
 rewrite kompatibilitas `XGETBV`/`AtomicU128`. Jika format C yang dihasilkan berubah,

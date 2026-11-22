@@ -1735,3 +1735,24 @@ yang dipatok.
 dipatok. Ia tidak membangun `std`, tidak membuktikan Unix PAL cocok, dan tidak
 menjalankan binary Rust di QEMU. Langkah berikutnya adalah audit simbol PAL
 dan ABI yang diperlukan, lalu patch libc target-specific dengan compile test.
+
+## 28. Inventaris API Unix PAL untuk Rust std (22 November 2026)
+
+- Memetakan subset simbol dari source Unix PAL upstream Rust yang dipatok.
+- Menambahkan `tools/rust_std_pal_api_inventory.json` dengan status
+  `implemented`, `partial`, atau `unsupported`.
+- Menambahkan checker yang memverifikasi deklarasi header dan definisi runtime
+  C untuk setiap simbol terpilih.
+- Menjalankan checker pada workflow Rust no_std saat header/runtime/inventaris
+  berubah.
+
+Cakupan awal meliputi filesystem, proses, poll/descriptor, pthread,
+clock/sleep, environment, memory mapping, dan beberapa socket API. Audit
+mengonfirmasi bahwa simbol tersedia belum tentu berarti semantik lengkap:
+`pthread_detach` mengembalikan `ENOTSUP`, ancillary data socket belum
+didukung, dan `getrandom` belum memberikan jaminan cryptographic entropy.
+
+**Batas:** ini inventaris subset API dan pemeriksaan source-level; belum
+merupakan modul upstream `libc` dan belum membuktikan `std` dapat dikompilasi.
+Tahap berikutnya adalah implementasi modul `libc` target-specific serta compile
+test bertahap terhadap source upstream yang dipatok.

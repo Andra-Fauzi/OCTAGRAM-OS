@@ -99,6 +99,10 @@ python3 tools/mrustc_poc/qemu_test.py
 `build_host.sh` menaruh semuanya di `$WORK` (default `/dev/shm/mrustc-poc`) dan
 menulis `sources.img` (ext2 256 MiB) lewat `mke2fs` + `debugfs`, lalu
 `qemu_test.py` memasangnya sebagai `sata1` di guest.
+Setelah semua file dimasukkan, builder menjalankan `e2fsck -fn` dan mengekstrak
+kembali sembilan payload dengan `debugfs dump`; masing-masing dibandingkan
+byte-per-byte terhadap sumber aslinya. Ini mencegah kegagalan perintah `debugfs`
+yang tidak tercermin pada exit status menghasilkan image sumber yang tampak sukses.
 
 Perintah guest yang diuji:
 

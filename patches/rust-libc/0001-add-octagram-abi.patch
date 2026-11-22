@@ -14,7 +14,7 @@ diff --git a/src/unix/mod.rs b/src/unix/mod.rs
 index 13a27f8..0000000 100644
 --- a/src/unix/mod.rs
 +++ b/src/unix/mod.rs
-@@ -1483,41 +1483,50 @@
+@@ -1484,41 +1484,50 @@
      pub fn pthread_condattr_destroy(attr: *mut crate::pthread_condattr_t) -> c_int;
 -    #[cfg_attr(
 -        all(target_os = "macos", target_arch = "x86"),

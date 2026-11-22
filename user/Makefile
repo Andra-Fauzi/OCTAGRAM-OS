@@ -36,7 +36,7 @@ PIC_CFLAGS := $(filter-out -fno-pic -fno-pie -DOCTAGRAM_TLS_ERRNO,$(CFLAGS)) -fP
 	-DOCTAGRAM_RUNTIME_ERRNO_ACCESSOR
 RUNTIME_PIC_CFLAGS := $(PIC_CFLAGS) -DOCTAGRAM_SHARED
 TCC_SETJMP := build/setjmp.o
-TCC_SUPPORT_SOURCES := libtcc1 stdatomic builtin va_list dsohandle
+TCC_SUPPORT_SOURCES := libtcc1 stdatomic builtin va_list dsohandle overflow
 TCC_SUPPORT_ASSEMBLY := atomic alloca alloca-bt
 TCC_SUPPORT_OBJECTS := $(addprefix build/tcc_support_,$(addsuffix .o,$(TCC_SUPPORT_SOURCES))) \
 	$(addprefix build/tcc_support_,$(addsuffix .o,$(TCC_SUPPORT_ASSEMBLY)))
@@ -57,7 +57,7 @@ DYNAMIC_LIBRARY := build/libdyn_demo.so
 SHARED_LIBC := build/liboctagram.so
 LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 
-.PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test dynamic
+.PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test dynamic
 all: $(BINARIES) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
@@ -78,6 +78,15 @@ ipv6-test: build/ipv6_test
 
 stdint-test:
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -Iinclude -fsyntax-only tests/stdint_header_test.c
+
+math-header-test:
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fno-builtin -Iinclude -fsyntax-only tests/math_header_test.c
+
+overflow-test: build/tcc_overflow_runtime_test
+	./build/tcc_overflow_runtime_test
+
+build/tcc_overflow_runtime_test: tests/tcc_overflow_runtime_test.c third_party/tinycc/lib/overflow.c | build
+	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -Iinclude -o $@ $^
 
 rust:
 	$(MAKE) -C rust

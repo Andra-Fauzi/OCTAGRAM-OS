@@ -370,7 +370,10 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(output) => output,
         Err(_) => return 55,
     };
-    if output.status != 0\n        || output.stdout.as_slice() != b"OCTAGRAM-PIPE-PASS"\n        || output.stderr.as_slice() != b"OCTAGRAM-STDERR-PASS"\n    {
+    if output.status != 0
+        || output.stdout.as_slice() != b"OCTAGRAM-PIPE-PASS"
+        || output.stderr.as_slice() != b"OCTAGRAM-STDERR-PASS"
+    {
         return 56;
     }
     if write_all(STDOUT, b"Rust runtime Command::output: PASS\n").is_err() {

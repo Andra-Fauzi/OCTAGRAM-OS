@@ -1049,6 +1049,37 @@ impl File {
     pub fn close(self) -> Result<(), i64> { self.fd.close_owned() }
 }
 
+/// RAII directory stream for the OCTAGRAM snapshot-based readdir ABI.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Directory {
+    fd: OwnedFd,
+}
+
+impl Directory {
+    /// Open a directory stream. The descriptor is closed when this value drops
+    /// on the OCTAGRAM target.
+    pub fn open(path: &CStr) -> Result<Self, i64> {
+        opendir(path).map(|fd| Self {
+            fd: unsafe { OwnedFd::from_raw_fd(fd) },
+        })
+    }
+
+    /// Read the next directory entry, or None after end-of-directory.
+    pub fn next_entry(&self) -> Result<Option<Dirent>, i64> {
+        readdir(self.fd.as_raw_fd())
+    }
+
+    /// Borrow the underlying directory descriptor.
+    pub const fn as_raw_fd(&self) -> u64 {
+        self.fd.as_raw_fd()
+    }
+
+    /// Close the directory stream explicitly.
+    pub fn close(self) -> Result<(), i64> {
+        self.fd.close_owned()
+    }
+}
+
 fn read_exact_with<F>(mut buffer: &mut [u8], mut read_once: F) -> Result<(), i64>
 where F: FnMut(&mut [u8]) -> Result<usize, i64>,
 {

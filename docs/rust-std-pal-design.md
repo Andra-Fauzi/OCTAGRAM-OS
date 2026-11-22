@@ -50,6 +50,21 @@ Nomor syscall dan keberadaan wrapper bukan bukti kompatibilitas semantik.
 Setiap baris harus memiliki test guest yang menguji sukses, error, batas,
 blocking, dan concurrency sesuai kebutuhan API Rust.
 
+## Directory ownership update
+
+Runtime kini menyediakan `Directory`, pembungkus RAII di atas descriptor
+`opendir/readdir/close`:
+- `Directory::open(path)` membuka stream direktori;
+- `next_entry()` menghasilkan satu `Dirent` atau `None` saat EOF;
+- `as_raw_fd()` meminjam descriptor;
+- `close()` menutup secara eksplisit; `Drop` menutup pada target OCTAGRAM.
+
+Smoke test guest menggunakan `Directory` alih-alih mengelola descriptor
+direktori mentah. Ini merupakan building block untuk `std::fs::ReadDir`,
+belum merupakan implementasi iterator std: semantik error setelah EOF,
+snapshot saat direktori berubah, urutan entri, dan lifetime entry masih harus
+diselaraskan dengan kontrak Rust std.
+
 ## API runtime terbaru
 
 `File` sekarang memiliki:

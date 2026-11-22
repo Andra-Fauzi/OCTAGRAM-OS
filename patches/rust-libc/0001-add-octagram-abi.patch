@@ -28,7 +28,7 @@ diff --git a/src/unix/octagram/mod.rs b/src/unix/octagram/mod.rs
 new file mode 100644
 --- /dev/null
 +++ b/src/unix/octagram/mod.rs
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,347 @@
 +//! OCTAGRAM x86_64 userspace ABI.
 +//!
 +//! These definitions describe OCTAGRAM's public C ABI. They intentionally do
@@ -56,6 +56,9 @@ new file mode 100644
 +pub type sa_family_t = u16;
 +pub type sigset_t = u64;
 +pub type socklen_t = u32;
++pub type tcflag_t = u32;
++pub type cc_t = u8;
++pub type speed_t = u32;
 +pub type suseconds_t = i64;
 +pub type time_t = i64;
 +pub type id_t = u32;
@@ -112,6 +115,97 @@ new file mode 100644
 +
 +    pub struct pthread_condattr_t {
 +        pub opaque: c_int,
++    }
++
++    pub struct sockaddr {
++        pub sa_family: sa_family_t,
++        pub sa_data: [c_char; 14],
++    }
++
++    pub struct addrinfo {
++        pub ai_flags: c_int,
++        pub ai_family: c_int,
++        pub ai_socktype: c_int,
++        pub ai_protocol: c_int,
++        pub ai_addrlen: socklen_t,
++        pub ai_addr: *mut sockaddr,
++        pub ai_canonname: *mut c_char,
++        pub ai_next: *mut addrinfo,
++    }
++
++    pub struct passwd {
++        pub pw_name: *mut c_char,
++        pub pw_passwd: *mut c_char,
++        pub pw_uid: uid_t,
++        pub pw_gid: gid_t,
++        pub pw_gecos: *mut c_char,
++        pub pw_dir: *mut c_char,
++        pub pw_shell: *mut c_char,
++    }
++
++    pub struct tm {
++        pub tm_sec: c_int,
++        pub tm_min: c_int,
++        pub tm_hour: c_int,
++        pub tm_mday: c_int,
++        pub tm_mon: c_int,
++        pub tm_year: c_int,
++        pub tm_wday: c_int,
++        pub tm_yday: c_int,
++        pub tm_isdst: c_int,
++    }
++
++    pub struct fd_set {
++        pub bits: [u64; 16],
++    }
++
++    pub struct lconv {
++        pub decimal_point: *mut c_char,
++        pub thousands_sep: *mut c_char,
++        pub grouping: *mut c_char,
++        pub int_curr_symbol: *mut c_char,
++        pub currency_symbol: *mut c_char,
++        pub mon_decimal_point: *mut c_char,
++        pub mon_thousands_sep: *mut c_char,
++        pub mon_grouping: *mut c_char,
++        pub positive_sign: *mut c_char,
++        pub negative_sign: *mut c_char,
++        pub int_frac_digits: c_char,
++        pub frac_digits: c_char,
++        pub p_cs_precedes: c_char,
++        pub p_sep_by_space: c_char,
++        pub n_cs_precedes: c_char,
++        pub n_sep_by_space: c_char,
++        pub p_sign_posn: c_char,
++        pub n_sign_posn: c_char,
++        pub int_p_cs_precedes: c_char,
++        pub int_p_sep_by_space: c_char,
++        pub int_n_cs_precedes: c_char,
++        pub int_n_sep_by_space: c_char,
++        pub int_p_sign_posn: c_char,
++        pub int_n_sign_posn: c_char,
++    }
++
++    pub struct sem_t {
++        pub count: c_uint,
++    }
++
++    pub struct termios {
++        pub c_iflag: tcflag_t,
++        pub c_oflag: tcflag_t,
++        pub c_cflag: tcflag_t,
++        pub c_lflag: tcflag_t,
++        pub c_line: cc_t,
++        pub c_cc: [cc_t; 32],
++        pub c_ispeed: speed_t,
++        pub c_ospeed: speed_t,
++    }
++
++    pub struct sigaction {
++        pub sa_sigaction: crate::sighandler_t,
++        pub sa_mask: sigset_t,
++        pub sa_flags: c_int,
++        pub sa_restorer: Option<unsafe extern "C" fn()>,
 +    }
 +}
 +

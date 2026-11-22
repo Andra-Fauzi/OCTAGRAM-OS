@@ -37,7 +37,7 @@ jobs:
 
       - name: Validate custom target specification
         run: |
-          rustc +nightly --print cfg --target user/rust/targets/x86_64-unknown-octagram.json
+          rustc +nightly -Z unstable-options --print cfg --target user/rust/targets/x86_64-unknown-octagram.json
 
       - name: Build OCTAGRAM Rust binaries
         run: make -C user/rust clean all check

@@ -695,6 +695,8 @@ pub unsafe fn mprotect(address: NonNull<u8>, length: usize, protection: u64) -> 
 pub fn pipe2(flags: u64) -> Result<[i32; 2], i64> {
     let mut descriptors = [-1i32; 2];
     let result = unsafe { syscall2(98, descriptors.as_mut_ptr() as usize as u64, flags) };
+    if result < 0 { Err(result) } else { Ok(descriptors) }
+}
 
 /// Create a pipe whose two descriptors are owned and closed on drop.
 pub fn pipe2_owned(flags: u64) -> Result<[OwnedFd; 2], i64> {
@@ -711,8 +713,6 @@ pub fn pipe2_owned(flags: u64) -> Result<[OwnedFd; 2], i64> {
             OwnedFd::from_raw_fd(descriptors[1] as u64),
         ]
     })
-}
-    if result < 0 { Err(result) } else { Ok(descriptors) }
 }
 
 /// Duplicate a descriptor onto a specific descriptor number.

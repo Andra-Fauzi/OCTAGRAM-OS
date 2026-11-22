@@ -125,3 +125,8 @@ mempunyai dependency cache lokal yang lengkap.
 Ia tidak menjalankan kedua ELF di QEMU. Pengujian QEMU sebelumnya untuk
 custom target tercatat pada [run 44713729286](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44713729286);
 perubahan runtime `strlen` masih perlu masuk regresi guest.
+
+
+## Allocator guest regression
+
+The Rust guest smoke program now performs 32 independent `Vec` allocations and drops, checks `u128` alignment, then allocates again after releasing the previous batches. The QEMU syscall smoke test requires the marker `Rust allocator mmap/munmap cycle: PASS` in addition to the existing file/stat marker and successful process exit. This specifically exercises the allocator's syscall 16 (`mmap`) and syscall 17 (`munmap`) path; it does not replace stress testing under concurrent threads.

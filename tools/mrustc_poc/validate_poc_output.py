@@ -7,7 +7,7 @@ import sys
 
 
 MAIN_DEFINITION = re.compile(
-    r"(?m)^\\s*(?:static\\s+)?(?:int|void)\\s+main\\s*\\("
+    r"(?m)^\s*(?:static\s+)?(?:int|void)\s+main\s*\("
 )
 
 

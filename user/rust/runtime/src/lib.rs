@@ -447,6 +447,21 @@ pub fn lseek(fd: u64, offset: i64, whence: u64) -> Result<i64, i64> {
     if result < 0 { Err(result) } else { Ok(result) }
 }
 
+/// Read from a descriptor at an explicit offset without changing its file position (syscall 102).
+pub fn pread(fd: u64, buffer: &mut [u8], offset: i64) -> Result<usize, i64> {
+    let result = unsafe {
+        syscall4(102, fd, buffer.as_mut_ptr() as usize as u64, buffer.len() as u64, offset as u64)
+    };
+    checked_result(result)
+}
+
+/// Write to a descriptor at an explicit offset without changing its file position (syscall 103).
+pub fn pwrite(fd: u64, bytes: &[u8], offset: i64) -> Result<usize, i64> {
+    let result = unsafe {
+        syscall4(103, fd, bytes.as_ptr() as usize as u64, bytes.len() as u64, offset as u64)
+    };
+    checked_result(result)
+}
 /// Read metadata for an already-open descriptor (syscall 29).
 pub fn fstat(fd: u64) -> Result<FileStat, i64> {
     let mut metadata = FileStat::default();
@@ -980,6 +995,22 @@ impl File {
     pub fn write_all(&self, bytes: &[u8]) -> Result<(), i64> {
         write_all_with(bytes, |remaining| self.write(remaining))
     }
+    /// Read at an explicit offset without changing the shared file position.
+    pub fn read_at(&self, buffer: &mut [u8], offset: i64) -> Result<usize, i64> {
+        pread(self.as_raw_fd(), buffer, offset)
+    }
+    /// Fill a buffer using positional reads; early EOF returns -EIO.
+    pub fn read_exact_at(&self, buffer: &mut [u8], offset: i64) -> Result<(), i64> {
+        read_exact_at_with(buffer, offset, |remaining, position| self.read_at(remaining, position))
+    }
+    /// Write at an explicit offset without changing the shared file position.
+    pub fn write_at(&self, bytes: &[u8], offset: i64) -> Result<usize, i64> {
+        pwrite(self.as_raw_fd(), bytes, offset)
+    }
+    /// Write all bytes positionally, handling partial writes.
+    pub fn write_all_at(&self, bytes: &[u8], offset: i64) -> Result<(), i64> {
+        write_all_at_with(bytes, offset, |remaining, position| self.write_at(remaining, position))
+    }
     /// Change or query the current file offset.
     pub fn seek(&self, offset: i64, whence: u64) -> Result<i64, i64> {
         self.fd.seek(offset, whence)
@@ -1003,6 +1034,30 @@ where F: FnMut(&mut [u8]) -> Result<usize, i64>,
     Ok(())
 }
 
+fn read_exact_at_with<F>(mut buffer: &mut [u8], mut offset: i64, mut read_once: F) -> Result<(), i64>
+where F: FnMut(&mut [u8], i64) -> Result<usize, i64>,
+{
+    while !buffer.is_empty() {
+        let count = read_once(buffer, offset)?;
+        if count == 0 || count > buffer.len() { return Err(-5); }
+        offset = offset.checked_add(count as i64).ok_or(-22)?;
+        buffer = &mut buffer[count..];
+    }
+    Ok(())
+}
+
+fn write_all_at_with<F>(mut bytes: &[u8], mut offset: i64, mut write_once: F) -> Result<(), i64>
+where F: FnMut(&[u8], i64) -> Result<usize, i64>,
+{
+    while !bytes.is_empty() {
+        let chunk_len = bytes.len().min(MAX_SYSCALL_IO);
+        let count = write_once(&bytes[..chunk_len], offset)?;
+        if count == 0 || count > chunk_len { return Err(-5); }
+        offset = offset.checked_add(count as i64).ok_or(-22)?;
+        bytes = &bytes[count..];
+    }
+    Ok(())
+}
 fn write_all_with<F>(mut bytes: &[u8], mut write_once: F) -> Result<(), i64>
 where F: FnMut(&[u8]) -> Result<usize, i64>,
 {
@@ -1561,6 +1616,38 @@ mod tests {
         assert_eq!(super::write_all_with(source, |_| Ok(0)), Err(-5));
     }
 
+    #[test]
+    fn positional_read_exact_handles_partial_reads_and_offsets() {
+        let source = b"0123456789";
+        let mut output = [0u8; 5];
+        let mut observed = std::vec::Vec::new();
+        assert_eq!(super::read_exact_at_with(&mut output, 3, |remaining, offset| {
+            observed.push(offset);
+            let start = offset as usize;
+            let count = remaining.len().min(2).min(source.len() - start);
+            remaining[..count].copy_from_slice(&source[start..start + count]);
+            Ok(count)
+        }), Ok(()));
+        assert_eq!(&output, b"34567");
+        assert_eq!(observed, [3, 5, 7]);
+    }
+
+    #[test]
+    fn positional_write_all_advances_offset_after_partial_writes() {
+        let mut output = [0u8; 12];
+        let mut observed = std::vec::Vec::new();
+        assert_eq!(super::write_all_at_with(b"octagram", 2, |remaining, offset| {
+            observed.push(offset);
+            let count = remaining.len().min(3);
+            let start = offset as usize;
+            output[start..start + count].copy_from_slice(&remaining[..count]);
+            Ok(count)
+        }), Ok(()));
+        assert_eq!(&output[2..10], b"octagram");
+        assert_eq!(observed, [2, 5, 8]);
+        assert_eq!(super::write_all_at_with(b"x", 0, |_, _| Ok(0)), Err(-5));
+        assert_eq!(super::write_all_at_with(b"x", i64::MAX, |_, _| Ok(1)), Err(-22));
+    }
     #[test]
     fn file_wraps_owned_descriptor_and_transfers_it() {
         let owned = unsafe { super::OwnedFd::from_raw_fd(19) };

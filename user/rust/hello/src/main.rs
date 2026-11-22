@@ -108,6 +108,17 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     if file.read_exact(&mut sample).is_err() || metadata.size < sample.len() as u64 {
         return 9;
     }
+    let mut positional_sample = [0u8; 8];
+    if file.read_exact_at(&mut positional_sample, 4).is_err() {
+        return 11;
+    }
+    if file.seek(0, SEEK_SET) != Ok(0) {
+        return 12;
+    }
+    let mut position_check = [0u8; 8];
+    if file.read_exact(&mut position_check).is_err() || position_check != sample[..8] {
+        return 13;
+    }
     if file.close().is_err() {
         return 10;
     }

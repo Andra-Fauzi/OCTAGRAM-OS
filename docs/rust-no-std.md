@@ -230,3 +230,6 @@ not yet provide buffered I/O, path normalization, or the complete
 ## Rust file-handle layer
 
 The octagram_runtime crate now exposes a small no_std File handle over OwnedFd: open/openat, descriptor borrowing, read/read_exact, write/write_all, seek, metadata, explicit close, and raw-fd ownership transfer. The exact-read and write-all loops handle partial progress; early EOF or a zero-progress write returns -EIO. This is not std::fs::File or a complete Rust standard library. Host tests cover partial I/O and ownership transfer; the guest smoke program exercises File::openat, metadata, exact read, seek, and close.
+
+
+The file layer also exposes positional I/O using OCTAGRAM syscalls 102 (`pread`) and 103 (`pwrite`). `File::read_at`/`write_at` do not alter the shared file offset; `read_exact_at`/`write_all_at` handle partial transfers and checked offset advancement. Host tests exercise offset progression and failure cases, and the guest smoke test verifies positional reads leave the sequential file position unchanged. The guest test does not yet exercise writes to a persistent file.

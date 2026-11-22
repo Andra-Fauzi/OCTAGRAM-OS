@@ -147,6 +147,7 @@ def main():
     monitor = None
     qemu_log_handle = None
     connected = False
+    success = False
 
     def send_line(text, pause=0.04):
         for character in text:
@@ -170,10 +171,6 @@ def main():
                 if process is not None and process.poll() is not None:
                     print("QEMU-EXIT: %s" % process.returncode)
                     print(serial_text()[-3000:])
-                    qemu_log_handle.flush()
-                    with open(QEMU_LOG, "r", errors="replace") as handle:
-                        print("=== QEMU LOG ===")
-                        print(handle.read()[-3000:])
                     return 1
                 time.sleep(0.5)
         if not connected:
@@ -330,6 +327,7 @@ def main():
             return 1
 
         print("MRUSTC-C-POC-PASS")
+        success = True
         return 0
     finally:
         if connected and monitor is not None:
@@ -347,6 +345,14 @@ def main():
                 process.kill()
                 process.wait()
         if qemu_log_handle is not None:
+            if not success:
+                try:
+                    qemu_log_handle.flush()
+                    with open(QEMU_LOG, "r", errors="replace") as handle:
+                        print("=== QEMU HOST LOG (failure diagnostics) ===")
+                        print(handle.read()[-5000:])
+                except OSError as error:
+                    print("QEMU-LOG-READ-FAIL: %s" % error)
             qemu_log_handle.close()
         for path in (MONITOR, live_vars):
             try:

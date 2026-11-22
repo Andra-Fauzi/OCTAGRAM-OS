@@ -168,7 +168,7 @@
     {
       "name": "stat",
       "header": "user/include/sys/stat.h",
-      "size": 88,
+      "size": 112,
       "align": 8,
       "fields": [
         [
@@ -230,6 +230,21 @@
           "st_blocks",
           "blkcnt_t",
           80
+        ],
+        [
+          "st_atime_nsec",
+          "time_t",
+          88
+        ],
+        [
+          "st_mtime_nsec",
+          "time_t",
+          96
+        ],
+        [
+          "st_ctime_nsec",
+          "time_t",
+          104
         ]
       ]
     },

@@ -10,6 +10,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="${WORK:-/dev/shm/mrustc-poc}"
 RUST_VERSION="${RUST_VERSION:-1.90.0}"
 MRUSTC_TARGET_VER="${MRUSTC_TARGET_VER:-1.90}"
+MRUSTC_REF="${MRUSTC_REF:-master}"
 PARLEVEL="${PARLEVEL:-$(nproc)}"
 SRC="$WORK/rustc-$RUST_VERSION-src"
 MRUSTC_DIR="$WORK/mrustc"
@@ -18,9 +19,13 @@ IMAGE="$WORK/sources.img"
 mkdir -p "$WORK"
 bash "$ROOT/tools/test_mrustc_compat_host.sh"
 
-if [[ ! -d "$MRUSTC_DIR" ]]; then
-    git clone --depth 1 https://github.com/thepowersgang/mrustc "$MRUSTC_DIR"
+if [[ ! -d "$MRUSTC_DIR/.git" ]]; then
+    rm -rf "$MRUSTC_DIR"
+    git clone --depth 1 --branch "$MRUSTC_REF" \
+        https://github.com/thepowersgang/mrustc "$MRUSTC_DIR"
 fi
+MRUSTC_COMMIT="$(git -C "$MRUSTC_DIR" rev-parse HEAD)"
+echo "MRUSTC-COMMIT: $MRUSTC_COMMIT"
 
 # mrustc injects the implicit `alloc_system` crate into every binary crate; a
 # no_std crate does not ship one, so disable the injection for this PoC.
@@ -30,29 +35,53 @@ import sys
 
 path = pathlib.Path(sys.argv[1]) / "src" / "main.cpp"
 text = path.read_text()
-if "false && !allocator_crate_loaded" not in text:
-    old = "                if( !allocator_crate_loaded )"
-    new = "                if( false && !allocator_crate_loaded )"
-    if old not in text:
-        raise SystemExit("mrustc alloc_system patch point not found")
+old = "                if( !allocator_crate_loaded )"
+new = "                if( false && !allocator_crate_loaded )"
+count = text.count(old)
+if "false && !allocator_crate_loaded" in text:
+    if count != 0:
+        raise SystemExit("mrustc allocator patch is in an ambiguous mixed state")
+    print("mrustc alloc_system patch already applied")
+else:
+    if count != 1:
+        raise SystemExit(f"expected exactly one allocator patch point, found {count}")
     path.write_text(text.replace(old, new, 1))
     print("patched mrustc: alloc_system injection disabled")
 PY
 
 make -C "$MRUSTC_DIR" -j"$PARLEVEL" bin/mrustc
 
-if [[ ! -d "$SRC/library" ]]; then
-    curl -fL -o "$WORK/rustc-$RUST_VERSION-src.tar.gz" \
-        "https://static.rust-lang.org/dist/rustc-$RUST_VERSION-src.tar.gz"
-    mkdir -p "$SRC"
-    tar xzf "$WORK/rustc-$RUST_VERSION-src.tar.gz" -C "$SRC" --strip-components=1 \
+RUST_SRC_ARCHIVE="$WORK/rustc-$RUST_VERSION-src.tar.gz"
+if [[ ! -s "$SRC/library/core/src/lib.rs" ]]; then
+    if [[ ! -s "$RUST_SRC_ARCHIVE" ]]; then
+        curl -fL --retry 3 -o "$RUST_SRC_ARCHIVE.tmp" \
+            "https://static.rust-lang.org/dist/rustc-$RUST_VERSION-src.tar.gz"
+        mv "$RUST_SRC_ARCHIVE.tmp" "$RUST_SRC_ARCHIVE"
+    fi
+    # Validate the archive and extract into a fresh staging directory. A
+    # partial previous extraction must never masquerade as a complete source.
+    tar -tzf "$RUST_SRC_ARCHIVE" >/dev/null
+    STAGE="$WORK/rustc-$RUST_VERSION-src.extracting"
+    rm -rf "$STAGE"
+    mkdir -p "$STAGE"
+    tar xzf "$RUST_SRC_ARCHIVE" -C "$STAGE" --strip-components=1 \
         --exclude='*/src/llvm-project/*' --exclude='*/src/tools/*'
+    if [[ ! -s "$STAGE/library/core/src/lib.rs" ]]; then
+        echo "ERROR: Rust source archive lacks library/core/src/lib.rs" >&2
+        exit 1
+    fi
+    rm -rf "$SRC"
+    mv "$STAGE" "$SRC"
 fi
 
 # Apply the mrustc compatibility patch exactly once. Do not mask arbitrary
 # patch failures: distinguish a clean tree, an already-patched tree, and a
 # source archive that no longer matches the patch.
 RUSTC_PATCH="$MRUSTC_DIR/rustc-$RUST_VERSION-src.patch"
+if [[ ! -s "$RUSTC_PATCH" ]]; then
+    echo "ERROR: missing mrustc compatibility patch: $RUSTC_PATCH" >&2
+    exit 1
+fi
 if (cd "$SRC" && patch --dry-run -p0 --forward <"$RUSTC_PATCH" >/dev/null 2>&1); then
     (cd "$SRC" && patch -p0 --forward <"$RUSTC_PATCH")
 elif (cd "$SRC" && patch --dry-run -R -p0 <"$RUSTC_PATCH" >/dev/null 2>&1); then

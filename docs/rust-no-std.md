@@ -259,4 +259,4 @@ Saat satu stream output mencapai EOF, `Command::output()` sekarang mengubah desc
 
 ## Directory iterator
 
-`Directory::into_iter()` menghasilkan `DirectoryIter`, sebuah owning iterator dengan item `Result<Dirent, i64>`. EOF mengakhiri iterasi; error dikeluarkan sekali dan menghentikan iterasi. Ownership directory tetap terjaga selama iterasi dan descriptor ditutup melalui `Drop` setelah iterator dilepas.
+`IntoIterator for Directory` menghasilkan `DirectoryIter`, sebuah owning iterator dengan item `Result<Dirent, i64>`. EOF mengakhiri iterasi; error dikeluarkan sekali dan menghentikan iterasi. Ownership directory tetap terjaga selama iterasi dan descriptor ditutup melalui `Drop` setelah iterator dilepas.

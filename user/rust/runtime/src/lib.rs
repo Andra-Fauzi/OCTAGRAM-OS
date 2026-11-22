@@ -111,6 +111,21 @@ pub unsafe extern "C" fn memcmp(
     0
 }
 
+/// Freestanding C string length primitive required by compiler-generated code.
+/// The caller must pass a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn strlen(string: *const c_char) -> usize {
+    let mut length = 0usize;
+    // SAFETY: The caller guarantees that string points to a readable
+    // NUL-terminated byte sequence.
+    unsafe {
+        while string.add(length).read() != 0 {
+            length += 1;
+        }
+    }
+    length
+}
+
 #[no_mangle]
 pub static mut environ: *mut *mut c_char = ptr::null_mut();
 

@@ -213,6 +213,21 @@ def main():
             return 1
         print("TCC-XGETBV-RUN-PASS")
 
+        # Ensure the freestanding math implementation is present in libc.a.
+        offset = len(serial_text())
+        send_line("tcc /mnt/src/tcc_math.c -o /mnt/tcc_math.elf")
+        if not wait_prompt(offset, 90):
+            print("TCC-MATH-COMPILE-FAIL")
+            print(serial_text()[offset:][-3000:])
+            return 1
+        offset = len(serial_text())
+        send_line("run /mnt/tcc_math.elf")
+        if not wait_for("TCC-MATH-PASS", offset, 60):
+            print("TCC-MATH-RUN-FAIL")
+            print(serial_text()[offset:][-3000:])
+            return 1
+        print("TCC-MATH-PASS")
+
         offset = len(serial_text())
         send_line(
             "tcc -I /mnt/src -include /mnt/src/fix.h /mnt/src/shim.c "

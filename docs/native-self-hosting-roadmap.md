@@ -1782,3 +1782,15 @@ diterapkan dan upstream crate `libc` berhasil di-cross-compile.
 `--no-default-features`; Rust `std` belum dibangun atau diuji. Masih perlu
 audit semua API yang diekspor oleh Unix module generik, menghubungkan simbol
 PAL ke runtime OCTAGRAM, lalu menjalankan eksperimen `build-std=std`.
+
+## 30. Upstream libc OCTAGRAM: applicator deterministik dan compile gate lulus (22 November 2026)
+
+- Integrasi upstream libc kini memakai source module `patches/rust-libc/octagram/mod.rs` dan script `tools/apply_rust_libc_octagram.py`, bukan unified diff yang sensitif terhadap offset baris.
+- Applicator memverifikasi checkout upstream tepat pada commit `a03dd7c2e298b0ca482f30ce07efd3115938328e`, lalu menerapkan perubahan lewat anchor unik yang harus cocok tepat satu kali. Ini membuat perubahan upstream gagal secara eksplisit jika source bergeser, alih-alih menerapkan patch secara ambigu.
+- Integrasi mendaftarkan `target_os = "octagram"`, memilih modul Unix khusus, mengimpor subset POSIX `unistd`, dan menambahkan tipe, record, konstanta, serta deklarasi ABI OCTAGRAM.
+- API yang belum disediakan OCTAGRAM dikecualikan dari binding generik, termasuk pthread rwlock, `statvfs`, dan `dladdr`. Modul target juga memiliki pemeriksaan layout compile-time terhadap ABI yang diinventarisasi.
+- Workflow Rust no_std mengambil checkout upstream yang dipatok, menjalankan applicator, kemudian melakukan `cargo +nightly -Zjson-target-spec -Zbuild-std=core check` untuk target OCTAGRAM.
+
+<badge color="success">Rust no_std CI lulus</badge> Run [45045459269](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45045459269) pada commit `ecda92b5` lulus seluruh langkah: validasi target dan ABI, inventaris Unix PAL, penerapan perubahan ke upstream libc, cross-compile crate libc, build userspace Rust, unit test runtime host, dan verifikasi ELF statis.
+
+**Batas:** ini membuktikan crate upstream `libc` dapat dikompilasi untuk custom target dan aplikasi `no_std` yang ada tetap terbangun. Ini belum membuktikan `std` dapat dibangun, belum menguji seluruh simbol libc saat link/run, dan belum membuat `rustc` atau Cargo native. Langkah berikutnya adalah mencoba `build-std=std` secara terkendali, menggunakan daftar error PAL/libc aktual untuk melengkapi ABI tanpa mengasumsikan kompatibilitas Linux.

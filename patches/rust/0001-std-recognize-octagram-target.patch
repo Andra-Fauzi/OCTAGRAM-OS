@@ -14,10 +14,10 @@ Upstream base: rust-lang/rust 342d74463af7dd3018ef6aa04dd5500c2deb5bd1
  1 file changed, 1 insertion(+)
 
 diff --git a/library/std/build.rs b/library/std/build.rs
-index 00000000000..00000000000 100644
+index 98856b58d890..000000000000 100644
 --- a/library/std/build.rs
 +++ b/library/std/build.rs
-@@ -72,6 +72,7 @@ fn main() {
+@@ -56,6 +56,7 @@ fn main() {
          || target_os == "uefi"
          || target_os == "teeos"
          || target_os == "zkvm"

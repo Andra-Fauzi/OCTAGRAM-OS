@@ -1610,3 +1610,12 @@ Status validasi setelah perubahan:
 Validasi: Rust no_std workflow sebelumnya lulus pada commit be5dd8c8, tetapi perubahan bagian 17 memerlukan run CI baru. POSIX Core Stage 1 run 45039013607 masih berjalan pada pemeriksaan sebelumnya; hasil QEMU belum dinyatakan lulus.
 
 Status: ExitStatus ini masih adapter khusus OCTAGRAM. Kernel belum menyimpan signal termination / core-dump state seperti Unix wait status, jadi code() tidak boleh dianggap setara penuh dengan std::process::ExitStatus.
+
+## 18. Owning directory iterator untuk fondasi std::fs (22 November 2026)
+
+- Ditambahkan DirectoryIter yang mengambil ownership Directory dan mengimplementasikan Iterator<Item = Result<Dirent, i64>>.
+- EOF mengakhiri iterator; error pertama dikembalikan satu kali dan iterator menjadi fused secara praktis (panggilan next selanjutnya menghasilkan None). Drop pada iterator melepaskan OwnedFd sehingga stream ditutup.
+- Guest smoke test kini mengiterasi /share/octagram melalui into_iter(), memvalidasi ukuran record dan terminasi nama, serta menemukan message.c. Ini menguji ownership dan jalur iterator pada guest, bukan hanya pemanggilan readdir manual.
+- Matriks PAL diperbarui: primitive iterator tersedia; adapter std::fs::ReadDir, DirEntry/PathBuf, metadata entry, dot-entry behavior, dan semantik perubahan direktori tetap terbuka.
+
+Validasi terkait: Rust no_std workflow run [45039201141](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45039201141) lulus pada commit ead26cd0 sebelum penambahan DirectoryIter. Perubahan iterator terbaru masih menunggu workflow CI baru.

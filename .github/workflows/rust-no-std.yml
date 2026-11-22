@@ -11,6 +11,7 @@ on:
       - "user/runtime.c"
       - "tools/rust_libc_abi_surface.json"
       - "tools/check_rust_libc_abi_surface.py"
+      - "patches/rust-libc/**"
       - "tools/rust_std_pal_api_inventory.json"
       - "tools/check_rust_std_pal_api_inventory.py"
       - ".github/workflows/rust-no-std.yml"
@@ -55,6 +56,24 @@ jobs:
 
       - name: Validate selected Rust std Unix PAL APIs
         run: python3 tools/check_rust_std_pal_api_inventory.py
+
+      - name: Checkout pinned upstream libc
+        uses: actions/checkout@v4
+        with:
+          repository: rust-lang/libc
+          ref: a03dd7c2e298b0ca482f30ce07efd3115938328e
+          path: upstream-libc
+
+      - name: Apply and compile OCTAGRAM upstream libc target
+        run: |
+          set -euo pipefail
+          cd upstream-libc
+          git apply --check ../patches/rust-libc/0001-add-octagram-abi.patch
+          git apply ../patches/rust-libc/0001-add-octagram-abi.patch
+          cd ..
+          cargo +nightly check --manifest-path upstream-libc/Cargo.toml \
+            --target user/rust/targets/x86_64-unknown-octagram.json \
+            --no-default-features --features rustc-dep-of-std
 
       - name: Build OCTAGRAM Rust binaries
         run: make -C user/rust clean all check

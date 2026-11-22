@@ -43,7 +43,9 @@ di `docs/native-self-hosting-roadmap.md` bagian **M4.3**.
 Helper overflow memakai aritmetika lebar untuk memeriksa rentang signed dan
 unsigned 8/16/32/64 bit, serta tetap menyimpan bit hasil terpotong saat overflow.
 TinyCC belum mendukung integer 128-bit sebagai tipe sumber; builtin overflow
-untuk `__int128` belum tercakup.
+untuk `__int128` belum tercakup. Helper AtomicU128 PoC diuji terpisah melalui
+`test_atomic128_shim.c` saat `build_host.sh` berjalan, namun helper itu hanya
+simulasi bytewise, bukan operasi atomic/concurrent.
 Macro lama yang selalu mengembalikan false sudah dihapus dari `fix.h`.
 Status tes QEMU tetap harus dibuktikan; keberadaan harness bukan bukti PASS.
 Stub matematika di `shim.c` telah dihapus agar simbol disediakan oleh

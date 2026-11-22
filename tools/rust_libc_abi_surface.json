@@ -10,7 +10,15 @@
     "user/include/time.h",
     "user/include/dirent.h",
     "docs/syscall-abi.md",
-    "user/runtime.c"
+    "user/runtime.c",
+    "user/include/sys/socket.h",
+    "user/include/netdb.h",
+    "user/include/pwd.h",
+    "user/include/locale.h",
+    "user/include/sys/select.h",
+    "user/include/sys/semaphore.h",
+    "user/include/termios.h",
+    "user/include/signal.h"
   ],
   "target": {
     "triple": "x86_64-unknown-octagram",
@@ -142,14 +150,157 @@
     "sendmsg and recvmsg return ENOSYS; socket API is partial.",
     "getrandom currently uses xorshift seeded from TSC and is not a cryptographic entropy guarantee.",
     "The manifest records source-level ABI facts; it does not prove Rust std builds or runs.",
-    "The initial upstream libc target module compiles for the custom target, but full Rust std linkage and runtime behavior are not yet verified."
+    "The initial upstream libc target module compiles for the custom target, but full Rust std linkage and runtime behavior are not yet verified.",
+    "The initial upstream rust-lang/libc OCTAGRAM module compiles for the custom target, but this does not prove Rust std PAL conformance or runtime symbol availability."
   ],
   "upstream_libc": {
     "repository": "rust-lang/libc",
-    "commit": "a03dd7c2e298b0ca482f30ce07efd3115938328e",
+    "base_commit": "a03dd7c2e298b0ca482f30ce07efd3115938328e",
     "applicator": "tools/apply_rust_libc_octagram.py",
     "target_module": "patches/rust-libc/octagram/mod.rs",
-    "validation": "nightly -Zjson-target-spec -Zbuild-std=core check",
-    "verified_workflow_run": "45045459269"
-  }
+    "compile_gate": "cargo +nightly -Zjson-target-spec -Zbuild-std=core check --target x86_64-unknown-octagram --no-default-features --features rustc-dep-of-std",
+    "last_verified_run": "45045589401"
+  },
+  "public_structs": [
+    {
+      "name": "stat",
+      "header": "user/include/sys/stat.h",
+      "size": 88,
+      "align": 8,
+      "fields": [
+        [
+          "st_size",
+          "off_t",
+          0
+        ],
+        [
+          "st_mode",
+          "mode_t",
+          8
+        ],
+        [
+          "st_dev",
+          "dev_t",
+          16
+        ],
+        [
+          "st_ino",
+          "ino_t",
+          24
+        ],
+        [
+          "st_nlink",
+          "nlink_t",
+          32
+        ],
+        [
+          "st_uid",
+          "uid_t",
+          36
+        ],
+        [
+          "st_gid",
+          "gid_t",
+          40
+        ],
+        [
+          "st_atime",
+          "time_t",
+          48
+        ],
+        [
+          "st_mtime",
+          "time_t",
+          56
+        ],
+        [
+          "st_ctime",
+          "time_t",
+          64
+        ],
+        [
+          "st_blksize",
+          "blksize_t",
+          72
+        ],
+        [
+          "st_blocks",
+          "blkcnt_t",
+          80
+        ]
+      ]
+    },
+    {
+      "name": "sockaddr",
+      "header": "user/include/sys/socket.h",
+      "size": 16,
+      "align": 2
+    },
+    {
+      "name": "addrinfo",
+      "header": "user/include/netdb.h",
+      "size": 48,
+      "align": 8
+    },
+    {
+      "name": "passwd",
+      "header": "user/include/pwd.h",
+      "size": 48,
+      "align": 8
+    },
+    {
+      "name": "tm",
+      "header": "user/include/time.h",
+      "size": 36,
+      "align": 4
+    },
+    {
+      "name": "fd_set",
+      "header": "user/include/sys/select.h",
+      "size": 128,
+      "align": 8
+    },
+    {
+      "name": "lconv",
+      "header": "user/include/locale.h",
+      "size": 96,
+      "align": 8
+    },
+    {
+      "name": "sem_t",
+      "header": "user/include/sys/semaphore.h",
+      "size": 4,
+      "align": 4
+    },
+    {
+      "name": "termios",
+      "header": "user/include/termios.h",
+      "size": 60,
+      "align": 4
+    },
+    {
+      "name": "sigaction",
+      "header": "user/include/signal.h",
+      "size": 32,
+      "align": 8
+    },
+    {
+      "name": "pthread_attr_t",
+      "header": "user/include/pthread.h",
+      "size": 16,
+      "align": 8
+    },
+    {
+      "name": "pthread_mutex_t",
+      "header": "user/include/pthread.h",
+      "size": 16,
+      "align": 8
+    },
+    {
+      "name": "pthread_cond_t",
+      "header": "user/include/pthread.h",
+      "size": 4,
+      "align": 4
+    }
+  ]
 }

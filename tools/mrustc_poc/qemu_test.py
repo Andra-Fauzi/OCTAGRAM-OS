@@ -99,7 +99,8 @@ def main():
             os.unlink(path)
         except FileNotFoundError:
             pass
-    live_vars = os.path.join(tempfile.gettempdir(), "octagram-mrustc-vars.fd")
+    vars_fd, live_vars = tempfile.mkstemp(prefix="octagram-mrustc-vars-", suffix=".fd")
+    os.close(vars_fd)
     shutil.copyfile(vars_template, live_vars)
 
     command = [
@@ -301,7 +302,7 @@ def main():
     finally:
         if connected:
             try:
-                monitor.sendall(b"quit\\n")
+                monitor.sendall(b"quit\n")
             except OSError:
                 pass
         monitor.close()

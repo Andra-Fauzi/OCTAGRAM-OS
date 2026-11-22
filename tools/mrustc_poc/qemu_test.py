@@ -132,10 +132,8 @@ def main():
         "-drive", "file=%s,format=raw,if=none,id=disk1" % SOURCES,
         "-device", "ide-hd,drive=disk1,bus=ide.1",
     ]
-    process = subprocess.Popen(
-        command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
-    )
-    monitor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    process = None
+    monitor = None
     connected = False
 
     def send_line(text, pause=0.04):
@@ -146,13 +144,17 @@ def main():
         time.sleep(0.4)
 
     try:
+        process = subprocess.Popen(
+            command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
+        )
+        monitor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         for _ in range(120):
             try:
                 monitor.connect(MONITOR)
                 connected = True
                 break
             except OSError:
-                if process.poll() is not None:
+                if process is not None and process.poll() is not None:
                     print("QEMU-EXIT: %s" % process.returncode)
                     print(serial_text()[-3000:])
                     return 1
@@ -313,13 +315,14 @@ def main():
         print("MRUSTC-C-POC-PASS")
         return 0
     finally:
-        if connected:
+        if connected and monitor is not None:
             try:
                 monitor.sendall(b"quit\n")
             except OSError:
                 pass
-        monitor.close()
-        if process.poll() is None:
+        if monitor is not None:
+            monitor.close()
+        if process is not None and process.poll() is None:
             process.terminate()
             try:
                 process.wait(timeout=20)

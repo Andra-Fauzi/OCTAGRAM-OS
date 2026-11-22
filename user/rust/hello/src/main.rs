@@ -15,7 +15,7 @@ use octagram_runtime::{
     getrandom, mmap, mprotect, munmap, nanosleep, pipe2, pipe2_owned, read,
     stat_path, thread_create, unlinkat, Child, Command, Directory, File,
     thread_exit, thread_join, thread_self, write, write_all, Stdio,
-    AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, O_RDWR, O_CREAT, O_TRUNC, O_CLOEXEC, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
+    AT_FDCWD, PathBuf, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, O_RDWR, O_CREAT, O_TRUNC, O_CLOEXEC, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
 };
 
 static RUST_THREAD_RESULT: AtomicU64 = AtomicU64::new(0);
@@ -100,6 +100,20 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     };
     if descriptor_metadata.size != metadata.size || relative_metadata.size != metadata.size {
         return 7;
+    }
+    // Exercise byte-preserving path construction and conversion at the syscall boundary.
+    let mut runtime_path = PathBuf::from_bytes(b"/share/octagram");
+    runtime_path.push(b"message.c");
+    let nul_terminated_path = match runtime_path.try_to_cstring_bytes() {
+        Ok(path) => path,
+        Err(_) => return 39,
+    };
+    let runtime_c_path = match CStr::from_bytes_with_nul(&nul_terminated_path) {
+        Ok(path) => path,
+        Err(_) => return 40,
+    };
+    if stat_path(runtime_c_path).map(|value| value.size != metadata.size).unwrap_or(true) {
+        return 41;
     }
     if file.seek(0, SEEK_SET) != Ok(0) {
         return 8;

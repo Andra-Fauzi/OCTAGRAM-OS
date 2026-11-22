@@ -5517,6 +5517,66 @@ static void parse_builtin_params(int nc, const char *args)
         nocode_wanted--;
 }
 
+/* Lower the type-generic GCC overflow builtins to the TinyCC runtime helper.
+   Operands are widened to uint64_t so their bit patterns survive the call;
+   the original signedness and pointed-to result type are passed separately. */
+static void parse_builtin_overflow(int op)
+{
+    CType cast_type, void_ptr_type, result_type;
+    int a_unsigned, b_unsigned, result_unsigned;
+    int result_size, align, bt;
+
+    next();
+    skip('(');
+
+    expr_eq();
+    bt = vtop->type.t & VT_BTYPE;
+    if (!is_integer_btype(bt) || bt == VT_BOOL)
+        tcc_error("integer overflow builtin requires integer operands");
+    a_unsigned = !!(vtop->type.t & VT_UNSIGNED);
+    cast_type.ref = NULL;
+    cast_type.t = VT_LLONG | VT_UNSIGNED;
+    gen_assign_cast(&cast_type);
+    skip(',');
+
+    expr_eq();
+    bt = vtop->type.t & VT_BTYPE;
+    if (!is_integer_btype(bt) || bt == VT_BOOL)
+        tcc_error("integer overflow builtin requires integer operands");
+    b_unsigned = !!(vtop->type.t & VT_UNSIGNED);
+    gen_assign_cast(&cast_type);
+    skip(',');
+
+    expr_eq();
+    if ((vtop->type.t & VT_BTYPE) != VT_PTR)
+        tcc_error("integer overflow builtin result must be a pointer");
+    result_type = *pointed_type(&vtop->type);
+    bt = result_type.t & VT_BTYPE;
+    if (!is_integer_btype(bt) || bt == VT_BOOL || (result_type.t & VT_CONSTANT))
+        tcc_error("integer overflow builtin result must point to a writable integer");
+    result_size = type_size(&result_type, &align);
+    if (result_size != 1 && result_size != 2
+        && result_size != 4 && result_size != 8)
+        tcc_error("integer overflow builtin supports result widths up to 64 bits");
+    result_unsigned = !!(result_type.t & VT_UNSIGNED);
+
+    void_ptr_type.ref = NULL;
+    void_ptr_type.t = VT_VOID;
+    mk_pointer(&void_ptr_type);
+    gen_assign_cast(&void_ptr_type);
+    skip(')');
+
+    /* Keep the first three arguments in source order, then append metadata. */
+    vpushi(op);
+    vpushi(a_unsigned);
+    vpushi(b_unsigned);
+    vpushi(result_size);
+    vpushi(result_unsigned);
+    vpush_helper_func(tok_alloc_const("__tcc_overflow"));
+    vrott(9);
+    gfunc_call(8);
+}
+
 static void parse_atomic(int atok)
 {
     int size, align, arg, t, save = 0;
@@ -5914,6 +5974,15 @@ ST_FUNC void unary(void)
 	    n = 0;
 	vtop--;
 	vpushi(n);
+        break;
+    case TOK_builtin_add_overflow:
+        parse_builtin_overflow(0);
+        break;
+    case TOK_builtin_sub_overflow:
+        parse_builtin_overflow(1);
+        break;
+    case TOK_builtin_mul_overflow:
+        parse_builtin_overflow(2);
         break;
     case TOK_builtin_unreachable:
 	parse_builtin_params(0, ""); /* just skip '()' */

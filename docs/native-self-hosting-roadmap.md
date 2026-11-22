@@ -1409,7 +1409,7 @@ Stub matematika dari `shim.c` juga sudah dihapus; simbol math harus dipenuhi
 oleh `libc.a`. Patcher `patch_core.py` mempertahankan fragmen XGETBV asli
 dan hanya me-rewrite AtomicU128 ke helper untuk jalur PoC yang tidak disentuh.
 Jika keluaran `mrustc` berubah, harness berhenti alih-alih meneruskan hasil
-yang tidak kompatibel. Enam tes regresi patcher ada di `test_patch_core.py`.
+yang tidak kompatibel. Sembilan tes regresi patcher ada di `test_patch_core.py`, termasuk penolakan fragmen AtomicU128 duplikat dan output campuran.
 
 ### Yang belum terbukti
 

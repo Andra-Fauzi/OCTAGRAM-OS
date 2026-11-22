@@ -83,9 +83,21 @@ int main(void)
 
     if (!near(tgamma(5.0), 24.0, 1e-8) || erf(0.0) != 0.0)
         return 14;
-    if (!near(fmax(-0.0, 0.0), 0.0, 0.0) ||
-        !near(fmin(-0.0, 0.0), -0.0, 0.0))
+
+    zero.value = fmax(-0.0, 0.0);
+    if (zero.bits != 0)
         return 15;
+    zero.value = fmin(-0.0, 0.0);
+    if (zero.bits != UINT64_C(0x8000000000000000))
+        return 23;
+
+    if (sqrt(-1.0) == sqrt(-1.0) || sqrt(-INFINITY) == sqrt(-INFINITY))
+        return 24;
+    if (!near(atan2(INFINITY, INFINITY), 0.78539816339744830962, 1e-12) ||
+        !near(atan2(-INFINITY, -INFINITY), -2.35619449019234492885, 1e-12))
+        return 25;
+    if (remainder(-7.0, 2.0) != 1.0)
+        return 26;
 
     return 0;
 }

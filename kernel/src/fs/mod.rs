@@ -56,6 +56,7 @@ const TCC_LIBC: &[u8] = include_bytes!("../../../user/build/libc.a");
 const TCC_LIBTCC1: &[u8] = include_bytes!("../../../user/build/libtcc1.a");
 const TCC_SMOKE_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_smoke.c");
 const TCC_OVERFLOW_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_overflow.c");
+const TCC_XGETBV_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_xgetbv.c");
 const TCC_SMOKE_MINIMAL_SOURCE: &[u8] =
     include_bytes!("../../../user/examples/tcc_smoke_minimal.c");
 const USER_HEADERS: &[(&str, &[u8])] = &[
@@ -911,6 +912,7 @@ pub fn init() {
         seed_file(&mut vfs, "/tmp/tcc.c", TCC_SMOKE_MINIMAL_SOURCE, 0o644);
         seed_file(&mut vfs, "/tmp/tcc-full.c", TCC_SMOKE_SOURCE, 0o644);
         seed_file(&mut vfs, "/tmp/tcc-overflow.c", TCC_OVERFLOW_SOURCE, 0o644);
+        seed_file(&mut vfs, "/tmp/tcc-xgetbv.c", TCC_XGETBV_SOURCE, 0o644);
         seed_file(
             &mut vfs,
             "/etc/os-release",
@@ -1155,6 +1157,11 @@ mod tests {
                 include_bytes!("../../../user/examples/tcc_overflow.c");
             let tcc_overflow_metadata = vfs.metadata("/tmp/tcc-overflow.c").unwrap();
             assert_eq!(tcc_overflow_metadata.len, tcc_overflow_source.len());
+
+            let tcc_xgetbv_source =
+                include_bytes!("../../../user/examples/tcc_xgetbv.c");
+            let tcc_xgetbv_metadata = vfs.metadata("/tmp/tcc-xgetbv.c").unwrap();
+            assert_eq!(tcc_xgetbv_metadata.len, tcc_xgetbv_source.len());
 
             for (path, expected) in [
                 (

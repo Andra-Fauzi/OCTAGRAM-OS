@@ -114,7 +114,11 @@ def main():
             pass
     vars_fd, live_vars = tempfile.mkstemp(prefix="octagram-mrustc-vars-", suffix=".fd")
     os.close(vars_fd)
-    shutil.copyfile(vars_template, live_vars)
+    try:
+        shutil.copyfile(vars_template, live_vars)
+    except BaseException:
+        os.unlink(live_vars)
+        raise
 
     command = [
         QEMU,

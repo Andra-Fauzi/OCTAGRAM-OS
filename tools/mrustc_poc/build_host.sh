@@ -16,6 +16,9 @@ MRUSTC_DIR="$WORK/mrustc"
 IMAGE="$WORK/sources.img"
 
 python3 -m unittest discover -s "$ROOT/tools/mrustc_poc" -p 'test_*.py'
+${HOSTCC:-cc} -std=c11 -O2 -Wall -Wextra -Werror -I"$ROOT/tools/mrustc_poc" \
+    "$ROOT/tools/mrustc_poc/test_atomic128_shim.c" -o "$WORK/test_atomic128_shim"
+"$WORK/test_atomic128_shim"
 mkdir -p "$WORK"
 
 if [[ ! -d "$MRUSTC_DIR" ]]; then

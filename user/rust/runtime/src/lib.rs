@@ -1839,8 +1839,8 @@ mod tests {
 
     #[test]
     fn command_stdio_builder_preserves_inherited_and_explicit_descriptors() {
-        let path = core::ffi::CStr::from_bytes_with_nul(b"/bin/sh\\0").unwrap();
-        let arg0 = core::ffi::CStr::from_bytes_with_nul(b"sh\\0").unwrap();
+        let path = core::ffi::CStr::from_bytes_with_nul(b"/bin/sh\0").unwrap();
+        let arg0 = core::ffi::CStr::from_bytes_with_nul(b"sh\0").unwrap();
         let argv = [arg0.as_ptr(), core::ptr::null()];
         let envp = [core::ptr::null()];
         let command = super::Command::new(path, &argv, &envp)

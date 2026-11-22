@@ -58,7 +58,8 @@ int main(void)
     if (zero.bits != 1)
         return 9;
     if (ilogb(8.0) != 3 || ilogb(zero.value) != -1074 ||
-        ilogb(0.0) != INT_MIN)
+        ilogb(0.0) != FP_ILOGB0 || ilogb(NAN) != FP_ILOGBNAN ||
+        ilogb(INFINITY) != INT_MAX)
         return 19;
     zero.value = logb(0.0);
     if (zero.bits != UINT64_C(0xfff0000000000000))

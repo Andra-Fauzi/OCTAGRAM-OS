@@ -171,7 +171,7 @@ def main():
         # spending minutes compiling the 587k-line mrustc core translation.
         offset = len(serial_text())
         send_line(
-            "tcc /mnt/src/tcc_overflow_test.c -o /mnt/tcc_overflow_test.elf"
+            "tcc /mnt/src/tcc_overflow.c -o /mnt/tcc_overflow.elf"
         )
         if not wait_prompt(offset, 90):
             print("TCC-OVERFLOW-COMPILE-TIMEOUT")
@@ -181,7 +181,7 @@ def main():
         print(serial_text()[offset:][-2500:])
 
         offset = len(serial_text())
-        send_line("run /mnt/tcc_overflow_test.elf")
+        send_line("run /mnt/tcc_overflow.elf")
         overflow_ok = wait_for("TCC-OVERFLOW-PASS", offset, 45)
         wait_prompt(offset, 45)
         print("=== TCC OVERFLOW RUN ===")

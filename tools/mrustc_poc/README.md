@@ -24,14 +24,15 @@ di `docs/native-self-hosting-roadmap.md` bagian **M4.3**.
    sehingga `stdatomic.h` gagal sebelum `tcc` menyentuh kode `mrustc`.
 2. Header publik `user/include/math.h` sekarang mendeklarasikan API math
    yang dipakai C `core`; implementasi libm nyata masih belum tersedia.
-3. `tcc` tidak mengimplementasikan `__builtin_add_overflow`,
-   `__builtin_sub_overflow`, `__builtin_mul_overflow` (1392 pemakaian di C
-   `core`).
+3. TinyCC now recognizes and lowers `__builtin_add_overflow`,
+   `__builtin_sub_overflow`, and `__builtin_mul_overflow` to a runtime helper;
+   the small guest test exercises all three operations and several integer widths.
 4. `tcc` (a) tidak punya opcode assembler `xgetbv`, dan (b) tidak mendukung
    atomic 128-bit (`uint128_t _Atomic`).
 
-Compat overflow/atomic dan stub libm pada PoC masih diatasi di sisi C hasil generate
-(`fix.h` dan `shim.c`) — **tanpa** memodifikasi `tcc`. Header `math.h` lokal di
+Overflow arithmetic is now implemented in TinyCC itself and the incorrect
+always-false macro replacements have been removed from `fix.h`. Atomic128 and
+math remain separate PoC compatibility gaps. Header `math.h` lokal di
 direktori ini tetap menjadi fixture PoC; header publik OCTAGRAM kini memiliki
 deklarasi API yang sesuai, tetapi belum menyediakan implementasi libm. Stub
 matematika tetap tidak presisi karena jalur float tidak dipakai program PoC.

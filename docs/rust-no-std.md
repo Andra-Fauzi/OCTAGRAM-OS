@@ -142,3 +142,18 @@ The freestanding runtime now also exposes:
 - `getrandom` for syscall 121, split into requests of at most 256 bytes and preserving partial-read semantics.
 
 Host unit tests check the timespec size/alignment/field offsets and clock ID constants. These wrappers are groundwork for a future `std::sys` backend, not evidence that Rust `std` is ported. Guest QEMU conformance for the new wrappers remains required.
+
+
+## Runtime ABI expansion for Rust host support
+
+The runtime now centralizes wrappers for the VM and synchronization/process
+primitives needed by a future `std::sys` backend: `mmap`, `munmap`,
+`mprotect`, `pipe2`, `dup3`, futex, thread ID/join, and FS thread-pointer
+get/set. The global allocator uses the shared `mmap`/`munmap` wrappers rather
+than embedding those syscall numbers directly.
+
+These wrappers are an ABI boundary, not a claim of full POSIX or Rust `std`
+compatibility. In particular, futex operation values, timeout clock semantics,
+thread cancellation, robust mutexes, descriptor inheritance, and failure
+semantics still require conformance tests before a Rust `std` backend can rely
+on them.

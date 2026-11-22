@@ -5,6 +5,7 @@ use core::alloc::Layout;
 use core::alloc::GlobalAlloc;
 use core::ffi::{c_char, c_void, CStr};
 use core::ptr;
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU16, Ordering};
 
 pub const STDIN: u64 = 0;
@@ -131,8 +132,6 @@ pub static mut environ: *mut *mut c_char = ptr::null_mut();
 pub const PROT_READ: u64 = 1;
 pub const PROT_WRITE: u64 = 2;
 pub const PROT_EXEC: u64 = 4;
-const MAP_PRIVATE: u64 = 2;
-const MAP_ANONYMOUS: u64 = 0x20;
 
 const MAX_SYSCALL_IO: usize = 4096;
 const ENOMEM: i64 = -12;
@@ -302,6 +301,117 @@ pub fn stat_path(path: &CStr) -> Result<FileStat, i64> {
 
 pub fn getcwd(buffer: &mut [u8]) -> Result<usize, i64> {
     let result = unsafe { syscall2(14, buffer.as_mut_ptr() as usize as u64, buffer.len() as u64) };
+    checked_result(result)
+}
+
+/// Anonymous/file-backed mapping flags used by the OCTAGRAM VM ABI.
+pub const MAP_SHARED: u64 = 1;
+pub const MAP_PRIVATE: u64 = 2;
+pub const MAP_ANONYMOUS: u64 = 0x20;
+
+/// Map a user virtual-memory range. The returned pointer is owned by the caller
+/// and must be released with `munmap`. A null address requests kernel placement.
+///
+/// # Safety
+/// The caller must ensure the mapping is used according to its protection flags
+/// and that no references outlive a successful `munmap`.
+pub unsafe fn mmap(
+    address: Option<NonNull<u8>>,
+    length: usize,
+    protection: u64,
+    flags: u64,
+    fd: i64,
+    offset: u64,
+) -> Result<NonNull<u8>, i64> {
+    if length == 0 {
+        return Err(-22);
+    }
+    let requested = address.map_or(0, |value| value.as_ptr() as usize as u64);
+    let result = unsafe { syscall6(16, requested, length as u64, protection, flags, fd as u64, offset) };
+    let mapped = checked_result(result)?;
+    NonNull::new(mapped as *mut u8).ok_or(ENOMEM)
+}
+
+/// Release a mapping created by `mmap`.
+///
+/// # Safety
+/// `address..address+length` must be a live mapping owned by the caller.
+pub unsafe fn munmap(address: NonNull<u8>, length: usize) -> Result<(), i64> {
+    if length == 0 {
+        return Err(-22);
+    }
+    let result = unsafe { syscall2(17, address.as_ptr() as usize as u64, length as u64) };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Change page protections on a mapped range.
+///
+/// # Safety
+/// The range must be mapped and page-aligned as required by the kernel.
+pub unsafe fn mprotect(address: NonNull<u8>, length: usize, protection: u64) -> Result<(), i64> {
+    if length == 0 {
+        return Err(-22);
+    }
+    let result = unsafe { syscall3(52, address.as_ptr() as usize as u64, length as u64, protection) };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Create a pipe. OCTAGRAM currently accepts the Linux-compatible pipe2 ABI.
+pub fn pipe2(flags: u64) -> Result<[i32; 2], i64> {
+    let mut descriptors = [-1i32; 2];
+    let result = unsafe { syscall2(98, descriptors.as_mut_ptr() as usize as u64, flags) };
+    if result < 0 { Err(result) } else { Ok(descriptors) }
+}
+
+/// Duplicate a descriptor onto a specific descriptor number.
+pub fn dup3(source: u64, target: u64, flags: u64) -> Result<u64, i64> {
+    let result = unsafe { syscall3(99, source, target, flags) };
+    if result < 0 { Err(result) } else { Ok(result as u64) }
+}
+
+/// Set the current thread's FS-base thread pointer.
+pub fn set_thread_pointer(pointer: usize) -> Result<(), i64> {
+    let result = unsafe { syscall1(59, pointer as u64) };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Read the current thread's FS-base thread pointer.
+pub fn get_thread_pointer() -> Result<usize, i64> {
+    let result = unsafe { syscall0(60) };
+    checked_result(result)
+}
+
+/// Return the current kernel thread identifier.
+pub fn thread_self() -> Result<u64, i64> {
+    let result = unsafe { syscall0(64) };
+    if result < 0 { Err(result) } else { Ok(result as u64) }
+}
+
+/// Wait for a kernel thread to finish.
+pub fn thread_join(thread_id: u64) -> Result<(), i64> {
+    let result = unsafe { syscall2(63, thread_id, 0) };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Wait/wake a 32-bit futex word. Timeout is an optional pointer to an ABI
+/// Timespec; operation-specific flags are passed unchanged to the kernel.
+///
+/// # Safety
+/// The futex word and optional timeout must remain valid for the syscall.
+pub unsafe fn futex(
+    word: *const u32,
+    operation: u64,
+    value: u64,
+    timeout_or_requeue: u64,
+    second_word: u64,
+    bitset: u64,
+) -> Result<usize, i64> {
+    if word.is_null() {
+        return Err(-22);
+    }
+    let result = unsafe {
+        syscall6(94, word as usize as u64, operation, value, timeout_or_requeue, second_word, bitset)
+    };
     checked_result(result)
 }
 
@@ -757,26 +867,24 @@ unsafe impl GlobalAlloc for MmapAllocator {
         let Some(length) = allocation_mapping_size(layout.size(), layout.align()) else {
             return ptr::null_mut();
         };
-        let result = unsafe {
-            syscall6(
-                16,
-                0,
-                length as u64,
+        let mapping = match unsafe {
+            mmap(
+                None,
+                length,
                 PROT_READ | PROT_WRITE,
                 MAP_PRIVATE | MAP_ANONYMOUS,
-                u64::MAX,
+                -1,
                 0,
             )
+        } {
+            Ok(mapping) => mapping,
+            Err(_) => return ptr::null_mut(),
         };
-        if result < 0 {
-            return ptr::null_mut();
-        }
-
-        let base = result as usize;
+        let base = mapping.as_ptr() as usize;
         let Some((aligned, _end)) =
             allocation_user_range(base, length, layout.size(), layout.align())
         else {
-            let _ = unsafe { syscall2(17, base as u64, length as u64) };
+            let _ = unsafe { munmap(mapping, length) };
             return ptr::null_mut();
         };
 
@@ -805,13 +913,9 @@ unsafe impl GlobalAlloc for MmapAllocator {
                 .cast::<AllocationHeader>()
                 .read()
         };
-        let _ = unsafe {
-            syscall2(
-                17,
-                header.mapping_base as u64,
-                header.mapping_length as u64,
-            )
-        };
+        if let Some(mapping) = NonNull::new(header.mapping_base) {
+            let _ = unsafe { munmap(mapping, header.mapping_length) };
+        }
     }
 }
 
@@ -860,6 +964,23 @@ mod tests {
             None
         );
         assert_eq!(super::allocation_user_range(base, 4096, 8, 0), None);
+    }
+
+    #[test]
+    fn vm_abi_constants_match_kernel_contract() {
+        assert_eq!(super::PROT_READ, 1);
+        assert_eq!(super::PROT_WRITE, 2);
+        assert_eq!(super::PROT_EXEC, 4);
+        assert_eq!(super::MAP_SHARED, 1);
+        assert_eq!(super::MAP_PRIVATE, 2);
+        assert_eq!(super::MAP_ANONYMOUS, 0x20);
+    }
+
+    #[test]
+    fn mapping_helpers_reject_empty_ranges_before_syscall() {
+        // The syscall wrappers validate zero-length mappings without invoking
+        // the guest-only int 0x80 path.
+        assert_eq!(super::mmap(None, 0, super::PROT_READ, super::MAP_PRIVATE, -1, 0), Err(-22));
     }
 
     #[test]

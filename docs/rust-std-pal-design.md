@@ -38,7 +38,7 @@ menggunakan mrustc atau xrustc.
 | File metadata | `fstat`, `fstatat`, `stat` | Lengkapi field metadata yang dibutuhkan `Metadata` |
 | File mutation/sync | `ftruncate`, `fsync`, `fdatasync` | Semantik permissions dan durability test |
 | Positional I/O | `pread`, `pwrite` | Validasi offset signed, partial I/O, dan error |
-| Directory | `opendir`, `readdir`, `closedir` | Implementasikan iterator `ReadDir`, dot entries, dan error terminal |
+| Directory | `opendir`, `readdir`, `closedir`, `DirectoryIter` | Adapter Iterator sudah ada; selaraskan dot entries, error terminal, dan perubahan direktori |
 | Path mutation | `mkdirat`, `unlinkat`, `renameat` | Mapping remove-file/remove-dir dan path edge cases |
 | VM | `mmap`, `munmap`, `mprotect`, `brk` | PAL allocator/VM dan mapping file yang teruji |
 | Process | `fork`, `execve`, `waitpid`, `pipe2(O_CLOEXEC)`, owned pipe descriptors, `dup3`, `Child`, `Stdio`, `Command::spawn` | Port ke `std::process`, signal/status mapping, full `Stdio`/`Command` semantics, and process status mapping |
@@ -128,3 +128,7 @@ kemampuan ini dianggap QEMU-tested.
 Runtime menyediakan `ExitStatus` sebagai wrapper atas nilai wait mentah OCTAGRAM, dengan `raw()`, `code()`, dan `success()`. `Child::wait_status()` serta `try_wait_status()` menyediakan bentuk bertipe tanpa menghapus API raw lama. `CapturedOutput::exit_status()` dan `success()` memakai wrapper yang sama. Karena kernel belum mengodekan terminasi sinyal ke status wait, `code()` saat ini selalu `Some(i32)` hasil interpretasi nilai mentah; ini bukan jaminan kompatibilitas penuh dengan `std::process::ExitStatus`.
 
 Saat satu stream output mencapai EOF, `Command::output()` sekarang mengubah descriptor terkait menjadi `fd = -1` pada array `poll`. Kernel mengabaikan descriptor negatif. Ini mencegah `POLLHUP` pada stream yang sudah selesai membuat loop polling sibuk ketika stream lainnya masih terbuka.
+
+## Directory iterator adapter
+
+`Directory::into_iter()` memindahkan ownership stream ke `DirectoryIter`, yang mengimplementasikan `Iterator<Item = Result<Dirent, i64>>`. EOF mengakhiri iterasi; error pertama dikeluarkan satu kali lalu iterator berhenti. Guest smoke test kini memakai adapter ini dan mengandalkan `Drop` untuk menutup descriptor. Ini belum `std::fs::ReadDir`: konversi `Dirent` ke `DirEntry`, representasi `PathBuf`, metadata entry, dan semantik dot entries masih perlu dipetakan.

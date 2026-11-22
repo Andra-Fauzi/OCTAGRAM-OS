@@ -158,7 +158,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     };
     let mut found_message = false;
     let mut directory_error = false;
-    for entry_result in directory.into_iter() {
+    for entry_result in directory {
         let entry = match entry_result {
             Ok(entry) => entry,
             Err(_) => {

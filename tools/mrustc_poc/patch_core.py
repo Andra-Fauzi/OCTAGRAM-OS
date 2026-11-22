@@ -22,10 +22,21 @@ def rewrite(source: str) -> str:
     if OBSOLETE_XGETBV_STUB in source:
         raise ValueError("obsolete XGETBV no-op stub found; keep the real instruction")
 
-    if ATOMIC128 in source:
-        source = source.replace(ATOMIC128, ATOMIC128_REPLACEMENT)
-    elif ATOMIC128_REPLACEMENT not in source:
+    original_count = source.count(ATOMIC128)
+    replacement_count = source.count(ATOMIC128_REPLACEMENT)
+    if original_count == 1 and replacement_count == 0:
+        source = source.replace(ATOMIC128, ATOMIC128_REPLACEMENT, 1)
+    elif original_count == 0 and replacement_count == 1:
+        # A previously patched output is accepted, but duplicate or mixed
+        # fragments indicate an upstream format change and must fail closed.
+        pass
+    elif original_count == 0 and replacement_count == 0:
         raise ValueError("expected AtomicU128 fragment not found; mrustc output changed")
+    else:
+        raise ValueError(
+            "expected exactly one unpatched or patched AtomicU128 fragment "
+            f"(found original={original_count}, replacement={replacement_count})"
+        )
 
     if XGETBV not in source:
         raise ValueError("XGETBV instruction was unexpectedly modified")

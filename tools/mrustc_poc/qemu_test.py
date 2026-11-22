@@ -86,6 +86,21 @@ def wait_prompt(offset, timeout):
     return False
 
 
+def wait_compile_success(offset, timeout):
+    """Wait for a successful process exit and the shell prompt together."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        tail = serial_text()[offset:]
+        if (
+            "program exited with status 0" in tail
+            and "octagram:" in tail
+            and tail.rstrip().endswith("$")
+        ):
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def key_name(character):
     if character in KEY_NAMES:
         return KEY_NAMES[character]
@@ -312,12 +327,10 @@ def main():
 
         offset = len(serial_text())
         send_line(
-            "tcc -I /mnt/src -include /mnt/src/fix.h /mnt/src/shim.c "
+            "tcc -bench -I /mnt/src -include /mnt/src/fix.h /mnt/src/shim.c "
             "/mnt/src/poc.c /mnt/src/libcore.c -o /mnt/poc.elf"
         )
-        if not wait_prompt(offset, COMPILE_TIMEOUT) or not wait_for(
-            "program exited with status 0", offset, COMPILE_TIMEOUT
-        ):
+        if not wait_compile_success(offset, COMPILE_TIMEOUT):
             print("TCC-COMPILE-FAIL")
             print(serial_text()[offset:][-4000:])
             return 1

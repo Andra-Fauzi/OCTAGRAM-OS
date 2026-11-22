@@ -1357,17 +1357,20 @@ status berikut:
    Tes helper host tersedia; `qemu_test.py` kini lebih dahulu mengompilasi dan
    menjalankan source builtin kecil di guest. **Hasil QEMU belum dijalankan /
    diverifikasi dalam sesi ini.**
-4. **XGETBV dan atomic 128-bit — belum menjadi dukungan umum.** PoC masih
-   mengganti fragmen XGETBV dan AtomicU128 di C keluaran `mrustc`. Rewrite
-   tersebut tidak boleh dianggap implementasi instruksi CPU atau atomic
-   128-bit yang sesungguhnya.
-
+4. **XGETBV assembler — implementasi ditambahkan.** Tabel assembler x86
+   TinyCC mengenali mnemonic `xgetbv` dan mengeluarkan encoding tetap
+   `0F 01 D0`. Source `user/examples/tcc_xgetbv.c` menggunakan inline asm
+   GCC-style yang dipakai mrustc. Dua harness QEMU mengompilasi file itu sebagai
+   object saja; mereka tidak menjalankannya karena XGETBV dapat memicu #UD
+   bila dukungan OSXSAVE/XCR0 belum aktif. Hasil guest QEMU belum diverifikasi.
+   **Atomic 128-bit** (`uint128_t _Atomic`) masih belum didukung TinyCC.
+   
 Macro lama di `fix.h` yang memaksa ketiga overflow builtin selalu
 mengembalikan false sudah dihapus, sehingga PoC akan memakai implementasi
-TinyCC yang baru. Patcher `patch_core.py` tetap memvalidasi dua rewrite yang
-masih diperlukan: XGETBV dan AtomicU128. Jika format keluaran `mrustc`
-berubah, harness berhenti alih-alih meneruskan hasil yang tidak kompatibel.
-Empat tes regresi patcher ada di `test_patch_core.py`.
+TinyCC yang baru. Patcher `patch_core.py` mempertahankan fragmen XGETBV asli
+dan hanya me-rewrite AtomicU128 ke helper untuk jalur PoC yang tidak disentuh.
+Jika keluaran `mrustc` berubah, harness berhenti alih-alih meneruskan hasil
+yang tidak kompatibel. Lima tes regresi patcher ada di `test_patch_core.py`.
 
 ### Yang belum terbukti
 

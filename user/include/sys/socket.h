@@ -21,7 +21,8 @@ struct sockaddr_un {
 
 struct sockaddr_storage {
     sa_family_t ss_family;
-    unsigned char __data[126];
+    unsigned char __data[118];
+    uint64_t __align;
 };
 
 #define AF_UNSPEC 0

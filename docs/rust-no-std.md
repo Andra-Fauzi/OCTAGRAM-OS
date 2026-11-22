@@ -63,8 +63,13 @@ integrasi. Jangan menimpa make bawaan sebelum uji regresi selesai.
 - Tidak ada Rust `std`; crate yang membutuhkan `std` belum dapat digunakan.
 - Belum ada native `rustc` atau Cargo di OCTAGRAM.
 - Runtime belum menyediakan seluruh API OS yang dibutuhkan oleh Rust `std`.
-- Allocator saat ini memakai arena mmap monotonik; `dealloc` belum mengembalikan
-  blok ke allocator.
+- Allocator saat ini memakai satu pemetaan anonymous `mmap` per alokasi dan
+  `dealloc` mengembalikan pemetaan lewat `munmap` (syscall 17). Ini menghindari
+  lock global yang dapat deadlock jika thread pemilik lock ter-preempt pada
+  single CPU. Biayanya: syscall dan pemetaan per objek; allocator arena per-thread
+  yang lebih efisien masih menjadi optimasi berikutnya.
+- Perubahan allocator baru host-build/unit-test; guest QEMU regression wajib
+  dijalankan sebelum dianggap stabil.
 - Panic strategy adalah `abort`; unwinding belum didukung.
 - Custom target harus diuji pada QEMU/hardware untuk memastikan fitur CPU,
   alignment ABI, linker output, dan syscall runtime sesuai dengan kernel.

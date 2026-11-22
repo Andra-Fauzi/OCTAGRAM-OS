@@ -12,7 +12,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
     close, closedir, clock_getres, clock_gettime, dup3, exit, fstat, fstatat, futex, getpid,
-    getrandom, lseek, mmap, mprotect, munmap, nanosleep, openat, opendir, pipe2, read, readdir,
+    getrandom, lseek, mmap, mprotect, munmap, nanosleep, openat_owned, opendir, pipe2, read, readdir,
     stat_path, thread_create,
     thread_exit, thread_join, thread_self, write, write_all,
     AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
@@ -90,23 +90,23 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(metadata) if metadata.size > 0 => metadata,
         _ => return 4,
     };
-    let fd = match openat(AT_FDCWD, path, O_RDONLY, 0) {
+    let fd = match openat_owned(AT_FDCWD, path, O_RDONLY, 0) {
         Ok(fd) => fd,
         Err(_) => return 5,
     };
-    let descriptor_metadata = match fstat(fd) {
+    let descriptor_metadata = match fstat(fd.as_raw_fd()) {
         Ok(metadata) if metadata.size > 0 => metadata,
         _ => return 6,
     };
     if descriptor_metadata.size != metadata.size || relative_metadata.size != metadata.size {
         return 7;
     }
-    if lseek(fd, 0, SEEK_SET) != Ok(0) {
+    if fd.seek(0, SEEK_SET) != Ok(0) {
         return 8;
     }
     let mut sample = [0u8; 32];
-    let read_result = read(fd, &mut sample);
-    let close_result = close(fd);
+    let read_result = fd.read(&mut sample);
+    let close_result = fd.close_owned();
     match (read_result, close_result) {
         (Ok(count), Ok(())) if count > 0 && metadata.size >= count as u64 => {}
         _ => return 9,

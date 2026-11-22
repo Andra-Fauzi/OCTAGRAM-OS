@@ -80,19 +80,38 @@ import sys
 work = pathlib.Path(sys.argv[1])
 core = work / "libcore.c"
 text = core.read_text()
+if not text:
+    raise SystemExit("generated libcore.c is empty")
 
 asm = '__asm__ __volatile__ ("xgetbv" : "=a" (lo), "=d" (hi) : "c" (arg0) );'
+asm_replacement = "lo = 0; hi = 0; /* tcc: no XGETBV opcode */"
 if asm in text:
-    text = text.replace(asm, "lo = 0; hi = 0; /* tcc: no XGETBV opcode */")
+    text = text.replace(asm, asm_replacement)
+elif asm_replacement not in text:
+    raise SystemExit("expected XGETBV fragment not found; mrustc output changed")
 
 atomic = (
     "atomic_compare_exchange_strong_explicit((uint128_t _Atomic *)arg0, "
     "&var1._0, arg2, memory_order_seq_cst, memory_order_seq_cst)"
 )
-text = text.replace(atomic, "poc_cxchg128((unsigned __int128 *)arg0, &var1._0, arg2)")
+atomic_replacement = (
+    "poc_cxchg128((unsigned __int128 *)arg0, &var1._0, arg2)"
+)
+if atomic in text:
+    text = text.replace(atomic, atomic_replacement)
+elif atomic_replacement not in text:
+    raise SystemExit("expected AtomicU128 fragment not found; mrustc output changed")
+
+if '__asm__ __volatile__ ("xgetbv"' in text:
+    raise SystemExit("unpatched XGETBV instruction remains in libcore.c")
+if "atomic_compare_exchange_strong_explicit((uint128_t _Atomic *)arg0" in text:
+    raise SystemExit("unpatched AtomicU128 intrinsic remains in libcore.c")
+
 core.write_text(text)
-print("patched libcore.c for tcc: xgetbv + 128-bit atomics")
+print("validated libcore.c compatibility rewrites: XGETBV + AtomicU128")
 PY
+test -s "$WORK/libcore.c"
+test -s "$WORK/poc.c"
 
 rm -f "$IMAGE"
 mke2fs -q -t ext2 -F -b 4096 -I 128 \

@@ -27,14 +27,14 @@ build/crt0.o: ../crt0.S | build
 $(RUST_HELLO): Cargo.toml rust-toolchain.toml .cargo/config.toml \
 		$(RUST_TARGET_JSON) linker.ld build/crt0.o hello/Cargo.toml \
 		hello/src/main.rs runtime/Cargo.toml runtime/src/lib.rs
-	$(CARGO) $(RUST_BUILD_FLAGS) build --offline --release --bin rust_hello \
+	$(CARGO) $(RUST_BUILD_FLAGS) build --release --bin rust_hello \
 		--target $(RUST_TARGET_JSON)
 	cp target/$(RUST_TARGET)/release/rust_hello $@
 
 $(RUST_MAKE): Cargo.toml rust-toolchain.toml .cargo/config.toml \
 		$(RUST_TARGET_JSON) linker.ld build/crt0.o make/Cargo.toml \
 		make/src/main.rs runtime/Cargo.toml runtime/src/lib.rs
-	$(CARGO) $(RUST_BUILD_FLAGS) build --offline --release --bin make \
+	$(CARGO) $(RUST_BUILD_FLAGS) build --release --bin make \
 		--target $(RUST_TARGET_JSON)
 	cp target/$(RUST_TARGET)/release/make $@
 

@@ -1121,6 +1121,15 @@ impl Iterator for DirectoryIter {
 
 impl core::iter::FusedIterator for DirectoryIter {}
 
+impl IntoIterator for Directory {
+    type Item = Result<Dirent, i64>;
+    type IntoIter = DirectoryIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        DirectoryIter { directory: self, finished: false }
+    }
+}
+
 /// RAII directory stream for the OCTAGRAM snapshot-based readdir ABI.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Directory {
@@ -1151,10 +1160,6 @@ impl Directory {
         self.fd.close_owned()
     }
 
-    /// Consume this stream into an owning iterator.
-    pub fn into_iter(self) -> DirectoryIter {
-        DirectoryIter { directory: self, finished: false }
-    }
 }
 
 fn read_exact_with<F>(mut buffer: &mut [u8], mut read_once: F) -> Result<(), i64>

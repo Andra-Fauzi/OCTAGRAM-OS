@@ -41,7 +41,7 @@ menggunakan mrustc atau xrustc.
 | Directory | `opendir`, `readdir`, `closedir` | Implementasikan iterator `ReadDir`, dot entries, dan error terminal |
 | Path mutation | `mkdirat`, `unlinkat`, `renameat` | Mapping remove-file/remove-dir dan path edge cases |
 | VM | `mmap`, `munmap`, `mprotect`, `brk` | PAL allocator/VM dan mapping file yang teruji |
-| Process | `fork`, `execve`, `waitpid`, `pipe2(O_CLOEXEC)`, `dup3`, `Child`, `Command::spawn` | Port ke `std::process`, signal/status mapping, full `Stdio`/`Command` semantics |
+| Process | `fork`, `execve`, `waitpid`, `pipe2(O_CLOEXEC)`, owned pipe descriptors, `dup3`, `Child`, `Stdio`, `Command::spawn` | Port ke `std::process`, signal/status mapping, full `Stdio`/`Command` semantics |
 | Threads | `thread_create/join/exit`, FS TLS, `futex` | Integrasi `std::thread`, mutex/condvar, TLS destructor |
 | Clock/random | `clock_gettime`, `nanosleep`, `getrandom` | Monotonic/instant semantics, error propagation, entropy tests |
 | Dynamic loading | Loader ELF subset | Belum layak untuk mengasumsikan dylib Rust/LLVM; tentukan static-link strategy |
@@ -57,6 +57,10 @@ Runtime kini menyediakan `Child`, pembungkus PID anak langsung dengan `wait()` d
 ## Command spawn dan exec handshake
 
 Runtime kini menyediakan `Command::new(path, argv, envp)`, konfigurasi descriptor melalui `stdin_from`/`stdout_from`/`stderr_from`, serta `spawn()`. Vektor `argv` dan `envp` wajib menyertakan pointer null terakhir. Implementasi membuat `pipe2(O_CLOEXEC)`, melakukan `fork`, menerapkan pemetaan descriptor di child, lalu memanggil `execve`. EOF pada pipe berarti image berhasil diganti; payload errno negatif berarti `execve` gagal. Parent mereap child pada jalur kegagalan. Smoke test guest menguji eksekusi `/bin/sh -c 'exit 23'` dan kegagalan menjalankan file sumber C sebagai executable. Ini fondasi untuk `std::process`, belum kompatibilitas penuh `Command` (termasuk `Stdio` abstraction, signal semantics, dan process groups).
+
+## Owned pipes dan konfigurasi Stdio
+
+Runtime kini menyediakan `pipe2_owned(flags)` yang mengembalikan dua `OwnedFd`; kedua ujung pipe otomatis ditutup ketika owner di-drop pada target OCTAGRAM. Builder `Command` menerima `Stdio::Inherit` atau `Stdio::Fd(fd)` melalui `.stdin()`, `.stdout()`, dan `.stderr()`, sementara metode `*_from(fd)` lama tetap tersedia. Descriptor sumber dipinjam selama `spawn()` dan ownership tetap pada parent. Smoke test guest menjalankan shell builtin `printf` dengan stdout diarahkan ke pipe, menutup ujung tulis parent, membaca sampai EOF, memeriksa byte output dan exit status. Ini memberi jalur dasar untuk `std::process::Stdio`, tetapi belum menyediakan enum `Piped` yang otomatis menghasilkan handle output seperti API standar.
 
 ## Directory ownership update
 

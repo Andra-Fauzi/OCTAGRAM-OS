@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-11-22",
+  "source_of_truth": [
+    "user/include/sys/types.h",
+    "user/include/sys/stat.h",
+    "user/include/octagram.h",
+    "user/include/errno.h",
+    "user/include/pthread.h",
+    "user/include/time.h",
+    "user/include/dirent.h",
+    "docs/syscall-abi.md",
+    "user/runtime.c"
+  ],
+  "target": {
+    "triple": "x86_64-unknown-octagram",
+    "arch": "x86_64",
+    "pointer_bits": 64,
+    "endianness": "little",
+    "abi": "OCTAGRAM int 0x80; RAX syscall number/result; RDI,RSI,RDX,R10,R8,R9 arguments; negative errno returns"
+  },
+  "scalar_types": {
+    "off_t": "i64",
+    "ssize_t": "i64",
+    "pid_t": "i32",
+    "mode_t": "u32",
+    "time_t": "i64",
+    "suseconds_t": "i64",
+    "clock_t": "i64",
+    "clockid_t": "i32",
+    "uid_t": "u32",
+    "gid_t": "u32",
+    "useconds_t": "u32",
+    "dev_t": "u64",
+    "ino_t": "u64",
+    "nlink_t": "u32",
+    "blksize_t": "i64",
+    "blkcnt_t": "i64",
+    "pthread_t": "u64"
+  },
+  "kernel_structs": [
+    {
+      "name": "oct_stat",
+      "header": "user/include/octagram.h",
+      "size": 16,
+      "align": 8,
+      "fields": [
+        [
+          "size",
+          "u64",
+          0
+        ],
+        [
+          "mode",
+          "u32",
+          8
+        ],
+        [
+          "modified_seconds",
+          "u32",
+          12
+        ]
+      ],
+      "meaning": "Kernel syscall metadata record only; do not expose as libc struct stat."
+    },
+    {
+      "name": "dirent",
+      "header": "user/include/dirent.h",
+      "size": 280,
+      "align": 8,
+      "fields": [
+        [
+          "d_ino",
+          "u64",
+          0
+        ],
+        [
+          "d_off",
+          "i64",
+          8
+        ],
+        [
+          "d_reclen",
+          "u16",
+          16
+        ],
+        [
+          "d_type",
+          "u8",
+          18
+        ],
+        [
+          "d_name",
+          "char[256]",
+          19
+        ]
+      ],
+      "meaning": "Directory syscall record; confirm target libc's exported dirent ABI matches this layout."
+    },
+    {
+      "name": "timespec",
+      "header": "user/include/time.h",
+      "size": 16,
+      "align": 8,
+      "fields": [
+        [
+          "tv_sec",
+          "i64",
+          0
+        ],
+        [
+          "tv_nsec",
+          "long",
+          8
+        ]
+      ],
+      "meaning": "x86_64 OCTAGRAM time ABI."
+    }
+  ],
+  "libc_translation": {
+    "stat": "user/runtime.c stat/lstat/fstat/fstatat convert oct_stat into public struct stat; only st_size, st_mode, and st_mtime are populated, other fields zeroed.",
+    "errno": "Syscall returns negative errno; libc wrappers translate to -1 and thread-local errno where configured.",
+    "pthread": "OCTAGRAM pthread_t is u64; pthread attributes support joinable creation and stack sizing; detach returns ENOTSUP.",
+    "time": "CLOCK_REALTIME and CLOCK_MONOTONIC are defined; monotonic/realtime precision and semantic compatibility need conformance tests.",
+    "directory": "dirent record has 280-byte ABI; name is fixed 256-byte field."
+  },
+  "required_libc_groups": [
+    "scalar_types",
+    "errno_constants",
+    "file_and_directory",
+    "process",
+    "memory_mapping",
+    "time",
+    "threads_tls",
+    "poll_and_sockets"
+  ],
+  "known_gaps": [
+    "No verified upstream rust-lang/libc target module exists yet.",
+    "OCTAGRAM libc is not glibc or musl ABI-compatible; upstream libc module must describe OCTAGRAM's own ABI.",
+    "Generic Rust Unix PAL may request libc functions or constants absent from current OCTAGRAM headers/runtime.",
+    "struct stat is a translated public C structure; raw kernel oct_stat must not be confused with it.",
+    "pthread_detach returns ENOTSUP; full POSIX thread semantics are not implemented.",
+    "sendmsg and recvmsg return ENOSYS; socket API is partial.",
+    "getrandom currently uses xorshift seeded from TSC and is not a cryptographic entropy guarantee.",
+    "The manifest records source-level ABI facts; it does not prove Rust std builds or runs."
+  ]
+}

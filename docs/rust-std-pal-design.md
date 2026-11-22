@@ -157,3 +157,30 @@ Saat satu stream output mencapai EOF, `Command::output()` sekarang mengubah desc
 ## Directory iterator adapter
 
 `IntoIterator for Directory` memindahkan ownership stream ke `DirectoryIter`, yang mengimplementasikan `Iterator<Item = Result<DirEntry, i64>>` dan `FusedIterator`. EOF mengakhiri iterasi; error pertama dikeluarkan satu kali lalu iterator berhenti permanen. Guest smoke test menyimpan `DirEntry` melewati EOF iterator lalu memeriksa metadata melalui descriptor parent duplikat. Ini masih adapter internal, bukan `std::fs::ReadDir`/`std::fs::DirEntry`: konversi nama ke `OsString`, representasi `PathBuf`, metadata penuh, dan semantik dot entries masih perlu dipetakan.
+
+## Audit ABI libc untuk upstream Rust
+
+Source C OCTAGRAM kini dirangkum dalam
+`tools/rust_libc_abi_surface.json`, dengan pemeriksaan konsistensi melalui
+`tools/check_rust_libc_abi_surface.py`. Workflow Rust menjalankan validator
+ini saat header/runtime berubah. Audit mengunci beberapa fakta penting:
+
+- x86_64 memakai `off_t/ssize_t/time_t` 64-bit, `pid_t` 32-bit, dan
+  `pthread_t` 64-bit.
+- Record kernel `oct_stat` hanya 16 byte (`size`, `mode`,
+  `modified_seconds`). Ini **bukan** layout publik `struct stat`.
+- Wrapper C `stat/lstat/fstat/fstatat` menerjemahkan record kernel ke
+  `struct stat`, tetapi saat ini hanya mengisi `st_size`, `st_mode`, dan
+  `st_mtime`; field lain dinolkan.
+- `dirent` adalah record 280 byte dengan nama fixed 256 byte; `timespec`
+  adalah dua field 64-bit pada x86_64.
+- `pthread_detach` saat ini mengembalikan `ENOTSUP`; socket messaging
+  `sendmsg/recvmsg` belum tersedia.
+
+Ini merupakan inventaris ABI C yang ada, bukan upstream Rust `libc` port.
+Crate upstream `libc` harus mendapat modul OCTAGRAM tersendiri dan harus
+mendefinisikan tepat ABI yang dipakai OCTAGRAM; jangan mewarisi deklarasi
+Linux/glibc hanya karena target memakai `cfg(unix)`. Berikutnya adalah
+memetakan API PAL Unix yang benar-benar dipakai ke simbol C yang tersedia,
+lalu mengimplementasikan modul libc target-specific dan menambahkan compile
+test. Sampai itu lulus, status Rust `std` tetap belum diimplementasikan.

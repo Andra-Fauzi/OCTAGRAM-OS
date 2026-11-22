@@ -130,3 +130,15 @@ perubahan runtime `strlen` masih perlu masuk regresi guest.
 ## Allocator guest regression
 
 The Rust guest smoke program now performs 32 independent `Vec` allocations and drops, checks `u128` alignment, then allocates again after releasing the previous batches. The QEMU syscall smoke test requires the marker `Rust allocator mmap/munmap cycle: PASS` in addition to the existing file/stat marker and successful process exit. This specifically exercises the allocator's syscall 16 (`mmap`) and syscall 17 (`munmap`) path; it does not replace stress testing under concurrent threads.
+
+
+## Runtime OS primitives for future Rust std port
+
+The freestanding runtime now also exposes:
+
+- `Timespec` with the OCTAGRAM C ABI layout (two signed 64-bit fields);
+- `clock_gettime` for syscall 50, with validation of nanoseconds;
+- `getpid` for syscall 11;
+- `getrandom` for syscall 121, split into requests of at most 256 bytes and preserving partial-read semantics.
+
+Host unit tests check the timespec size/alignment/field offsets and clock ID constants. These wrappers are groundwork for a future `std::sys` backend, not evidence that Rust `std` is ported. Guest QEMU conformance for the new wrappers remains required.

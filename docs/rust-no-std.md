@@ -144,6 +144,19 @@ The freestanding runtime now also exposes:
 Host unit tests check the timespec size/alignment/field offsets and clock ID constants. These wrappers are groundwork for a future `std::sys` backend, not evidence that Rust `std` is ported. Guest QEMU conformance for the new wrappers remains required.
 
 
+## Process environment support
+
+The runtime now exports a read-only `getenv(&CStr)` lookup backed by the
+initial `environ` pointer installed by `user/crt0.S`. Lookup requires an
+exact variable-name match, rejects malformed names, and bounds the scan to
+4096 entries. Host unit tests cover exact matches, prefix collisions,
+missing variables, invalid names, and null environment pointers.
+
+This is a first process-environment primitive for future Rust `std` and Cargo
+support. It does not yet implement `setenv`, `unsetenv`, ownership of
+environment strings, or mutation-safe environment replacement. Those belong
+in a later process/environment layer.
+
 ## Runtime ABI expansion for Rust host support
 
 The runtime now centralizes wrappers for the VM and synchronization/process

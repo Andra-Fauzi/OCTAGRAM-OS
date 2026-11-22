@@ -26,7 +26,7 @@ Upstream base: rust-lang/libc a03dd7c2e298b0ca482f30ce07efd3115938328e
  create mode 100644 src/unix/octagram/mod.rs
 
 diff --git a/src/new/mod.rs b/src/new/mod.rs
-index 000000000000..000000000000 100644
+index 9a6ce30b6c1a..000000000000 100644
 --- a/src/new/mod.rs
 +++ b/src/new/mod.rs
 @@ -113,6 +113,9 @@ cfg_if! {

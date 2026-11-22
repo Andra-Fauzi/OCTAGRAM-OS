@@ -35,6 +35,19 @@ class PatchCoreTests(unittest.TestCase):
             rewrite(XGETBV + "\n" + OBSOLETE_XGETBV_STUB + "\n" + ATOMIC128)
 
 
+    def test_rejects_duplicate_atomic128_fragments(self):
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            rewrite(XGETBV + "\n" + ATOMIC128 + "\n" + ATOMIC128)
+
+    def test_rejects_mixed_patched_and_unpatched_atomic128(self):
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            rewrite(XGETBV + "\n" + ATOMIC128 + "\n" + ATOMIC128_REPLACEMENT)
+
+    def test_rejects_duplicate_replacement_fragments(self):
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            rewrite(XGETBV + "\n" + ATOMIC128_REPLACEMENT + "\n" + ATOMIC128_REPLACEMENT)
+
+
     def test_atomic_replacement_avoids_unsupported_int128_syntax(self):
         self.assertIn("poc_cxchg128((void *)arg0", ATOMIC128_REPLACEMENT)
         self.assertNotIn("__int128", ATOMIC128_REPLACEMENT)

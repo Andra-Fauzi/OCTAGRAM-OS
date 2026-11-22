@@ -41,7 +41,7 @@ def main() -> int:
         "    #[cfg(target_os = \"vxworks\")]\n"
         "    pub use crate::os::vxworks::*;\n"
         "    #[cfg(target_os = \"octagram\")]\n"
-        "    pub use crate::os::octagram::*;\n",
+        "    pub(crate) use crate::os::octagram::*;\n",
     )
     thread_unix = std / "sys/thread/unix.rs"
     thread_anchor = (
@@ -60,6 +60,24 @@ def main() -> int:
         + "pub fn set_name(_name: &CStr) {\n"
         + "    // Thread naming is not exposed by the current OCTAGRAM ABI.\n"
         + "}\n",
+    )
+
+    args_unix = std / "sys/args/unix.rs"
+    replace_once(
+        args_unix,
+        '    target_os = "nuttx",\n)))]',
+        '    target_os = "nuttx",\n    target_os = "octagram",\n)))]',
+    )
+
+    random_mod = std / "sys/random/mod.rs"
+    replace_once(
+        random_mod,
+        '    any(target_os = "horizon", target_os = "cygwin", target_os = "redox") => {',
+        '    target_os = "octagram" => {\n'
+        '        mod getrandom;\n'
+        '        pub use getrandom::fill_bytes;\n'
+        '    }\n'
+        '    any(target_os = "horizon", target_os = "cygwin", target_os = "redox") => {',
     )
 
     paths_unix = std / "sys/paths/unix.rs"

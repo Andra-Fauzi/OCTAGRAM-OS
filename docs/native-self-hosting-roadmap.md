@@ -1788,3 +1788,14 @@ test bertahap terhadap source upstream yang dipatok.
 atau pembuktian semantik POSIX. Khususnya, `struct stat` publik memuat field
 yang sebagian saat ini dinolkan oleh wrapper C; ukuran cocok tidak berarti
 semua metadata sudah tersedia. Rust `std` tetap belum dibangun.
+
+## 32. Lengkapi mutex attribute yang dipakai Unix PAL Rust std (22 November 2026)
+
+- Audit source Unix PAL upstream Rust pada commit `342d74463af7dd3018ef6aa04dd5500c2deb5bd1` menemukan bahwa `sync/mutex.rs` memanggil `pthread_mutexattr_settype(..., PTHREAD_MUTEX_NORMAL)` dan menginisialisasi mutex/condvar memakai `PTHREAD_MUTEX_INITIALIZER` serta `PTHREAD_COND_INITIALIZER`.
+- Menambahkan `PTHREAD_MUTEX_NORMAL` dan `PTHREAD_MUTEX_DEFAULT` pada header OCTAGRAM. `pthread_mutexattr_settype` kini menerima hanya tipe normal; tipe lain menghasilkan `EINVAL`. Ini cocok dengan implementasi mutex OCTAGRAM yang non-recursive dan tidak membutuhkan field type tambahan pada `pthread_mutexattr_t`.
+- Menambahkan deklarasi `pthread_mutexattr_settype` dan initializer statis pada modul upstream libc OCTAGRAM. `thread_demo` kini menguji tipe normal diterima dan nilai tidak valid ditolak.
+- Inventaris Unix PAL diperbarui agar API ini tercatat sebagai implemented; ABI `pthread_mutexattr_t` tidak berubah.
+
+<badge color="success">Rust no_std CI lulus</badge> Run [45046390159](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45046390159) pada commit `7c529470` lulus validasi ABI, kompilasi upstream libc untuk target OCTAGRAM, build Rust no_std, unit test runtime host, dan verifikasi ELF. Build C userspace serta eksekusi `thread_demo` di QEMU masih harus dinilai dari POSIX Core Stage 1 run yang terpisah.
+
+**Batas:** baru tipe mutex normal yang didukung; recursive/error-checking mutex belum tersedia. `pthread_detach` masih `ENOTSUP`, sehingga semantik lifecycle thread Rust std belum lengkap. Ini belum merupakan build `std`.

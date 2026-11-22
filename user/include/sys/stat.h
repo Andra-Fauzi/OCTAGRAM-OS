@@ -4,9 +4,12 @@
 #include <sys/types.h>
 
 #define S_IFMT  0170000
+#define S_IFIFO 0010000
 #define S_IFCHR 0020000
+#define S_IFBLK 0060000
 #define S_IFDIR 0040000
 #define S_IFLNK 0120000
+#define S_IFSOCK 0140000
 #define S_IFREG 0100000
 
 #define S_IRUSR 0400
@@ -35,6 +38,9 @@ struct stat {
     time_t st_ctime;
     blksize_t st_blksize;
     blkcnt_t st_blocks;
+    time_t st_atime_nsec;
+    time_t st_mtime_nsec;
+    time_t st_ctime_nsec;
 };
 
 #define S_ISCHR(mode) (((mode) & S_IFMT) == S_IFCHR)

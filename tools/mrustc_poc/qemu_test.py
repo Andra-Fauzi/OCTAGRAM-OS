@@ -58,6 +58,15 @@ def serial_text():
         return ""
 
 
+def qemu_log_tail(path, limit=5000):
+    """Read only the final bytes of a potentially large QEMU diagnostic log."""
+    with open(path, "r", errors="replace") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        handle.seek(max(0, size - limit), os.SEEK_SET)
+        return handle.read()
+
+
 def wait_for(needle, offset, timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -348,9 +357,8 @@ def main():
             if not success:
                 try:
                     qemu_log_handle.flush()
-                    with open(QEMU_LOG, "r", errors="replace") as handle:
-                        print("=== QEMU HOST LOG (failure diagnostics) ===")
-                        print(handle.read()[-5000:])
+                    print("=== QEMU HOST LOG (failure diagnostics) ===")
+                    print(qemu_log_tail(QEMU_LOG))
                 except OSError as error:
                     print("QEMU-LOG-READ-FAIL: %s" % error)
             qemu_log_handle.close()

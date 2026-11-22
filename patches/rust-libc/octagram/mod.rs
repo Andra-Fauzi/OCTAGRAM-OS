@@ -178,6 +178,23 @@ s! {
     }
 }
 
+const _: [(); 88] = [(); core::mem::size_of::<stat>()];
+const _: [(); 8] = [(); core::mem::align_of::<stat>()];
+const _: [(); 280] = [(); core::mem::size_of::<dirent>()];
+const _: [(); 8] = [(); core::mem::align_of::<dirent>()];
+const _: [(); 16] = [(); core::mem::size_of::<pthread_attr_t>()];
+const _: [(); 16] = [(); core::mem::size_of::<pthread_mutex_t>()];
+const _: [(); 4] = [(); core::mem::size_of::<pthread_cond_t>()];
+const _: [(); 4] = [(); core::mem::size_of::<sem_t>()];
+const _: [(); 60] = [(); core::mem::size_of::<termios>()];
+const _: [(); 32] = [(); core::mem::size_of::<sigaction>()];
+const _: [(); 16] = [(); core::mem::size_of::<sockaddr>()];
+const _: [(); 48] = [(); core::mem::size_of::<addrinfo>()];
+const _: [(); 48] = [(); core::mem::size_of::<passwd>()];
+const _: [(); 36] = [(); core::mem::size_of::<tm>()];
+const _: [(); 128] = [(); core::mem::size_of::<fd_set>()];
+const _: [(); 96] = [(); core::mem::size_of::<lconv>()];
+
 pub const PATH_MAX: c_int = 4096;
 pub const AT_FDCWD: c_int = -100;
 pub const AT_SYMLINK_NOFOLLOW: c_int = 1 << 8;

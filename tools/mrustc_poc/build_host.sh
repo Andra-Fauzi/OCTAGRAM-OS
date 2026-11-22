@@ -92,6 +92,7 @@ done
 debugfs -w -R "write $ROOT/user/examples/tcc_overflow.c /src/tcc_overflow.c" "$IMAGE" >/dev/null 2>&1
 debugfs -w -R "write $ROOT/user/examples/tcc_xgetbv.c /src/tcc_xgetbv.c" "$IMAGE" >/dev/null 2>&1
 debugfs -w -R "write $ROOT/user/examples/tcc_math.c /src/tcc_math.c" "$IMAGE" >/dev/null 2>&1
+debugfs -w -R "write $ROOT/user/examples/tcc_atomic128_shim.c /src/tcc_atomic128_shim.c" "$IMAGE" >/dev/null 2>&1
 
 echo "MRUSTC-C-POC-ARTIFACTS: $WORK"
 echo "SOURCE-IMAGE: $IMAGE"

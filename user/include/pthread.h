@@ -37,6 +37,8 @@ typedef struct {
 #define PTHREAD_COND_INITIALIZER {0}
 
 #define PTHREAD_MUTEX_STALLED 0
+#define PTHREAD_MUTEX_NORMAL 0
+#define PTHREAD_MUTEX_DEFAULT PTHREAD_MUTEX_NORMAL
 #define PTHREAD_MUTEX_ROBUST 1
 #define PTHREAD_KEYS_MAX 64
 #define PTHREAD_DESTRUCTOR_ITERATIONS 4
@@ -57,6 +59,7 @@ int pthread_mutex_consistent(pthread_mutex_t *mutex);
 
 int pthread_mutexattr_init(pthread_mutexattr_t *attributes);
 int pthread_mutexattr_destroy(pthread_mutexattr_t *attributes);
+int pthread_mutexattr_settype(pthread_mutexattr_t *attributes, int type);
 int pthread_mutexattr_setrobust(pthread_mutexattr_t *attributes,
                                 int robustness);
 int pthread_mutexattr_getrobust(const pthread_mutexattr_t *attributes,

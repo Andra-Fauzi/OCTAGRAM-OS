@@ -19,8 +19,8 @@ Upstream base: rust-lang/libc a03dd7c2e298b0ca482f30ce07efd3115938328e
  src/new/octagram/mod.rs     |  4 +++
  src/new/octagram/unistd.rs  |  7 +++++++
  src/unix/mod.rs             |  3 +++
- src/unix/octagram/mod.rs    | 139 +++++++++++++++++++++++++++++++++++++++++++
- 5 files changed, 155 insertions(+)
+ src/unix/octagram/mod.rs    | 243 +++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 260 insertions(+)
  create mode 100644 src/new/octagram/mod.rs
  create mode 100644 src/new/octagram/unistd.rs
  create mode 100644 src/unix/octagram/mod.rs
@@ -81,7 +81,7 @@ new file mode 100644
 index 000000000000..000000000000
 --- /dev/null
 +++ b/src/unix/octagram/mod.rs
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,243 @@
 +//! Initial raw bindings for the OCTAGRAM x86_64 userspace ABI.
 +//!
 +//! These definitions follow OCTAGRAM's public C headers. They intentionally
@@ -127,6 +127,97 @@ index 000000000000..000000000000
 +        pub st_ctime: time_t,
 +        pub st_blksize: blksize_t,
 +        pub st_blocks: blkcnt_t,
++    }
++
++    pub struct passwd {
++        pub pw_name: *mut c_char,
++        pub pw_passwd: *mut c_char,
++        pub pw_uid: crate::uid_t,
++        pub pw_gid: crate::gid_t,
++        pub pw_gecos: *mut c_char,
++        pub pw_dir: *mut c_char,
++        pub pw_shell: *mut c_char,
++    }
++
++    pub struct sockaddr {
++        pub sa_family: sa_family_t,
++        pub sa_data: [c_char; 14],
++    }
++
++    pub struct addrinfo {
++        pub ai_flags: c_int,
++        pub ai_family: c_int,
++        pub ai_socktype: c_int,
++        pub ai_protocol: c_int,
++        pub ai_addrlen: socklen_t,
++        pub ai_addr: *mut sockaddr,
++        pub ai_canonname: *mut c_char,
++        pub ai_next: *mut addrinfo,
++    }
++
++    pub struct tm {
++        pub tm_sec: c_int,
++        pub tm_min: c_int,
++        pub tm_hour: c_int,
++        pub tm_mday: c_int,
++        pub tm_mon: c_int,
++        pub tm_year: c_int,
++        pub tm_wday: c_int,
++        pub tm_yday: c_int,
++        pub tm_isdst: c_int,
++    }
++
++    pub struct fd_set {
++        pub bits: [u64; 16],
++    }
++
++    pub struct lconv {
++        pub decimal_point: *mut c_char,
++        pub thousands_sep: *mut c_char,
++        pub grouping: *mut c_char,
++        pub int_curr_symbol: *mut c_char,
++        pub currency_symbol: *mut c_char,
++        pub mon_decimal_point: *mut c_char,
++        pub mon_thousands_sep: *mut c_char,
++        pub mon_grouping: *mut c_char,
++        pub positive_sign: *mut c_char,
++        pub negative_sign: *mut c_char,
++        pub int_frac_digits: c_char,
++        pub frac_digits: c_char,
++        pub p_cs_precedes: c_char,
++        pub p_sep_by_space: c_char,
++        pub n_cs_precedes: c_char,
++        pub n_sep_by_space: c_char,
++        pub p_sign_posn: c_char,
++        pub n_sign_posn: c_char,
++        pub int_p_cs_precedes: c_char,
++        pub int_p_sep_by_space: c_char,
++        pub int_n_cs_precedes: c_char,
++        pub int_n_sep_by_space: c_char,
++        pub int_p_sign_posn: c_char,
++        pub int_n_sign_posn: c_char,
++    }
++
++    pub struct sem_t {
++        pub count: c_uint,
++    }
++
++    pub struct termios {
++        pub c_iflag: tcflag_t,
++        pub c_oflag: tcflag_t,
++        pub c_cflag: tcflag_t,
++        pub c_lflag: tcflag_t,
++        pub c_line: cc_t,
++        pub c_cc: [cc_t; 32],
++        pub c_ispeed: speed_t,
++        pub c_ospeed: speed_t,
++    }
++
++    pub struct sigaction {
++        pub sa_sigaction: crate::sighandler_t,
++        pub sa_mask: sigset_t,
++        pub sa_flags: c_int,
++        pub sa_restorer: Option<extern "C" fn()>,
 +    }
 +
 +    pub struct dirent {
@@ -221,5 +312,49 @@ index 000000000000..000000000000
 +    flags: 0,
 +};
 +pub const PTHREAD_COND_INITIALIZER: pthread_cond_t = pthread_cond_t { sequence: 0 };
+diff --git a/src/unix/mod.rs b/src/unix/mod.rs
+index 13a27f8cb01f..000000000000 100644
+--- a/src/unix/mod.rs
++++ b/src/unix/mod.rs
+@@ -1488,1 +1488,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn pthread_rwlock_init(
+@@ -1496,1 +1497,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn pthread_rwlock_destroy(lock: *mut crate::pthread_rwlock_t) -> c_int;
+@@ -1501,1 +1503,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn pthread_rwlock_rdlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
+@@ -1506,1 +1509,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn pthread_rwlock_tryrdlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
+@@ -1511,1 +1515,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn pthread_rwlock_wrlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
+@@ -1516,1 +1521,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn pthread_rwlock_trywrlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
+@@ -1521,1 +1527,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn pthread_rwlock_unlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
+@@ -1522,1 +1529,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn pthread_rwlockattr_init(attr: *mut crate::pthread_rwlockattr_t) -> c_int;
+@@ -1523,1 +1531,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn pthread_rwlockattr_destroy(attr: *mut crate::pthread_rwlockattr_t) -> c_int;
+@@ -1705,1 +1714,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn statvfs(path: *const c_char, buf: *mut crate::statvfs) -> c_int;
+@@ -1708,1 +1718,2 @@
++    #[cfg(not(target_os = "octagram"))]
+     pub fn fstatvfs(fd: c_int, buf: *mut crate::statvfs) -> c_int;
+@@ -2294,1 +2305,1 @@
+-    if #[cfg(not(target_os = "aix"))] {
++    if #[cfg(not(any(target_os = "aix", target_os = "octagram")))] {
+@@ -2388,1 +2399,2 @@
++            #[cfg(not(target_os = "octagram"))]
+             pub fn sigaction(signum: c_int, act: *const sigaction, oldact: *mut sigaction)
+
 -- 
 2.43.0

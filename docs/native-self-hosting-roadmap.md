@@ -1415,10 +1415,11 @@ Jika keluaran `mrustc` berubah, harness berhenti alih-alih meneruskan hasil
 yang tidak kompatibel. Sebelas tes regresi patcher ada di `test_patch_core.py`, termasuk penolakan fragmen AtomicU128 duplikat/output campuran dan verifikasi bahwa file sumber tetap utuh saat validasi gagal. Patcher menulis ke file temporer, melakukan flush+fsync, lalu mengganti file dengan `os.replace` agar kegagalan penulisan tidak meninggalkan `libcore.c` setengah tertulis.
 
 Harness QEMU `qemu_test.py` juga diperketat pada 22 November: proses QEMU
-kini dibersihkan meskipun koneksi monitor gagal sebelum boot, file OVMF-vars
-dibuat unik per proses agar dua run tidak saling menimpa, dan socket serta
-file firmware sementara dibersihkan pada seluruh jalur keluar. Ini perbaikan
-keandalan harness, bukan bukti bahwa uji guest telah lulus.
+kini dibersihkan meskipun koneksi monitor gagal sebelum boot. File OVMF-vars,
+log serial, dan socket monitor memakai path unik per proses agar run paralel
+tidak saling mengganggu; socket dan file firmware sementara dibersihkan pada
+seluruh jalur keluar, sedangkan log serial dipertahankan untuk diagnosis. Ini
+perbaikan keandalan harness, bukan bukti bahwa uji guest telah lulus.
 
 ### Yang belum terbukti
 

@@ -1599,3 +1599,14 @@ Status validasi setelah perubahan:
 - Rust no_std workflow sebelumnya lulus pada run [45038500294](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45038500294), tetapi itu mendahului penambahan dual-stream capture.
 - Perubahan terbaru harus kembali melewati build runtime, unit test host, ELF verification, dan QEMU guest marker Rust runtime Command::output: PASS.
 - M4 tetap **belum selesai**. Tidak ada std, native rustc, atau Cargo native yang dinyatakan tersedia.
+
+## 17. ExitStatus dan perbaikan drain multi-stream (22 November 2026)
+
+- Ditambahkan ExitStatus sebagai wrapper kompatibilitas awal di atas nilai wait mentah kernel, dengan raw(), code(), dan success(). Child memiliki wait_status()/try_wait_status(); CapturedOutput menyediakan exit_status()/success(). API raw wait tetap dipertahankan agar tidak mematahkan pemakai sebelumnya.
+- Command::output() sekarang menandai descriptor stream yang sudah EOF sebagai fd = -1 pada array poll. Kernel poll_revents mengabaikan fd negatif; tanpa ini POLLHUP dari stream yang sudah selesai dapat membuat poll langsung kembali terus-menerus sementara stream lain masih aktif.
+- Unit test host memeriksa nilai status normal, gagal, dan nilai signed. Guest smoke test memeriksa ExitStatus::success() dan code() pada output command.
+- Dihapus atribut cfg(test) duplikat yang tidak diperlukan pada deklarasi allocator.
+
+Validasi: Rust no_std workflow sebelumnya lulus pada commit be5dd8c8, tetapi perubahan bagian 17 memerlukan run CI baru. POSIX Core Stage 1 run 45039013607 masih berjalan pada pemeriksaan sebelumnya; hasil QEMU belum dinyatakan lulus.
+
+Status: ExitStatus ini masih adapter khusus OCTAGRAM. Kernel belum menyimpan signal termination / core-dump state seperti Unix wait status, jadi code() tidak boleh dianggap setara penuh dengan std::process::ExitStatus.

@@ -19,8 +19,8 @@ Upstream base: rust-lang/libc a03dd7c2e298b0ca482f30ce07efd3115938328e
  src/new/octagram/mod.rs     |  4 +++
  src/new/octagram/unistd.rs  |  7 +++++++
  src/unix/mod.rs             |  3 +++
- src/unix/octagram/mod.rs    | 231 +++++++++++++++++++++++++++++++++++++++++
- 5 files changed, 261 insertions(+)
+ src/unix/octagram/mod.rs    | 264 +++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 293 insertions(+)
  create mode 100644 src/new/octagram/mod.rs
  create mode 100644 src/new/octagram/unistd.rs
  create mode 100644 src/unix/octagram/mod.rs
@@ -120,7 +120,7 @@ new file mode 100644
 index 000000000000..000000000000
 --- /dev/null
 +++ b/src/unix/octagram/mod.rs
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,264 @@
 +//! Initial raw bindings for the OCTAGRAM x86_64 userspace ABI.
 +//!
 +//! These definitions follow OCTAGRAM's public C headers. They intentionally
@@ -295,6 +295,39 @@ index 000000000000..000000000000
 +        pub robustness: c_int,
 +    }
 +}
++
++
++// These assertions keep the Rust bindings synchronized with the C ABI.
++const _: () = {
++    assert!(core::mem::size_of::<stat>() == 88);
++    assert!(core::mem::align_of::<stat>() == 8);
++    assert!(core::mem::offset_of!(stat, st_mode) == 8);
++    assert!(core::mem::offset_of!(stat, st_dev) == 16);
++    assert!(core::mem::offset_of!(stat, st_atime) == 48);
++    assert!(core::mem::offset_of!(stat, st_blocks) == 80);
++
++    assert!(core::mem::size_of::<dirent>() == 280);
++    assert!(core::mem::align_of::<dirent>() == 8);
++    assert!(core::mem::offset_of!(dirent, d_reclen) == 16);
++    assert!(core::mem::offset_of!(dirent, d_type) == 18);
++    assert!(core::mem::offset_of!(dirent, d_name) == 19);
++
++    assert!(core::mem::size_of::<pthread_mutex_t>() == 16);
++    assert!(core::mem::size_of::<pthread_attr_t>() == 16);
++    assert!(core::mem::size_of::<pthread_cond_t>() == 4);
++    assert!(core::mem::size_of::<pthread_condattr_t>() == 4);
++    assert!(core::mem::size_of::<pthread_mutexattr_t>() == 4);
++
++    assert!(core::mem::size_of::<passwd>() == 48);
++    assert!(core::mem::size_of::<sockaddr>() == 16);
++    assert!(core::mem::size_of::<addrinfo>() == 48);
++    assert!(core::mem::size_of::<tm>() == 36);
++    assert!(core::mem::size_of::<fd_set>() == 128);
++    assert!(core::mem::size_of::<lconv>() == 96);
++    assert!(core::mem::size_of::<sem_t>() == 4);
++    assert!(core::mem::size_of::<termios>() == 60);
++    assert!(core::mem::size_of::<sigaction>() == 32);
++};
 +
 +pub const O_RDONLY: c_int = 0;
 +pub const O_WRONLY: c_int = 1;

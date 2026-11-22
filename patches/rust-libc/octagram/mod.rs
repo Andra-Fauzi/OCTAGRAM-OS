@@ -219,6 +219,15 @@ s! {
 
 const _: [(); 112] = [(); core::mem::size_of::<stat>()];
 const _: [(); 8] = [(); core::mem::align_of::<stat>()];
+const _: [(); 110] = [(); core::mem::size_of::<sockaddr_un>()];
+const _: [(); 2] = [(); core::mem::align_of::<sockaddr_un>()];
+const _: [(); 128] = [(); core::mem::size_of::<sockaddr_storage>()];
+const _: [(); 8] = [(); core::mem::align_of::<sockaddr_storage>()];
+const _: [(); 4] = [(); core::mem::size_of::<in_addr>()];
+const _: [(); 16] = [(); core::mem::size_of::<sockaddr_in>()];
+const _: [(); 28] = [(); core::mem::size_of::<sockaddr_in6>()];
+const _: [(); 8] = [(); core::mem::size_of::<ip_mreq>()];
+const _: [(); 8] = [(); core::mem::align_of::<stat>()];
 const _: [(); 280] = [(); core::mem::size_of::<dirent>()];
 const _: [(); 8] = [(); core::mem::align_of::<dirent>()];
 const _: [(); 16] = [(); core::mem::size_of::<pthread_attr_t>()];

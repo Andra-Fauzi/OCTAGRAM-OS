@@ -131,4 +131,4 @@ Saat satu stream output mencapai EOF, `Command::output()` sekarang mengubah desc
 
 ## Directory iterator adapter
 
-`Directory::into_iter()` memindahkan ownership stream ke `DirectoryIter`, yang mengimplementasikan `Iterator<Item = Result<Dirent, i64>>` dan `FusedIterator`. EOF mengakhiri iterasi; error pertama dikeluarkan satu kali lalu iterator berhenti permanen. Guest smoke test memakai adapter ini dan mengandalkan `Drop` untuk menutup descriptor. Ini belum `std::fs::ReadDir`: konversi `Dirent` ke `DirEntry`, representasi `PathBuf`, metadata entry, dan semantik dot entries masih perlu dipetakan.
+`IntoIterator for Directory` memindahkan ownership stream ke `DirectoryIter`, yang mengimplementasikan `Iterator<Item = Result<Dirent, i64>>` dan `FusedIterator`. EOF mengakhiri iterasi; error pertama dikeluarkan satu kali lalu iterator berhenti permanen. Guest smoke test memakai adapter ini dan mengandalkan `Drop` untuk menutup descriptor. Ini belum `std::fs::ReadDir`: konversi `Dirent` ke `DirEntry`, representasi `PathBuf`, metadata entry, dan semantik dot entries masih perlu dipetakan.

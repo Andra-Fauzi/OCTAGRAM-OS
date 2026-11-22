@@ -62,7 +62,9 @@ membedakan patch yang belum diterapkan, yang sudah diterapkan, dan source
 archive yang tidak cocok. Kegagalan patch tidak lagi disembunyikan oleh
 `|| true`. Tahap PoC juga menghapus `poc.c` lama sebelum transpile dan hanya
 menerima status `mrustc` nonzero bila file C baru benar-benar dihasilkan serta
-memuat entry point `main`; kegagalan tanpa output segar menghentikan build.
+memuat definisi `main` yang dikenali validator Python terpisah dan diuji unit;
+kegagalan tanpa output segar menghentikan build. Tes validator mencakup output
+kosong, fungsi selain `main`, serta penyebutan `main` yang hanya berada di komentar.
 
 ## Menjalankan
 

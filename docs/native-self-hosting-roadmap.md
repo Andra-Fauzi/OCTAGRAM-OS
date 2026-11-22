@@ -1345,9 +1345,16 @@ status berikut:
 1. **Header integer — diperbaiki di source.** `user/include/stdint.h`
    menyediakan tipe `int_leastN_t`/`uint_leastN_t` dan
    `int_fastN_t`/`uint_fastN_t`; pemeriksaan sintaks tersedia.
-2. **Libm — belum diperbaiki.** Header publik `user/include/math.h` sudah
-   mendeklarasikan API yang dipakai C `core`, tetapi implementasi matematika
-   nyata belum ada. Shim PoC masih memakai stub yang tidak presisi.
+2. **Libm — bootstrap implementation tersedia.** `user/math.c` sekarang
+   menyediakan implementasi untuk semua simbol yang dideklarasikan oleh
+   `user/include/math.h`, dan objeknya dimasukkan ke `libc.a` yang dipakai
+   TinyCC. Operasi bit IEEE-754 dasar (sign, abs, trunc, frexp/ldexp,
+   nextafter, pembulatan) dibuat lewat manipulasi bit; sqrt memakai x87;
+   exp/log/trig/gamma/error-function memakai aproksimasi numerik. Tes host
+   tersedia lewat `make -C user math-test`, dan dua QEMU harness menguji
+   program yang menautkan fungsi dari archive. Ini **belum** correctly-rounded
+   atau selengkap/sekokoh libm produksi; error numerik, domain dan rounding
+   mode masih perlu diverifikasi lebih luas.
 3. **Overflow builtin — implementasi compiler ditambahkan.** Token
    `__builtin_add_overflow`, `__builtin_sub_overflow`, dan
    `__builtin_mul_overflow` kini dikenali di `tcctok.h` dan diturunkan oleh
@@ -1360,14 +1367,16 @@ status berikut:
 4. **XGETBV assembler — implementasi ditambahkan.** Tabel assembler x86
    TinyCC mengenali mnemonic `xgetbv` dan mengeluarkan encoding tetap
    `0F 01 D0`. Source `user/examples/tcc_xgetbv.c` menggunakan inline asm
-   GCC-style yang dipakai mrustc. Dua harness QEMU mengompilasi file itu sebagai
-   object saja; mereka tidak menjalankannya karena XGETBV dapat memicu #UD
-   bila dukungan OSXSAVE/XCR0 belum aktif. Hasil guest QEMU belum diverifikasi.
-   **Atomic 128-bit** (`uint128_t _Atomic`) masih belum didukung TinyCC.
+   GCC-style. Dua harness QEMU mengompilasi dan menautkan fungsi itu, kemudian
+   menjalankan `main()` yang tidak memanggil fungsi XGETBV; instruksi tersebut
+   tidak dieksekusi karena OSXSAVE/XCR0 mungkin belum aktif. Hasil guest QEMU
+   belum diverifikasi. **Atomic 128-bit** (`uint128_t _Atomic`) masih belum
+   didukung TinyCC.
    
 Macro lama di `fix.h` yang memaksa ketiga overflow builtin selalu
-mengembalikan false sudah dihapus, sehingga PoC akan memakai implementasi
-TinyCC yang baru. Patcher `patch_core.py` mempertahankan fragmen XGETBV asli
+mengembalikan false sudah dihapus, sehingga PoC memakai implementasi TinyCC.
+Stub matematika dari `shim.c` juga sudah dihapus; simbol math harus dipenuhi
+oleh `libc.a`. Patcher `patch_core.py` mempertahankan fragmen XGETBV asli
 dan hanya me-rewrite AtomicU128 ke helper untuk jalur PoC yang tidak disentuh.
 Jika keluaran `mrustc` berubah, harness berhenti alih-alih meneruskan hasil
 yang tidak kompatibel. Lima tes regresi patcher ada di `test_patch_core.py`.
@@ -1388,9 +1397,10 @@ yang tidak kompatibel. Lima tes regresi patcher ada di `test_patch_core.py`.
 
 1. Selesaikan run QEMU sampai `MRUSTC-C-POC-PASS` (atau kumpulkan sisa celah
    `tcc` yang muncul setelah baris 227 ribu).
-2. Lengkapi header guest publik dan uji sintaksnya: `stdint.h` kini
-   menyediakan tipe least/fast; `math.h` mendeklarasikan API yang diperlukan.
-   Selanjutnya implementasikan dan uji libm nyata (jangan mengandalkan stub PoC).
+2. Lanjutkan validasi libm: jalankan tes host dan QEMU, tambah pengujian
+   batas/domain/NaN/Inf/rounding, lalu tingkatkan akurasi aproksimasi.
+   Header `stdint.h` sudah menyediakan tipe least/fast dan libm bootstrap
+   kini berada di `libc.a`.
 3. Ukur batas praktis: berapa RAM/waktu `tcc` untuk `core`, lalu putuskan
    apakah `std` layak dicoba atau cukup `core` + kernel subset.
 4. Baru setelah itu pertimbangkan memindahkan `mrustc` sendiri ke dalam guest

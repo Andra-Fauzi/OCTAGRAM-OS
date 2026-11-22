@@ -15,6 +15,10 @@ Dokumen ini adalah kontrak implementasi bertahap, bukan klaim bahwa `std`,
   positional I/O, metadata, directory iteration, VM, clock, entropy,
   futex, dan thread primitives.
 - Host Linux masih menjalankan rustc/Cargo untuk menghasilkan guest ELF.
+- Target JSON juga mendeklarasikan `target_family = ["unix"]` agar crate
+  dapat memilih jalur `cfg(unix)`. Ini hanya klasifikasi target; bukan bukti
+  bahwa OCTAGRAM telah memenuhi seluruh kontrak Unix/POSIX atau bahwa PAL
+  `std` telah tersedia. Validator CI memeriksa cfg tersebut secara eksplisit.
 
 ## Konsekuensi upstream Rust
 

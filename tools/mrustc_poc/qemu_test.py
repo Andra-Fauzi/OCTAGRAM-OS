@@ -191,6 +191,15 @@ def main():
             return 1
         print("TCC-OVERFLOW-PASS")
 
+        # Compile only: executing XGETBV depends on OSXSAVE/XCR0 setup.
+        offset = len(serial_text())
+        send_line("tcc -c /mnt/src/tcc_xgetbv.c -o /mnt/tcc_xgetbv.o")
+        if not wait_prompt(offset, 60):
+            print("TCC-XGETBV-ASSEMBLE-FAIL")
+            print(serial_text()[offset:][-3000:])
+            return 1
+        print("TCC-XGETBV-ASSEMBLE-PASS")
+
         offset = len(serial_text())
         send_line(
             "tcc -I /mnt/src -include /mnt/src/fix.h /mnt/src/shim.c "

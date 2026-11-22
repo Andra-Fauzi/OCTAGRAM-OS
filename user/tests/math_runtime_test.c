@@ -1,5 +1,6 @@
 #include <math.h>
 #include <stdint.h>
+#include <limits.h>
 
 static int near(double value, double expected, double tolerance)
 {
@@ -42,10 +43,17 @@ int main(void)
         return 7;
     if (remquo(7.0, 2.0, &quotient) != -1.0 || quotient != 4)
         return 8;
+    if (remquo(-7.0, 2.0, &quotient) != 1.0 || quotient != -4)
+        return 17;
+    if (remquo(18.0, 2.0, &quotient) != 0.0 || quotient != 1)
+        return 18;
 
     zero.value = nextafter(0.0, 1.0);
     if (zero.bits != 1)
         return 9;
+    if (ilogb(8.0) != 3 || ilogb(zero.value) != -1074 ||
+        ilogb(0.0) != INT_MIN || logb(0.0) != -1.0 / 0.0)
+        return 19;
     if (!near(exp(1.0), 2.71828182845904523536, 1e-13) ||
         !near(log(2.71828182845904523536), 1.0, 1e-12))
         return 10;
@@ -60,6 +68,9 @@ int main(void)
     if (!near(hypot(3.0, 4.0), 5.0, 1e-12) ||
         !near(atan2(0.0, -1.0), 3.14159265358979323846, 1e-12))
         return 13;
+    if (atan2(-0.0, -1.0) != -3.14159265358979323846 ||
+        pow(-2.0, 3.0) != -8.0)
+        return 20;
 
     if (!near(tgamma(5.0), 24.0, 1e-8) || erf(0.0) != 0.0)
         return 14;

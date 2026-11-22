@@ -14,16 +14,6 @@ diff --git a/src/unix/mod.rs b/src/unix/mod.rs
 index 13a27f8..0000000 100644
 --- a/src/unix/mod.rs
 +++ b/src/unix/mod.rs
-@@ -2573,6 +2573,9 @@ cfg_if! {
-     } else if #[cfg(target_os = "haiku")] {
-         mod haiku;
-         pub use self::haiku::*;
-+    } else if #[cfg(target_os = "octagram")] {
-+        mod octagram;
-+        pub use self::octagram::*;
-     } else if #[cfg(target_os = "redox")] {
-         mod redox;
-         pub use self::redox::*;
 @@ -1484,40 +1484,49 @@
 -    #[cfg_attr(
 -        all(target_os = "macos", target_arch = "x86"),
@@ -132,6 +122,16 @@ index 13a27f8..0000000 100644
 @@ -2294,1 +2294,1 @@
 -    if #[cfg(not(target_os = "aix"))] {
 +    if #[cfg(not(any(target_os = "aix", target_os = "octagram")))] {
+@@ -2573,6 +2573,9 @@ cfg_if! {
+     } else if #[cfg(target_os = "haiku")] {
+         mod haiku;
+         pub use self::haiku::*;
++    } else if #[cfg(target_os = "octagram")] {
++        mod octagram;
++        pub use self::octagram::*;
+     } else if #[cfg(target_os = "redox")] {
+         mod redox;
+         pub use self::redox::*;
 diff --git a/src/unix/octagram/mod.rs b/src/unix/octagram/mod.rs
 new file mode 100644
 --- /dev/null

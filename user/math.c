@@ -1079,6 +1079,8 @@ float nextafterf(float x, float y)
 
 float nexttowardf(float x, long double y)
 {
+    if (y != y)
+        return (float)y;
     if ((long double)x == y)
         return (float)y;
     return nextafterf(x, y > (long double)x ? INFINITY : -INFINITY);

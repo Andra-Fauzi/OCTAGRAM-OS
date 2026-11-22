@@ -1,7 +1,8 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from qemu_test import qemu_log_tail
+from qemu_test import qemu_log_tail, wait_compile_success
 
 
 class QemuLogTailTests(unittest.TestCase):
@@ -22,6 +23,17 @@ class QemuLogTailTests(unittest.TestCase):
             handle.write(b"0123456789\xff")
             handle.flush()
             self.assertEqual(qemu_log_tail(handle.name, limit=1), "\ufffd")
+
+
+    def test_compile_wait_requires_exit_status_and_shell_prompt(self):
+        serial = "program exited with status 0\\noctagram:~$"
+        with patch("qemu_test.serial_text", return_value=serial):
+            self.assertTrue(wait_compile_success(0, timeout=1))
+
+    def test_compile_wait_rejects_missing_successful_exit(self):
+        serial = "tcc: error: undefined symbol\\noctagram:~$"
+        with patch("qemu_test.serial_text", return_value=serial):
+            self.assertFalse(wait_compile_success(0, timeout=0))
 
 
 if __name__ == "__main__":

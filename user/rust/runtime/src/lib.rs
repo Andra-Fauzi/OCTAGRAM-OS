@@ -2225,7 +2225,7 @@ mod tests {
         assert_eq!(value.as_bytes(), &raw);
         assert!(value.to_str().is_none());
         assert_eq!(value.try_to_cstring_bytes().unwrap(), [b'f', 0x80, b'o', 0]);
-        let invalid = super::OsString::from_bytes(b"a\\0b");
+        let invalid = super::OsString::from_bytes([b'a', 0, b'b']);
         assert_eq!(invalid.try_to_cstring_bytes(), Err(-22));
     }
 

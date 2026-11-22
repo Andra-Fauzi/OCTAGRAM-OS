@@ -189,6 +189,15 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
             None => return 34,
         };
         if name_bytes == b"message.c" {
+            let file_name = match entry.file_name() {
+                Some(name) if name.as_bytes() == b"message.c" => name,
+                _ => return 42,
+            };
+            let entry_path = match entry.path() {
+                Some(path) if path.as_bytes() == b"/share/octagram/message.c" => path,
+                _ => return 43,
+            };
+            let _ = (file_name, entry_path);
             found_message = true;
             found_entry = Some(entry);
         }

@@ -65,6 +65,9 @@ menerima status `mrustc` nonzero bila file C baru benar-benar dihasilkan serta
 memuat definisi `main` yang dikenali validator Python terpisah dan diuji unit;
 kegagalan tanpa output segar menghentikan build. Tes validator mencakup output
 kosong, fungsi selain `main`, serta penyebutan `main` yang hanya berada di komentar.
+Artefak `libcore.c` dan `libcore.hir` juga dihapus sebelum transpile dan wajib
+muncul kembali sebelum patcher dijalankan, sehingga build tidak memakai hasil
+`core` dari percobaan sebelumnya.
 
 ## Menjalankan
 

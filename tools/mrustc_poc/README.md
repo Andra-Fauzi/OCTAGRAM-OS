@@ -135,6 +135,12 @@ Pembacaan tail dilakukan secara biner agar batas UTF-8 yang terpotong tidak
 membuat pelaporan diagnostik gagal. Kegagalan menyalin template OVMF-vars juga
 menghapus file temporernya.
 
+Kompilasi besar `libcore.c` dijalankan dengan opsi `tcc -bench` agar run yang
+berhasil juga mencatat statistik kompilasi TinyCC. Penantian tahap ini memakai
+satu deadline gabungan untuk status keluar `0` dan prompt shell, sehingga
+waktu tunggu tidak berlipat ketika salah satu penanda tidak muncul. Tes unit
+`test_qemu_test.py` mencakup kedua syarat keberhasilan tersebut.
+
 ## Catatan
 
 - `mrustc` tidak mendukung crate `#![no_core]`: tanpa `core` ia gagal dengan

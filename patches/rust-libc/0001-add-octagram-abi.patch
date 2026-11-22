@@ -130,7 +130,7 @@ new file mode 100644
 +pub const O_NONBLOCK: c_int = 1 << 11;
 +pub const O_EXCL: c_int = 1 << 12;
 +pub const O_CLOEXEC: c_int = 1 << 19;
-+pub const O_NOFOLLOW: c_int = 1 << 18;
++pub const O_NOFOLLOW: c_int = 1 << 17;
 +
 +pub const S_IFMT: mode_t = 0o170000;
 +pub const S_IFCHR: mode_t = 0o020000;

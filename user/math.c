@@ -22,7 +22,6 @@ typedef union {
 #define OCT_D_SIGN UINT64_C(0x8000000000000000)
 #define OCT_D_EXP  UINT64_C(0x7ff0000000000000)
 #define OCT_D_FRAC UINT64_C(0x000fffffffffffff)
-#define OCT_D_ONE  UINT64_C(0x3ff0000000000000)
 #define OCT_D_INF  UINT64_C(0x7ff0000000000000)
 #define OCT_D_QNAN UINT64_C(0x7ff8000000000000)
 
@@ -232,6 +231,10 @@ double ldexp(double x, int exponent)
 
     if (x == 0.0 || oct_isnan(x) || oct_isinf(x))
         return x;
+    if (exponent > 2098)
+        return oct_inf(oct_signbit(x));
+    if (exponent < -2098)
+        return oct_signed_zero(oct_signbit(x));
     while (exponent > 1023) {
         x *= 8.9884656743115795386465259539451e307; /* 2^1023 */
         exponent -= 1023;
@@ -263,7 +266,7 @@ int ilogb(double x)
     if (bits == 0)
         return INT_MIN;
     if (field == 0x7ffu)
-        return fraction ? INT_MAX : INT_MAX;
+        return INT_MAX;
     if (field != 0)
         return (int)field - 1023;
     while (fraction != 0) {
@@ -275,12 +278,10 @@ int ilogb(double x)
 
 double logb(double x)
 {
-    if (oct_isnan(x))
+    if (oct_isnan(x) || oct_isinf(x))
         return x;
     if (x == 0.0)
         return oct_inf(1);
-    if (oct_isinf(x))
-        return oct_inf(0);
     return (double)ilogb(x);
 }
 
@@ -360,12 +361,19 @@ double remainder(double x, double y)
 {
     double r, ay;
 
+    double ratio;
     r = fmod(x, y);
     if (oct_isnan(r) || r == 0.0)
         return r;
     ay = fabs(y);
-    if (fabs(r) > ay * 0.5)
+    if (fabs(r) > ay * 0.5) {
         r -= copysign(ay, r);
+    } else if (fabs(r) == ay * 0.5) {
+        ratio = trunc(x / y);
+        if (fabs(ratio) < 4503599627370496.0 &&
+            ((long long)ratio & 1LL) != 0)
+            r -= copysign(ay, r);
+    }
     return r;
 }
 
@@ -377,7 +385,7 @@ double remquo(double x, double y, int *quotient)
     if (quotient != 0) {
         if (y != 0.0 && !oct_isnan(x) && !oct_isnan(y) &&
             !oct_isinf(x) && !oct_isinf(y)) {
-            ratio = trunc(x / y);
+            ratio = nearbyint(x / y);
             if (fabs(ratio) < 4503599627370496.0)
                 low = (int)((long long)ratio & 7LL);
         }
@@ -639,16 +647,16 @@ double atan2(double y, double x)
 {
     if (oct_isnan(x) || oct_isnan(y))
         return x + y;
+    if (x == 0.0) {
+        if (y == 0.0)
+            return oct_signbit(x) ? copysign(oct_pi, y)
+                                  : copysign(0.0, y);
+        return copysign(oct_half_pi, y);
+    }
     if (x > 0.0)
         return atan(y / x);
-    if (x < 0.0)
-        return y >= 0.0 ? atan(y / x) + oct_pi
-                        : atan(y / x) - oct_pi;
-    if (y > 0.0)
-        return oct_half_pi;
-    if (y < 0.0)
-        return -oct_half_pi;
-    return copysign(0.0, y);
+    return oct_signbit(y) ? atan(y / x) - oct_pi
+                          : atan(y / x) + oct_pi;
 }
 
 double asin(double x)
@@ -813,6 +821,8 @@ double erf(double x)
     double t, polynomial, value;
 
     if (oct_isnan(x))
+        return x;
+    if (x == 0.0)
         return x;
     if (oct_isinf(x))
         return copysign(1.0, x);

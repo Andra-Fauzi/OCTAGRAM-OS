@@ -2,7 +2,6 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use alloc::string::String;
 use core::alloc::Layout;
 #[cfg(not(test))]
 use core::alloc::GlobalAlloc;

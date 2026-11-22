@@ -389,3 +389,28 @@ for a short interval. The QEMU gate requires the existing runtime marker, so
 these tests are part of the same guest execution path once the updated ISO is
 built. Thread creation is not considered fully validated until that QEMU run
 passes.
+
+## 3.8. Upstream target registration and dependency patching
+
+The pinned upstream Rust revision currently has three additional integration
+points beyond the custom JSON and the `std/build.rs` allowlist:
+
+1. Register a builtin target in
+   `compiler/rustc_target/src/spec/mod.rs` and add a target module under
+   `compiler/rustc_target/src/spec/targets/`. The module must describe the
+   actual OCTAGRAM host ABI and linker policy; it must not simply copy the
+   Linux target.
+2. Add `x86_64-unknown-octagram` to
+   `src/bootstrap/src/core/sanity.rs`'s `STAGE0_MISSING_TARGETS` while the
+   Stage 0 compiler does not know the new builtin target. Remove it only after
+   a later Stage 0 compiler contains the target.
+3. Patch and pin dependent crates such as upstream `libc` (and `cc` only if
+   the host build actually requires it) using the top-level Cargo patch
+   mechanism. Update lockfiles from the pinned source revision.
+
+These steps follow the upstream
+[Rust compiler guide for adding a target](https://rustc-dev-guide.rust-lang.org/building/new-target.html).
+They are recorded as required follow-up work; no builtin target registration
+or Stage 0 bootstrap patch is claimed in this repository yet. The immediate
+blocker remains the OCTAGRAM-specific libc/PAL contract and a successful
+`build-std=std` experiment.

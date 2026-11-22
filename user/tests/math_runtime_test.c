@@ -19,6 +19,12 @@ int main(void)
     int quotient = 0;
     double nan_value = NAN;
     double huge_value = HUGE_VAL;
+    union {
+        float value;
+        uint32_t bits;
+    } zero_float;
+    float float_fraction;
+    int float_exponent = 0;
 
     if (nan_value == nan_value || !(huge_value > 1.0e300) ||
         !(INFINITY > 1.0e300))
@@ -110,6 +116,30 @@ int main(void)
         return 25;
     if (remainder(-7.0, 2.0) != 1.0)
         return 26;
+
+    if (fabsf(-2.0f) != 2.0f || sqrtf(81.0f) != 9.0f ||
+        !near((double)sinf(0.5235987755982988f), 0.5, 1e-6))
+        return 30;
+    if (!near((double)expf(1.0f), 2.7182818, 1e-6) ||
+        !near((double)logf(2.7182818f), 1.0, 1e-6))
+        return 31;
+    float_fraction = frexpf(8.0f, &float_exponent);
+    if (float_fraction != 0.5f || float_exponent != 4 ||
+        ldexpf(float_fraction, float_exponent) != 8.0f)
+        return 32;
+    if (modff(-3.25f, &float_fraction) != -0.25f ||
+        float_fraction != -3.0f)
+        return 33;
+    zero_float.value = nextafterf(0.0f, 1.0f);
+    if (zero_float.bits != 1U)
+        return 34;
+    zero_float.value = nextafterf(0.0f, -1.0f);
+    if (zero_float.bits != UINT32_C(0x80000001))
+        return 35;
+    if (remquof(7.0f, 2.0f, &quotient) != -1.0f || quotient != 4)
+        return 36;
+    if (nexttowardf(1.0f, 1.0L) != 1.0f || nanf("float") == nanf("float"))
+        return 37;
 
     return 0;
 }

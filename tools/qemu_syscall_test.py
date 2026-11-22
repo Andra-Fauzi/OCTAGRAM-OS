@@ -221,6 +221,14 @@ def main():
         print("RUST-OS-ABI-FAIL: clock_gettime/getrandom/getpid runtime test failed")
         print(serial_text()[-5000:])
         return 1
+    if not wait_for_after("Rust runtime child process/waitpid: PASS", output_offset, 30):
+        print("RUST-PROCESS-FAIL: Rust fork/waitpid child ownership test failed")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("Rust runtime Command exec handshake: PASS", output_offset, 30):
+        print("RUST-COMMAND-FAIL: Rust Command exec success/failure handshake failed")
+        print(serial_text()[-5000:])
+        return 1
     if not wait_for_after("Rust runtime VM/pipe/futex/thread: PASS", output_offset, 30):
         print("RUST-HOST-ABI-FAIL: mmap/mprotect/munmap/pipe2/dup3/futex/thread runtime test failed")
         print(serial_text()[-5000:])

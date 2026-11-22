@@ -1453,6 +1453,47 @@ fn decode_exec_handshake(bytes: &[u8], eof: bool) -> Result<Option<i64>, i64> {
     }
 }
 
+/// A small process command builder for OCTAGRAM userspace.
+///
+/// Argument and environment vectors must be NUL-terminated pointer arrays,
+/// with their final element set to null. Descriptor mappings are inherited
+/// sources duplicated onto fd 0, 1, and 2 in the child.
+pub struct Command<'a> {
+    path: &'a CStr,
+    argv: &'a [*const c_char],
+    envp: &'a [*const c_char],
+    stdio: [Option<u64>; 3],
+}
+
+impl<'a> Command<'a> {
+    pub const fn new(
+        path: &'a CStr,
+        argv: &'a [*const c_char],
+        envp: &'a [*const c_char],
+    ) -> Self {
+        Self { path, argv, envp, stdio: [None, None, None] }
+    }
+
+    pub const fn stdin_from(mut self, fd: u64) -> Self {
+        self.stdio[0] = Some(fd);
+        self
+    }
+
+    pub const fn stdout_from(mut self, fd: u64) -> Self {
+        self.stdio[1] = Some(fd);
+        self
+    }
+
+    pub const fn stderr_from(mut self, fd: u64) -> Self {
+        self.stdio[2] = Some(fd);
+        self
+    }
+
+    pub fn spawn(&self) -> Result<Child, i64> {
+        spawn_with_stdio(self.path, self.argv, self.envp, self.stdio)
+    }
+}
+
 /// Spawn a program by forking, applying optional stdio descriptor mappings,
 /// then executing it. argv and envp must each include a trailing null pointer.
 /// The stdio array is [stdin, stdout, stderr]; None preserves the inherited fd.

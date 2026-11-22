@@ -29,6 +29,8 @@ extern char **environ;
 #define _SC_CLK_TCK 2
 #define _SC_NGROUPS_MAX 3
 #define _SC_OPEN_MAX 4
+#define _SC_HOST_NAME_MAX 5
+#define _SC_GETPW_R_SIZE_MAX 6
 #define _SC_PAGESIZE 30
 #define _SC_PAGE_SIZE 30
 #define _SC_NPROCESSORS_CONF 83

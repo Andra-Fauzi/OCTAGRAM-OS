@@ -1434,6 +1434,10 @@ pub fn execve(path: &CStr, argv: &[*const c_char], envp: &[*const c_char]) -> Re
     }
 }
 
+fn is_null_terminated_exec_vector(vector: &[*const c_char]) -> bool {
+    vector.last().is_some_and(|entry| entry.is_null())
+}
+
 /// Decode the close-on-exec handshake sent by a child when execve fails.
 /// None means EOF without a payload: execve replaced the child image.
 fn decode_exec_handshake(bytes: &[u8], eof: bool) -> Result<Option<i64>, i64> {
@@ -1515,8 +1519,8 @@ pub fn spawn_with_stdio(
     envp: &[*const c_char],
     stdio: [Option<u64>; 3],
 ) -> Result<Child, i64> {
-    if argv.last().copied() != Some(ptr::null())
-        || envp.last().copied() != Some(ptr::null())
+    if !is_null_terminated_exec_vector(argv)
+        || !is_null_terminated_exec_vector(envp)
     {
         return Err(-22);
     }
@@ -1778,6 +1782,16 @@ mod tests {
 
     use super::{build_dns_query, find_env_value, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen, Dirent};
     use core::alloc::Layout;
+
+    #[test]
+    fn exec_vectors_require_explicit_null_terminators() {
+        let valid = [core::ptr::null()];
+        let invalid: [*const core::ffi::c_char; 0] = [];
+        let not_terminated = [1usize as *const core::ffi::c_char];
+        assert!(super::is_null_terminated_exec_vector(&valid));
+        assert!(!super::is_null_terminated_exec_vector(&invalid));
+        assert!(!super::is_null_terminated_exec_vector(&not_terminated));
+    }
 
     #[test]
     fn exec_handshake_distinguishes_success_failure_and_corruption() {

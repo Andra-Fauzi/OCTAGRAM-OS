@@ -34,6 +34,22 @@ tertentu. Patch lokal harus terpisah, dapat di-rebase, dan memiliki test
 compile/test untuk target host OCTAGRAM. Jangan memodifikasi compiler
 menggunakan mrustc atau xrustc.
 
+### Patch upstream pertama
+
+Direktori `patches/rust/` kini menyimpan patch awal untuk menambahkan
+`target_os == "octagram"` ke allowlist `library/std/build.rs` pada upstream
+Rust commit `342d74463af7dd3018ef6aa04dd5500c2deb5bd1`. Target JSON OCTAGRAM
+sudah memilih `cfg(unix)`, sehingga dispatcher PAL upstream akan masuk ke
+jalur Unix generik.
+
+Patch ini sengaja hanya membuka gate `restricted_std`; ia **belum**
+menambahkan dukungan target pada crate `libc`, belum membangun PAL, dan
+belum membuktikan bahwa `std` dapat dikompilasi. Sebelum menganggapnya
+terintegrasi, patch harus diuji dengan `git apply --check` pada checkout
+yang persis sama, kemudian build-std harus dijalankan untuk mengumpulkan
+daftar API libc yang benar-benar hilang. Jangan menambahkan target ke allowlist
+sebagai jalan pintas untuk menyembunyikan kegagalan ABI.
+
 ## Peta awal PAL
 
 | Kebutuhan Rust std | Primitive OCTAGRAM yang tersedia | Pekerjaan PAL yang tersisa |

@@ -1251,7 +1251,7 @@ impl Iterator for DirectoryIter {
         if self.finished { return None; }
         match self.directory.next_entry() {
             Ok(Some(entry)) => match self.directory.fd.try_clone() {
-                Ok(parent) => Some(Ok(DirEntry { entry, parent })),
+                Ok(parent) => Some(Ok(DirEntry { entry, parent, parent_path: self.directory.path.clone() })),
                 Err(error) => {
                     self.finished = true;
                     Some(Err(error))
@@ -1284,6 +1284,7 @@ impl IntoIterator for Directory {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Directory {
     fd: OwnedFd,
+    path: OsString,
 }
 
 impl Directory {
@@ -1292,6 +1293,7 @@ impl Directory {
     pub fn open(path: &CStr) -> Result<Self, i64> {
         opendir(path).map(|fd| Self {
             fd: unsafe { OwnedFd::from_raw_fd(fd) },
+            path: OsString::from_bytes(path.to_bytes()),
         })
     }
 
@@ -1318,12 +1320,26 @@ impl Directory {
 pub struct DirEntry {
     entry: Dirent,
     parent: OwnedFd,
+    parent_path: OsString,
 }
 
 impl DirEntry {
     /// Return the entry name as raw bytes, without assuming UTF-8.
     pub fn name_bytes(&self) -> Option<&[u8]> {
         self.entry.name_bytes()
+    }
+
+    /// Return the entry name as an owned, byte-preserving OS string.
+    pub fn file_name(&self) -> Option<OsString> {
+        self.name_bytes().map(OsString::from_bytes)
+    }
+
+    /// Return the entry path by joining its name to the directory path.
+    pub fn path(&self) -> Option<PathBuf> {
+        let name = self.name_bytes()?;
+        let mut path = PathBuf { inner: self.parent_path.clone() };
+        path.push(name);
+        Some(path)
     }
 
     /// Return the entry's original OCTAGRAM directory record.
@@ -2209,6 +2225,7 @@ mod tests {
         let iterator = super::DirectoryIter {
             directory: super::Directory {
                 fd: unsafe { super::OwnedFd::from_raw_fd(1) },
+                path: super::OsString::new(),
             },
             finished: true,
         };
@@ -2216,6 +2233,29 @@ mod tests {
         let mut iterator = iterator;
         assert!(iterator.next().is_none());
         assert!(iterator.next().is_none());
+    }
+
+    #[test]
+    fn directory_entry_exposes_owned_name_and_path() {
+        let mut name = [0 as super::c_char; 256];
+        name[0] = b'x' as super::c_char;
+        name[1] = b'.' as super::c_char;
+        name[2] = b'c' as super::c_char;
+        name[3] = 0;
+        let entry = super::Dirent {
+            d_ino: 1,
+            d_off: 0,
+            d_reclen: (core::mem::offset_of!(super::Dirent, d_name) + 4) as u16,
+            d_type: super::DT_REG,
+            d_name: name,
+        };
+        let value = super::DirEntry {
+            entry,
+            parent: unsafe { super::OwnedFd::from_raw_fd(1) },
+            parent_path: super::OsString::from_bytes(b"/share/octagram"),
+        };
+        assert_eq!(value.file_name().unwrap().as_bytes(), b"x.c");
+        assert_eq!(value.path().unwrap().as_bytes(), b"/share/octagram/x.c");
     }
 
     #[test]

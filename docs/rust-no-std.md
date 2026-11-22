@@ -259,7 +259,7 @@ Saat satu stream output mencapai EOF, `Command::output()` sekarang mengubah desc
 
 ## Directory iterator
 
-`IntoIterator for Directory` menghasilkan `DirectoryIter`, sebuah owning iterator dengan item `Result<DirEntry, i64>`. Setiap `DirEntry` mempertahankan descriptor parent duplikat dan menyediakan `name_bytes()`, `metadata()`, serta `file_type()`, sehingga metadata tetap dapat dibaca setelah iterator mencapai EOF. EOF mengakhiri iterasi; error dikeluarkan sekali dan menghentikan iterasi. `DirectoryIter` mengimplementasikan `FusedIterator`.
+`IntoIterator for Directory` menghasilkan `DirectoryIter`, sebuah owning iterator dengan item `Result<DirEntry, i64>`. Setiap `DirEntry` mempertahankan descriptor parent duplikat dan menyediakan `name_bytes()`, `file_name()`, `path()`, `metadata()`, serta `file_type()`, sehingga metadata tetap dapat dibaca setelah iterator mencapai EOF. EOF mengakhiri iterasi; error dikeluarkan sekali dan menghentikan iterasi. `DirectoryIter` mengimplementasikan `FusedIterator`.
 
 ## OS strings dan path byte-preserving
 

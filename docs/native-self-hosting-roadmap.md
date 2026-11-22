@@ -1756,3 +1756,29 @@ didukung, dan `getrandom` belum memberikan jaminan cryptographic entropy.
 merupakan modul upstream `libc` dan belum membuktikan `std` dapat dikompilasi.
 Tahap berikutnya adalah implementasi modul `libc` target-specific serta compile
 test bertahap terhadap source upstream yang dipatok.
+
+## 29. Modul awal upstream libc OCTAGRAM berhasil di-cross-compile (22 November 2026)
+
+- Menambahkan patch `patches/libc/0001-unix-add-octagram-abi-module.patch`
+  terhadap upstream `rust-lang/libc` commit
+  `a03dd7c2e298b0ca482f30ce07efd3115938328e`.
+- Mendaftarkan `target_os = "octagram"` pada modul Unix lama dan modul
+  header baru upstream.
+- Menambahkan tipe dan record ABI OCTAGRAM dari header C, termasuk
+  `stat`, `dirent`, pthread objects, `passwd`, socket address,
+  `addrinfo`, `tm`, `fd_set`, `lconv`, `sem_t`, `termios`, dan
+  `sigaction`.
+- Menambahkan compile-time size/alignment/offset assertions untuk mencegah
+  perubahan layout diam-diam.
+- Menonaktifkan binding generik yang belum tersedia pada target OCTAGRAM:
+  pthread rwlock, `statvfs`, `dladdr`, dan fungsi `sigaction()`.
+- Workflow upstream patch kini menerapkan patch ke source yang dipatok dan
+  menjalankan cross-compile `libc` dengan nightly, `core`, dan custom target.
+
+<badge color="success">CI lulus</badge> Run `45042972852`: patch berhasil
+diterapkan dan upstream crate `libc` berhasil di-cross-compile.
+
+**Batas:** yang berhasil adalah crate `libc` dalam mode
+`--no-default-features`; Rust `std` belum dibangun atau diuji. Masih perlu
+audit semua API yang diekspor oleh Unix module generik, menghubungkan simbol
+PAL ke runtime OCTAGRAM, lalu menjalankan eksperimen `build-std=std`.

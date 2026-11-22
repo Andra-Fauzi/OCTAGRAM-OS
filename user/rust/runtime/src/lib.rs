@@ -881,6 +881,91 @@ pub fn chmod(path: &CStr, mode: u64) -> Result<(), i64> {
     }
 }
 
+/// An owned OCTAGRAM file descriptor.
+///
+/// Dropping this value closes the descriptor on the OCTAGRAM target. On host
+/// builds used for unit tests, Drop is inert because OCTAGRAM syscalls cannot
+/// be issued by the host test process.
+#[derive(Debug, PartialEq, Eq)]
+pub struct OwnedFd {
+    raw: u64,
+}
+
+const INVALID_FD: u64 = u64::MAX;
+
+impl OwnedFd {
+    /// Take ownership of a descriptor returned by an OCTAGRAM syscall.
+    ///
+    /// # Safety
+    /// The caller must own `raw` and must not close it or create another
+    /// owning wrapper for the same descriptor.
+    pub const unsafe fn from_raw_fd(raw: u64) -> Self {
+        Self { raw }
+    }
+
+    /// Return the underlying descriptor without transferring ownership.
+    pub const fn as_raw_fd(&self) -> u64 {
+        self.raw
+    }
+
+    /// Consume this wrapper and transfer descriptor ownership to the caller.
+    pub fn into_raw_fd(mut self) -> u64 {
+        core::mem::replace(&mut self.raw, INVALID_FD)
+    }
+
+    /// Explicitly close the descriptor and consume this owner.
+    pub fn close_owned(mut self) -> Result<(), i64> {
+        let raw = core::mem::replace(&mut self.raw, INVALID_FD);
+        if raw == INVALID_FD {
+            Ok(())
+        } else {
+            close(raw)
+        }
+    }
+
+    /// Read bytes through this owned descriptor.
+    pub fn read(&self, buffer: &mut [u8]) -> Result<usize, i64> {
+        read(self.raw, buffer)
+    }
+
+    /// Write bytes through this owned descriptor.
+    pub fn write(&self, bytes: &[u8]) -> Result<usize, i64> {
+        write(self.raw, bytes)
+    }
+
+    /// Seek this descriptor.
+    pub fn seek(&self, offset: i64, whence: u64) -> Result<i64, i64> {
+        lseek(self.raw, offset, whence)
+    }
+}
+
+impl Drop for OwnedFd {
+    fn drop(&mut self) {
+        if self.raw != INVALID_FD {
+            #[cfg(target_os = "octagram")]
+            {
+                let _ = close(self.raw);
+            }
+            self.raw = INVALID_FD;
+        }
+    }
+}
+
+/// Open a path and return an owning descriptor wrapper.
+pub fn open_owned(path: &CStr, flags: u64) -> Result<OwnedFd, i64> {
+    open(path, flags).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Open a directory-relative path and return an owning descriptor wrapper.
+pub fn openat_owned(
+    dirfd: i64,
+    path: &CStr,
+    flags: u64,
+    mode: u32,
+) -> Result<OwnedFd, i64> {
+    openat(dirfd, path, flags, mode).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
 pub fn close(fd: u64) -> Result<(), i64> {
     let result = unsafe { syscall1(4, fd) };
     if result < 0 {
@@ -1363,6 +1448,19 @@ mod tests {
             None
         );
         assert_eq!(super::allocation_user_range(base, 4096, 8, 0), None);
+    }
+
+    #[test]
+    fn owned_fd_supports_borrow_and_ownership_transfer() {
+        let owned = unsafe { super::OwnedFd::from_raw_fd(42) };
+        assert_eq!(owned.as_raw_fd(), 42);
+        let raw = owned.into_raw_fd();
+        assert_eq!(raw, 42);
+
+        let owned = unsafe { super::OwnedFd::from_raw_fd(7) };
+        assert_eq!(owned.as_raw_fd(), 7);
+        // Host Drop is intentionally inert; this test must not issue int 0x80.
+        drop(owned);
     }
 
     #[test]

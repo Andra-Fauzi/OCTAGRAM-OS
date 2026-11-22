@@ -181,7 +181,7 @@ s! {
     }
 }
 
-const _: [(); 88] = [(); core::mem::size_of::<stat>()];
+const _: [(); 112] = [(); core::mem::size_of::<stat>()];
 const _: [(); 8] = [(); core::mem::align_of::<stat>()];
 const _: [(); 280] = [(); core::mem::size_of::<dirent>()];
 const _: [(); 8] = [(); core::mem::align_of::<dirent>()];

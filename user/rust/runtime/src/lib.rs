@@ -1,5 +1,7 @@
 #![no_std]
+extern crate alloc;
 
+use alloc::vec::Vec;
 use core::alloc::Layout;
 #[cfg(not(test))]
 use core::alloc::GlobalAlloc;
@@ -1474,6 +1476,13 @@ fn decode_exec_handshake(bytes: &[u8], eof: bool) -> Result<Option<i64>, i64> {
     }
 }
 
+/// Captured stdout and raw OCTAGRAM exit status from a completed child.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CapturedOutput {
+    pub status: u64,
+    pub stdout: Vec<u8>,
+}
+
 /// A standard-I/O source for a child process.
 ///
 /// `Fd` borrows a descriptor for the duration of `spawn`;
@@ -1549,6 +1558,35 @@ impl<'a> Command<'a> {
     pub fn spawn(&self) -> Result<Child, i64> {
         let stdio = self.stdio.map(Stdio::raw_fd);
         spawn_with_stdio(self.path, self.argv, self.envp, stdio)
+    }
+
+    /// Spawn the command, capture stdout until EOF, then reap the child.
+    ///
+    /// Stderr follows this command's configured Stdio setting (inherited by
+    /// default). The returned status is OCTAGRAM's raw exit value.
+    pub fn output(&self) -> Result<CapturedOutput, i64> {
+        let [read_end, write_end] = pipe2_owned(O_CLOEXEC)?;
+        let mut stdio = self.stdio.map(Stdio::raw_fd);
+        stdio[1] = Some(write_end.as_raw_fd());
+        let mut child = spawn_with_stdio(self.path, self.argv, self.envp, stdio)?;
+        drop(write_end);
+
+        let mut stdout = Vec::new();
+        let mut buffer = [0u8; 1024];
+        loop {
+            match read_end.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => stdout.extend_from_slice(&buffer[..count]),
+                Err(-4) => continue,
+                Err(error) => {
+                    let _ = child.wait();
+                    return Err(error);
+                }
+            }
+        }
+
+        let status = child.wait()?;
+        Ok(CapturedOutput { status, stdout })
     }
 }
 

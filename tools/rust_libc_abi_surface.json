@@ -135,13 +135,21 @@
     "poll_and_sockets"
   ],
   "known_gaps": [
-    "No verified upstream rust-lang/libc target module exists yet.",
     "OCTAGRAM libc is not glibc or musl ABI-compatible; upstream libc module must describe OCTAGRAM's own ABI.",
     "Generic Rust Unix PAL may request libc functions or constants absent from current OCTAGRAM headers/runtime.",
     "struct stat is a translated public C structure; raw kernel oct_stat must not be confused with it.",
     "pthread_detach returns ENOTSUP; full POSIX thread semantics are not implemented.",
     "sendmsg and recvmsg return ENOSYS; socket API is partial.",
     "getrandom currently uses xorshift seeded from TSC and is not a cryptographic entropy guarantee.",
-    "The manifest records source-level ABI facts; it does not prove Rust std builds or runs."
-  ]
+    "The manifest records source-level ABI facts; it does not prove Rust std builds or runs.",
+    "The initial upstream libc target module compiles for the custom target, but full Rust std linkage and runtime behavior are not yet verified."
+  ],
+  "upstream_libc": {
+    "repository": "rust-lang/libc",
+    "commit": "a03dd7c2e298b0ca482f30ce07efd3115938328e",
+    "applicator": "tools/apply_rust_libc_octagram.py",
+    "target_module": "patches/rust-libc/octagram/mod.rs",
+    "validation": "nightly -Zjson-target-spec -Zbuild-std=core check",
+    "verified_workflow_run": "45045459269"
+  }
 }

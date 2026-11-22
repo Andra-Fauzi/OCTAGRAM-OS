@@ -75,7 +75,6 @@ test -s "$WORK/poc.c"
 # feature and AtomicU128 code, which the PoC program never reaches.
 python3 "$ROOT/tools/mrustc_poc/patch_core.py" "$WORK/libcore.c"
 test -s "$WORK/libcore.c"
-test -s "$WORK/poc.c"test -s "$WORK/libcore.c"
 test -s "$WORK/poc.c"
 
 rm -f "$IMAGE"

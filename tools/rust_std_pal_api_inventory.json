@@ -352,6 +352,24 @@
       "header": "user/include/pthread.h",
       "status": "implemented",
       "notes": "Required by generic Rust Unix PAL mutex/condition-variable initialization"
+    },
+    {
+      "symbol": "pthread_attr_init",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Thread attribute lifecycle and stack sizing used by generic Rust Unix PAL"
+    },
+    {
+      "symbol": "pthread_attr_destroy",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Thread attribute lifecycle and stack sizing used by generic Rust Unix PAL"
+    },
+    {
+      "symbol": "pthread_attr_setstacksize",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Thread attribute lifecycle and stack sizing used by generic Rust Unix PAL"
     }
   ]
 }

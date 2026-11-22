@@ -54,7 +54,7 @@ class PatchCoreTests(unittest.TestCase):
     def test_patch_file_replaces_valid_input_atomically(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "libcore.c"
-            path.write_text(XGETBV + "\\n" + ATOMIC128)
+            path.write_text(XGETBV + "\n" + ATOMIC128)
             patch_file(path)
             result = path.read_text()
             self.assertIn(XGETBV, result)
@@ -64,7 +64,7 @@ class PatchCoreTests(unittest.TestCase):
     def test_patch_file_preserves_original_on_validation_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "libcore.c"
-            original = XGETBV + "\\n" + ATOMIC128 + "\\n" + ATOMIC128
+            original = XGETBV + "\n" + ATOMIC128 + "\n" + ATOMIC128
             path.write_text(original)
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 patch_file(path)

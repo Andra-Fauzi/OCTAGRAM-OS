@@ -414,3 +414,16 @@ They are recorded as required follow-up work; no builtin target registration
 or Stage 0 bootstrap patch is claimed in this repository yet. The immediate
 blocker remains the OCTAGRAM-specific libc/PAL contract and a successful
 `build-std=std` experiment.
+
+### M4.2 progress — upstream libc target slice (2026-11-22)
+
+The first OCTAGRAM-specific module for upstream `rust-lang/libc` now
+cross-compiles on the pinned upstream revision
+`a03dd7c2e298b0ca482f30ce07efd3115938328e`. The integration is applied by
+`tools/apply_rust_libc_octagram.py`; CI runs it before compiling libc with
+`-Zbuild-std=core`. The module has compile-time ABI layout assertions and
+the public C header checker validates its source layouts.
+
+This advances only the libc dependency groundwork. The M4.2 tasks for full
+libc/PAL conformance and Rust `std` remain open. The successful compile does
+not prove that every declared function links or behaves correctly at runtime.

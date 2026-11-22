@@ -1,7 +1,9 @@
+#include <stdint.h>
+
 /*
- * Compile-only probe for the XGETBV assembler instruction.
- * Do not execute this function unless CPUID reports OSXSAVE support and the
- * operating system has enabled the required XCR0 state components.
+ * Compile-and-inspect probe for XGETBV. The test's main() scans the function
+ * bytes for 0F 01 D0 but never calls this function: executing it is conditional
+ * on CPUID.OSXSAVE and CR4.OSXSAVE/XCR0 state.
  */
 unsigned long long octagram_read_xcr(unsigned int index)
 {
@@ -13,8 +15,17 @@ unsigned long long octagram_read_xcr(unsigned int index)
     return ((unsigned long long)high << 32) | low;
 }
 
-/* Keep the XGETBV function in the object, but never invoke it in this test. */
 int main(void)
 {
-    return 0;
+    unsigned long long (*function)(unsigned int) = octagram_read_xcr;
+    const unsigned char *code =
+        (const unsigned char *)(uintptr_t)function;
+    unsigned int index;
+
+    for (index = 0; index + 2 < 64; ++index) {
+        if (code[index] == 0x0f && code[index + 1] == 0x01 &&
+            code[index + 2] == 0xd0)
+            return 0;
+    }
+    return 33;
 }

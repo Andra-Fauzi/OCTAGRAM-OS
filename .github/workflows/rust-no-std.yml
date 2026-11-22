@@ -68,8 +68,8 @@ jobs:
         run: |
           set -euo pipefail
           cd upstream-libc
-          git apply --check ../patches/rust-libc/0001-add-octagram-abi.patch
-          git apply ../patches/rust-libc/0001-add-octagram-abi.patch
+          git apply --ignore-whitespace --check ../patches/rust-libc/0001-add-octagram-abi.patch
+          git apply --ignore-whitespace ../patches/rust-libc/0001-add-octagram-abi.patch
           cd ..
           cargo +nightly -Zjson-target-spec -Zbuild-std=core check \
             --manifest-path upstream-libc/Cargo.toml \

@@ -1268,7 +1268,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn dirent_matches_octagram_c_abi() {
         assert_eq!(core::mem::size_of::<super::Dirent>(), 280);
         assert_eq!(core::mem::align_of::<super::Dirent>(), 8);
@@ -1279,6 +1278,7 @@ mod tests {
         assert_eq!(core::mem::offset_of!(super::Dirent, d_name), 19);
     }
 
+    #[test]
     fn timespec_matches_octagram_c_abi() {
         assert_eq!(core::mem::size_of::<super::Timespec>(), 16);
         assert_eq!(core::mem::align_of::<super::Timespec>(), 8);

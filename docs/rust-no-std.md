@@ -150,8 +150,12 @@ The runtime now also exposes typed wrappers for `openat`, `fstat`,
 `fstatat`, `lseek`, `mkdirat`, `unlinkat`, and `renameat`, plus the
 OCTAGRAM `AT_FDCWD`, `AT_SYMLINK_NOFOLLOW`, and `SEEK_*` constants.
 The Rust guest smoke binary exercises `openat`, `fstat`, `fstatat`, and
-`lseek` against a seeded source file. Host tests check the C-compatible
-`FileStat` layout and path/seek constants.
+`lseek` against a seeded source file. It also exercises `opendir`,
+`readdir`, and `closedir` against the seeded `/share/octagram` directory,
+checking for `message.c` and the end-of-directory result. The QEMU syscall
+test requires the dedicated directory-iteration success marker. Host tests
+check the C-compatible `FileStat` and `Dirent` layouts and their field
+offsets.k constants.
 
 These interfaces move the filesystem side closer to the needs of Cargo, but
 they do not yet constitute a complete `std::fs` backend: directory iteration,

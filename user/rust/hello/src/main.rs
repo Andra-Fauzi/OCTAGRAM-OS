@@ -11,9 +11,9 @@ use core::panic::PanicInfo;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
-    close, closedir, clock_getres, clock_gettime, dup3, exit, fstat, fstatat, futex, getpid,
-    getrandom, mmap, mprotect, munmap, nanosleep, openat_owned, opendir, pipe2, read, readdir,
-    stat_path, thread_create,
+    close, closedir, clock_getres, clock_gettime, dup3, exit, fstatat, futex, getpid,
+    getrandom, mmap, mprotect, munmap, nanosleep, opendir, pipe2, read, readdir,
+    stat_path, thread_create, File,
     thread_exit, thread_join, thread_self, write, write_all,
     AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
 };
@@ -90,26 +90,26 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(metadata) if metadata.size > 0 => metadata,
         _ => return 4,
     };
-    let fd = match openat_owned(AT_FDCWD, path, O_RDONLY, 0) {
-        Ok(fd) => fd,
+    let file = match File::openat(AT_FDCWD, path, O_RDONLY, 0) {
+        Ok(file) => file,
         Err(_) => return 5,
     };
-    let descriptor_metadata = match fstat(fd.as_raw_fd()) {
+    let descriptor_metadata = match file.metadata() {
         Ok(metadata) if metadata.size > 0 => metadata,
         _ => return 6,
     };
     if descriptor_metadata.size != metadata.size || relative_metadata.size != metadata.size {
         return 7;
     }
-    if fd.seek(0, SEEK_SET) != Ok(0) {
+    if file.seek(0, SEEK_SET) != Ok(0) {
         return 8;
     }
     let mut sample = [0u8; 32];
-    let read_result = fd.read(&mut sample);
-    let close_result = fd.close_owned();
-    match (read_result, close_result) {
-        (Ok(count), Ok(())) if count > 0 && metadata.size >= count as u64 => {}
-        _ => return 9,
+    if file.read_exact(&mut sample).is_err() || metadata.size < sample.len() as u64 {
+        return 9;
+    }
+    if file.close().is_err() {
+        return 10;
     }
     // Directory iteration is required by std::fs::read_dir and Cargo discovery.
     let directory_path = match CStr::from_bytes_with_nul(b"/share/octagram\0") {

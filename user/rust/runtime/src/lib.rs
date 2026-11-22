@@ -353,16 +353,8 @@ pub fn write(fd: u64, bytes: &[u8]) -> Result<usize, i64> {
     checked_result(result)
 }
 
-pub fn write_all(fd: u64, mut bytes: &[u8]) -> Result<(), i64> {
-    while !bytes.is_empty() {
-        let chunk = bytes.len().min(MAX_SYSCALL_IO);
-        let written = write(fd, &bytes[..chunk])?;
-        if written == 0 || written > chunk {
-            return Err(-5);
-        }
-        bytes = &bytes[written..];
-    }
-    Ok(())
+pub fn write_all(fd: u64, bytes: &[u8]) -> Result<(), i64> {
+    write_all_with(bytes, |remaining| write(fd, remaining))
 }
 
 pub fn read(fd: u64, buffer: &mut [u8]) -> Result<usize, i64> {
@@ -951,6 +943,77 @@ impl Drop for OwnedFd {
     }
 }
 
+/// A small std-like file handle built on OCTAGRAM's owned descriptor.
+///
+/// This is deliberately a no_std abstraction: it provides the byte-oriented
+/// operations needed by a future std::sys::pal implementation without
+/// pretending that the full Rust standard library is available.
+#[derive(Debug, PartialEq, Eq)]
+pub struct File {
+    fd: OwnedFd,
+}
+
+impl File {
+    /// Open an existing path with the supplied OCTAGRAM open flags.
+    pub fn open(path: &CStr, flags: u64) -> Result<Self, i64> {
+        open_owned(path, flags).map(Self::from_owned_fd)
+    }
+
+    /// Open a path relative to a directory descriptor.
+    pub fn openat(dirfd: i64, path: &CStr, flags: u64, mode: u32) -> Result<Self, i64> {
+        openat_owned(dirfd, path, flags, mode).map(Self::from_owned_fd)
+    }
+
+    /// Wrap an already-owned descriptor.
+    pub const fn from_owned_fd(fd: OwnedFd) -> Self { Self { fd } }
+    /// Borrow the underlying descriptor.
+    pub const fn as_raw_fd(&self) -> u64 { self.fd.as_raw_fd() }
+    /// Read up to the buffer length. A zero result is EOF.
+    pub fn read(&self, buffer: &mut [u8]) -> Result<usize, i64> { self.fd.read(buffer) }
+    /// Fill the complete buffer, returning -EIO if EOF arrives too early.
+    pub fn read_exact(&self, buffer: &mut [u8]) -> Result<(), i64> {
+        read_exact_with(buffer, |remaining| self.read(remaining))
+    }
+    /// Write one buffer; a short write is allowed.
+    pub fn write(&self, bytes: &[u8]) -> Result<usize, i64> { self.fd.write(bytes) }
+    /// Write all bytes, handling partial writes. A zero write is -EIO.
+    pub fn write_all(&self, bytes: &[u8]) -> Result<(), i64> {
+        write_all_with(bytes, |remaining| self.write(remaining))
+    }
+    /// Change or query the current file offset.
+    pub fn seek(&self, offset: i64, whence: u64) -> Result<i64, i64> {
+        self.fd.seek(offset, whence)
+    }
+    /// Read metadata for this open descriptor.
+    pub fn metadata(&self) -> Result<FileStat, i64> { fstat(self.as_raw_fd()) }
+    /// Transfer ownership of the raw descriptor to the caller.
+    pub fn into_raw_fd(self) -> u64 { self.fd.into_raw_fd() }
+    /// Close the descriptor explicitly.
+    pub fn close(self) -> Result<(), i64> { self.fd.close_owned() }
+}
+
+fn read_exact_with<F>(mut buffer: &mut [u8], mut read_once: F) -> Result<(), i64>
+where F: FnMut(&mut [u8]) -> Result<usize, i64>,
+{
+    while !buffer.is_empty() {
+        let count = read_once(buffer)?;
+        if count == 0 || count > buffer.len() { return Err(-5); }
+        buffer = &mut buffer[count..];
+    }
+    Ok(())
+}
+
+fn write_all_with<F>(mut bytes: &[u8], mut write_once: F) -> Result<(), i64>
+where F: FnMut(&[u8]) -> Result<usize, i64>,
+{
+    while !bytes.is_empty() {
+        let chunk_len = bytes.len().min(MAX_SYSCALL_IO);
+        let count = write_once(&bytes[..chunk_len])?;
+        if count == 0 || count > chunk_len { return Err(-5); }
+        bytes = &bytes[count..];
+    }
+    Ok(())
+}
 /// Open a path and return an owning descriptor wrapper.
 pub fn open_owned(path: &CStr, flags: u64) -> Result<OwnedFd, i64> {
     open(path, flags).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
@@ -1463,6 +1526,48 @@ mod tests {
         drop(owned);
     }
 
+    #[test]
+    fn file_read_exact_handles_partial_reads_and_reports_early_eof() {
+        let source = b"octagram";
+        let mut offset = 0usize;
+        let mut output = [0u8; 8];
+        let result = super::read_exact_with(&mut output, |remaining| {
+            let count = remaining.len().min(3).min(source.len() - offset);
+            remaining[..count].copy_from_slice(&source[offset..offset + count]);
+            offset += count;
+            Ok(count)
+        });
+        assert_eq!(result, Ok(()));
+        assert_eq!(&output, source);
+        let mut short = [0u8; 9];
+        assert_eq!(super::read_exact_with(&mut short, |remaining| {
+            let count = remaining.len().min(source.len() - offset);
+            remaining[..count].copy_from_slice(&source[offset..offset + count]);
+            offset += count;
+            Ok(count)
+        }), Err(-5));
+    }
+
+    #[test]
+    fn file_write_all_handles_partial_writes_and_rejects_zero_progress() {
+        let source = b"native-file-api";
+        let mut output = std::vec::Vec::new();
+        assert_eq!(super::write_all_with(source, |remaining| {
+            let count = remaining.len().min(4);
+            output.extend_from_slice(&remaining[..count]);
+            Ok(count)
+        }), Ok(()));
+        assert_eq!(output, source);
+        assert_eq!(super::write_all_with(source, |_| Ok(0)), Err(-5));
+    }
+
+    #[test]
+    fn file_wraps_owned_descriptor_and_transfers_it() {
+        let owned = unsafe { super::OwnedFd::from_raw_fd(19) };
+        let file = super::File::from_owned_fd(owned);
+        assert_eq!(file.as_raw_fd(), 19);
+        assert_eq!(file.into_raw_fd(), 19);
+    }
     #[test]
     fn syscall_error_decoding_preserves_errno_semantics() {
         let interrupted = super::SysError::from_return(-4).unwrap();

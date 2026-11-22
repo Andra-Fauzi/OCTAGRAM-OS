@@ -322,6 +322,36 @@
       "header": "user/include/pthread.h",
       "status": "implemented",
       "notes": "Rust std Unix PAL selects PTHREAD_MUTEX_NORMAL; OCTAGRAM validates this only supported mutex type"
+    },
+    {
+      "symbol": "pthread_mutexattr_init",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Required by generic Rust Unix PAL mutex/condition-variable initialization"
+    },
+    {
+      "symbol": "pthread_mutexattr_destroy",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Required by generic Rust Unix PAL mutex/condition-variable initialization"
+    },
+    {
+      "symbol": "pthread_condattr_init",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Required by generic Rust Unix PAL mutex/condition-variable initialization"
+    },
+    {
+      "symbol": "pthread_condattr_destroy",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Required by generic Rust Unix PAL mutex/condition-variable initialization"
+    },
+    {
+      "symbol": "pthread_condattr_setclock",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Required by generic Rust Unix PAL mutex/condition-variable initialization"
     }
   ]
 }

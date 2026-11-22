@@ -1,4 +1,3 @@
-import os
 import tempfile
 import unittest
 
@@ -20,9 +19,9 @@ class QemuLogTailTests(unittest.TestCase):
 
     def test_replacement_decoding_handles_invalid_bytes(self):
         with tempfile.NamedTemporaryFile(mode="wb") as handle:
-            handle.write(b"ok\xff")
+            handle.write(b"0123456789\xff")
             handle.flush()
-            self.assertEqual(qemu_log_tail(handle.name), "ok\ufffd")
+            self.assertEqual(qemu_log_tail(handle.name, limit=1), "\ufffd")
 
 
 if __name__ == "__main__":

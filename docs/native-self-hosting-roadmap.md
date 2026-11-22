@@ -1362,8 +1362,9 @@ status berikut:
    `user/third_party/tinycc/lib/overflow.c` memeriksa rentang signed/unsigned
    8/16/32/64 bit dan menyimpan bit hasil, termasuk ketika overflow terjadi.
    Tes helper host tersedia; `qemu_test.py` kini lebih dahulu mengompilasi dan
-   menjalankan source builtin kecil di guest. **Hasil QEMU belum dijalankan /
-   diverifikasi dalam sesi ini.**
+   menjalankan source builtin kecil di guest. Implementasi builtin dibatasi
+   integer 8/16/32/64 bit; TinyCC belum memiliki tipe integer sumber 128-bit.
+   **Hasil QEMU belum dijalankan / diverifikasi dalam sesi ini.**
 4. **XGETBV assembler — implementasi ditambahkan.** Tabel assembler x86
    TinyCC mengenali mnemonic `xgetbv` dan mengeluarkan encoding tetap
    `0F 01 D0`. Source `user/examples/tcc_xgetbv.c` menggunakan inline asm GCC-style. Dua

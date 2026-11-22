@@ -331,7 +331,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(pipe) => pipe,
         Err(_) => return 49,
     };
-    let capture_arg2 = CStr::from_bytes_with_nul(b"printf OCTAGRAM-PIPE-PASS\0").unwrap();
+    let capture_arg2 = CStr::from_bytes_with_nul(b"printf OCTAGRAM-PIPE-PASS; printf OCTAGRAM-STDERR-PASS >&2\0").unwrap();
     let capture_argv = [
         shell_arg0.as_ptr(),
         shell_arg1.as_ptr(),
@@ -370,7 +370,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(output) => output,
         Err(_) => return 55,
     };
-    if output.status != 0 || output.stdout.as_slice() != b"OCTAGRAM-PIPE-PASS" {
+    if output.status != 0\n        || output.stdout.as_slice() != b"OCTAGRAM-PIPE-PASS"\n        || output.stderr.as_slice() != b"OCTAGRAM-STDERR-PASS"\n    {
         return 56;
     }
     if write_all(STDOUT, b"Rust runtime Command::output: PASS\n").is_err() {

@@ -231,6 +231,10 @@ def main():
             print("TCC-MATH-RUN-FAIL")
             print(serial_text()[offset:][-3000:])
             return 1
+        if not wait_for("program exited with status 0", offset, 30):
+            print("TCC-MATH-EXIT-FAIL")
+            print(serial_text()[offset:][-3000:])
+            return 1
         if not wait_prompt(offset, 30):
             print("TCC-MATH-PROMPT-FAIL")
             print(serial_text()[offset:][-3000:])
@@ -253,6 +257,10 @@ def main():
         send_line("run /mnt/tcc_atomic128_shim.elf")
         if not wait_for("TCC-ATOMIC128-SHIM-PASS", offset, 60):
             print("TCC-ATOMIC128-SHIM-RUN-FAIL")
+            print(serial_text()[offset:][-3000:])
+            return 1
+        if not wait_for("program exited with status 0", offset, 30):
+            print("TCC-ATOMIC128-SHIM-EXIT-FAIL")
             print(serial_text()[offset:][-3000:])
             return 1
         if not wait_prompt(offset, 30):

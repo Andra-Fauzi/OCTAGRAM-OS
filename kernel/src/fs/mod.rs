@@ -58,6 +58,8 @@ const TCC_SMOKE_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_smoke
 const TCC_OVERFLOW_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_overflow.c");
 const TCC_XGETBV_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_xgetbv.c");
 const TCC_MATH_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_math.c");
+const TCC_ATOMIC128_SHIM_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_atomic128_shim.c");
+const TCC_ATOMIC128_FIX_HEADER: &[u8] = include_bytes!("../../../tools/mrustc_poc/fix.h");
 const TCC_SMOKE_MINIMAL_SOURCE: &[u8] =
     include_bytes!("../../../user/examples/tcc_smoke_minimal.c");
 const USER_HEADERS: &[(&str, &[u8])] = &[
@@ -919,6 +921,8 @@ pub fn init() {
         seed_file(&mut vfs, "/tmp/tcc-overflow.c", TCC_OVERFLOW_SOURCE, 0o644);
         seed_file(&mut vfs, "/tmp/tcc-xgetbv.c", TCC_XGETBV_SOURCE, 0o644);
         seed_file(&mut vfs, "/tmp/tcc-math.c", TCC_MATH_SOURCE, 0o644);
+        seed_file(&mut vfs, "/tmp/tcc-atomic128-shim.c", TCC_ATOMIC128_SHIM_SOURCE, 0o644);
+        seed_file(&mut vfs, "/tmp/tcc-atomic128-fix.h", TCC_ATOMIC128_FIX_HEADER, 0o644);
         seed_file(
             &mut vfs,
             "/etc/os-release",
@@ -1173,6 +1177,17 @@ mod tests {
                 include_bytes!("../../../user/examples/tcc_math.c");
             let tcc_math_metadata = vfs.metadata("/tmp/tcc-math.c").unwrap();
             assert_eq!(tcc_math_metadata.len, tcc_math_source.len());
+
+            let tcc_atomic128_source =
+                include_bytes!("../../../user/examples/tcc_atomic128_shim.c");
+            let tcc_atomic128_metadata =
+                vfs.metadata("/tmp/tcc-atomic128-shim.c").unwrap();
+            assert_eq!(tcc_atomic128_metadata.len, tcc_atomic128_source.len());
+            let tcc_atomic128_fix =
+                include_bytes!("../../../tools/mrustc_poc/fix.h");
+            let tcc_atomic128_fix_metadata =
+                vfs.metadata("/tmp/tcc-atomic128-fix.h").unwrap();
+            assert_eq!(tcc_atomic128_fix_metadata.len, tcc_atomic128_fix.len());
 
             for (path, expected) in [
                 (

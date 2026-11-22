@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Apply the narrowly scoped compatibility rewrites needed by the TCC PoC."""
+"""Apply the remaining narrowly scoped mrustc-to-TinyCC compatibility rewrite."""
 
 import pathlib
 import sys
 
 XGETBV = '__asm__ __volatile__ ("xgetbv" : "=a" (lo), "=d" (hi) : "c" (arg0) );'
-XGETBV_REPLACEMENT = "lo = 0; hi = 0; /* tcc: no XGETBV opcode */"
+OBSOLETE_XGETBV_STUB = "lo = 0; hi = 0; /* tcc: no XGETBV opcode */"
 ATOMIC128 = (
     "atomic_compare_exchange_strong_explicit((uint128_t _Atomic *)arg0, "
     "&var1._0, arg2, memory_order_seq_cst, memory_order_seq_cst)"
@@ -16,20 +16,20 @@ ATOMIC128_REPLACEMENT = (
 
 
 def rewrite(source: str) -> str:
-    """Rewrite known mrustc output, accepting an already-rewritten file."""
-    if XGETBV in source:
-        source = source.replace(XGETBV, XGETBV_REPLACEMENT)
-    elif XGETBV_REPLACEMENT not in source:
+    """Preserve real XGETBV assembly and rewrite the still-unsupported AtomicU128."""
+    if XGETBV not in source:
         raise ValueError("expected XGETBV fragment not found; mrustc output changed")
+    if OBSOLETE_XGETBV_STUB in source:
+        raise ValueError("obsolete XGETBV no-op stub found; keep the real instruction")
 
     if ATOMIC128 in source:
         source = source.replace(ATOMIC128, ATOMIC128_REPLACEMENT)
     elif ATOMIC128_REPLACEMENT not in source:
         raise ValueError("expected AtomicU128 fragment not found; mrustc output changed")
 
-    if '__asm__ __volatile__ ("xgetbv"' in source:
-        raise ValueError("unpatched XGETBV instruction remains")
-    if "atomic_compare_exchange_strong_explicit((uint128_t _Atomic *)arg0" in source:
+    if XGETBV not in source:
+        raise ValueError("XGETBV instruction was unexpectedly modified")
+    if ATOMIC128 in source:
         raise ValueError("unpatched AtomicU128 intrinsic remains")
     return source
 
@@ -48,7 +48,7 @@ def main() -> int:
     except (OSError, ValueError) as error:
         print("mrustc compatibility patch failed: %s" % error, file=sys.stderr)
         return 1
-    print("validated libcore.c compatibility rewrites: XGETBV + AtomicU128")
+    print("validated libcore.c compatibility rewrite: AtomicU128 (XGETBV preserved)")
     return 0
 
 

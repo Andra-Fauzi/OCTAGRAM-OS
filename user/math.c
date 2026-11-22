@@ -1059,7 +1059,6 @@ float nanf(const char *tag) { return (float)nan(tag); }
 float nextafterf(float x, float y)
 {
     OctFloatBits bits;
-    OctFloatBits other;
 
     if (x != x || y != y)
         return x + y;
@@ -1071,7 +1070,6 @@ float nextafterf(float x, float y)
         return bits.value;
     }
     bits.value = x;
-    other.value = y;
     if (((x > 0.0f) == (y > x)))
         ++bits.bits;
     else

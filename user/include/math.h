@@ -68,7 +68,7 @@ double asinh(double);
 double atanh(double);
 double exp2(double);
 double expm1(double);
-double ilogb(double);
+int ilogb(double);
 double log1p(double);
 double log2(double);
 double logb(double);

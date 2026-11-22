@@ -67,8 +67,8 @@ jobs:
       - name: Checkout exact pinned libc commit
         working-directory: libc-src
         run: |
-          git fetch --depth=1 origin a03dd7c2e298b0ca482f30ce07efd3115938328
-          git checkout --detach a03dd7c2e298b0ca482f30ce07efd3115938328
+          git fetch --depth=1 origin a03dd7c2e298b0ca482f30ce07efd3115938328e
+          git checkout --detach a03dd7c2e298b0ca482f30ce07efd3115938328e
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly

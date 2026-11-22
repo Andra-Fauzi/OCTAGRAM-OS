@@ -143,6 +143,25 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
+    # Verify that the real freestanding math object is available through libc.a.
+    output_offset = len(serial_text())
+    send_line("tcc /tmp/tcc-math.c -o /tmp/tcc-math.elf")
+    if not wait_for_after("program exited with status 0", output_offset, 90):
+        print("TCC-MATH-COMPILE-FAIL: guest math program did not link against libc.a")
+        print(serial_text()[-5000:])
+        return 1
+
+    output_offset = len(serial_text())
+    send_line("run /tmp/tcc-math.elf")
+    if not wait_for_after("TCC-MATH-PASS", output_offset, 60):
+        print("TCC-MATH-RUN-FAIL: guest math regression cases failed")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("program exited with status 0", output_offset, 15):
+        print("TCC-MATH-RUN-FAIL: guest math program did not exit successfully")
+        print(serial_text()[-5000:])
+        return 1
+
     # Exercise the shell's native ELF linker with two independent TinyCC
     # objects and a cross-object PLT32/PC32 call relocation.
     for command, label in (

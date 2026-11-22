@@ -2,6 +2,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use alloc::string::String;
 use core::alloc::Layout;
 #[cfg(not(test))]
 use core::alloc::GlobalAlloc;
@@ -21,6 +22,119 @@ pub const O_CREAT: u64 = 1 << 8;
 pub const O_TRUNC: u64 = 1 << 9;
 pub const O_APPEND: u64 = 1 << 10;
 pub const O_CLOEXEC: u64 = 1 << 19;
+
+/// Borrowed operating-system string represented as arbitrary non-NUL-agnostic bytes.
+/// Unlike Rust UTF-8 strings, this type preserves names that are not valid UTF-8.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OsStr<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> OsStr<'a> {
+    pub const fn from_bytes(bytes: &'a [u8]) -> Self { Self { bytes } }
+    pub const fn as_bytes(self) -> &'a [u8] { self.bytes }
+    pub fn to_os_string(self) -> OsString { OsString { bytes: self.bytes.to_vec() } }
+    pub fn to_str(self) -> Option<&'a str> { core::str::from_utf8(self.bytes).ok() }
+    pub fn is_empty(self) -> bool { self.bytes.is_empty() }
+    pub fn contains_nul(self) -> bool { self.bytes.contains(&0) }
+}
+
+/// Owned operating-system string. It stores raw bytes and never assumes UTF-8.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OsString {
+    bytes: Vec<u8>,
+}
+
+impl OsString {
+    pub const fn new() -> Self { Self { bytes: Vec::new() } }
+    pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Self {
+        Self { bytes: bytes.as_ref().to_vec() }
+    }
+    pub fn as_os_str(&self) -> OsStr<'_> { OsStr::from_bytes(&self.bytes) }
+    pub fn as_bytes(&self) -> &[u8] { &self.bytes }
+    pub fn into_bytes(self) -> Vec<u8> { self.bytes }
+    pub fn push(&mut self, value: OsStr<'_>) { self.bytes.extend_from_slice(value.as_bytes()); }
+    pub fn try_to_cstring_bytes(&self) -> Result<Vec<u8>, i64> {
+        if self.bytes.contains(&0) { return Err(-22); }
+        let mut result = self.bytes.clone();
+        result.push(0);
+        Ok(result)
+    }
+    pub fn to_str(&self) -> Option<&str> { core::str::from_utf8(&self.bytes).ok() }
+    pub fn is_empty(&self) -> bool { self.bytes.is_empty() }
+}
+
+impl<'a> From<&'a str> for OsString {
+    fn from(value: &'a str) -> Self { Self::from_bytes(value.as_bytes()) }
+}
+
+/// Borrowed path view using Unix-style '/' separators and raw OS bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Path<'a> {
+    os_str: OsStr<'a>,
+}
+
+impl<'a> Path<'a> {
+    pub const fn new(bytes: &'a [u8]) -> Self { Self { os_str: OsStr::from_bytes(bytes) } }
+    pub const fn as_os_str(self) -> OsStr<'a> { self.os_str }
+    pub const fn as_bytes(self) -> &'a [u8] { self.os_str.as_bytes() }
+    pub const fn is_absolute(self) -> bool {
+        !self.as_bytes().is_empty() && self.as_bytes()[0] == b'/'
+    }
+    pub fn file_name(self) -> Option<OsStr<'a>> {
+        let bytes = self.as_bytes();
+        let end = bytes.iter().rposition(|byte| *byte != b'/')? + 1;
+        let start = bytes[..end].iter().rposition(|byte| *byte == b'/').map(|i| i + 1).unwrap_or(0);
+        if start == end { None } else { Some(OsStr::from_bytes(&bytes[start..end])) }
+    }
+    pub fn extension(self) -> Option<OsStr<'a>> {
+        let name = self.file_name()?.as_bytes();
+        let dot = name.iter().rposition(|byte| *byte == b'.')?;
+        if dot == 0 || dot + 1 == name.len() { return None; }
+        Some(OsStr::from_bytes(&name[dot + 1..]))
+    }
+    pub fn parent(self) -> Option<Path<'a>> {
+        let bytes = self.as_bytes();
+        let end = bytes.iter().rposition(|byte| *byte != b'/')? + 1;
+        let slash = bytes[..end].iter().rposition(|byte| *byte == b'/')?;
+        if slash == 0 { Some(Path::new(b"/")) }
+        else { Some(Path::new(&bytes[..slash])) }
+    }
+    pub fn to_path_buf(self) -> PathBuf { PathBuf { inner: self.os_str.to_os_string() } }
+}
+
+/// Owned path buffer. This is a byte-preserving path helper, not yet std::path::PathBuf.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PathBuf {
+    inner: OsString,
+}
+
+impl PathBuf {
+    pub const fn new() -> Self { Self { inner: OsString::new() } }
+    pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Self {
+        Self { inner: OsString::from_bytes(bytes) }
+    }
+    pub fn as_path(&self) -> Path<'_> { Path::new(self.inner.as_bytes()) }
+    pub fn as_os_str(&self) -> OsStr<'_> { self.inner.as_os_str() }
+    pub fn as_bytes(&self) -> &[u8] { self.inner.as_bytes() }
+    pub fn into_os_string(self) -> OsString { self.inner }
+    pub fn push(&mut self, path: impl AsRef<[u8]>) {
+        let next = path.as_ref();
+        if next.first() == Some(&b'/') {
+            self.inner.bytes.clear();
+            self.inner.bytes.extend_from_slice(next);
+            return;
+        }
+        if !self.inner.bytes.is_empty() && self.inner.bytes.last() != Some(&b'/') {
+            self.inner.bytes.push(b'/');
+        }
+        self.inner.bytes.extend_from_slice(next);
+    }
+    pub fn try_to_cstring_bytes(&self) -> Result<Vec<u8>, i64> {
+        self.inner.try_to_cstring_bytes()
+    }
+}
+
 
 
 /// Freestanding C memory primitives required by Rust core/alloc when linking
@@ -2103,6 +2217,33 @@ mod tests {
         let mut iterator = iterator;
         assert!(iterator.next().is_none());
         assert!(iterator.next().is_none());
+    }
+
+    #[test]
+    fn os_strings_preserve_non_utf8_and_reject_nul_for_syscalls() {
+        let raw = [b'f', 0x80, b'o'];
+        let value = super::OsString::from_bytes(raw);
+        assert_eq!(value.as_bytes(), &raw);
+        assert!(value.to_str().is_none());
+        assert_eq!(value.try_to_cstring_bytes().unwrap(), [b'f', 0x80, b'o', 0]);
+        let invalid = super::OsString::from_bytes(b"a\\0b");
+        assert_eq!(invalid.try_to_cstring_bytes(), Err(-22));
+    }
+
+    #[test]
+    fn path_helpers_handle_names_extensions_parents_and_join() {
+        let path = super::Path::new(b"/share/octagram/message.c");
+        assert!(path.is_absolute());
+        assert_eq!(path.file_name().unwrap().as_bytes(), b"message.c");
+        assert_eq!(path.extension().unwrap().as_bytes(), b"c");
+        assert_eq!(path.parent().unwrap().as_bytes(), b"/share/octagram");
+        let root_child = super::Path::new(b"/file").parent().unwrap();
+        assert_eq!(root_child.as_bytes(), b"/");
+        let mut owned = super::PathBuf::from_bytes(b"/share/octagram");
+        owned.push(b"message.c");
+        assert_eq!(owned.as_bytes(), b"/share/octagram/message.c");
+        owned.push(b"/tmp/file");
+        assert_eq!(owned.as_bytes(), b"/tmp/file");
     }
 
     #[test]

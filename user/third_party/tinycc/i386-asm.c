@@ -1003,14 +1003,11 @@ again:
 #ifdef TCC_TARGET_X86_64
 	    if (pa->sym == TOK_ASM_endbr64)
 	      ops[i].reg = 2; // dx
-	    else if (pa->sym == TOK_ASM_xgetbv
-	             || (pa->sym >= TOK_ASM_lfence && pa->sym <= TOK_ASM_sfence))
+	    else if (pa->sym >= TOK_ASM_lfence && pa->sym <= TOK_ASM_sfence)
 	      ops[i].reg = 0; // ax
 #else
 	    if (pa->sym == TOK_ASM_endbr32)
 	      ops[i].reg = 3; // bx
-	    else if (pa->sym == TOK_ASM_xgetbv)
-	      ops[i].reg = 0; // ax
 #endif
 	    else
 	      tcc_error("bad MODR/M opcode without operands");

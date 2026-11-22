@@ -8,7 +8,10 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ffi::CStr;
 use core::panic::PanicInfo;
-use octagram_runtime::{close, exit, open, read, stat_path, write_all, O_RDONLY, STDOUT};
+use octagram_runtime::{
+    close, clock_gettime, exit, getpid, getrandom, open, read, stat_path, write_all,
+    CLOCK_MONOTONIC, O_RDONLY, STDOUT,
+};
 
 #[cfg(target_os = "octagram")]
 const TARGET_MARKER: &[u8] = b"Rust custom target x86_64-unknown-octagram runs in OCTAGRAM!\n";
@@ -84,6 +87,22 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     }
     if write_all(STDOUT, b"Rust runtime file/stat: PASS\n").is_err() {
         return 6;
+    }
+
+    // Exercise the runtime's clock, process identity, and entropy syscalls.
+    let now = match clock_gettime(CLOCK_MONOTONIC) {
+        Ok(value) if value.tv_nsec >= 0 && value.tv_nsec < 1_000_000_000 => value,
+        _ => return 11,
+    };
+    if now.tv_sec < 0 || getpid().map(|pid| pid == 0).unwrap_or(true) {
+        return 12;
+    }
+    let mut entropy = [0u8; 64];
+    if getrandom(&mut entropy, 0) != Ok(entropy.len()) {
+        return 13;
+    }
+    if write_all(STDOUT, b"Rust runtime clock/random/pid: PASS\n").is_err() {
+        return 14;
     }
     0
 }

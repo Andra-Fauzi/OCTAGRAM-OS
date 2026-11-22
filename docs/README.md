@@ -33,6 +33,7 @@ sebagian API tersedia; lihat [batasan](limitations.md).
 | Shell | [shell.md](shell.md) | Perintah shell, PATH, run, pkg dan mount |
 | Paket | [packages.md](packages.md) | Format paket, registry dan app launcher |
 | Userspace Rust | [rust-userspace.md](rust-userspace.md) | Aplikasi Rust no-std dan octagram-runtime |
+| Rust custom target | [rust-no-std.md](rust-no-std.md) | Custom target x86_64 OCTAGRAM, build-std core/alloc, linker, dan kriteria uji |
 | Toolchain | [toolchain.md](toolchain.md) | Assembler, linker, compiler dan TinyCC |
 | Build | [building.md](building.md) | Dependencies, target build, ISO dan QEMU |
 | Self-hosting (roadmap utama) | [roadmap-self-hosting.md](roadmap-self-hosting.md) | Milestone, dependency, status, acceptance gates, dan bukti menuju full self-hosting |

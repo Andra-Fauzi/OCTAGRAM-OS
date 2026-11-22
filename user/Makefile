@@ -57,7 +57,7 @@ DYNAMIC_LIBRARY := build/libdyn_demo.so
 SHARED_LIBC := build/liboctagram.so
 LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 
-.PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test dynamic
+.PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test dynamic
 all: $(BINARIES) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
@@ -84,6 +84,13 @@ math-header-test:
 
 overflow-test: build/tcc_overflow_runtime_test
 	./build/tcc_overflow_runtime_test
+
+math-test: build/math_runtime_test
+	./build/math_runtime_test
+
+build/math_runtime_test: tests/math_runtime_test.c math.c | build
+	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
+		-Iinclude -o $@ $^
 
 build/tcc_overflow_runtime_test: tests/tcc_overflow_runtime_test.c third_party/tinycc/lib/overflow.c | build
 	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -fno-builtin -Iinclude -o $@ $^
@@ -268,7 +275,10 @@ $(TCC_ELF): $(TCC_OBJECTS) build/tcc_signals.o build/crt0.o build/runtime.o $(TC
 $(TCC_LIBTCC1): $(TCC_SUPPORT_OBJECTS)
 	$(AR) rcs $@ $^
 
-$(TCC_LIBC): build/runtime.o $(TCC_SETJMP)
+build/math.o: math.c $(HEADERS) | build
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(TCC_LIBC): build/runtime.o build/math.o $(TCC_SETJMP)
 	$(AR) rcs $@ $^
 
 clean:

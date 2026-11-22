@@ -35,5 +35,10 @@ class PatchCoreTests(unittest.TestCase):
             rewrite(XGETBV + "\n" + OBSOLETE_XGETBV_STUB + "\n" + ATOMIC128)
 
 
+    def test_atomic_replacement_avoids_unsupported_int128_syntax(self):
+        self.assertIn("poc_cxchg128((void *)arg0", ATOMIC128_REPLACEMENT)
+        self.assertNotIn("__int128", ATOMIC128_REPLACEMENT)
+
+
 if __name__ == "__main__":
     unittest.main()

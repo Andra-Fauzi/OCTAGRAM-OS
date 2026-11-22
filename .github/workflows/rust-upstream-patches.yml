@@ -11,6 +11,8 @@ on:
   pull_request:
     paths:
       - "patches/rust/**"
+      - "patches/libc/**"
+      - "user/rust/targets/x86_64-unknown-octagram.json"
       - ".github/workflows/rust-upstream-patches.yml"
   workflow_dispatch:
 

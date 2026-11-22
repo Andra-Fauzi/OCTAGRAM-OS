@@ -12,7 +12,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
     close, clock_getres, clock_gettime, dup3, exit, fstat, fstatat, futex, getpid, getrandom, mmap,
-    lseek, mprotect, munmap, nanosleep, open, openat, pipe2, read, stat_path, thread_create,
+    lseek, mprotect, munmap, nanosleep, openat, pipe2, read, stat_path, thread_create,
     thread_exit, thread_join, thread_self, write, write_all,
     AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
 };
@@ -86,7 +86,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         _ => return 3,
     };
     let relative_metadata = match fstatat(AT_FDCWD, path, 0) {
-        Ok(metadata) if metadata.size == metadata.size && metadata.size > 0 => metadata,
+        Ok(metadata) if metadata.size > 0 => metadata,
         _ => return 4,
     };
     let fd = match openat(AT_FDCWD, path, O_RDONLY, 0) {

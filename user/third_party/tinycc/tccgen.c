@@ -5575,6 +5575,16 @@ static void parse_builtin_overflow(int op)
     vpush_helper_func(tok_alloc_const("__tcc_overflow"));
     vrott(9);
     gfunc_call(8);
+
+    /* gfunc_call emits the call but does not push its return value. */
+    vpushi(0);
+    PUT_R_RET(vtop, VT_INT);
+    {
+        CType bool_type;
+        bool_type.t = VT_BOOL;
+        bool_type.ref = NULL;
+        gen_cast(&bool_type);
+    }
 }
 
 static void parse_atomic(int atok)

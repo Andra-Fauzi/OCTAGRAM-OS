@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Build mrustc on the host, transpile Rust `core` and the PoC program to C, and
+# write an EXT2 source disk that the guest can compile with its own `tcc`.
+#
+# Everything lands in $WORK (default /dev/shm/mrustc-poc): it needs roughly
+# 4 GiB of scratch space because the Rust source tarball is ~575 MiB.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORK="${WORK:-/dev/shm/mrustc-poc}"
+RUST_VERSION="${RUST_VERSION:-1.90.0}"
+MRUSTC_TARGET_VER="${MRUSTC_TARGET_VER:-1.90}"
+PARLEVEL="${PARLEVEL:-$(nproc)}"
+SRC="$WORK/rustc-$RUST_VERSION-src"
+MRUSTC_DIR="$WORK/mrustc"
+IMAGE="$WORK/sources.img"
+
+mkdir -p "$WORK"
+
+if [[ ! -d "$MRUSTC_DIR" ]]; then
+    git clone --depth 1 https://github.com/thepowersgang/mrustc "$MRUSTC_DIR"
+fi
+
+# mrustc injects the implicit `alloc_system` crate into every binary crate; a
+# no_std crate does not ship one, so disable the injection for this PoC.
+python3 - "$MRUSTC_DIR" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1]) / "src" / "main.cpp"
+text = path.read_text()
+if "false && !allocator_crate_loaded" not in text:
+    old = "                if( !allocator_crate_loaded )"
+    new = "                if( false && !allocator_crate_loaded )"
+    if old not in text:
+        raise SystemExit("mrustc alloc_system patch point not found")
+    path.write_text(text.replace(old, new, 1))
+    print("patched mrustc: alloc_system injection disabled")
+PY
+
+make -C "$MRUSTC_DIR" -j"$PARLEVEL" bin/mrustc
+
+if [[ ! -d "$SRC/library" ]]; then
+    curl -fL -o "$WORK/rustc-$RUST_VERSION-src.tar.gz" \
+        "https://static.rust-lang.org/dist/rustc-$RUST_VERSION-src.tar.gz"
+    mkdir -p "$SRC"
+    tar xzf "$WORK/rustc-$RUST_VERSION-src.tar.gz" -C "$SRC" --strip-components=1 \
+        --exclude='*/src/llvm-project/*' --exclude='*/src/tools/*'
+fi
+
+# The shipped patch only touches `compiler/`, so it is harmless here, but it
+# keeps the tree identical to a normal mrustc checkout.
+(cd "$SRC" && patch -p0 --forward <"$MRUSTC_DIR/rustc-$RUST_VERSION-src.patch") || true
+
+MRUSTC="$MRUSTC_DIR/bin/mrustc"
+
+# `core` must exist first: mrustc cannot compile a `#![no_core]` crate on its
+# own (it fails with "Couldn't find component 0 of ::ops::RangeFull").
+MRUSTC_TARGET_VER="$MRUSTC_TARGET_VER" "$MRUSTC" \
+    --crate-name core --crate-type rlib --edition 2024 \
+    --target x86_64-unknown-linux-gnu \
+    -o "$WORK/libcore" "$SRC/library/core/src/lib.rs"
+
+# mrustc tries to link the program itself and fails (it does not add libcore.o
+# to the link line); the generated poc.c is what this PoC needs.
+MRUSTC_TARGET_VER="$MRUSTC_TARGET_VER" "$MRUSTC" \
+    --crate-name poc --crate-type bin --edition 2021 \
+    --target x86_64-unknown-linux-gnu \
+    --extern core="$WORK/libcore.hir" \
+    -o "$WORK/poc" "$ROOT/tools/mrustc_poc/poc.rs" || true
+
+test -s "$WORK/poc.c"
+
+# tcc cannot assemble XGETBV or do 128-bit atomics; both appear in core's CPU
+# feature and AtomicU128 code, which the PoC program never reaches.
+python3 - "$WORK" <<'PY'
+import pathlib
+import sys
+
+work = pathlib.Path(sys.argv[1])
+core = work / "libcore.c"
+text = core.read_text()
+
+asm = '__asm__ __volatile__ ("xgetbv" : "=a" (lo), "=d" (hi) : "c" (arg0) );'
+if asm in text:
+    text = text.replace(asm, "lo = 0; hi = 0; /* tcc: no XGETBV opcode */")
+
+atomic = (
+    "atomic_compare_exchange_strong_explicit((uint128_t _Atomic *)arg0, "
+    "&var1._0, arg2, memory_order_seq_cst, memory_order_seq_cst)"
+)
+text = text.replace(atomic, "poc_cxchg128((unsigned __int128 *)arg0, &var1._0, arg2)")
+core.write_text(text)
+print("patched libcore.c for tcc: xgetbv + 128-bit atomics")
+PY
+
+rm -f "$IMAGE"
+mke2fs -q -t ext2 -F -b 4096 -I 128 \
+    -O sparse_super,filetype,^extent,^64bit,^metadata_csum,^flex_bg,^dir_index,^resize_inode \
+    "$IMAGE" 256M
+debugfs -w -R "mkdir /src" "$IMAGE" >/dev/null 2>&1
+for file in libcore.c poc.c; do
+    debugfs -w -R "write $WORK/$file /src/$file" "$IMAGE" >/dev/null 2>&1
+done
+for file in fix.h math.h shim.c poc.rs; do
+    debugfs -w -R "write $ROOT/tools/mrustc_poc/$file /src/$file" "$IMAGE" >/dev/null 2>&1
+done
+
+echo "MRUSTC-C-POC-ARTIFACTS: $WORK"
+echo "SOURCE-IMAGE: $IMAGE"

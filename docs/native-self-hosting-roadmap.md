@@ -1311,3 +1311,75 @@ masih bisa dijalankan seluruhnya di dalam OCTAGRAM.
 - Catatan M7.2 di atas masih menggambarkan keadaan sebelum pemilihan entri boot
   selesai; status terbaru ada di `ROADMAP.md` dan bagian M7.2 pada commit
   `102282b` (pemilihan slot via `default_entry` + `octagram.slot=`).
+
+## M4.3 — Evaluasi `mrustc` sebagai jalur "Rust asli" (22 November 2026)
+
+Status: **belum lulus end-to-end; yang terbukti baru sisi host dan sebagian
+sisi guest.** Ini bukan `rustc` native, dan belum mengubah status M4/M5.
+
+Latar: port `rustc` utuh tidak realistis untuk sekarang (butuh `std`, target
+`core`/`alloc`, dynamic loading untuk proc-macro, dan backend LLVM; binary
+`rustc` ratusan MB sedangkan heap kernel 32 MiB). `mrustc` dipilih sebagai
+kandidat karena ia **menghasilkan C** dan karena itu dapat memakai `tcc` yang
+sudah ada di dalam OCTAGRAM sebagai backend, tanpa LLVM.
+
+### Yang sudah terbukti (host-tested)
+
+- `mrustc` (HEAD, g++ 13.3, 8 core) dibangun dari source: `bin/mrustc` 10,9 MB
+  dalam sekitar satu menit.
+- Rust `core` 1.90.0 di-transpile menjadi **34,5 MB / 587.406 baris C** dengan
+  `MRUSTC_TARGET_VER=1.90 --edition 2024 --target x86_64-unknown-linux-gnu`;
+  mrustc memanggil `gcc` host hanya untuk mengubah C itu menjadi objek.
+- Program `no_std` `tools/mrustc_poc/poc.rs` (loop, static array, slice,
+  `extern "C" write`, lang item `start`) menjadi **36 KB C** yang
+  mendefinisikan `main` standar, yaitu bentuk yang siap di-link `tcc`.
+- `tools/mrustc_poc/build_host.sh` mereproduksi seluruh rantai itu dan menulis
+  disk EXT2 256 MiB berisi sumber C untuk guest.
+
+### Celah yang ditemukan di sisi guest (bukan di mrustc)
+
+`tcc` guest diberi sumber C hasil transpile lewat `mount sata1 /mnt ext2` dan
+`tcc -I /mnt/src -include /mnt/src/fix.h ... -o /mnt/poc.elf`. Ia berhasil
+melewati preprocessor dan **227 ribu dari 587 ribu baris** sebelum berhenti.
+Empat celah nyata yang tercatat:
+
+1. `/include/stdint.h` guest tidak punya `int_leastN_t`/`uint_leastN_t`,
+   sehingga `/include/stdatomic.h` gagal lebih dulu. Ini bug header guest,
+   bukan batas `tcc`.
+2. Guest tidak punya `math.h` maupun libm, sementara C `core` memakai
+   `fabs/sqrt/floor/ceil/trunc/round/pow/copysign/fma/exp/log2/cbrt/fdim`.
+3. `tcc` tidak mengimplementasikan `__builtin_add_overflow`,
+   `__builtin_sub_overflow`, dan `__builtin_mul_overflow` yang dipakai 1392
+   kali oleh C `core`.
+4. `tcc` (a) tidak punya opcode assembler `xgetbv`, dan (b) tidak mendukung
+   atomic 128-bit (`uint128_t _Atomic`) sehingga `compare_exchange` u128 gagal.
+
+Semua di atas diatasi di sisi C (`tools/mrustc_poc/fix.h`, `math.h`, `shim.c`
+plus dua penggantian teks pada C hasil transpile) — tanpa memodifikasi `tcc`.
+Stub matematika di `shim.c` sengaja tidak presisi karena program PoC tidak
+menyentuh jalur float; itu harus diganti implementasi nyata sebelum dipakai
+lebih jauh.
+
+### Yang belum terbukti
+
+- Belum ada `PASS`: run QEMU terakhir terpotong sebelum ELF di-link dan
+  dijalankan, jadi belum ada bukti bahwa `tcc` menyelesaikan 587 ribu baris,
+  bahwa `ld`/link internal `tcc` menerima simbol `core`, dan bahwa hasilnya
+  mencetak `mrustc-c-poc: 108`.
+- Waktu kompilasi `tcc` untuk satu TU `core` 34,5 MB sudah sekitar 100–170 detik
+  di QEMU/TCG; ini akan jauh lebih berat untuk `std` + `rustc`.
+- `mrustc` tidak mendukung crate `#![no_core]` (gagal dengan
+  `BUG: src/hir/hir.cpp: ... ::ops::RangeFull`), jadi `core` wajib ikut
+  di-transpile; dan injeksi crate implisit `alloc_system` harus dimatikan.
+
+### Langkah berikutnya
+
+1. Selesaikan run QEMU sampai `MRUSTC-C-POC-PASS` (atau kumpulkan sisa celah
+   `tcc` yang muncul setelah baris 227 ribu).
+2. Perbaiki header guest yang kurang (`stdint.h` least/fast types, `math.h`)
+   di `user/include/`, bukan hanya lewat `-include` shim.
+3. Ukur batas praktis: berapa RAM/waktu `tcc` untuk `core`, lalu putuskan
+   apakah `std` layak dicoba atau cukup `core` + kernel subset.
+4. Baru setelah itu pertimbangkan memindahkan `mrustc` sendiri ke dalam guest
+   (butuh libc/C++ runtime di guest — `tcc` hanya C, jadi ini pekerjaan
+   tersendiri yang jauh lebih besar).

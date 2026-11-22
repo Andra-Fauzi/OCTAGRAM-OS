@@ -307,6 +307,13 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
   - [x] `xrustc`: frontend Rust-subset native (parse → assembly → `as` → `ld` di
     dalam OCTAGRAM, `putstr`/`putchar`, rekursi dan loop; 7 host test + QEMU
     `XRUSTC-SUBSET-PASS`). Bukan port `rustc`; lihat `docs/native-self-hosting-roadmap.md` M4.2
+  - [x] Evaluasi `mrustc` (transpiler Rust→C dalam C++) di host: Rust `core`
+    1.90 di-transpile menjadi 34,5 MB / 587 ribu baris C, dan program PoC
+    `no_std` menjadi 36 KB C. Harness + sumber compat di `tools/mrustc_poc/`
+    (lihat `docs/native-self-hosting-roadmap.md` M4.3)
+  - [ ] PoC `mrustc` end-to-end: C hasil transpile dikompilasi `tcc` di guest
+    lalu dijalankan. `tcc` guest sudah melewati 227 ribu dari 587 ribu baris;
+    4 celah nyata masih tercatat, jadi belum ada `PASS`
   - [ ] `rustc` native, `core`/`alloc` native, dan Cargo native/offline
 - [ ] M5: build kernel Rust sepenuhnya dari dalam OCTAGRAM
 - [ ] M6: native disk/boot image builder dan installer

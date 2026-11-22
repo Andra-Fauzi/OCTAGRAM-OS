@@ -126,7 +126,7 @@ tetapi gagal keluar dianggap sukses. Harness juga memakai file OVMF-vars
 sementara, log serial, dan socket monitor memakai path unik per proses agar
 run paralel tidak saling mengganggu. Harness membersihkan socket monitor,
 proses QEMU, serta file firmware sementara pada semua jalur keluar, termasuk
-kegagalan sebelum monitor tersambung; log serial dipertahankan untuk diagnosis. Pembuatan proses QEMU dan socket monitor juga berada di dalam blok cleanup, sehingga kegagalan startup tidak meninggalkan proses yatim; kegagalan menyalin template OVMF-vars menghapus file temporernya.
+kegagalan sebelum monitor tersambung; log serial dan log QEMU host dipertahankan untuk diagnosis. Output QEMU host (termasuk error startup) ditulis ke log terpisah yang path-nya dapat diatur lewat `OCTAGRAM_POC_QEMU_LOG`. Pembuatan proses QEMU dan socket monitor juga berada di dalam blok cleanup, sehingga kegagalan startup tidak meninggalkan proses yatim; kegagalan menyalin template OVMF-vars menghapus file temporernya.
 tetapi gagal keluar dianggap sukses.
 
 ## Catatan

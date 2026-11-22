@@ -96,6 +96,13 @@ int main(void)
     if (zero.bits != UINT64_C(0x8000000000000000))
         return 23;
 
+    zero.value = fmax(-0.0, -0.0);
+    if (zero.bits != UINT64_C(0x8000000000000000))
+        return 28;
+    zero.value = fmin(0.0, 0.0);
+    if (zero.bits != 0)
+        return 29;
+
     if (sqrt(-1.0) == sqrt(-1.0) || sqrt(-INFINITY) == sqrt(-INFINITY))
         return 24;
     if (!near(atan2(INFINITY, INFINITY), 0.78539816339744830962, 1e-12) ||

@@ -26,12 +26,12 @@ class QemuLogTailTests(unittest.TestCase):
 
 
     def test_compile_wait_requires_exit_status_and_shell_prompt(self):
-        serial = "program exited with status 0\\noctagram:~$"
+        serial = "program exited with status 0" + chr(10) + "octagram:~$"
         with patch("qemu_test.serial_text", return_value=serial):
             self.assertTrue(wait_compile_success(0, timeout=1))
 
     def test_compile_wait_rejects_missing_successful_exit(self):
-        serial = "tcc: error: undefined symbol\\noctagram:~$"
+        serial = "tcc: error: undefined symbol" + chr(10) + "octagram:~$"
         with patch("qemu_test.serial_text", return_value=serial):
             self.assertFalse(wait_compile_success(0, timeout=0))
 

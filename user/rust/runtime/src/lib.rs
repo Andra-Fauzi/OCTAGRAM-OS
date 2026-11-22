@@ -129,6 +129,55 @@ pub unsafe extern "C" fn strlen(string: *const c_char) -> usize {
 #[no_mangle]
 pub static mut environ: *mut *mut c_char = ptr::null_mut();
 
+/// Look up an environment variable in an envp array.
+///
+/// Returns a pointer to the first byte after '=' or null when absent.
+/// The caller must provide a valid, NUL-terminated envp array and name bytes
+/// without NUL or '='. The scan is bounded to avoid walking a corrupt envp
+/// indefinitely.
+unsafe fn find_env_value(
+    environment: *const *const c_char,
+    name: &[u8],
+) -> *const c_char {
+    if environment.is_null() || name.is_empty() || name.contains(&b'=') {
+        return ptr::null();
+    }
+
+    for index in 0..4096usize {
+        let entry = unsafe { *environment.add(index) };
+        if entry.is_null() {
+            return ptr::null();
+        }
+
+        let value = unsafe { CStr::from_ptr(entry) }.to_bytes();
+        if value.len() > name.len()
+            && value[name.len()] == b'='
+            && &value[..name.len()] == name
+        {
+            return unsafe { entry.add(name.len() + 1) };
+        }
+    }
+    ptr::null()
+}
+
+/// Return an environment variable from the initial process environment.
+///
+/// OCTAGRAM startup initializes the exported environ pointer from the
+/// kernel-provided initial stack before calling main. The returned string
+/// points into that process-lifetime initial stack.
+///
+/// This runtime currently provides lookup only; setenv/unsetenv require an
+/// owned environment table and are intentionally not emulated here.
+pub fn getenv(name: &CStr) -> Option<&'static CStr> {
+    let environment = unsafe { ptr::addr_of!(environ).read() };
+    let value = unsafe { find_env_value(environment.cast_const(), name.to_bytes()) };
+    if value.is_null() {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr(value) })
+    }
+}
+
 pub const PROT_READ: u64 = 1;
 pub const PROT_WRITE: u64 = 2;
 pub const PROT_EXEC: u64 = 4;
@@ -995,8 +1044,30 @@ static ALLOCATOR: MmapAllocator = MmapAllocator;
 mod tests {
     extern crate std;
 
-    use super::{build_dns_query, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen};
+    use super::{build_dns_query, find_env_value, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen};
     use core::alloc::Layout;
+
+    #[test]
+    fn environment_lookup_matches_exact_name_and_value() {
+        let path = b"PATH=/bin:/usr/bin\0";
+        let cargo_home = b"CARGO_HOME=/home/user/.cargo\0";
+        let entries = [
+            path.as_ptr().cast(),
+            cargo_home.as_ptr().cast(),
+            core::ptr::null(),
+        ];
+        unsafe {
+            let found = find_env_value(entries.as_ptr(), b"CARGO_HOME");
+            assert!(!found.is_null());
+            assert_eq!(core::ffi::CStr::from_ptr(found).to_bytes(), b"/home/user/.cargo");
+
+            assert!(find_env_value(entries.as_ptr(), b"CARGO").is_null());
+            assert!(find_env_value(entries.as_ptr(), b"MISSING").is_null());
+            assert!(find_env_value(entries.as_ptr(), b"").is_null());
+            assert!(find_env_value(entries.as_ptr(), b"PATH=other").is_null());
+            assert!(find_env_value(core::ptr::null(), b"PATH").is_null());
+        }
+    }
 
     #[test]
     fn allocation_mapping_size_accounts_for_alignment() {

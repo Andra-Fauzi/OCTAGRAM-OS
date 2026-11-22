@@ -50,6 +50,9 @@ s! {
         pub st_ctime: time_t,
         pub st_blksize: blksize_t,
         pub st_blocks: blkcnt_t,
+        pub st_atime_nsec: time_t,
+        pub st_mtime_nsec: time_t,
+        pub st_ctime_nsec: time_t,
     }
 
     pub struct dirent {
@@ -220,9 +223,12 @@ pub const O_CLOEXEC: c_int = 1 << 19;
 pub const O_NOFOLLOW: c_int = 1 << 17;
 
 pub const S_IFMT: mode_t = 0o170000;
+pub const S_IFIFO: mode_t = 0o010000;
 pub const S_IFCHR: mode_t = 0o020000;
+pub const S_IFBLK: mode_t = 0o060000;
 pub const S_IFDIR: mode_t = 0o040000;
 pub const S_IFLNK: mode_t = 0o120000;
+pub const S_IFSOCK: mode_t = 0o140000;
 pub const S_IFREG: mode_t = 0o100000;
 pub const S_IRUSR: mode_t = 0o400;
 pub const S_IWUSR: mode_t = 0o200;

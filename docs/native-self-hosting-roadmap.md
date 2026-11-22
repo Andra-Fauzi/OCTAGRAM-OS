@@ -1334,7 +1334,10 @@ sudah ada di dalam OCTAGRAM sebagai backend, tanpa LLVM.
   `extern "C" write`, lang item `start`) menjadi **36 KB C** yang
   mendefinisikan `main` standar, yaitu bentuk yang siap di-link `tcc`.
 - `tools/mrustc_poc/build_host.sh` mereproduksi seluruh rantai itu dan menulis
-  disk EXT2 256 MiB berisi sumber C untuk guest.
+  disk EXT2 256 MiB berisi sumber C untuk guest. Penerapan patch source Rust
+  kini fail-closed: script membedakan patch yang belum diterapkan, sudah
+  diterapkan, dan source archive yang tidak cocok; kegagalan patch tidak lagi
+  ditutupi dengan `|| true`.
 
 ### Status hambatan di sisi guest
 

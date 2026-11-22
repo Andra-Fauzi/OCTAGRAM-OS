@@ -1583,3 +1583,19 @@ PoC ini juga memakai shim bytewise non-atomic untuk `AtomicU128` dan helper
 4. Baru setelah itu pertimbangkan memindahkan `mrustc` sendiri ke dalam guest
    (butuh libc/C++ runtime di guest — `tcc` hanya C, jadi ini pekerjaan
    tersendiri yang jauh lebih besar).
+
+## 16. Kemajuan Rust process PAL dan konsistensi build alloc (22 November 2026)
+
+Runtime Rust memperluas primitive proses untuk mendekati kebutuhan std::process:
+
+- PollFd memakai layout C 8-byte (fd:i32, events:i16, revents:i16) dan wrapper poll() memanggil syscall 97. Unit test host memeriksa ukuran, alignment, dan offset field terhadap ABI kernel.
+- Command::output() sekarang membuat pipe terpisah untuk stdout dan stderr, mengalihkan kedua descriptor pada child, lalu menguras keduanya secara bergantian menggunakan poll. Membaca dua pipe secara simultan penting untuk menghindari deadlock ketika child menulis lebih banyak dari kapasitas salah satu pipe.
+- CapturedOutput berisi status mentah OCTAGRAM, stdout, dan stderr. Smoke test guest menjalankan shell yang menulis marker berbeda ke kedua stream dan memeriksa keduanya serta status exit.
+- Ini belum std::process::Output: status belum dibungkus ExitStatus, semantik stdin belum sama, dan signal/process-group semantics masih perlu dikerjakan.
+
+**Perbaikan CI:** POSIX Core Stage 1 run [45038538793](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45038538793) gagal karena langkah compile runtime hanya memakai -Z build-std=core, sementara runtime kini menggunakan alloc::Vec untuk hasil Command::output(). Jalur Makefile dan workflow Rust khusus sudah memakai core,alloc; workflow POSIX disamakan menjadi -Z build-std=core,alloc. Ini memperbaiki konfigurasi build, bukan menandai PAL atau std selesai.
+
+Status validasi setelah perubahan:
+- Rust no_std workflow sebelumnya lulus pada run [45038500294](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45038500294), tetapi itu mendahului penambahan dual-stream capture.
+- Perubahan terbaru harus kembali melewati build runtime, unit test host, ELF verification, dan QEMU guest marker Rust runtime Command::output: PASS.
+- M4 tetap **belum selesai**. Tidak ada std, native rustc, atau Cargo native yang dinyatakan tersedia.

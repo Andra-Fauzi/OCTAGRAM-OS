@@ -145,16 +145,40 @@ mke2fs -q -t ext2 -F -b 4096 -I 128 \
     -O sparse_super,filetype,^extent,^64bit,^metadata_csum,^flex_bg,^dir_index,^resize_inode \
     "$IMAGE" 256M
 debugfs -w -R "mkdir /src" "$IMAGE" >/dev/null 2>&1
-for file in libcore.c poc.c; do
-    debugfs -w -R "write $WORK/$file /src/$file" "$IMAGE" >/dev/null 2>&1
+
+# Populate and then read every payload back from the actual EXT2 image. Some
+# debugfs command failures are not reliably reflected by its process status,
+# so byte-for-byte verification is the acceptance criterion.
+while read -r source destination; do
+    debugfs -w -R "write $source /src/$destination" "$IMAGE" >/dev/null 2>&1
+done <<EOF
+$WORK/libcore.c libcore.c
+$WORK/poc.c poc.c
+$ROOT/tools/mrustc_poc/fix.h fix.h
+$ROOT/tools/mrustc_poc/shim.c shim.c
+$ROOT/tools/mrustc_poc/poc.rs poc.rs
+$ROOT/user/examples/tcc_overflow.c tcc_overflow.c
+$ROOT/user/examples/tcc_xgetbv.c tcc_xgetbv.c
+$ROOT/user/examples/tcc_math.c tcc_math.c
+$ROOT/user/examples/tcc_atomic128_shim.c tcc_atomic128_shim.c
+EOF
+
+e2fsck -fn "$IMAGE" >/dev/null
+VERIFY_DIR="$(mktemp -d "$WORK/source-image-verify.XXXXXX")"
+trap 'rm -rf "$VERIFY_DIR"' EXIT
+for file in libcore.c poc.c fix.h shim.c poc.rs tcc_overflow.c tcc_xgetbv.c tcc_math.c tcc_atomic128_shim.c; do
+    debugfs -R "dump /src/$file $VERIFY_DIR/$file" "$IMAGE" >/dev/null 2>&1
+    cmp "$VERIFY_DIR/$file" "$WORK/$file" 2>/dev/null || {
+        case "$file" in
+            libcore.c|poc.c) source="$WORK/$file" ;;
+            fix.h|shim.c|poc.rs) source="$ROOT/tools/mrustc_poc/$file" ;;
+            *) source="$ROOT/user/examples/$file" ;;
+        esac
+        cmp "$VERIFY_DIR/$file" "$source"
+    }
 done
-for file in fix.h shim.c poc.rs; do
-    debugfs -w -R "write $ROOT/tools/mrustc_poc/$file /src/$file" "$IMAGE" >/dev/null 2>&1
-done
-debugfs -w -R "write $ROOT/user/examples/tcc_overflow.c /src/tcc_overflow.c" "$IMAGE" >/dev/null 2>&1
-debugfs -w -R "write $ROOT/user/examples/tcc_xgetbv.c /src/tcc_xgetbv.c" "$IMAGE" >/dev/null 2>&1
-debugfs -w -R "write $ROOT/user/examples/tcc_math.c /src/tcc_math.c" "$IMAGE" >/dev/null 2>&1
-debugfs -w -R "write $ROOT/user/examples/tcc_atomic128_shim.c /src/tcc_atomic128_shim.c" "$IMAGE" >/dev/null 2>&1
+echo "SOURCE-IMAGE-VERIFY-PASS: EXT2 clean; 9 payloads match source byte-for-byte"
+sha256sum "$WORK/libcore.c" "$WORK/poc.c" "$IMAGE"
 
 echo "MRUSTC-C-POC-ARTIFACTS: $WORK"
 echo "SOURCE-IMAGE: $IMAGE"

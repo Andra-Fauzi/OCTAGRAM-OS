@@ -44,6 +44,7 @@ def main() -> int:
         'target_pointer_width="64"',
         'target_endian="little"',
         'target_env=""',
+        'unix',
     }
     missing = sorted(required - cfg)
     if missing:

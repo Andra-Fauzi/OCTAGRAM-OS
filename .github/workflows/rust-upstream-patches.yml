@@ -5,6 +5,8 @@ on:
     branches: [feature/native-self-hosting]
     paths:
       - "patches/rust/**"
+      - "patches/libc/**"
+      - "user/rust/targets/x86_64-unknown-octagram.json"
       - ".github/workflows/rust-upstream-patches.yml"
   pull_request:
     paths:
@@ -45,3 +47,34 @@ jobs:
           git apply "$GITHUB_WORKSPACE/patches/rust/0001-std-recognize-octagram-target.patch"
           grep -n 'target_os == "octagram"' library/std/build.rs
           echo "RUST-STD-PATCH-APPLY-PASS"
+
+  check-libc-octagram-module:
+    name: Cross-compile pinned upstream libc for OCTAGRAM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout OCTAGRAM-OS
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned upstream libc
+        uses: actions/checkout@v4
+        with:
+          repository: rust-lang/libc
+          ref: a03dd7c2e298b0ca482f30ce07efd3115938328
+          path: libc-src
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Check and apply OCTAGRAM libc patch
+        working-directory: libc-src
+        run: |
+          git apply --check "$GITHUB_WORKSPACE/patches/libc/0001-unix-add-octagram-abi-module.patch"
+          git apply "$GITHUB_WORKSPACE/patches/libc/0001-unix-add-octagram-abi-module.patch"
+
+      - name: Compile upstream libc against OCTAGRAM target
+        run: |
+          cargo +nightly check --manifest-path libc-src/Cargo.toml --lib \
+            --target user/rust/targets/x86_64-unknown-octagram.json \
+            --no-default-features -Zbuild-std=core

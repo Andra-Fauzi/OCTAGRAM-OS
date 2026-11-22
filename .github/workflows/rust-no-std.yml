@@ -35,14 +35,29 @@ jobs:
         with:
           components: rust-src, rustfmt
 
+      - name: Validate custom target specification
+        run: |
+          rustc +nightly -Z json-target-spec --print cfg --target user/rust/targets/x86_64-unknown-octagram.json
+
       - name: Build OCTAGRAM Rust binaries
         run: make -C user/rust clean all check
 
       - name: Run runtime unit tests on host
-        run: cargo +nightly test --manifest-path user/rust/Cargo.toml -p octagram-runtime --target x86_64-unknown-linux-gnu
+        run: cargo +nightly test --manifest-path user/rust/Cargo.toml -p octagram-runtime --lib --target x86_64-unknown-linux-gnu
 
       - name: Verify ELF output
+        shell: bash
         run: |
-          file user/rust/build/rust_hello.elf user/rust/build/make.elf
-          readelf -h user/rust/build/rust_hello.elf
-          readelf -l user/rust/build/rust_hello.elf
+          set -euo pipefail
+          for elf in user/rust/build/rust_hello.elf user/rust/build/make.elf; do
+            test -s "$elf"
+            file "$elf"
+            header="$(readelf -h "$elf")"
+            grep -Eq 'Type:[[:space:]]+EXEC' <<< "$header"
+            grep -Eq 'Machine:[[:space:]]+Advanced Micro Devices X86-64' <<< "$header"
+            if readelf -l "$elf" | grep -q 'INTERP'; then
+              echo "Unexpected dynamic interpreter in $elf" >&2
+              exit 1
+            fi
+            readelf -l "$elf"
+          done

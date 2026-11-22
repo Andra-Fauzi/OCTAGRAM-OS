@@ -28,6 +28,9 @@ int main(void)
     if (round(-1.5) != -2.0 || nearbyint(2.5) != 2.0 ||
         nearbyint(3.5) != 4.0)
         return 4;
+    zero.value = nearbyint(-0.5);
+    if (zero.bits != UINT64_C(0x8000000000000000) || nan("test") == nan("test"))
+        return 16;
 
     fraction = frexp(8.0, &exponent);
     if (fraction != 0.5 || exponent != 4 || ldexp(fraction, exponent) != 8.0)

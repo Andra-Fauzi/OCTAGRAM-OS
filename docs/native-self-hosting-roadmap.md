@@ -1419,7 +1419,7 @@ kini dibersihkan meskipun koneksi monitor gagal sebelum boot. File OVMF-vars,
 log serial, dan socket monitor memakai path unik per proses agar run paralel
 tidak saling mengganggu; socket dan file firmware sementara dibersihkan pada
 seluruh jalur keluar, sedangkan log serial dipertahankan untuk diagnosis. Ini
-perbaikan keandalan harness, bukan bukti bahwa uji guest telah lulus.
+pembuatan proses/socket monitor dilindungi cleanup sehingga kegagalan startup tidak meninggalkan proses yatim; kegagalan menyalin OVMF-vars juga menghapus file temporernya. Ini perbaikan keandalan harness, bukan bukti bahwa uji guest telah lulus.
 
 ### Yang belum terbukti
 

@@ -1427,8 +1427,12 @@ replacement agar batas UTF-8 yang terpotong tidak menggagalkan diagnostik.
 Pembuatan proses/socket monitor dilindungi cleanup sehingga kegagalan startup
 tidak meninggalkan proses yatim; kegagalan menyalin OVMF-vars juga menghapus
 file temporernya. Tes unit `test_qemu_test.py` memeriksa tail log pendek,
-pembatasan ukuran baca, dan decoding byte UTF-8 yang tidak lengkap. Ini
-perbaikan keandalan harness, bukan bukti bahwa uji guest telah lulus.
+pembatasan ukuran baca, decoding byte UTF-8 yang tidak lengkap, serta syarat
+bahwa compile baru dinyatakan selesai jika status keluar `0` dan prompt shell
+kembali. Kompilasi `libcore.c` memakai `tcc -bench` untuk merekam statistik
+pada run yang berhasil; penantiannya menggunakan satu deadline gabungan agar
+waktu tunggu tidak terduplikasi. Ini perbaikan keandalan/observabilitas
+harness, bukan bukti bahwa uji guest telah lulus.
 
 ### Yang belum terbukti
 

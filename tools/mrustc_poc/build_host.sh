@@ -86,7 +86,7 @@ debugfs -w -R "mkdir /src" "$IMAGE" >/dev/null 2>&1
 for file in libcore.c poc.c; do
     debugfs -w -R "write $WORK/$file /src/$file" "$IMAGE" >/dev/null 2>&1
 done
-for file in fix.h math.h shim.c poc.rs; do
+for file in fix.h math.h shim.c poc.rs tcc_overflow_test.c; do
     debugfs -w -R "write $ROOT/tools/mrustc_poc/$file /src/$file" "$IMAGE" >/dev/null 2>&1
 done
 

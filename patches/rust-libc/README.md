@@ -1,42 +1,37 @@
-# Upstream Rust libc: OCTAGRAM ABI patch
-
-Patch: `0001-add-octagram-abi.patch`
+# Upstream Rust libc: OCTAGRAM ABI integration
 
 Pinned upstream repository: https://github.com/rust-lang/libc
 Pinned base commit: `a03dd7c2e298b0ca482f30ce07efd3115938328e`
 
-## What this patch does
+## Files
 
-- Adds a dedicated `src/unix/octagram` target module selected for
-  `target_os = "octagram"`.
-- Registers `octagram` as a recognized `target_os` value in the crate build
-  script's check-cfg allowlist.
-- Defines initial OCTAGRAM scalar aliases, public `stat` and `dirent`
-  layouts, pthread object layouts, and constants based on OCTAGRAM headers.
-- Declares the current C runtime pthread and clock entry points needed by
-  consumers.
+- `octagram/mod.rs` is the target-specific Rust ABI module copied into
+  upstream `src/unix/octagram/mod.rs`.
+- `tools/apply_rust_libc_octagram.py` applies all source edits using exact,
+  uniqueness-checked anchors and verifies the pinned upstream commit.
+- Rust no_std CI runs that applicator and then compiles upstream libc for the
+  OCTAGRAM custom target with `-Zbuild-std=core`.
 
-The module deliberately does not alias OCTAGRAM to Linux, Redox, or another
-Unix platform. In particular, the public C `struct stat` is distinct from the
-kernel's 16-byte `struct oct_stat`; the former is 88 bytes on x86_64 with the
-field order declared in `user/include/sys/stat.h`.
+## Integration details
 
-## Validation
+The integration registers `target_os = "octagram"`, selects the dedicated
+Unix target module, exports the common POSIX `unistd` constants, and adds
+OCTAGRAM scalar aliases, public `stat` and `dirent` layouts, pthread object
+layouts, constants, and clock/pthread declarations.
 
-The Rust no_std CI checks out the exact upstream commit, runs `git apply
---check`, applies the patch, and runs `cargo check` for the custom target
-without default features. This verifies the libc crate's initial target
-module compiles; it does not prove that Rust `std` builds or that all declared
-functions are implemented by the kernel.
+The target module follows OCTAGRAM public C headers. The public C `struct
+stat` is separate from the kernel's 16-byte `struct oct_stat`. Generic
+upstream declarations for pthread rwlocks, `statvfs`, and `dladdr` are
+excluded because OCTAGRAM does not currently expose those interfaces.
 
-## Known limitations
+## Validation scope and limitations
 
-- This is an initial ABI surface, not full POSIX coverage.
-- Some POSIX functions declared by generic libc code may not yet be provided
-  by OCTAGRAM's runtime.
-- Signal, process-status, socket, dynamic-loader, and filesystem semantics
-  need further PAL-specific audit.
-- The target module must be kept synchronized with
-  `tools/rust_libc_abi_surface.json` and the public C headers.
-- No claim is made that upstream `std`, `rustc`, or Cargo is already native.
+The CI check verifies that the exact upstream source edits apply and that the
+upstream `libc` crate compiles for `x86_64-unknown-octagram`. It does not yet
+prove that Rust `std` builds or that every declared C symbol is implemented
+and linked by OCTAGRAM.
 
+This is an initial ABI surface, not full POSIX coverage. Signal/process
+semantics, sockets, dynamic loading, and filesystem extensions still need
+target-specific conformance tests. No claim is made that upstream `std`,
+`rustc`, or Cargo is already native.

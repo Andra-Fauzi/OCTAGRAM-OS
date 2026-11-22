@@ -7,6 +7,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 python3 -m unittest discover -s "$ROOT/tools/mrustc_poc" -p 'test_*.py'
+python3 "$ROOT/tools/check_tinycc_xgetbv_encoding.py"
 
 "$HOSTCC" -std=c11 -O2 -Wall -Wextra -Werror \
     -I"$ROOT/tools/mrustc_poc" \

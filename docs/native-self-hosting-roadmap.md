@@ -1357,7 +1357,10 @@ status berikut:
    atau selengkap/sekokoh libm produksi; error numerik, domain dan rounding
    mode masih perlu diverifikasi lebih luas.
    Regression terbaru juga mencakup signed zero dan transisi `nextafter`
-   dari/toward infinity, serta propagasi NaN oleh `nexttoward[f]`.
+   dari/toward infinity, propagasi NaN oleh `nexttoward[f]`, serta edge case
+   float untuk `ilogbf` (termasuk subnormal), `fminf`/`fmaxf`, dan
+   `nearbyintf`. Tes `ilogb` double memakai input subnormal eksplisit agar
+   tidak keliru menguji nilai finite maksimum.
 3. **Overflow builtin — implementasi compiler ditambahkan.** Token
    `__builtin_add_overflow`, `__builtin_sub_overflow`, dan
    `__builtin_mul_overflow` kini dikenali di `tcctok.h` dan diturunkan oleh

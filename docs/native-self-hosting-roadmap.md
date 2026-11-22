@@ -1661,3 +1661,22 @@ Batasan: tipe-tipe ini adalah primitive internal no_std, bukan tipe resmi `std::
 - Guest smoke test memverifikasi `file_name()` menghasilkan `message.c` dan `path()` menghasilkan `/share/octagram/message.c`, kemudian tetap menguji metadata setelah iterator selesai.
 
 Batasan: `PathBuf` masih helper internal, belum `std::path::PathBuf`; path relative/canonicalization dan edge case separator tetap memerlukan pengujian tambahan.
+
+## 24. Deklarasi Unix target family untuk Rust host (22 November 2026)
+
+- Target JSON `x86_64-unknown-octagram` kini mendeklarasikan
+  `target-family = ["unix"]`, sehingga compiler mengeluarkan cfg `unix`
+  selain `target_os = "octagram"`.
+- Validator `tools/check_octagram_rust_target.py` kini mensyaratkan cfg
+  `unix`; workflow Rust khusus menjalankan validator tersebut sebelum build.
+- CI Rust no_std run
+  [45040711459](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45040711459)
+  telah melewati validasi target dan cfg Unix. Build runtime, unit test, dan
+  verifikasi ELF pada run itu masih berjalan saat catatan ini ditulis.
+
+Batasan: `target_family = "unix"` hanya mengaktifkan pemilihan kode berbasis
+`cfg(unix)`. Ini bukan klaim bahwa seluruh ABI POSIX telah lengkap, bukan
+aktivasi otomatis Rust `std`, dan bukan bukti `rustc`/Cargo berjalan native.
+Langkah M4 berikutnya tetap mengintegrasikan PAL upstream Rust dan libc
+OCTAGRAM pada checkout Rust yang dipatok, lalu membangun serta menjalankan
+program `std` pertama di QEMU.

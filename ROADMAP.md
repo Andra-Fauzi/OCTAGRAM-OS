@@ -311,6 +311,7 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     1.90 di-transpile menjadi 34,5 MB / 587 ribu baris C, dan program PoC
     `no_std` menjadi 36 KB C. Harness + sumber compat di `tools/mrustc_poc/`
     (lihat `docs/native-self-hosting-roadmap.md` M4.3)
+  - [x] Harness host menolak perubahan format keluaran `mrustc` jika rewrite kompatibilitas `XGETBV`/`AtomicU128` tidak ditemukan atau masih tersisa setelah patch.
   - [ ] PoC `mrustc` end-to-end: C hasil transpile dikompilasi `tcc` di guest
     lalu dijalankan. Header publik `stdint.h` kini memiliki tipe C99 least/fast
     dan `math.h` menyediakan deklarasi fungsi matematika yang dipakai `core`;

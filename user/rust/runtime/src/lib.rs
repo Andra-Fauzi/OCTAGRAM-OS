@@ -646,9 +646,34 @@ fn allocation_mapping_size(size: usize, alignment: usize) -> Option<usize> {
     if alignment == 0 || !alignment.is_power_of_two() {
         return None;
     }
+    let effective_alignment = alignment.max(core::mem::align_of::<AllocationHeader>());
     core::mem::size_of::<AllocationHeader>()
-        .checked_add(alignment - 1)?
+        .checked_add(effective_alignment - 1)?
         .checked_add(size)
+}
+
+/// Return the aligned user range inside a mapping, or None on overflow/bounds
+/// errors. Keeping this arithmetic pure makes allocator layout testable on host.
+fn allocation_user_range(
+    mapping_base: usize,
+    mapping_length: usize,
+    size: usize,
+    alignment: usize,
+) -> Option<(usize, usize)> {
+    if alignment == 0 || !alignment.is_power_of_two() {
+        return None;
+    }
+    let effective_alignment = alignment.max(core::mem::align_of::<AllocationHeader>());
+    let after_header = mapping_base.checked_add(core::mem::size_of::<AllocationHeader>())?;
+    let aligned = after_header
+        .checked_add(effective_alignment - 1)?
+        & !(effective_alignment - 1);
+    let end = aligned.checked_add(size)?;
+    let mapping_end = mapping_base.checked_add(mapping_length)?;
+    if end > mapping_end {
+        return None;
+    }
+    Some((aligned, end))
 }
 
 #[cfg(not(test))]
@@ -677,30 +702,12 @@ unsafe impl GlobalAlloc for MmapAllocator {
         }
 
         let base = result as usize;
-        let Some(after_header) = base.checked_add(core::mem::size_of::<AllocationHeader>()) else {
-            let _ = unsafe { syscall2(17, base as u64, length as u64) };
-            return ptr::null_mut();
-        };
-        let alignment = layout.align().max(core::mem::align_of::<AllocationHeader>());
-        let Some(aligned) = after_header
-            .checked_add(alignment - 1)
-            .map(|value| value & !(alignment - 1))
+        let Some((aligned, _end)) =
+            allocation_user_range(base, length, layout.size(), layout.align())
         else {
             let _ = unsafe { syscall2(17, base as u64, length as u64) };
             return ptr::null_mut();
         };
-        let Some(end) = aligned.checked_add(layout.size()) else {
-            let _ = unsafe { syscall2(17, base as u64, length as u64) };
-            return ptr::null_mut();
-        };
-        let Some(mapping_end) = base.checked_add(length) else {
-            let _ = unsafe { syscall2(17, base as u64, length as u64) };
-            return ptr::null_mut();
-        };
-        if end > mapping_end {
-            let _ = unsafe { syscall2(17, base as u64, length as u64) };
-            return ptr::null_mut();
-        }
 
         let user_pointer = aligned as *mut u8;
         let header = unsafe {
@@ -760,6 +767,28 @@ mod tests {
     #[test]
     fn allocation_mapping_size_rejects_overflow() {
         assert_eq!(super::allocation_mapping_size(usize::MAX, 4096), None);
+        assert_eq!(super::allocation_mapping_size(32, 3), None);
+    }
+
+    #[test]
+    fn allocation_user_range_honors_alignment_and_mapping_bounds() {
+        let header = core::mem::size_of::<super::AllocationHeader>();
+        let base = 0x1000usize;
+        let (pointer, end) =
+            super::allocation_user_range(base, 0x4000, 256, 128).unwrap();
+        assert_eq!(pointer % 128, 0);
+        assert_eq!(end - pointer, 256);
+        assert!(pointer >= base + header);
+
+        assert_eq!(
+            super::allocation_user_range(base, 64, 4096, 16),
+            None
+        );
+        assert_eq!(
+            super::allocation_user_range(usize::MAX - 8, 64, 8, 8),
+            None
+        );
+        assert_eq!(super::allocation_user_range(base, 4096, 8, 0), None);
     }
 
     #[test]

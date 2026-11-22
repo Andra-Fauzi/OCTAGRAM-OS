@@ -249,3 +249,10 @@ The octagram_runtime crate now exposes a small no_std File handle over OwnedFd: 
 
 
 The file layer also exposes positional I/O using OCTAGRAM syscalls 102 (`pread`) and 103 (`pwrite`). `File::read_at`/`write_at` do not alter the shared file offset; `read_exact_at`/`write_all_at` handle partial transfers and checked offset advancement. Host tests exercise offset progression and failure cases, and the guest smoke test verifies positional reads leave the sequential file position unchanged. The guest test does not yet exercise writes to a persistent file.
+
+
+## ExitStatus dan poll multi-stream
+
+Runtime menyediakan `ExitStatus` sebagai wrapper atas nilai wait mentah OCTAGRAM, dengan `raw()`, `code()`, dan `success()`. `Child::wait_status()` serta `try_wait_status()` menyediakan bentuk bertipe tanpa menghapus API raw lama. `CapturedOutput::exit_status()` dan `success()` memakai wrapper yang sama. Karena kernel belum mengodekan terminasi sinyal ke status wait, `code()` saat ini selalu `Some(i32)` hasil interpretasi nilai mentah; ini bukan jaminan kompatibilitas penuh dengan `std::process::ExitStatus`.
+
+Saat satu stream output mencapai EOF, `Command::output()` sekarang mengubah descriptor terkait menjadi `fd = -1` pada array `poll`. Kernel mengabaikan descriptor negatif. Ini mencegah `POLLHUP` pada stream yang sudah selesai membuat loop polling sibuk ketika stream lainnya masih terbuka.

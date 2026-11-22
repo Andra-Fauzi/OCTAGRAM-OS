@@ -225,6 +225,10 @@ def main():
         print("RUST-PROCESS-FAIL: Rust fork/waitpid child ownership test failed")
         print(serial_text()[-5000:])
         return 1
+    if not wait_for_after("Rust runtime Command::output: PASS", output_offset, 30):
+        print("RUST-COMMAND-OUTPUT-FAIL: Command.output stdout capture/reap failed")
+        print(serial_text()[-5000:])
+        return 1
     if not wait_for_after("Rust runtime Command stdout capture: PASS", output_offset, 30):
         print("RUST-STDIO-FAIL: Rust Command stdout capture via owned pipe failed")
         print(serial_text()[-5000:])

@@ -377,3 +377,15 @@ This is a reusable low-level boundary for a future Rust `std::sys` port. It
 does not mean that Rust `std`, rustc, LLVM, or Cargo can run natively yet.
 The next gate is guest conformance for each wrapper and then implementing the
 OS-specific standard-library backend against the exact semantics.
+
+
+### Additional Rust thread/time ABI wrappers
+
+The runtime boundary also exposes `thread_create`/`thread_exit`,
+`clock_getres`, and `nanosleep`. The Rust guest smoke program now starts a
+real Rust entry-point thread on a kernel-owned stack mapping, joins it, and
+checks an atomic result. It also queries monotonic clock resolution and sleeps
+for a short interval. The QEMU gate requires the existing runtime marker, so
+these tests are part of the same guest execution path once the updated ISO is
+built. Thread creation is not considered fully validated until that QEMU run
+passes.

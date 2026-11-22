@@ -415,6 +415,52 @@ pub unsafe fn futex(
     checked_result(result)
 }
 
+/// Futex operation numbers shared with the OCTAGRAM kernel ABI.
+pub const FUTEX_WAIT: u64 = 0;
+pub const FUTEX_WAKE: u64 = 1;
+pub const FUTEX_REQUEUE: u64 = 3;
+pub const FUTEX_WAIT_BITSET: u64 = 9;
+pub const FUTEX_WAKE_BITSET: u64 = 10;
+pub const FUTEX_BITSET_MATCH_ANY: u64 = u32::MAX as u64;
+
+/// Create a user thread. The kernel takes ownership of the supplied mapping
+/// and releases it when the thread is reaped.
+///
+/// # Safety
+/// `entry` must be a valid non-returning userspace entry point; `stack_top`
+/// must be aligned and lie inside `mapping`; `thread_pointer` must reference
+/// a valid TLS/TCB block or be None. The mapping must not be released by caller.
+pub unsafe fn thread_create(
+    entry: extern "C" fn(*mut c_void) -> !,
+    argument: *mut c_void,
+    stack_top: NonNull<u8>,
+    thread_pointer: Option<NonNull<u8>>,
+    mapping: NonNull<u8>,
+    mapping_length: usize,
+) -> Result<u64, i64> {
+    if mapping_length == 0 {
+        return Err(-22);
+    }
+    let result = unsafe {
+        syscall6(
+            61,
+            entry as usize as u64,
+            argument as usize as u64,
+            stack_top.as_ptr() as usize as u64,
+            thread_pointer.map_or(0, |pointer| pointer.as_ptr() as usize as u64),
+            mapping.as_ptr() as usize as u64,
+            mapping_length as u64,
+        )
+    };
+    if result < 0 { Err(result) } else { Ok(result as u64) }
+}
+
+/// Terminate the current thread and publish its result to a joining thread.
+pub fn thread_exit(result: usize) -> ! {
+    unsafe { syscall1(62, result as u64); }
+    loop { core::hint::spin_loop(); }
+}
+
 /// POSIX-compatible clock identifiers exposed by the OCTAGRAM syscall ABI.
 pub const CLOCK_REALTIME: u64 = 0;
 pub const CLOCK_MONOTONIC: u64 = 1;
@@ -444,6 +490,28 @@ pub fn clock_gettime(clock_id: u64) -> Result<Timespec, i64> {
         return Err(-22);
     }
     Ok(value)
+}
+
+/// Query the resolution of an OCTAGRAM clock (syscall 118).
+pub fn clock_getres(clock_id: u64) -> Result<Timespec, i64> {
+    let mut value = Timespec::default();
+    let result = unsafe {
+        syscall2(118, clock_id, &mut value as *mut Timespec as usize as u64)
+    };
+    if result < 0 { return Err(result); }
+    if value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+        return Err(-22);
+    }
+    Ok(value)
+}
+
+/// Sleep for a relative interval (syscall 90).
+pub fn nanosleep(request: &Timespec) -> Result<(), i64> {
+    if request.tv_sec < 0 || !(0..1_000_000_000).contains(&request.tv_nsec) {
+        return Err(-22);
+    }
+    let result = unsafe { syscall1(90, request as *const Timespec as usize as u64) };
+    if result < 0 { Err(result) } else { Ok(()) }
 }
 
 /// Return the current process identifier (syscall 11).
@@ -982,6 +1050,16 @@ mod tests {
         assert_eq!(core::mem::align_of::<super::Timespec>(), 8);
         assert_eq!(core::mem::offset_of!(super::Timespec, tv_sec), 0);
         assert_eq!(core::mem::offset_of!(super::Timespec, tv_nsec), 8);
+    }
+
+    #[test]
+    fn futex_operations_match_octagram_kernel_abi() {
+        assert_eq!(super::FUTEX_WAIT, 0);
+        assert_eq!(super::FUTEX_WAKE, 1);
+        assert_eq!(super::FUTEX_REQUEUE, 3);
+        assert_eq!(super::FUTEX_WAIT_BITSET, 9);
+        assert_eq!(super::FUTEX_WAKE_BITSET, 10);
+        assert_eq!(super::FUTEX_BITSET_MATCH_ANY, u32::MAX as u64);
     }
 
     #[test]

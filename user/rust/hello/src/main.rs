@@ -8,11 +8,21 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ffi::CStr;
 use core::panic::PanicInfo;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
-    close, clock_gettime, dup3, exit, futex, getpid, getrandom, mmap, mprotect,
-    munmap, open, pipe2, read, stat_path, thread_self, write, write_all,
+    close, clock_getres, clock_gettime, dup3, exit, futex, getpid, getrandom, mmap,
+    mprotect, munmap, nanosleep, open, pipe2, read, stat_path, thread_create,
+    thread_exit, thread_join, thread_self, write, write_all,
     CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, STDOUT,
 };
+
+static RUST_THREAD_RESULT: AtomicU64 = AtomicU64::new(0);
+
+extern "C" fn rust_thread_entry(_argument: *mut core::ffi::c_void) -> ! {
+    RUST_THREAD_RESULT.store(0x0C7A_6A4A, Ordering::SeqCst);
+    thread_exit(0)
+}
 
 #[cfg(target_os = "octagram")]
 const TARGET_MARKER: &[u8] = b"Rust custom target x86_64-unknown-octagram runs in OCTAGRAM!\n";
@@ -91,6 +101,14 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     }
 
     // Exercise the runtime's clock, process identity, and entropy syscalls.
+    let resolution = match clock_getres(CLOCK_MONOTONIC) {
+        Ok(value) if value.tv_sec >= 0 && value.tv_nsec >= 0 => value,
+        _ => return 23,
+    };
+    let _ = resolution;
+    if nanosleep(&octagram_runtime::Timespec { tv_sec: 0, tv_nsec: 1_000_000 }).is_err() {
+        return 24;
+    }
     let now = match clock_gettime(CLOCK_MONOTONIC) {
         Ok(value) if value.tv_nsec >= 0 && value.tv_nsec < 1_000_000_000 => value,
         _ => return 11,
@@ -162,6 +180,34 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     if duplicate_result.is_err() || duplicate_close.is_err() {
         return 21;
     }
+    // Create a real Rust thread with an owned stack mapping, then join it.
+    RUST_THREAD_RESULT.store(0, Ordering::SeqCst);
+    let stack_length = 64 * 1024usize;
+    let stack_mapping = match unsafe {
+        mmap(None, stack_length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+    } {
+        Ok(mapping) => mapping,
+        Err(_) => return 25,
+    };
+    let stack_top = match NonNull::new(unsafe { stack_mapping.as_ptr().add(stack_length) }) {
+        Some(pointer) => pointer,
+        None => return 26,
+    };
+    let thread_id = match unsafe {
+        thread_create(rust_thread_entry, core::ptr::null_mut(), stack_top, None, stack_mapping, stack_length)
+    } {
+        Ok(thread_id) => thread_id,
+        Err(_) => {
+            let _ = unsafe { munmap(stack_mapping, stack_length) };
+            return 27;
+        }
+    };
+    if thread_join(thread_id).is_err()
+        || RUST_THREAD_RESULT.load(Ordering::SeqCst) != 0x0C7A_6A4A
+    {
+        return 28;
+    }
+
     if write_all(STDOUT, b"Rust runtime VM/pipe/futex/thread: PASS\n").is_err() {
         return 22;
     }

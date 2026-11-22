@@ -193,3 +193,8 @@ on them.
 ### Safe Rust directory-entry name access
 
 The runtime now exposes `octagram_runtime::Dirent::name_bytes()`. It checks that `d_reclen` stays within the fixed C ABI record and that a NUL terminator occurs inside the record's name region. It returns a borrowed byte slice, avoiding repeated raw-pointer conversions in applications. Host unit tests cover a valid name, a record too short for its name, a missing terminator, and an oversized record. The QEMU directory smoke test uses this same accessor. This validates the Rust-side record boundary; it does not change the kernel directory ABI or claim full `std::fs` compatibility.
+
+
+### File metadata helpers
+
+`octagram_runtime::FileStat` exposes POSIX file-type constants and helpers (`file_type`, `is_file`, `is_directory`, `is_symlink`, `is_character_device`, and `permissions`). The compact OCTAGRAM metadata record remains 16 bytes (`size`, `mode`, `modified_seconds`); these helpers interpret its mode bits without pretending that it is the larger public C `struct stat`. Host unit tests cover regular files, directories, symlinks, and permission extraction. This is a Rust runtime convenience layer, not yet the `std::fs::Metadata` implementation.

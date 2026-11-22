@@ -349,6 +349,44 @@ pub struct FileStat {
     pub modified_seconds: u32,
 }
 
+/// POSIX-compatible file type bits carried in OCTAGRAM's compact metadata.
+pub const S_IFMT: u32 = 0o170000;
+pub const S_IFIFO: u32 = 0o010000;
+pub const S_IFCHR: u32 = 0o020000;
+pub const S_IFDIR: u32 = 0o040000;
+pub const S_IFBLK: u32 = 0o060000;
+pub const S_IFREG: u32 = 0o100000;
+pub const S_IFLNK: u32 = 0o120000;
+pub const S_IFSOCK: u32 = 0o140000;
+
+impl FileStat {
+    /// Return the POSIX file type portion of the mode.
+    pub const fn file_type(&self) -> u32 {
+        self.mode & S_IFMT
+    }
+
+    pub const fn is_file(&self) -> bool {
+        self.file_type() == S_IFREG
+    }
+
+    pub const fn is_directory(&self) -> bool {
+        self.file_type() == S_IFDIR
+    }
+
+    pub const fn is_symlink(&self) -> bool {
+        self.file_type() == S_IFLNK
+    }
+
+    pub const fn is_character_device(&self) -> bool {
+        self.file_type() == S_IFCHR
+    }
+
+    /// Return the permission and special bits, excluding the file type.
+    pub const fn permissions(&self) -> u32 {
+        self.mode & !S_IFMT
+    }
+}
+
 /// Read file metadata without opening a descriptor.
 pub const AT_FDCWD: i64 = -100;
 pub const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
@@ -1295,6 +1333,22 @@ mod tests {
         assert_eq!(core::mem::offset_of!(super::Dirent, d_reclen), 16);
         assert_eq!(core::mem::offset_of!(super::Dirent, d_type), 18);
         assert_eq!(core::mem::offset_of!(super::Dirent, d_name), 19);
+    }
+
+    #[test]
+    fn file_stat_exposes_posix_file_type_and_permissions() {
+        let file = super::FileStat { size: 42, mode: super::S_IFREG | 0o755, modified_seconds: 7 };
+        assert!(file.is_file());
+        assert!(!file.is_directory());
+        assert_eq!(file.file_type(), super::S_IFREG);
+        assert_eq!(file.permissions(), 0o755);
+
+        let directory = super::FileStat { mode: super::S_IFDIR | 0o750, ..file };
+        assert!(directory.is_directory());
+        assert!(!directory.is_file());
+
+        let symlink = super::FileStat { mode: super::S_IFLNK | 0o777, ..file };
+        assert!(symlink.is_symlink());
     }
 
     #[test]

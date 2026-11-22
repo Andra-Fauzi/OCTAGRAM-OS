@@ -213,32 +213,33 @@ lalu menjalankan compile test terhadap checkout upstream. Fitur PAL yang belum
 didukung harus diberi cfg/implementasi eksplisit; jangan mengarahkan target
 OCTAGRAM ke ABI Linux.
 
-## Patch awal upstream libc dan hasil compile
+## Upstream libc target OCTAGRAM: compile gate lulus
 
-Patch `patches/libc/0001-unix-add-octagram-abi-module.patch` sekarang
-mendaftarkan target OCTAGRAM pada modul Unix lama dan modul header baru
-upstream `libc`. Modul target mendefinisikan scalar aliases serta record C
-yang diperlukan oleh deklarasi Unix generik. API yang belum tersedia di
-OCTAGRAM—pthread rwlock, `statvfs`, `dladdr`, dan fungsi `sigaction()`
-generik—tidak diekspor untuk target ini.
+Integrasi awal upstream `rust-lang/libc` kini disimpan sebagai modul
+`patches/rust-libc/octagram/mod.rs` dan diterapkan oleh
+`tools/apply_rust_libc_octagram.py`. Applicator memverifikasi checkout
+upstream tepat pada commit
+`a03dd7c2e298b0ca482f30ce07efd3115938328e`, lalu mengubah source hanya jika
+setiap anchor ditemukan tepat satu kali. Modul tersebut mendefinisikan ABI
+OCTAGRAM sendiri dan tidak meminjam layout Linux atau Redox.
 
-CI mengambil source `rust-lang/libc` pada commit tetap
-`a03dd7c2e298b0ca482f30ce07efd3115938328e`, menerapkan patch, lalu berhasil
-menjalankan `cargo check --lib --no-default-features -Zjson-target-spec
--Zbuild-std=core` untuk target OCTAGRAM. Modul juga memuat compile-time layout
-assertions bagi struktur ABI utama.
+Modul awal mencakup scalar aliases, `stat`, `dirent`, `sockaddr`,
+`addrinfo`, `passwd`, `tm`, `fd_set`, `lconv`, `sem_t`, `termios`,
+`sigaction`, dan object pthread. Compile-time assertions mengunci ukuran
+struktur utama. Binding generik untuk pthread rwlock, `statvfs`, dan
+`dladdr` dikecualikan karena interface tersebut belum disediakan OCTAGRAM.
 
-Hasil ini adalah milestone pertama yang terukur untuk crate upstream
-`libc`: **crate berhasil cross-compile**. Ini belum build `std`, belum
-membuktikan semua simbol PAL tersedia, dan belum membuktikan program
-`std` dapat dijalankan di QEMU. Tahap berikutnya adalah compile upstream
-`std` dengan patch target gate dan libc, lalu menyelesaikan setiap missing
-symbol/semantic mismatch yang muncul.
+CI menjalankan validator header/ABI, menerapkan modul ke source upstream yang
+dipatok, lalu melakukan
+`cargo +nightly -Zjson-target-spec -Zbuild-std=core check` untuk
+`x86_64-unknown-octagram`. Run
+[45045939233](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45045939233)
+lulus, termasuk compile upstream libc, build userspace Rust, runtime host
+unit tests, dan pemeriksaan ELF statis.
 
-## Upstream libc target integration status
-
-Upstream `rust-lang/libc` kini memiliki integrasi target OCTAGRAM yang dapat direproduksi pada commit upstream `a03dd7c2e298b0ca482f30ce07efd3115938328e`. Script `tools/apply_rust_libc_octagram.py` memeriksa commit tersebut dan menerapkan perubahan melalui exact anchors yang unik; modul ABI berada di `patches/rust-libc/octagram/mod.rs`. CI kemudian menjalankan cross-compile crate `libc` untuk `x86_64-unknown-octagram` menggunakan nightly dan `-Zbuild-std=core`.
-
-Compile gate ini lulus pada Rust no_std run [45045459269](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45045459269), bersama build userspace, runtime host unit tests, dan verifikasi ELF. Ini adalah bukti compile untuk crate `libc`, bukan bukti bahwa semua fungsi sudah punya implementasi/link symbol, bukan build Rust `std`, dan bukan native compiler/Cargo.
-
-Binding pthread rwlock, `statvfs`, dan `dladdr` generik dikecualikan karena OCTAGRAM belum menyediakan interface tersebut. Tipe dan layout lain tetap harus diuji terhadap header C dan syscall ABI; jangan menambahkan binding hanya agar crate lolos compile jika ABI atau implementasi runtime belum ada.
+**Batas:** ini membuktikan crate upstream `libc` dapat di-cross-compile untuk
+custom target. Ini belum membangun Rust `std`, belum membuktikan seluruh
+simbol PAL tersedia saat link/run, dan belum menghasilkan rustc atau Cargo
+native. Tahap berikutnya adalah percobaan `build-std=std` dan penyelesaian
+error PAL yang benar-benar muncul, dengan ABI setiap fungsi diverifikasi
+terhadap header serta runtime OCTAGRAM.

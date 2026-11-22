@@ -1630,8 +1630,17 @@ Validasi: run Rust no_std sebelumnya lulus untuk commit 4ed89d72 ([45039325350](
 
 ## 20. IntoIterator standar untuk Directory (22 November 2026)
 
-- `Directory` kini mengimplementasikan `IntoIterator<Item = Result<Dirent, i64>>` dengan `DirectoryIter` sebagai associated IntoIter. Penggunaan dapat langsung memakai `for entry in directory { ... }`, tanpa memanggil metode inherent yang meniru nama trait.
+- `Directory` kini mengimplementasikan `IntoIterator<Item = Result<DirEntry, i64>>` dengan `DirectoryIter` sebagai associated IntoIter. Setiap `DirEntry` menyimpan duplikat descriptor parent sehingga metadata bisa dibaca setelah iterasi berakhir.
 - Guest smoke test diperbarui untuk memakai `for` langsung pada Directory, sehingga menguji dispatch `IntoIterator` standar, ownership stream, EOF, dan jalur error terminal.
 - `DirectoryIter` tetap mengimplementasikan `FusedIterator`; status terminal setelah EOF/error dijaga.
 
 Status: primitive iterator sekarang lebih idiomatis untuk no_std. Ini belum mengimplementasikan `std::fs::ReadDir`/`DirEntry` atau `PathBuf`.
+
+## 21. Owned DirEntry dan metadata relatif direktori (22 November 2026)
+
+- Ditambahkan `dup(33)` dan `OwnedFd::try_clone()` untuk menggandakan ownership descriptor tanpa berbagi wrapper pemilik.
+- `DirectoryIter` kini menghasilkan `DirEntry`, bukan record mentah `Dirent`. Setiap entry membawa descriptor parent duplikat; karena itu `metadata()` tetap valid setelah iterator mencapai EOF dan descriptor stream utamanya ditutup.
+- `DirEntry::name_bytes()` mempertahankan nama file sebagai byte mentah (tidak memaksakan UTF-8), `dirent()` menyediakan record ABI, `metadata()` memakai `fstatat(AT_SYMLINK_NOFOLLOW)`, dan `file_type()` memetakan metadata ke `FileType`.
+- Ditambahkan unit test host untuk klasifikasi tipe file dan guest smoke test yang menyimpan entry `message.c`, menyelesaikan iterasi, lalu memeriksa metadata dan tipe file dari entry yang masih hidup.
+
+Batasan: ini belum `std::fs::DirEntry`; belum ada `OsString`/`PathBuf`, canonicalization, metadata lengkap POSIX, atau penanganan seluruh semantik symlink/path. Perubahan perlu lulus Rust no_std dan QEMU sebelum dianggap tervalidasi di guest.

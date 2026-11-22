@@ -1838,6 +1838,24 @@ mod tests {
     use core::alloc::Layout;
 
     #[test]
+    fn command_stdio_builder_preserves_inherited_and_explicit_descriptors() {
+        let path = core::ffi::CStr::from_bytes_with_nul(b"/bin/sh\\0").unwrap();
+        let arg0 = core::ffi::CStr::from_bytes_with_nul(b"sh\\0").unwrap();
+        let argv = [arg0.as_ptr(), core::ptr::null()];
+        let envp = [core::ptr::null()];
+        let command = super::Command::new(path, &argv, &envp)
+            .stdin(super::Stdio::from_fd(8))
+            .stdout(super::Stdio::from_fd(9));
+        assert_eq!(command.stdio, [
+            super::Stdio::Fd(8),
+            super::Stdio::Fd(9),
+            super::Stdio::Inherit,
+        ]);
+        assert_eq!(super::Stdio::Inherit.raw_fd(), None);
+        assert_eq!(super::Stdio::Fd(10).raw_fd(), Some(10));
+    }
+
+    #[test]
     fn exec_vectors_require_explicit_null_terminators() {
         let valid = [core::ptr::null()];
         let invalid: [*const core::ffi::c_char; 0] = [];

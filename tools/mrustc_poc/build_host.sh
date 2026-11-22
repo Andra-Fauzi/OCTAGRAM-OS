@@ -71,15 +71,31 @@ MRUSTC_TARGET_VER="$MRUSTC_TARGET_VER" "$MRUSTC" \
     --target x86_64-unknown-linux-gnu \
     -o "$WORK/libcore" "$SRC/library/core/src/lib.rs"
 
-# mrustc tries to link the program itself and fails (it does not add libcore.o
-# to the link line); the generated poc.c is what this PoC needs.
+# mrustc may emit poc.c and then fail its own link step (it does not add
+# libcore.o to the link line). Remove stale outputs first so an old poc.c can
+# never disguise a transpilation failure; accept a nonzero status only when a
+# fresh, structurally plausible C translation unit was actually emitted.
+rm -f "$WORK/poc.c" "$WORK/poc"
+set +e
 MRUSTC_TARGET_VER="$MRUSTC_TARGET_VER" "$MRUSTC" \
     --crate-name poc --crate-type bin --edition 2021 \
     --target x86_64-unknown-linux-gnu \
     --extern core="$WORK/libcore.hir" \
-    -o "$WORK/poc" "$ROOT/tools/mrustc_poc/poc.rs" || true
+    -o "$WORK/poc" "$ROOT/tools/mrustc_poc/poc.rs"
+MRUSTC_STATUS=$?
+set -e
 
-test -s "$WORK/poc.c"
+if [[ ! -s "$WORK/poc.c" ]]; then
+    echo "ERROR: mrustc did not emit a fresh poc.c (exit status $MRUSTC_STATUS)" >&2
+    exit 1
+fi
+if ! grep -Eq '(^|[[:space:]])main[[:space:]]*\\(' "$WORK/poc.c"; then
+    echo "ERROR: generated poc.c does not contain the expected main entry point" >&2
+    exit 1
+fi
+if [[ "$MRUSTC_STATUS" -ne 0 ]]; then
+    echo "NOTE: mrustc exited $MRUSTC_STATUS after emitting poc.c; continuing with the validated C output (guest tcc performs the actual link)" >&2
+fi
 
 # TinyCC now assembles XGETBV directly. AtomicU128 remains outside this PoC's
 # supported subset and is narrowly redirected to its unreachable-path helper.

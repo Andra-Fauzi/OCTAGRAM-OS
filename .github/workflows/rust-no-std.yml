@@ -76,6 +76,9 @@ jobs:
             --target user/rust/targets/x86_64-unknown-octagram.json \
             --no-default-features --features rustc-dep-of-std
 
+      - name: Patch installed rust-src with OCTAGRAM std target glue
+        run: python3 tools/patch_rust_std_octagram.py
+
       - name: Probe upstream Rust std for OCTAGRAM (diagnostic, non-blocking)
         continue-on-error: true
         env:

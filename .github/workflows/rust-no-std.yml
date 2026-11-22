@@ -22,6 +22,8 @@ on:
       - "user/runtime.c"
       - "tools/rust_libc_abi_surface.json"
       - "tools/check_rust_libc_abi_surface.py"
+      - "tools/rust_std_pal_api_inventory.json"
+      - "tools/check_rust_std_pal_api_inventory.py"
       - ".github/workflows/rust-no-std.yml"
   workflow_dispatch:
 

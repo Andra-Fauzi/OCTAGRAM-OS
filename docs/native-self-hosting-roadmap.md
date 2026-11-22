@@ -1366,10 +1366,11 @@ status berikut:
    diverifikasi dalam sesi ini.**
 4. **XGETBV assembler — implementasi ditambahkan.** Tabel assembler x86
    TinyCC mengenali mnemonic `xgetbv` dan mengeluarkan encoding tetap
-   `0F 01 D0`. Source `user/examples/tcc_xgetbv.c` menggunakan inline asm
-   GCC-style. Dua harness QEMU mengompilasi dan menautkan fungsi itu, kemudian
-   menjalankan `main()` yang tidak memanggil fungsi XGETBV; instruksi tersebut
-   tidak dieksekusi karena OSXSAVE/XCR0 mungkin belum aktif. Hasil guest QEMU
+   `0F 01 D0`. Source `user/examples/tcc_xgetbv.c` menggunakan inline asm GCC-style. Dua
+   harness QEMU mengompilasi dan menautkan fungsi itu, kemudian menjalankan
+   `main()` yang memeriksa keberadaan byte `0F 01 D0` dalam kode fungsi tetapi
+   tidak memanggil fungsi XGETBV; instruksi tersebut tidak dieksekusi karena
+   OSXSAVE/XCR0 mungkin belum aktif. Hasil guest QEMU
    belum diverifikasi. **Atomic 128-bit** (`uint128_t _Atomic`) masih belum
    didukung TinyCC.
    

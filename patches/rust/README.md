@@ -34,3 +34,11 @@ reports missing symbols/modules without weakening unrelated targets.
 
 Do not mark `rust_std`, `rustc_host`, or `cargo_host` as implemented from
 this patch alone.
+
+## Automated patch validation
+
+The `Rust upstream patch validation` GitHub Actions workflow checks this patch
+against the exact upstream Rust commit listed above. It performs both
+`git apply --check` and an application followed by a source assertion. This
+only validates patch context and application; it does not build Rust
+`std`, prove PAL compatibility, or validate the target's runtime behavior.

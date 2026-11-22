@@ -1,7 +1,7 @@
 # Upstream libc patch series for OCTAGRAM
 
 Initial audit base: `rust-lang/libc`
-`a03dd7c2e298b0ca482f30ce07efd3115938328` (upstream main, 22 November 2026).
+`a03dd7c2e298b0ca482f30ce07efd3115938328e` (upstream main, 22 November 2026).
 
 ## Patch 0001
 

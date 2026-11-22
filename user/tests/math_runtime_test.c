@@ -72,6 +72,7 @@ int main(void)
     zero.value = nextafter(-INFINITY, 0.0);
     if (zero.bits != UINT64_C(0xffefffffffffffff))
         return 40;
+    zero.value = nextafter(0.0, -1.0);
     if (ilogb(8.0) != 3 || ilogb(zero.value) != -1074 ||
         ilogb(0.0) != FP_ILOGB0 || ilogb(NAN) != FP_ILOGBNAN ||
         ilogb(INFINITY) != INT_MAX)

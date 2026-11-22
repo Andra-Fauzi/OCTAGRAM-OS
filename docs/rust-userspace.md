@@ -24,7 +24,7 @@ user/rust/
 └── make/                    # Implementasi utilitas 'make' berbasis Rust
 ```
 
-Target kompilasi yang digunakan adalah target bare-metal Rust `x86_64-unknown-none`.
+Target kompilasi utama adalah custom target `x86_64-unknown-octagram` di `targets/x86_64-unknown-octagram.json`. Target ini mengidentifikasi `target_os = "octagram"` dan menggunakan ABI syscall OCTAGRAM, bukan Linux.
 
 ---
 
@@ -35,7 +35,7 @@ kernel OCTAGRAM-OS:
 
 ### Alokator Memori Dinamis (`alloc`)
 - Mengimplementasikan trait `core::alloc::GlobalAlloc`.
-- Memanfaatkan alokasi memori halaman anonim melalui syscall `mmap` (Syscall 9) dan `munmap` (Syscall 11).
+- Memanfaatkan pemetaan memori anonim melalui syscall `mmap` (nomor 16 pada ABI OCTAGRAM). `dealloc` saat ini belum mengembalikan blok ke kernel; allocator masih berupa arena monotonik.
 - Mengaktifkan fitur `alloc` standar Rust sehingga tipe data seperti `Vec`, `String`, `Box`, dan `BTreeMap` dapat digunakan secara penuh di userspace.
 
 ### Pembungkus Syscall ABI (`int 0x80`)
@@ -114,7 +114,7 @@ make -C user/rust
 
 Perintah ini akan:
 1. Merakit `crt0.S` menjadi `build/crt0.o`.
-2. Menjalankan `cargo build --release --target x86_64-unknown-none`.
+2. Menjalankan Cargo nightly dengan `-Z build-std=core,alloc` untuk custom target OCTAGRAM.
 3. Menautkan objek dengan `linker.ld`.
 4. Menghasilkan biner ELF di `user/rust/build/`:
    - `user/rust/build/rust_hello.elf`

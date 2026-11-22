@@ -60,11 +60,11 @@ def serial_text():
 
 def qemu_log_tail(path, limit=5000):
     """Read only the final bytes of a potentially large QEMU diagnostic log."""
-    with open(path, "r", errors="replace") as handle:
+    with open(path, "rb") as handle:
         handle.seek(0, os.SEEK_END)
         size = handle.tell()
         handle.seek(max(0, size - limit), os.SEEK_SET)
-        return handle.read()
+        return handle.read().decode("utf-8", errors="replace")
 
 
 def wait_for(needle, offset, timeout):

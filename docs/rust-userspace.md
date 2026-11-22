@@ -16,7 +16,7 @@ Struktur subdirektori `user/rust/`:
 ```text
 user/rust/
 ├── Cargo.toml               # Workspace konfigurasi Cargo
-├── rust-toolchain.toml      # Toolchain target x86_64-unknown-none
+├── rust-toolchain.toml      # Rust nightly + rust-src
 ├── linker.ld                # Skrip linker untuk executable ELF userspace
 ├── Makefile                 # Otomasi kompilasi dan penyalinan biner ke build/
 ├── runtime/                 # Crate runtime: allocator & syscall bindings

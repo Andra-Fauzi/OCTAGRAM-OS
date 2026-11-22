@@ -13,9 +13,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
     close, closedir, clock_getres, clock_gettime, dup3, exit, fstatat, futex, getpid,
     getrandom, mmap, mprotect, munmap, nanosleep, opendir, pipe2, read, readdir,
-    stat_path, thread_create, File,
+    stat_path, thread_create, unlinkat, File,
     thread_exit, thread_join, thread_self, write, write_all,
-    AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
+    AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, O_RDWR, O_CREAT, O_TRUNC, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
 };
 
 static RUST_THREAD_RESULT: AtomicU64 = AtomicU64::new(0);
@@ -122,6 +122,31 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     if file.close().is_err() {
         return 10;
     }
+
+    // Verify writable-file operations required by std::fs::File:
+    // create, partial overwrite via truncate, fsync/fdatasync, metadata, unlink.
+    let scratch_path = match CStr::from_bytes_with_nul(b"/tmp/rust-runtime-sync-test.tmp\\0") {
+        Ok(path) => path,
+        Err(_) => return 35,
+    };
+    let scratch = match File::openat(AT_FDCWD, scratch_path, O_RDWR | O_CREAT | O_TRUNC, 0o600) {
+        Ok(file) => file,
+        Err(_) => return 36,
+    };
+    if scratch.write_all(b"octagram-file-api").is_err()
+        || scratch.set_len(4).is_err()
+        || scratch.sync_data().is_err()
+        || scratch.sync_all().is_err()
+        || scratch.metadata().map(|value| value.size != 4).unwrap_or(true)
+        || scratch.close().is_err()
+        || unlinkat(AT_FDCWD, scratch_path, 0).is_err()
+    {
+        return 37;
+    }
+    if write_all(STDOUT, b"Rust runtime file mutation/sync: PASS\\n").is_err() {
+        return 38;
+    }
+
     // Directory iteration is required by std::fs::read_dir and Cargo discovery.
     let directory_path = match CStr::from_bytes_with_nul(b"/share/octagram\0") {
         Ok(path) => path,

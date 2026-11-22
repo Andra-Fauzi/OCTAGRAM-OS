@@ -413,7 +413,7 @@ impl Dirent {
             return None;
         }
 
-        let name_capacity = record_len - name_offset;
+        let name_capacity = (record_len - name_offset).min(self.d_name.len());
         let name = unsafe {
             core::slice::from_raw_parts(self.d_name.as_ptr().cast::<u8>(), name_capacity)
         };

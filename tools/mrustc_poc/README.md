@@ -38,7 +38,8 @@ di `docs/native-self-hosting-roadmap.md` bagian **M4.3**.
    fungsi itu, lalu memeriksa byte `0F 01 D0` lewat `main()` yang tidak
    memanggilnya. Instruksi XGETBV tidak dieksekusi. Atomic 128-bit (`uint128_t _Atomic`) masih belum didukung TinyCC. Rewrite
    PoC mengalihkan jalur yang tidak dieksekusi ke helper bytewise 16-byte;
-   helper ini **bukan atomic** dan tidak aman untuk concurrency.
+   source guest `tcc_atomic128_shim.c` menguji parser TinyCC dan dua jalur helper.
+   Helper ini **bukan atomic** dan tidak aman untuk concurrency.
 
 Helper overflow memakai aritmetika lebar untuk memeriksa rentang signed dan
 unsigned 8/16/32/64 bit, serta tetap menyimpan bit hasil terpotong saat overflow.

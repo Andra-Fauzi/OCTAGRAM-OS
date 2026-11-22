@@ -211,3 +211,17 @@ This is the low-level error boundary intended for a future Rust `std` PAL;
 existing syscall wrappers still return their original `Result<T, i64>`
 signatures for compatibility. Host unit tests cover both valid errno values
 and non-error/out-of-range returns.
+
+
+### Owned file descriptors
+
+The runtime now provides `OwnedFd`, an ownership wrapper for descriptors
+returned by `open` and `openat`. It exposes borrowed raw access, explicit
+ownership transfer through `into_raw_fd`, explicit closure through
+`close_owned`, and descriptor-based read/write/seek methods. On OCTAGRAM
+guest builds, dropping an owner closes its descriptor; host unit-test builds
+keep Drop inert so tests never execute guest syscalls. Unsafe
+`from_raw_fd` documents the single-owner requirement. This is a first
+resource-ownership primitive for a future `std::fs` implementation; it does
+not yet provide buffered I/O, path normalization, or the complete
+`std::os::fd` trait surface.

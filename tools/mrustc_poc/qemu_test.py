@@ -32,6 +32,7 @@ BOOT = os.environ.get("OCTAGRAM_POC_BOOT", "/dev/shm/octagram-xrustc.img")
 SOURCES = os.environ.get("OCTAGRAM_POC_SOURCES", os.path.join(WORK, "sources.img"))
 SERIAL = os.environ.get("OCTAGRAM_POC_SERIAL", "/tmp/octagram-mrustc-serial.log")
 MONITOR = os.environ.get("OCTAGRAM_POC_MONITOR", "/tmp/octagram-mrustc-monitor.sock")
+QEMU_LOG = os.environ.get("OCTAGRAM_POC_QEMU_LOG")
 MEMORY_MIB = os.environ.get("OCTAGRAM_POC_MEMORY", "2048")
 COMPILE_TIMEOUT = int(os.environ.get("OCTAGRAM_POC_COMPILE_TIMEOUT", "540"))
 
@@ -84,7 +85,7 @@ def key_name(character):
 
 
 def main():
-    global SERIAL, MONITOR
+    global SERIAL, MONITOR, QEMU_LOG
     for path in (BOOT, SOURCES):
         if not os.path.exists(path):
             print("SKIP: missing %s" % path)
@@ -106,6 +107,11 @@ def main():
         )
         os.close(monitor_fd)
         os.unlink(MONITOR)
+    if QEMU_LOG is None:
+        log_fd, QEMU_LOG = tempfile.mkstemp(
+            prefix="octagram-mrustc-", suffix=".qemu.log"
+        )
+        os.close(log_fd)
 
     for path in (SERIAL, MONITOR):
         try:
@@ -138,6 +144,7 @@ def main():
     ]
     process = None
     monitor = None
+    qemu_log_handle = None
     connected = False
 
     def send_line(text, pause=0.04):
@@ -148,8 +155,9 @@ def main():
         time.sleep(0.4)
 
     try:
+        qemu_log_handle = open(QEMU_LOG, "w")
         process = subprocess.Popen(
-            command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
+            command, stdout=qemu_log_handle, stderr=subprocess.STDOUT
         )
         monitor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         for _ in range(120):
@@ -161,6 +169,10 @@ def main():
                 if process is not None and process.poll() is not None:
                     print("QEMU-EXIT: %s" % process.returncode)
                     print(serial_text()[-3000:])
+                    qemu_log_handle.flush()
+                    with open(QEMU_LOG, "r", errors="replace") as handle:
+                        print("=== QEMU LOG ===")
+                        print(handle.read()[-3000:])
                     return 1
                 time.sleep(0.5)
         if not connected:
@@ -333,6 +345,8 @@ def main():
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+        if qemu_log_handle is not None:
+            qemu_log_handle.close()
         for path in (MONITOR, live_vars):
             try:
                 os.unlink(path)

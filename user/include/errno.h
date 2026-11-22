@@ -17,6 +17,12 @@ extern int errno;
 #define EPERM 1
 #define EAGAIN 11
 #define EWOULDBLOCK EAGAIN
+#define EFBIG 27
+#define EMLINK 31
+#define ETXTBSY 26
+#define EXDEV 18
+#define EDQUOT 122
+#define ESTALE 116
 #define EALREADY 114
 #define EINPROGRESS 115
 #define ECONNABORTED 103

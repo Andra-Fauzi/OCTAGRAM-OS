@@ -155,12 +155,14 @@
   ],
   "upstream_libc": {
     "repository": "rust-lang/libc",
-    "base_commit": "a03dd7c2e298b0ca482f30ce07efd3115938328e",
+    "base_commit": "ccc2ff4aaab962f7fde7b8edda7379c045b1ca12",
     "applicator": "tools/apply_rust_libc_octagram.py",
     "target_module": "patches/rust-libc/octagram/mod.rs",
     "compile_gate": "cargo +nightly -Zjson-target-spec -Zbuild-std=core check --target x86_64-unknown-octagram --no-default-features --features rustc-dep-of-std",
-    "last_verified_run": "45045589401",
-    "commit": "a03dd7c2e298b0ca482f30ce07efd3115938328e"
+    "last_verified_run": null,
+    "commit": "ccc2ff4aaab962f7fde7b8edda7379c045b1ca12",
+    "version": "0.2.191",
+    "reason": "This is the exact libc version declared by library/std/Cargo.toml in the pinned Rust source."
   },
   "public_structs": [
     {

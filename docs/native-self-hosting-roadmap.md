@@ -1341,7 +1341,9 @@ sudah ada di dalam OCTAGRAM sebagai backend, tanpa LLVM.
   memeriksa keluaran C segar dan entry point `main`, serta hanya mengizinkan
   status `mrustc` nonzero bila C yang valid secara struktural sudah dihasilkan;
   status nonzero tersebut dicatat sebagai kegagalan link host yang memang
-  dialihkan ke linker TinyCC guest.
+  dialihkan ke linker TinyCC guest. Pemeriksaan struktur C dipisah ke
+  `validate_poc_output.py` dan memiliki tes unit untuk output kosong, definisi
+  `main`, fungsi non-main, serta komentar yang hanya menyebut `main`.
 
 ### Status hambatan di sisi guest
 

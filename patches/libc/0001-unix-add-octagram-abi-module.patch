@@ -19,8 +19,8 @@ Upstream base: rust-lang/libc a03dd7c2e298b0ca482f30ce07efd3115938328e
  src/new/octagram/mod.rs     |  4 +++
  src/new/octagram/unistd.rs  |  7 +++++++
  src/unix/mod.rs             |  3 +++
- src/unix/octagram/mod.rs    | 243 +++++++++++++++++++++++++++++++++++++++++
- 5 files changed, 260 insertions(+)
+ src/unix/octagram/mod.rs    | 231 +++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 261 insertions(+)
  create mode 100644 src/new/octagram/mod.rs
  create mode 100644 src/new/octagram/unistd.rs
  create mode 100644 src/unix/octagram/mod.rs
@@ -120,7 +120,7 @@ new file mode 100644
 index 000000000000..000000000000
 --- /dev/null
 +++ b/src/unix/octagram/mod.rs
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,231 @@
 +//! Initial raw bindings for the OCTAGRAM x86_64 userspace ABI.
 +//!
 +//! These definitions follow OCTAGRAM's public C headers. They intentionally
@@ -131,6 +131,7 @@ index 000000000000..000000000000
 +pub type blkcnt_t = i64;
 +pub type blksize_t = i64;
 +pub type clock_t = i64;
++pub type cc_t = u8;
 +pub type clockid_t = c_int;
 +pub type dev_t = u64;
 +pub type ino_t = u64;

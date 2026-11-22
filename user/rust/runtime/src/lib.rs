@@ -1119,6 +1119,8 @@ impl Iterator for DirectoryIter {
     }
 }
 
+impl core::iter::FusedIterator for DirectoryIter {}
+
 /// RAII directory stream for the OCTAGRAM snapshot-based readdir ABI.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Directory {
@@ -2007,6 +2009,21 @@ mod tests {
 
     use super::{build_dns_query, find_env_value, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen, Dirent};
     use core::alloc::Layout;
+
+    #[test]
+    fn directory_iterator_is_fused_after_completion() {
+        fn assert_fused<I: core::iter::FusedIterator>(_iterator: &I) {}
+        let iterator = super::DirectoryIter {
+            directory: super::Directory {
+                fd: unsafe { super::OwnedFd::from_raw_fd(1) },
+            },
+            finished: true,
+        };
+        assert_fused(&iterator);
+        let mut iterator = iterator;
+        assert!(iterator.next().is_none());
+        assert!(iterator.next().is_none());
+    }
 
     #[test]
     fn exit_status_preserves_octagram_raw_exit_values() {

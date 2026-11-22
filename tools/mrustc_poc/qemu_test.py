@@ -193,12 +193,20 @@ def main():
 
         # Compile only: executing XGETBV depends on OSXSAVE/XCR0 setup.
         offset = len(serial_text())
-        send_line("tcc -c /mnt/src/tcc_xgetbv.c -o /mnt/tcc_xgetbv.o")
+        send_line("tcc /mnt/src/tcc_xgetbv.c -o /mnt/tcc_xgetbv.elf")
         if not wait_prompt(offset, 60):
             print("TCC-XGETBV-ASSEMBLE-FAIL")
             print(serial_text()[offset:][-3000:])
             return 1
         print("TCC-XGETBV-ASSEMBLE-PASS")
+
+        offset = len(serial_text())
+        send_line("run /mnt/tcc_xgetbv.elf")
+        if not wait_prompt(offset, 30):
+            print("TCC-XGETBV-RUN-FAIL")
+            print(serial_text()[offset:][-2000:])
+            return 1
+        print("TCC-XGETBV-RUN-PASS")
 
         offset = len(serial_text())
         send_line(

@@ -131,9 +131,15 @@ def main():
     # Compile only: XGETBV can raise #UD when the guest CPU/OS has not
     # enabled OSXSAVE, so never execute this function as part of the smoke test.
     output_offset = len(serial_text())
-    send_line("tcc -c /tmp/tcc-xgetbv.c -o /tmp/tcc-xgetbv.o")
+    send_line("tcc /tmp/tcc-xgetbv.c -o /tmp/tcc-xgetbv.elf")
     if not wait_for_after("program exited with status 0", output_offset, 60):
         print("TCC-XGETBV-ASSEMBLE-FAIL: TinyCC could not assemble XGETBV")
+        print(serial_text()[-5000:])
+        return 1
+    output_offset = len(serial_text())
+    send_line("run /tmp/tcc-xgetbv.elf")
+    if not wait_for_after("program exited with status 0", output_offset, 30):
+        print("TCC-XGETBV-RUN-FAIL: compile-only XGETBV container ELF did not run")
         print(serial_text()[-5000:])
         return 1
 

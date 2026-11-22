@@ -60,7 +60,7 @@ Runtime kini menyediakan `Command::new(path, argv, envp)`, konfigurasi descripto
 
 ## `Command::output` stdout capture
 
-Runtime menyediakan `Command::output()` membuat dua pipe `O_CLOEXEC`, mengalihkan stdout dan stderr child, lalu memakai `poll(2)` untuk menguras keduanya bersamaan sampai EOF sebelum mereap child. Pembacaan simultan mencegah deadlock ketika salah satu pipe penuh. Hasil `CapturedOutput` berisi status keluar mentah OCTAGRAM, byte stdout, dan byte stderr. API poll memakai layout `PollFd` 8-byte yang diuji terhadap ABI kernel. Ini masih bukan `std::process::Output` penuh: status belum dipetakan ke `ExitStatus`, dan semantik stdin, sinyal, serta error perlu diselaraskan. Guest smoke test memeriksa output `printf` dan status nol; QEMU gate memiliki marker khusus untuk API ini.
+Runtime menyediakan `Command::output()` membuat dua pipe `O_CLOEXEC`, mengalihkan stdout dan stderr child, lalu memakai `poll(2)` untuk menguras keduanya bersamaan sampai EOF sebelum mereap child. Pembacaan simultan mencegah deadlock ketika salah satu pipe penuh. Hasil `CapturedOutput` berisi status keluar mentah OCTAGRAM, byte stdout, dan byte stderr. API poll memakai layout `PollFd` 8-byte yang diuji terhadap ABI kernel. `CapturedOutput::exit_status()` dan `success()` menyediakan adapter `ExitStatus` awal, tetapi ini belum `std::process::Output` penuh: status sinyal belum direpresentasikan dan semantik stdin, sinyal, serta error masih perlu diselaraskan. Guest smoke test memeriksa output `printf` dan status nol; QEMU gate memiliki marker khusus untuk API ini.
 
 ## Owned pipes dan konfigurasi Stdio
 
@@ -131,4 +131,4 @@ Saat satu stream output mencapai EOF, `Command::output()` sekarang mengubah desc
 
 ## Directory iterator adapter
 
-`Directory::into_iter()` memindahkan ownership stream ke `DirectoryIter`, yang mengimplementasikan `Iterator<Item = Result<Dirent, i64>>`. EOF mengakhiri iterasi; error pertama dikeluarkan satu kali lalu iterator berhenti. Guest smoke test kini memakai adapter ini dan mengandalkan `Drop` untuk menutup descriptor. Ini belum `std::fs::ReadDir`: konversi `Dirent` ke `DirEntry`, representasi `PathBuf`, metadata entry, dan semantik dot entries masih perlu dipetakan.
+`Directory::into_iter()` memindahkan ownership stream ke `DirectoryIter`, yang mengimplementasikan `Iterator<Item = Result<Dirent, i64>>` dan `FusedIterator`. EOF mengakhiri iterasi; error pertama dikeluarkan satu kali lalu iterator berhenti permanen. Guest smoke test memakai adapter ini dan mengandalkan `Drop` untuk menutup descriptor. Ini belum `std::fs::ReadDir`: konversi `Dirent` ke `DirEntry`, representasi `PathBuf`, metadata entry, dan semantik dot entries masih perlu dipetakan.

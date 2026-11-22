@@ -272,9 +272,9 @@ int ilogb(double x)
     int top = -1;
 
     if (bits == 0)
-        return INT_MIN;
+        return FP_ILOGB0;
     if (field == 0x7ffu)
-        return INT_MAX;
+        return fraction ? FP_ILOGBNAN : INT_MAX;
     if (field != 0)
         return (int)field - 1023;
     while (fraction != 0) {

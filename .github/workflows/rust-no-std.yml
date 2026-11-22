@@ -76,6 +76,16 @@ jobs:
             --target user/rust/targets/x86_64-unknown-octagram.json \
             --no-default-features --features rustc-dep-of-std
 
+      - name: Probe upstream Rust std for OCTAGRAM (diagnostic, non-blocking)
+        continue-on-error: true
+        env:
+          RUSTC_BOOTSTRAP_SYNTHETIC_TARGET: "1"
+        run: |
+          cargo +nightly -Zjson-target-spec -Zbuild-std=std check \
+            --manifest-path user/rust/std-probe/Cargo.toml \
+            --target user/rust/targets/x86_64-unknown-octagram.json \
+            --config 'patch.crates-io.libc.path="upstream-libc"'
+
       - name: Build OCTAGRAM Rust binaries
         run: make -C user/rust clean all check
 

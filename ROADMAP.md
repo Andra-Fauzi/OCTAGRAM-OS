@@ -316,8 +316,8 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     `__builtin_sub_overflow`, dan `__builtin_mul_overflow`; runtime helper
     mendukung hasil signed/unsigned 8/16/32/64 bit dan tes host tersedia.
   - [x] Tambahkan mnemonic assembler TinyCC `xgetbv` dengan encoding
-    `0F 01 D0`; source test mengompilasi/menautkan fungsi dan menjalankan
-    `main()` tanpa memanggil instruksi XGETBV; dua QEMU harness sudah disiapkan.
+    `0F 01 D0`; source test mengompilasi/menautkan fungsi, lalu memeriksa byte `0F 01 D0`
+    di kode fungsi tanpa mengeksekusi XGETBV; dua QEMU harness sudah disiapkan.
   - [x] Tambahkan bootstrap libm `user/math.c` ke `libc.a`, dengan tes host
     `make -C user math-test` dan program guest yang menguji link/runtime.
   - [ ] Tingkatkan akurasi dan kesesuaian ISO libm; fungsi transendental kini

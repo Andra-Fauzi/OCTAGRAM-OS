@@ -39,6 +39,7 @@ struct addrinfo {
 #define EAI_SOCKTYPE -6
 #define EAI_OVERFLOW -7
 #define EAI_FAIL -8
+#define EAI_SYSTEM -11
 
 #define HOST_NOT_FOUND 1
 #define TRY_AGAIN 2

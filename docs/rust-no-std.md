@@ -259,4 +259,8 @@ Saat satu stream output mencapai EOF, `Command::output()` sekarang mengubah desc
 
 ## Directory iterator
 
-`IntoIterator for Directory` menghasilkan `DirectoryIter`, sebuah owning iterator dengan item `Result<Dirent, i64>`. EOF mengakhiri iterasi; error dikeluarkan sekali dan menghentikan iterasi. Ownership directory tetap terjaga selama iterasi dan descriptor ditutup melalui `Drop` setelah iterator dilepas.
+`IntoIterator for Directory` menghasilkan `DirectoryIter`, sebuah owning iterator dengan item `Result<DirEntry, i64>`. Setiap `DirEntry` mempertahankan descriptor parent duplikat dan menyediakan `name_bytes()`, `metadata()`, serta `file_type()`, sehingga metadata tetap dapat dibaca setelah iterator mencapai EOF. EOF mengakhiri iterasi; error dikeluarkan sekali dan menghentikan iterasi. `DirectoryIter` mengimplementasikan `FusedIterator`.
+
+## OS strings dan path byte-preserving
+
+Runtime no_std menyediakan primitive internal `OsStr`/`OsString` dan `Path`/`PathBuf` berbasis byte mentah untuk menyiapkan integrasi PAL filesystem. Nama/path non-UTF-8 dipertahankan; `try_to_cstring_bytes()` menolak NUL sebelum menyiapkan argumen syscall. Path helper menyediakan absolute check, filename, extension, parent, dan push. Tipe ini belum merupakan implementasi resmi `std::ffi`/`std::path` dan belum mencakup normalisasi `.`/`..` maupun seluruh edge case upstream.

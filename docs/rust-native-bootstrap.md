@@ -356,3 +356,10 @@ Setelah compiler host-native dan linker yang sesuai tersedia:
 
 Jangan menaikkan status milestone hanya karena source code sudah tersedia atau
 karena cross-compile dari host berhasil.
+
+
+## 3.8. Rust runtime OS primitives groundwork (2026-11-22)
+
+The `octagram-runtime` crate now exposes a C-ABI-compatible `Timespec`, `clock_gettime` (syscall 50), `getpid` (syscall 11), and `getrandom` (syscall 121). Random requests are chunked to the kernel's current 256-byte maximum, and partial results are preserved consistently with the C runtime wrapper. Host tests assert the `Timespec` layout and clock identifiers.
+
+This is a small runtime foundation for a future Rust `std::sys` implementation. It does not implement errno/TLS, full filesystem and process semantics, or the Rust standard library. Guest QEMU checks for the new syscall wrappers are still pending; do not mark the Rust std milestone complete.

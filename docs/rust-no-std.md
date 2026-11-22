@@ -227,6 +227,10 @@ not yet provide buffered I/O, path normalization, or the complete
 `std::os::fd` trait surface.
 
 
+## Process spawning (`Command`)
+
+Runtime menyediakan builder `Command` dengan `spawn()` dan pemetaan descriptor opsional untuk stdin/stdout/stderr. Spawn memakai pipe `O_CLOEXEC` sebagai handshake: EOF tanpa payload menunjukkan `execve` berhasil, sedangkan payload berisi errno negatif menunjukkan kegagalan eksekusi. Smoke test guest menjalankan `/bin/sh -c 'exit 23'`, memeriksa status keluar, lalu memastikan file non-ELF ditolak sebagai executable. Ini belum sama dengan `std::process::Command`; pengaturan environment tingkat tinggi, signal, process group, dan seluruh semantik `Stdio` masih belum tersedia.
+
 ## Child process ownership
 
 Runtime menyediakan `Child` untuk melacak PID anak langsung. `wait()` menunggu hingga anak selesai dan mengembalikan nilai mentah yang diberikan ke `exit(status)`; `try_wait()` memakai `WNOHANG` agar pemeriksaan tidak memblokir. `waitpid_with_options()` dan `WAIT_ANY_PID` juga tersedia untuk kebutuhan tingkat rendah. Smoke test guest menjalankan `fork`, menguji pemeriksaan nonblocking, lalu mereap anak dan memverifikasi status keluar. API ini belum setara dengan `std::process::Child`/`Command`; belum ada spawn error handshake atau abstraksi stdio command.

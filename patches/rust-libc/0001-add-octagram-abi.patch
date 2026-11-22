@@ -24,6 +24,114 @@ index 13a27f8..0000000 100644
      } else if #[cfg(target_os = "redox")] {
          mod redox;
          pub use self::redox::*;
+@@ -1484,40 +1484,49 @@
+-    #[cfg_attr(
+-        all(target_os = "macos", target_arch = "x86"),
+-        link_name = "pthread_rwlock_init$UNIX2003"
+-    )]
+-    pub fn pthread_rwlock_init(
+-        lock: *mut crate::pthread_rwlock_t,
+-        attr: *const crate::pthread_rwlockattr_t,
+-    ) -> c_int;
+-    #[cfg_attr(
+-        all(target_os = "macos", target_arch = "x86"),
+-        link_name = "pthread_rwlock_destroy$UNIX2003"
+-    )]
+-    pub fn pthread_rwlock_destroy(lock: *mut crate::pthread_rwlock_t) -> c_int;
+-    #[cfg_attr(
+-        all(target_os = "macos", target_arch = "x86"),
+-        link_name = "pthread_rwlock_rdlock$UNIX2003"
+-    )]
+-    pub fn pthread_rwlock_rdlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
+-    #[cfg_attr(
+-        all(target_os = "macos", target_arch = "x86"),
+-        link_name = "pthread_rwlock_tryrdlock$UNIX2003"
+-    )]
+-    pub fn pthread_rwlock_tryrdlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
+-    #[cfg_attr(
+-        all(target_os = "macos", target_arch = "x86"),
+-        link_name = "pthread_rwlock_wrlock$UNIX2003"
+-    )]
+-    pub fn pthread_rwlock_wrlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
+-    #[cfg_attr(
+-        all(target_os = "macos", target_arch = "x86"),
+-        link_name = "pthread_rwlock_trywrlock$UNIX2003"
+-    )]
+-    pub fn pthread_rwlock_trywrlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
+-    #[cfg_attr(
+-        all(target_os = "macos", target_arch = "x86"),
+-        link_name = "pthread_rwlock_unlock$UNIX2003"
+-    )]
+-    pub fn pthread_rwlock_unlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
+-    pub fn pthread_rwlockattr_init(attr: *mut crate::pthread_rwlockattr_t) -> c_int;
+-    pub fn pthread_rwlockattr_destroy(attr: *mut crate::pthread_rwlockattr_t) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    #[cfg_attr(
++        all(target_os = "macos", target_arch = "x86"),
++        link_name = "pthread_rwlock_init$UNIX2003"
++    )]
++    pub fn pthread_rwlock_init(
++        lock: *mut crate::pthread_rwlock_t,
++        attr: *const crate::pthread_rwlockattr_t,
++    ) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    #[cfg_attr(
++        all(target_os = "macos", target_arch = "x86"),
++        link_name = "pthread_rwlock_destroy$UNIX2003"
++    )]
++    pub fn pthread_rwlock_destroy(lock: *mut crate::pthread_rwlock_t) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    #[cfg_attr(
++        all(target_os = "macos", target_arch = "x86"),
++        link_name = "pthread_rwlock_rdlock$UNIX2003"
++    )]
++    pub fn pthread_rwlock_rdlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    #[cfg_attr(
++        all(target_os = "macos", target_arch = "x86"),
++        link_name = "pthread_rwlock_tryrdlock$UNIX2003"
++    )]
++    pub fn pthread_rwlock_tryrdlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    #[cfg_attr(
++        all(target_os = "macos", target_arch = "x86"),
++        link_name = "pthread_rwlock_wrlock$UNIX2003"
++    )]
++    pub fn pthread_rwlock_wrlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    #[cfg_attr(
++        all(target_os = "macos", target_arch = "x86"),
++        link_name = "pthread_rwlock_trywrlock$UNIX2003"
++    )]
++    pub fn pthread_rwlock_trywrlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    #[cfg_attr(
++        all(target_os = "macos", target_arch = "x86"),
++        link_name = "pthread_rwlock_unlock$UNIX2003"
++    )]
++    pub fn pthread_rwlock_unlock(lock: *mut crate::pthread_rwlock_t) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    pub fn pthread_rwlockattr_init(attr: *mut crate::pthread_rwlockattr_t) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    pub fn pthread_rwlockattr_destroy(attr: *mut crate::pthread_rwlockattr_t) -> c_int;
+@@ -1703,6 +1703,8 @@
+-    #[cfg(not(all(target_os = "linux", target_env = "gnu")))] // defined in new/glibc
+-    #[cfg_attr(gnu_file_offset_bits64, link_name = "statvfs64")]
+-    pub fn statvfs(path: *const c_char, buf: *mut crate::statvfs) -> c_int;
+-    #[cfg(not(all(target_os = "linux", target_env = "gnu")))] // defined in new/glibc
+-    #[cfg_attr(gnu_file_offset_bits64, link_name = "fstatvfs64")]
+-    pub fn fstatvfs(fd: c_int, buf: *mut crate::statvfs) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    #[cfg(not(all(target_os = "linux", target_env = "gnu")))] // defined in new/glibc
++    #[cfg_attr(gnu_file_offset_bits64, link_name = "statvfs64")]
++    pub fn statvfs(path: *const c_char, buf: *mut crate::statvfs) -> c_int;
++    #[cfg(not(target_os = "octagram"))]
++    #[cfg(not(all(target_os = "linux", target_env = "gnu")))] // defined in new/glibc
++    #[cfg_attr(gnu_file_offset_bits64, link_name = "fstatvfs64")]
++    pub fn fstatvfs(fd: c_int, buf: *mut crate::statvfs) -> c_int;
+@@ -2294,1 +2294,1 @@
+-    if #[cfg(not(target_os = "aix"))] {
++    if #[cfg(not(any(target_os = "aix", target_os = "octagram")))] {
 diff --git a/src/unix/octagram/mod.rs b/src/unix/octagram/mod.rs
 new file mode 100644
 --- /dev/null

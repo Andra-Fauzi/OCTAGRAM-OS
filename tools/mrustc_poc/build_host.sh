@@ -72,8 +72,8 @@ MRUSTC_TARGET_VER="$MRUSTC_TARGET_VER" "$MRUSTC" \
 
 test -s "$WORK/poc.c"
 
-# tcc cannot assemble XGETBV or do 128-bit atomics; both appear in core's CPU
-# feature and AtomicU128 code, which the PoC program never reaches.
+# TinyCC now assembles XGETBV directly. AtomicU128 remains outside this PoC's
+# supported subset and is narrowly redirected to its unreachable-path helper.
 python3 "$ROOT/tools/mrustc_poc/patch_core.py" "$WORK/libcore.c"
 test -s "$WORK/libcore.c"
 test -s "$WORK/poc.c"

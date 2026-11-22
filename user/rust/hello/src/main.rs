@@ -370,7 +370,8 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(output) => output,
         Err(_) => return 55,
     };
-    if output.status != 0
+    if !output.success()
+        || output.exit_status().code() != Some(0)
         || output.stdout.as_slice() != b"OCTAGRAM-PIPE-PASS"
         || output.stderr.as_slice() != b"OCTAGRAM-STDERR-PASS"
     {

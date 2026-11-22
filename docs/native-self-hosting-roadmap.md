@@ -1757,32 +1757,6 @@ merupakan modul upstream `libc` dan belum membuktikan `std` dapat dikompilasi.
 Tahap berikutnya adalah implementasi modul `libc` target-specific serta compile
 test bertahap terhadap source upstream yang dipatok.
 
-## 29. Modul awal upstream libc OCTAGRAM berhasil di-cross-compile (22 November 2026)
-
-- Menambahkan patch `patches/libc/0001-unix-add-octagram-abi-module.patch`
-  terhadap upstream `rust-lang/libc` commit
-  `a03dd7c2e298b0ca482f30ce07efd3115938328e`.
-- Mendaftarkan `target_os = "octagram"` pada modul Unix lama dan modul
-  header baru upstream.
-- Menambahkan tipe dan record ABI OCTAGRAM dari header C, termasuk
-  `stat`, `dirent`, pthread objects, `passwd`, socket address,
-  `addrinfo`, `tm`, `fd_set`, `lconv`, `sem_t`, `termios`, dan
-  `sigaction`.
-- Menambahkan compile-time size/alignment/offset assertions untuk mencegah
-  perubahan layout diam-diam.
-- Menonaktifkan binding generik yang belum tersedia pada target OCTAGRAM:
-  pthread rwlock, `statvfs`, `dladdr`, dan fungsi `sigaction()`.
-- Workflow upstream patch kini menerapkan patch ke source yang dipatok dan
-  menjalankan cross-compile `libc` dengan nightly, `core`, dan custom target.
-
-<badge color="success">CI lulus</badge> Run `45042972852`: patch berhasil
-diterapkan dan upstream crate `libc` berhasil di-cross-compile.
-
-**Batas:** yang berhasil adalah crate `libc` dalam mode
-`--no-default-features`; Rust `std` belum dibangun atau diuji. Masih perlu
-audit semua API yang diekspor oleh Unix module generik, menghubungkan simbol
-PAL ke runtime OCTAGRAM, lalu menjalankan eksperimen `build-std=std`.
-
 ## 30. Upstream libc OCTAGRAM: applicator deterministik dan compile gate lulus (22 November 2026)
 
 - Integrasi upstream libc kini memakai source module `patches/rust-libc/octagram/mod.rs` dan script `tools/apply_rust_libc_octagram.py`, bukan unified diff yang sensitif terhadap offset baris.
@@ -1791,6 +1765,26 @@ PAL ke runtime OCTAGRAM, lalu menjalankan eksperimen `build-std=std`.
 - API yang belum disediakan OCTAGRAM dikecualikan dari binding generik, termasuk pthread rwlock, `statvfs`, dan `dladdr`. Modul target juga memiliki pemeriksaan layout compile-time terhadap ABI yang diinventarisasi.
 - Workflow Rust no_std mengambil checkout upstream yang dipatok, menjalankan applicator, kemudian melakukan `cargo +nightly -Zjson-target-spec -Zbuild-std=core check` untuk target OCTAGRAM.
 
-<badge color="success">Rust no_std CI lulus</badge> Run [45045459269](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45045459269) pada commit `ecda92b5` lulus seluruh langkah: validasi target dan ABI, inventaris Unix PAL, penerapan perubahan ke upstream libc, cross-compile crate libc, build userspace Rust, unit test runtime host, dan verifikasi ELF statis.
+<badge color="success">Rust no_std CI lulus</badge> Run [45045939233](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45045939233) pada commit `3115c898` lulus seluruh langkah: validasi target dan ABI, inventaris Unix PAL, penerapan perubahan ke upstream libc, cross-compile crate libc, build userspace Rust, unit test runtime host, dan verifikasi ELF statis.
 
 **Batas:** ini membuktikan crate upstream `libc` dapat dikompilasi untuk custom target dan aplikasi `no_std` yang ada tetap terbangun. Ini belum membuktikan `std` dapat dibangun, belum menguji seluruh simbol libc saat link/run, dan belum membuat `rustc` atau Cargo native. Langkah berikutnya adalah mencoba `build-std=std` secara terkendali, menggunakan daftar error PAL/libc aktual untuk melengkapi ABI tanpa mengasumsikan kompatibilitas Linux.
+
+## 31. Pemeriksaan layout ABI publik dan validasi header penuh (22 November 2026)
+
+- Modul `patches/rust-libc/octagram/mod.rs` kini mengunci ukuran dan alignment
+  struktur `stat`, `dirent`, `pthread_attr_t`, `pthread_mutex_t`,
+  `pthread_cond_t`, `sem_t`, `termios`, `sigaction`, `sockaddr`,
+  `addrinfo`, `passwd`, `tm`, `fd_set`, dan `lconv` melalui
+  compile-time assertions.
+- Manifest `tools/rust_libc_abi_surface.json` mencatat public structs
+  terpisah dari record kernel `oct_stat`, termasuk ukuran dan alignment.
+- Checker ABI diperluas agar memeriksa urutan field pada header C socket,
+  passwd/netdb, pthread, terminal, semaphore, select, signal, dan stat.
+- CI run `45045939233` lulus validator header, penerapan applicator upstream,
+  cross-compile crate `libc`, build Rust no_std, unit test runtime host, dan
+  verifikasi ELF statis.
+
+**Batas:** compile-time size checks tidak menggantikan conformance test runtime
+atau pembuktian semantik POSIX. Khususnya, `struct stat` publik memuat field
+yang sebagian saat ini dinolkan oleh wrapper C; ukuran cocok tidak berarti
+semua metadata sudah tersedia. Rust `std` tetap belum dibangun.

@@ -11,9 +11,9 @@ use core::panic::PanicInfo;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
-    close, closedir, clock_getres, clock_gettime, dup3, exit, fstatat, futex, getpid,
-    getrandom, mmap, mprotect, munmap, nanosleep, opendir, pipe2, read, readdir,
-    stat_path, thread_create, unlinkat, File,
+    close, clock_getres, clock_gettime, dup3, exit, fstatat, futex, getpid,
+    getrandom, mmap, mprotect, munmap, nanosleep, pipe2, read,
+    stat_path, thread_create, unlinkat, Directory, File,
     thread_exit, thread_join, thread_self, write, write_all,
     AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, O_RDWR, O_CREAT, O_TRUNC, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
 };
@@ -152,23 +152,23 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(path) => path,
         Err(_) => return 29,
     };
-    let directory_fd = match opendir(directory_path) {
-        Ok(fd) => fd,
+    let directory = match Directory::open(directory_path) {
+        Ok(directory) => directory,
         Err(_) => return 30,
     };
     let mut found_message = false;
     let mut reached_eof = false;
     for _ in 0..128 {
-        match readdir(directory_fd) {
+        match directory.next_entry() {
             Ok(Some(entry)) => {
                 if entry.d_reclen as usize != core::mem::size_of::<octagram_runtime::Dirent>() {
-                    let _ = closedir(directory_fd);
+                    let _ = directory.close();
                     return 33;
                 }
                 let name_bytes = match entry.name_bytes() {
                     Some(name) => name,
                     None => {
-                        let _ = closedir(directory_fd);
+                        let _ = directory.close();
                         return 34;
                     }
                 };
@@ -178,7 +178,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
             Err(_) => break,
         }
     }
-    if closedir(directory_fd).is_err() || !found_message || !reached_eof {
+    if directory.close().is_err() || !found_message || !reached_eof {
         return 31;
     }
     if write_all(STDOUT, b"Rust runtime directory iteration: PASS\n").is_err() {

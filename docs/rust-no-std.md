@@ -144,6 +144,20 @@ The freestanding runtime now also exposes:
 Host unit tests check the timespec size/alignment/field offsets and clock ID constants. These wrappers are groundwork for a future `std::sys` backend, not evidence that Rust `std` is ported. Guest QEMU conformance for the new wrappers remains required.
 
 
+## Filesystem descriptor and directory-relative APIs
+
+The runtime now also exposes typed wrappers for `openat`, `fstat`,
+`fstatat`, `lseek`, `mkdirat`, `unlinkat`, and `renameat`, plus the
+OCTAGRAM `AT_FDCWD`, `AT_SYMLINK_NOFOLLOW`, and `SEEK_*` constants.
+The Rust guest smoke binary exercises `openat`, `fstat`, `fstatat`, and
+`lseek` against a seeded source file. Host tests check the C-compatible
+`FileStat` layout and path/seek constants.
+
+These interfaces move the filesystem side closer to the needs of Cargo, but
+they do not yet constitute a complete `std::fs` backend: directory iteration,
+permissions and timestamps, symlink edge cases, rename/unlink behavior, and
+error mapping still need conformance tests.
+
 ## Process environment support
 
 The runtime now exports a read-only `getenv(&CStr)` lookup backed by the

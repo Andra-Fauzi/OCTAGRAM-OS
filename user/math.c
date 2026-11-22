@@ -472,7 +472,7 @@ double fmax(double x, double y)
     if (oct_isnan(y))
         return x;
     if (x == 0.0 && y == 0.0)
-        return oct_signed_zero(0);
+        return oct_signed_zero(oct_signbit(x) && oct_signbit(y));
     return x > y ? x : y;
 }
 
@@ -483,7 +483,7 @@ double fmin(double x, double y)
     if (oct_isnan(y))
         return x;
     if (x == 0.0 && y == 0.0)
-        return oct_signed_zero(1);
+        return oct_signed_zero(oct_signbit(x) || oct_signbit(y));
     return x < y ? x : y;
 }
 

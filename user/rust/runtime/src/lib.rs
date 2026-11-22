@@ -392,6 +392,45 @@ pub fn fstatat(dirfd: i64, path: &CStr, flags: u64) -> Result<FileStat, i64> {
     if result < 0 { Err(result) } else { Ok(metadata) }
 }
 
+/// Directory entry layout shared with OCTAGRAM's C `struct dirent`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Dirent {
+    pub d_ino: u64,
+    pub d_off: i64,
+    pub d_reclen: u16,
+    pub d_type: u8,
+    pub d_name: [c_char; 256],
+}
+
+/// Open a directory and return its descriptor (syscall 27).
+pub fn opendir(path: &CStr) -> Result<u64, i64> {
+    let result = unsafe { syscall1(27, path.as_ptr() as usize as u64) };
+    if result < 0 { Err(result) } else { Ok(result as u64) }
+}
+
+/// Read the next snapshot entry from a directory descriptor (syscall 28).
+/// Returns `Ok(None)` at end-of-directory.
+pub fn readdir(directory_fd: u64) -> Result<Option<Dirent>, i64> {
+    let mut entry = Dirent {
+        d_ino: 0, d_off: 0, d_reclen: 0, d_type: 0, d_name: [0; 256],
+    };
+    let result = unsafe {
+        syscall2(28, directory_fd, &mut entry as *mut Dirent as usize as u64)
+    };
+    match result {
+        0 => Ok(None),
+        1 => Ok(Some(entry)),
+        value if value < 0 => Err(value),
+        _ => Err(-5),
+    }
+}
+
+/// Close a directory descriptor returned by `opendir`.
+pub fn closedir(directory_fd: u64) -> Result<(), i64> {
+    close(directory_fd)
+}
+
 /// Create a directory relative to a directory descriptor (syscall 42).
 pub fn mkdirat(dirfd: i64, path: &CStr, mode: u32) -> Result<(), i64> {
     let result = unsafe {
@@ -1229,6 +1268,17 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn dirent_matches_octagram_c_abi() {
+        assert_eq!(core::mem::size_of::<super::Dirent>(), 280);
+        assert_eq!(core::mem::align_of::<super::Dirent>(), 8);
+        assert_eq!(core::mem::offset_of!(super::Dirent, d_ino), 0);
+        assert_eq!(core::mem::offset_of!(super::Dirent, d_off), 8);
+        assert_eq!(core::mem::offset_of!(super::Dirent, d_reclen), 16);
+        assert_eq!(core::mem::offset_of!(super::Dirent, d_type), 18);
+        assert_eq!(core::mem::offset_of!(super::Dirent, d_name), 19);
+    }
+
     fn timespec_matches_octagram_c_abi() {
         assert_eq!(core::mem::size_of::<super::Timespec>(), 16);
         assert_eq!(core::mem::align_of::<super::Timespec>(), 8);

@@ -11,7 +11,7 @@ use core::panic::PanicInfo;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
-    close, clock_getres, clock_gettime, dup3, exit, fstat, fstatat, futex, getpid, getrandom, mmap,
+    close, closedir, clock_getres, clock_gettime, dup3, exit, fstat, fstatat, futex, getpid, getrandom, mmap, opendir, readdir,
     lseek, mprotect, munmap, nanosleep, openat, pipe2, read, stat_path, thread_create,
     thread_exit, thread_join, thread_self, write, write_all,
     AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
@@ -110,6 +110,34 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         (Ok(count), Ok(())) if count > 0 && metadata.size >= count as u64 => {}
         _ => return 9,
     }
+    // Directory iteration is required by std::fs::read_dir and Cargo discovery.
+    let directory_path = match CStr::from_bytes_with_nul(b"/share/octagram\0") {
+        Ok(path) => path,
+        Err(_) => return 29,
+    };
+    let directory_fd = match opendir(directory_path) {
+        Ok(fd) => fd,
+        Err(_) => return 30,
+    };
+    let mut found_message = false;
+    let mut reached_eof = false;
+    for _ in 0..128 {
+        match readdir(directory_fd) {
+            Ok(Some(entry)) => {
+                let name = unsafe { CStr::from_ptr(entry.d_name.as_ptr()) };
+                if name.to_bytes() == b"message.c" { found_message = true; }
+            }
+            Ok(None) => { reached_eof = true; break; }
+            Err(_) => break,
+        }
+    }
+    if closedir(directory_fd).is_err() || !found_message || !reached_eof {
+        return 31;
+    }
+    if write_all(STDOUT, b"Rust runtime directory iteration: PASS\n").is_err() {
+        return 32;
+    }
+
     if write_all(STDOUT, b"Rust runtime file/stat: PASS\n").is_err() {
         return 6;
     }

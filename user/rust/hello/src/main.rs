@@ -11,9 +11,9 @@ use core::panic::PanicInfo;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
-    close, clock_getres, clock_gettime, dup3, exit, fstatat, futex, getpid,
+    close, clock_getres, clock_gettime, dup3, exit, fork, fstatat, futex, getpid,
     getrandom, mmap, mprotect, munmap, nanosleep, pipe2, read,
-    stat_path, thread_create, unlinkat, Directory, File,
+    stat_path, thread_create, unlinkat, Child, Directory, File,
     thread_exit, thread_join, thread_self, write, write_all,
     AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, O_RDWR, O_CREAT, O_TRUNC, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
 };
@@ -268,6 +268,27 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     let duplicate_close = close(duplicate);
     if duplicate_result.is_err() || duplicate_close.is_err() {
         return 21;
+    }
+
+    // Exercise fork + nonblocking/blocking waitpid and raw exit-status delivery.
+    let child_pid = match fork() {
+        Ok(0) => exit(42),
+        Ok(pid) if pid > 0 => pid,
+        _ => return 39,
+    };
+    let mut child = Child::from_pid(child_pid);
+    if child.try_wait().is_err() {
+        return 40;
+    }
+    let child_status = match child.wait() {
+        Ok(status) => status,
+        Err(_) => return 41,
+    };
+    if child_status != 42 || child.id().is_some() || child.wait().is_ok() {
+        return 42;
+    }
+    if write_all(STDOUT, b"Rust runtime child process/waitpid: PASS\\n").is_err() {
+        return 43;
     }
     // Create a real Rust thread with an owned stack mapping, then join it.
     RUST_THREAD_RESULT.store(0, Ordering::SeqCst);

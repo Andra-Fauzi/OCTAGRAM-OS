@@ -33,6 +33,17 @@ int main(void) {
         || s64 != (long long)0x8000000000000000ULL)
         return 8;
 
+    if (!__builtin_add_overflow(0x7fffffffffffffffLL, 1LL, &s64)
+        || s64 != (long long)0x8000000000000000ULL)
+        return 9;
+    if (!__builtin_sub_overflow((long long)0x8000000000000000ULL, 1LL, &s64)
+        || s64 != 0x7fffffffffffffffLL)
+        return 10;
+    if (!__builtin_sub_overflow(0ULL, 1ULL, &u64) || u64 != ~0ULL)
+        return 11;
+    if (!__builtin_add_overflow(~0ULL, 1ULL, &u64) || u64 != 0)
+        return 12;
+
     write(1, pass, sizeof(pass) - 1);
     return 0;
 }

@@ -1,20 +1,25 @@
 # Upstream Rust libc: OCTAGRAM ABI integration
 
 Pinned upstream repository: https://github.com/rust-lang/libc
-Pinned base commit: `a03dd7c2e298b0ca482f30ce07efd3115938328e`
+Pinned release: `0.2.191`
+Pinned commit: `ccc2ff4aaab962f7fde7b8edda7379c045b1ca12`
+
+This is the exact `libc` version required by the pinned Rust source's
+`library/std/Cargo.toml`. Do not substitute upstream `main` or the
+`1.0.0-alpha` development line for the standard-library dependency.
 
 ## Files
 
 - `octagram/mod.rs` is the target-specific Rust ABI module copied into
   upstream `src/unix/octagram/mod.rs`.
-- `tools/apply_rust_libc_octagram.py` applies all source edits using exact,
+- `tools/apply_rust_libc_octagram.py` applies source edits using exact,
   uniqueness-checked anchors and verifies the pinned upstream commit.
-- Rust no_std CI runs that applicator and then compiles upstream libc for the
-  OCTAGRAM custom target with `-Zbuild-std=core`.
+- Rust no_std CI checks out this exact release, runs the applicator, and
+  compiles the dependency for the OCTAGRAM custom target.
 
 ## Integration details
 
-The integration registers `target_os = "octagram"`, selects the dedicated
+The integration registers `target_os = "octagram"`, selects a dedicated
 Unix target module, exports the common POSIX `unistd` constants, and adds
 OCTAGRAM scalar aliases, public `stat` and `dirent` layouts, pthread object
 layouts, constants, and clock/pthread declarations.
@@ -26,12 +31,13 @@ excluded because OCTAGRAM does not currently expose those interfaces.
 
 ## Validation scope and limitations
 
-The CI check verifies that the exact upstream source edits apply and that the
-upstream `libc` crate compiles for `x86_64-unknown-octagram`. It does not yet
-prove that Rust `std` builds or that every declared C symbol is implemented
-and linked by OCTAGRAM.
+CI applies the target module to the exact `0.2.191` release and compiles the
+crate for `x86_64-unknown-octagram` with nightly and `-Zbuild-std=core`.
+This verifies that the dependency version used by Rust `std` accepts the
+initial target ABI module.
 
-This is an initial ABI surface, not full POSIX coverage. Signal/process
-semantics, sockets, dynamic loading, and filesystem extensions still need
-target-specific conformance tests. No claim is made that upstream `std`,
-`rustc`, or Cargo is already native.
+It does not yet prove that Rust `std` builds or that every declared C symbol
+is implemented and linked by OCTAGRAM. Signal/process semantics, sockets,
+dynamic loading, and filesystem extensions still need target-specific
+conformance tests. No claim is made that upstream `std`, `rustc`, or Cargo
+is already native.

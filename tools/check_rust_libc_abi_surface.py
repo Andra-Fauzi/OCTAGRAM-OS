@@ -33,15 +33,15 @@ def main() -> int:
         "gid_t": "uint32_t", "dev_t": "uint64_t", "ino_t": "uint64_t",
     }
     for name, c_type in expected_types.items():
-        require(re.search(rf"typedef\\s+{c_type}\\s+{name}\\s*;", types) is not None,
+        require(re.search(rf"typedef\s+{c_type}\s+{name}\s*;", types) is not None,
                 f"{name} no longer matches {c_type}")
 
     octagram = read("user/include/octagram.h")
-    require(re.search(r"struct\\s+oct_stat\\s*\\{\\s*uint64_t\\s+size;\\s*uint32_t\\s+mode;\\s*uint32_t\\s+modified_seconds;", octagram, re.S) is not None,
+    require(re.search(r"struct\s+oct_stat\s*\{\s*uint64_t\s+size;\s*uint32_t\s+mode;\s*uint32_t\s+modified_seconds;", octagram, re.S) is not None,
             "oct_stat kernel ABI changed; update manifest and PAL mapping")
 
     dirent = read("user/include/dirent.h")
-    require(re.search(r"struct\\s+dirent\\s*\\{\\s*uint64_t\\s+d_ino;\\s*off_t\\s+d_off;\\s*uint16_t\\s+d_reclen;\\s*unsigned\\s+char\\s+d_type;\\s*char\\s+d_name\\[256\\];", dirent, re.S) is not None,
+    require(re.search(r"struct\s+dirent\s*\{\s*uint64_t\s+d_ino;\s*off_t\s+d_off;\s*uint16_t\s+d_reclen;\s*unsigned\s+char\s+d_type;\s*char\s+d_name\[256\];", dirent, re.S) is not None,
             "dirent layout changed; update manifest and tests")
 
     timespec = read("user/include/time.h")

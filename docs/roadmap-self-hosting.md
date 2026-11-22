@@ -67,7 +67,7 @@ selesai jika bukti sesuai tersedia.
 | C compiler | TinyCC mengompilasi source terpisah menjadi object, membuat static archive, link ELF dari object + archive, lalu executable berjalan di QEMU | QEMU guest-tested untuk object, archive, link, dan eksekusi |
 | Mini toolchain | Compiler C-subset, assembler/linker mini tersedia | Terbatas, bukan GNU toolchain |
 | Native Make | Rust no_std; explicit graph, variables, `$@`, `$<`, `$^`, `$*`, `.PHONY`, `include`, single-stem pattern rules, `-n`, `-s`, `-j1`, mtime incremental, `-B` | QEMU-tested: included pattern rules, object/archive/link, skip, dependency rebuild, force, `.PHONY` |
-| Rust application/runtime | Custom target `x86_64-unknown-octagram`, runtime `no_std` + `alloc`, allocator `mmap/munmap`, dan typed syscall wrappers untuk VM, pipe/dup, futex, serta thread | Host build + unit tests lulus pada [CI 45031467283](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45031467283); guest QEMU sebelumnya lulus untuk custom target dan syscall dasar; conformance guest tambahan untuk wrapper VM/pipe/futex/thread sedang diuji pada [CI 45031506097](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45031506097) |
+| Rust application/runtime | Custom target `x86_64-unknown-octagram`, runtime `no_std` + `alloc`, allocator `mmap/munmap`, dan typed syscall wrappers untuk VM, pipe/dup, futex, serta thread | Host build + unit tests lulus pada [CI 45031506097](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45031506097); guest QEMU sebelumnya lulus untuk custom target dan syscall dasar; conformance guest tambahan untuk wrapper VM/pipe/futex/thread sedang diuji pada workflow POSIX terbaru |
 | rustc | Belum terbukti berjalan di OCTAGRAM | Belum tersedia |
 | Cargo | Belum terbukti berjalan di OCTAGRAM | Belum tersedia |
 | Kernel build native | Kernel masih dibangun dengan host Rust/Cargo/LLVM | Belum tersedia |
@@ -338,8 +338,7 @@ serta FS thread pointer. Allocator global memakai wrapper VM yang sama.
 Host build dan unit test wrapper lulus pada CI run
 [45031467283](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45031467283).
 Program guest diperluas untuk menguji wrapper VM, pipe, futex, dan thread;
-hasil QEMU masih menunggu run
-[45031506097](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45031506097).
+hasil QEMU masih menunggu workflow POSIX terbaru untuk commit ini.
 Ini baru lapisan syscall/runtime, belum implementasi Rust `std` atau
 compiler native.
 

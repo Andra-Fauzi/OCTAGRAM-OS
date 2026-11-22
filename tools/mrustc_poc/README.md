@@ -57,9 +57,11 @@ membutuhkan pengujian numerik lebih luas.
 `build_host.sh` juga mencetak SHA commit `mrustc` yang benar-benar dipakai (`MRUSTC-COMMIT`) dan menerima `MRUSTC_REF` untuk memilih branch/tag saat clone. Patch `alloc_system` kini mensyaratkan tepat satu titik patch (atau kondisi sudah diterapkan yang konsisten), sehingga perubahan source upstream yang ambigu ditolak. Arsip Rust divalidasi dengan `tar -tzf`, diekstrak ke direktori staging baru, dan baru dipindahkan setelah `library/core/src/lib.rs` terverifikasi; ekstraksi parsial lama tidak lagi dianggap lengkap. File patch Rust juga diperiksa eksplisit sebelum dry-run.
 
 `build_host.sh` sekarang memvalidasi bahwa keluaran `mrustc` masih memuat XGETBV
-asli, lalu hanya me-rewrite AtomicU128 yang belum didukung. Sembilan uji regresi
+asli, lalu hanya me-rewrite AtomicU128 yang belum didukung. Sebelas uji regresi
 memastikan XGETBV dipertahankan, patch idempoten, perubahan format yang tak
-dikenali ditolak, serta fragmen AtomicU128 duplikat atau campuran ditolak. Patch sumber Rust juga diterapkan secara fail-closed: script
+dikenali ditolak, fragmen AtomicU128 duplikat/campuran ditolak, dan file asli
+tidak berubah jika validasi gagal. Hasil ditulis ke file temporer dalam
+direktori yang sama, di-flush dan di-fsync, lalu dipasang dengan `os.replace`. Patch sumber Rust juga diterapkan secara fail-closed: script
 membedakan patch yang belum diterapkan, yang sudah diterapkan, dan source
 archive yang tidak cocok. Kegagalan patch tidak lagi disembunyikan oleh
 `|| true`. Tahap PoC juga menghapus `poc.c` lama sebelum transpile dan hanya

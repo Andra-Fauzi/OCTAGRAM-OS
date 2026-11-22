@@ -823,6 +823,8 @@ double acosh(double x)
         return oct_qnan();
     if (x == 1.0)
         return 0.0;
+    if (x > 1.0e154)
+        return log(x) + oct_ln2;
     return log(x + sqrt(x - 1.0) * sqrt(x + 1.0));
 }
 
@@ -832,6 +834,8 @@ double asinh(double x)
     if (oct_isnan(x) || oct_isinf(x) || x == 0.0)
         return x;
     ax = fabs(x);
+    if (ax > 1.0e154)
+        return copysign(log(ax) + oct_ln2, x);
     return copysign(log(ax + sqrt(ax * ax + 1.0)), x);
 }
 

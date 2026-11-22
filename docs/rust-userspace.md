@@ -35,7 +35,8 @@ kernel OCTAGRAM-OS:
 
 ### Alokator Memori Dinamis (`alloc`)
 - Mengimplementasikan trait `core::alloc::GlobalAlloc`.
-- Memanfaatkan pemetaan memori anonim melalui syscall `mmap` (nomor 16 pada ABI OCTAGRAM). `dealloc` saat ini belum mengembalikan blok ke kernel; allocator masih berupa arena monotonik.
+- Setiap alokasi meminta pemetaan anonim melalui syscall `mmap` (nomor 16); `dealloc` melepasnya melalui `munmap` (nomor 17). Header kecil tepat sebelum pointer menyimpan base dan panjang mapping.
+- Desain per-alokasi menghindari global spinlock yang berisiko deadlock jika thread ter-preempt saat lock dipegang pada single CPU. Trade-off-nya adalah biaya syscall per objek; arena per-thread dapat menggantikannya setelah runtime memiliki primitive TLS/allocator yang diuji.
 - Mengaktifkan fitur `alloc` standar Rust sehingga tipe data seperti `Vec`, `String`, `Box`, dan `BTreeMap` dapat digunakan secara penuh di userspace.
 
 ### Pembungkus Syscall ABI (`int 0x80`)

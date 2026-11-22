@@ -1,0 +1,321 @@
+{
+  "schema_version": 1,
+  "upstream_rust": {
+    "repository": "rust-lang/rust",
+    "commit": "342d74463af7dd3018ef6aa04dd5500c2deb5bd1"
+  },
+  "purpose": "Initial API inventory for the generic Unix std PAL; entries are selected from the pinned source audit, not a complete libc ABI list.",
+  "status_values": [
+    "implemented",
+    "partial",
+    "unsupported"
+  ],
+  "entries": [
+    {
+      "symbol": "open",
+      "header": "user/include/fcntl.h",
+      "status": "implemented",
+      "notes": "Open file descriptor"
+    },
+    {
+      "symbol": "openat",
+      "header": "user/include/fcntl.h",
+      "status": "implemented",
+      "notes": "Directory-relative open"
+    },
+    {
+      "symbol": "close",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Close descriptor"
+    },
+    {
+      "symbol": "read",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Read descriptor"
+    },
+    {
+      "symbol": "write",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Write descriptor"
+    },
+    {
+      "symbol": "lseek",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Seek descriptor"
+    },
+    {
+      "symbol": "pread",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Positional read"
+    },
+    {
+      "symbol": "pwrite",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Positional write"
+    },
+    {
+      "symbol": "fstat",
+      "header": "user/include/sys/stat.h",
+      "status": "implemented",
+      "notes": "Descriptor metadata; public struct stat translation"
+    },
+    {
+      "symbol": "fstatat",
+      "header": "user/include/sys/stat.h",
+      "status": "implemented",
+      "notes": "Directory-relative metadata"
+    },
+    {
+      "symbol": "mkdirat",
+      "header": "user/include/sys/stat.h",
+      "status": "implemented",
+      "notes": "Directory-relative mkdir"
+    },
+    {
+      "symbol": "unlinkat",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Directory-relative unlink"
+    },
+    {
+      "symbol": "renameat",
+      "header": "user/include/stdio.h",
+      "status": "implemented",
+      "notes": "Directory-relative rename"
+    },
+    {
+      "symbol": "ftruncate",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Resize open file"
+    },
+    {
+      "symbol": "fsync",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Sync file data and metadata"
+    },
+    {
+      "symbol": "fdatasync",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Sync file data"
+    },
+    {
+      "symbol": "opendir",
+      "header": "user/include/dirent.h",
+      "status": "implemented",
+      "notes": "Open directory stream"
+    },
+    {
+      "symbol": "readdir",
+      "header": "user/include/dirent.h",
+      "status": "implemented",
+      "notes": "Read directory record"
+    },
+    {
+      "symbol": "closedir",
+      "header": "user/include/dirent.h",
+      "status": "implemented",
+      "notes": "Close directory stream"
+    },
+    {
+      "symbol": "fork",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Create process"
+    },
+    {
+      "symbol": "execve",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Replace process image"
+    },
+    {
+      "symbol": "waitpid",
+      "header": "user/include/sys/wait.h",
+      "status": "implemented",
+      "notes": "Wait for child; OCTAGRAM-specific raw kernel status translated to C wait status"
+    },
+    {
+      "symbol": "pipe2",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Create close-on-exec pipe"
+    },
+    {
+      "symbol": "dup3",
+      "header": "user/include/unistd.h",
+      "status": "implemented",
+      "notes": "Duplicate descriptor"
+    },
+    {
+      "symbol": "poll",
+      "header": "user/include/poll.h",
+      "status": "implemented",
+      "notes": "Poll descriptor events"
+    },
+    {
+      "symbol": "pthread_create",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Create thread"
+    },
+    {
+      "symbol": "pthread_join",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Join thread"
+    },
+    {
+      "symbol": "pthread_self",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Current thread ID"
+    },
+    {
+      "symbol": "pthread_mutex_init",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Initialize mutex"
+    },
+    {
+      "symbol": "pthread_mutex_lock",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Lock mutex"
+    },
+    {
+      "symbol": "pthread_mutex_trylock",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Try mutex lock"
+    },
+    {
+      "symbol": "pthread_mutex_unlock",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Unlock mutex"
+    },
+    {
+      "symbol": "pthread_mutex_destroy",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Destroy mutex"
+    },
+    {
+      "symbol": "pthread_cond_init",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Initialize condition variable"
+    },
+    {
+      "symbol": "pthread_cond_wait",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Wait condition variable"
+    },
+    {
+      "symbol": "pthread_cond_timedwait",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Timed condition wait"
+    },
+    {
+      "symbol": "pthread_cond_signal",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Signal condition variable"
+    },
+    {
+      "symbol": "pthread_cond_broadcast",
+      "header": "user/include/pthread.h",
+      "status": "implemented",
+      "notes": "Broadcast condition variable"
+    },
+    {
+      "symbol": "clock_gettime",
+      "header": "user/include/time.h",
+      "status": "implemented",
+      "notes": "Read clock"
+    },
+    {
+      "symbol": "clock_getres",
+      "header": "user/include/time.h",
+      "status": "implemented",
+      "notes": "Clock resolution"
+    },
+    {
+      "symbol": "nanosleep",
+      "header": "user/include/time.h",
+      "status": "implemented",
+      "notes": "Sleep for duration"
+    },
+    {
+      "symbol": "getenv",
+      "header": "user/include/stdlib.h",
+      "status": "implemented",
+      "notes": "Read environment variable"
+    },
+    {
+      "symbol": "setenv",
+      "header": "user/include/stdlib.h",
+      "status": "implemented",
+      "notes": "Set environment variable"
+    },
+    {
+      "symbol": "unsetenv",
+      "header": "user/include/stdlib.h",
+      "status": "implemented",
+      "notes": "Unset environment variable"
+    },
+    {
+      "symbol": "mmap",
+      "header": "user/include/sys/mman.h",
+      "status": "implemented",
+      "notes": "Map memory"
+    },
+    {
+      "symbol": "munmap",
+      "header": "user/include/sys/mman.h",
+      "status": "implemented",
+      "notes": "Unmap memory"
+    },
+    {
+      "symbol": "mprotect",
+      "header": "user/include/sys/mman.h",
+      "status": "implemented",
+      "notes": "Change mapping permissions"
+    },
+    {
+      "symbol": "getrandom",
+      "header": "user/include/sys/random.h",
+      "status": "partial",
+      "notes": "Current implementation is xorshift seeded from TSC; not cryptographic entropy"
+    },
+    {
+      "symbol": "sendmsg",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Ancillary data and descriptor passing are unsupported"
+    },
+    {
+      "symbol": "recvmsg",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Ancillary data and descriptor passing are unsupported"
+    },
+    {
+      "symbol": "pthread_detach",
+      "header": "user/include/pthread.h",
+      "status": "unsupported",
+      "notes": "Returns ENOTSUP"
+    }
+  ]
+}

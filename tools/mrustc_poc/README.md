@@ -24,9 +24,10 @@ di `docs/native-self-hosting-roadmap.md` bagian **M4.3**.
    `int_leastN_t`/`uint_leastN_t` dan `int_fastN_t`/`uint_fastN_t`;
    target pemeriksaan sintaks `stdint-test` tersedia.
 2. Bootstrap libm kini tersedia di `user/math.c` dan masuk ke `libc.a`.
-   Implementasi mencakup operasi IEEE-754 dasar serta fungsi eksponensial,
-   logaritma, trigonometrik, gamma/error-function berbasis aproksimasi.
-   `make -C user math-test` menguji host; QEMU harness juga menguji program
+   Implementasi menyediakan 112 simbol double/float yang dideklarasikan header,
+   termasuk operasi IEEE-754 dasar, eksponensial, logaritma, trigonometrik,
+   gamma dan error-function berbasis aproksimasi. `math-header-test` kini
+   mengompilasi dan menautkan seluruh simbol; `math-test` menguji perilaku host; QEMU harness juga menguji program
    TinyCC yang menautkan math dari `libc.a`. Ini belum correctly-rounded
    dan belum boleh dianggap setara libm matang seperti musl/glibc.
 3. TinyCC sekarang mengenali dan menurunkan `__builtin_add_overflow`,

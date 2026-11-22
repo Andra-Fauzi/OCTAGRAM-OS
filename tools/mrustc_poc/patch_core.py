@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Apply the remaining narrowly scoped mrustc-to-TinyCC compatibility rewrite."""
 
+import os
 import pathlib
+import stat
 import sys
+import tempfile
 
 XGETBV = '__asm__ __volatile__ ("xgetbv" : "=a" (lo), "=d" (hi) : "c" (arg0) );'
 OBSOLETE_XGETBV_STUB = "lo = 0; hi = 0; /* tcc: no XGETBV opcode */"
@@ -45,17 +48,36 @@ def rewrite(source: str) -> str:
     return source
 
 
+def patch_file(path: pathlib.Path) -> None:
+    """Validate completely, then atomically replace the generated C file."""
+    original = path.read_text()
+    if not original:
+        raise ValueError("generated libcore.c is empty")
+    patched = rewrite(original)
+    mode = stat.S_IMODE(path.stat().st_mode)
+    fd, temporary = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(patched)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: patch_core.py <libcore.c>", file=sys.stderr)
         return 2
-    path = pathlib.Path(sys.argv[1])
     try:
-        original = path.read_text()
-        if not original:
-            raise ValueError("generated libcore.c is empty")
-        patched = rewrite(original)
-        path.write_text(patched)
+        patch_file(pathlib.Path(sys.argv[1]))
     except (OSError, ValueError) as error:
         print("mrustc compatibility patch failed: %s" % error, file=sys.stderr)
         return 1

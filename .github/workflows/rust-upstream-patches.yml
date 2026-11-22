@@ -22,8 +22,6 @@ jobs:
     steps:
       - name: Checkout OCTAGRAM-OS
         uses: actions/checkout@v4
-        with:
-          ref: feature/native-self-hosting
 
       - name: Checkout pinned upstream Rust source
         uses: actions/checkout@v4

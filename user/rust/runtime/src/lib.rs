@@ -441,7 +441,29 @@ pub struct Dirent {
     pub d_name: [c_char; 256],
 }
 
+/// Directory-entry type values shared with user/include/dirent.h.
+pub const DT_UNKNOWN: u8 = 0;
+pub const DT_FIFO: u8 = 1;
+pub const DT_CHR: u8 = 2;
+pub const DT_DIR: u8 = 4;
+pub const DT_BLK: u8 = 6;
+pub const DT_REG: u8 = 8;
+pub const DT_LNK: u8 = 10;
+pub const DT_SOCK: u8 = 12;
+
 impl Dirent {
+    pub const fn is_file(&self) -> bool {
+        self.d_type == DT_REG
+    }
+
+    pub const fn is_directory(&self) -> bool {
+        self.d_type == DT_DIR
+    }
+
+    pub const fn is_symlink(&self) -> bool {
+        self.d_type == DT_LNK
+    }
+
     /// Return the entry name only when the record length contains a
     /// NUL-terminated name within the fixed OCTAGRAM ABI buffer.
     pub fn name_bytes(&self) -> Option<&[u8]> {
@@ -1349,6 +1371,22 @@ mod tests {
 
         let symlink = super::FileStat { mode: super::S_IFLNK | 0o777, ..file };
         assert!(symlink.is_symlink());
+    }
+
+    #[test]
+    fn dirent_type_helpers_match_c_header_values() {
+        let entry = Dirent {
+            d_ino: 1,
+            d_off: 0,
+            d_reclen: core::mem::size_of::<Dirent>() as u16,
+            d_type: super::DT_DIR,
+            d_name: [0; 256],
+        };
+        assert!(entry.is_directory());
+        assert!(!entry.is_file());
+        assert!(!entry.is_symlink());
+        assert_eq!(super::DT_REG, 8);
+        assert_eq!(super::DT_LNK, 10);
     }
 
     #[test]

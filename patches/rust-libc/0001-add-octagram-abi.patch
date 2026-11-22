@@ -16,7 +16,7 @@ index 13a27f8..0000000 100644
 +++ b/src/unix/mod.rs
 @@ -2573,6 +2573,9 @@ cfg_if! {
     } else if #[cfg(target_os = "haiku")] {
-        mod haiku;
+         mod haiku;
          pub use self::haiku::*;
 +    } else if #[cfg(target_os = "octagram")] {
 +        mod octagram;

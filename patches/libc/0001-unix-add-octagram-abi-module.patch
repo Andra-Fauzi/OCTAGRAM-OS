@@ -1,0 +1,179 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OCTAGRAM-OS contributors <dev@octagram.invalid>
+Date: Sun, 22 Nov 2026 22:00:00 +0700
+Subject: [PATCH 1/1] unix: add initial OCTAGRAM ABI module
+
+Add an OCTAGRAM-specific Unix libc module with scalar types and the public
+stat, dirent, and pthread layouts copied from OCTAGRAM's own C ABI.
+
+This is an initial compile-oriented ABI slice, not complete libc or std
+support. More constants, structures, and symbol compatibility must be added
+as upstream compile errors and ABI tests identify them.
+
+Upstream base: rust-lang/libc a03dd7c2e298b0ca482f30ce07efd3115938328
+
+---
+ src/unix/mod.rs            |  3 +++
+ src/unix/octagram/mod.rs   | 99 ++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 102 insertions(+)
+ create mode 100644 src/unix/octagram/mod.rs
+
+diff --git a/src/unix/mod.rs b/src/unix/mod.rs
+index 13a27f8cb01f..000000000000 100644
+--- a/src/unix/mod.rs
++++ b/src/unix/mod.rs
+@@ -1050,6 +1050,9 @@ cfg_if! {
+     } else if #[cfg(target_os = "redox")] {
+         mod redox;
+         pub use self::redox::*;
++    } else if #[cfg(target_os = "octagram")] {
++        mod octagram;
++        pub use self::octagram::*;
+     } else if #[cfg(target_os = "cygwin")] {
+         mod cygwin;
+         pub use self::cygwin::*;
+diff --git a/src/unix/octagram/mod.rs b/src/unix/octagram/mod.rs
+new file mode 100644
+index 000000000000..000000000000
+--- /dev/null
++++ b/src/unix/octagram/mod.rs
+@@ -0,0 +1,99 @@
++//! Initial raw bindings for the OCTAGRAM x86_64 userspace ABI.
++//!
++//! These definitions follow OCTAGRAM's public C headers. They intentionally
++//! do not reuse Linux or Redox layouts.
++
++use crate::prelude::*;
++
++pub type blkcnt_t = i64;
++pub type blksize_t = i64;
++pub type clock_t = i64;
++pub type clockid_t = c_int;
++pub type dev_t = u64;
++pub type ino_t = u64;
++pub type mode_t = u32;
++pub type nlink_t = u32;
++pub type off_t = i64;
++pub type pthread_t = u64;
++pub type pthread_key_t = u32;
++pub type rlim_t = u64;
++pub type sa_family_t = u16;
++pub type socklen_t = u32;
++pub type speed_t = u32;
++pub type suseconds_t = i64;
++pub type tcflag_t = u32;
++pub type time_t = i64;
++pub type useconds_t = u32;
++pub type wchar_t = i32;
++
++s! {
++    pub struct stat {
++        pub st_size: off_t,
++        pub st_mode: mode_t,
++        pub st_dev: dev_t,
++        pub st_ino: ino_t,
++        pub st_nlink: nlink_t,
++        pub st_uid: crate::uid_t,
++        pub st_gid: crate::gid_t,
++        pub st_atime: time_t,
++        pub st_mtime: time_t,
++        pub st_ctime: time_t,
++        pub st_blksize: blksize_t,
++        pub st_blocks: blkcnt_t,
++    }
++
++    pub struct dirent {
++        pub d_ino: ino_t,
++        pub d_off: off_t,
++        pub d_reclen: u16,
++        pub d_type: u8,
++        pub d_name: [c_char; 256],
++    }
++
++    pub struct oct_pthread_robust_entry {
++        pub next: *mut oct_pthread_robust_entry,
++    }
++
++    pub struct pthread_mutex_t {
++        pub list: oct_pthread_robust_entry,
++        pub state: c_uint,
++        pub flags: c_uint,
++    }
++
++    pub struct pthread_attr_t {
++        pub opaque: usize,
++        pub stack_size: size_t,
++    }
++
++    pub struct pthread_cond_t {
++        pub sequence: c_uint,
++    }
++
++    pub struct pthread_condattr_t {
++        pub opaque: c_int,
++    }
++
++    pub struct pthread_mutexattr_t {
++        pub robustness: c_int,
++    }
++}
++
++pub const O_RDONLY: c_int = 0;
++pub const O_WRONLY: c_int = 1;
++pub const O_RDWR: c_int = 2;
++pub const O_ACCMODE: c_int = 3;
++pub const O_CREAT: c_int = 1 << 8;
++pub const O_TRUNC: c_int = 1 << 9;
++pub const O_APPEND: c_int = 1 << 10;
++pub const O_NONBLOCK: c_int = 1 << 11;
++pub const O_EXCL: c_int = 1 << 12;
++pub const O_CLOEXEC: c_int = 1 << 19;
++pub const O_NOFOLLOW: c_int = 1 << 17;
++
++pub const AT_FDCWD: c_int = -100;
++pub const AT_SYMLINK_NOFOLLOW: c_int = 1 << 8;
++pub const AT_REMOVEDIR: c_int = 1 << 9;
++
++pub const FD_CLOEXEC: c_int = 1;
++pub const SEEK_SET: c_int = 0;
++pub const SEEK_CUR: c_int = 1;
++pub const SEEK_END: c_int = 2;
++
++pub const PROT_NONE: c_int = 0;
++pub const PROT_READ: c_int = 1;
++pub const PROT_WRITE: c_int = 2;
++pub const PROT_EXEC: c_int = 4;
++pub const MAP_SHARED: c_int = 1;
++pub const MAP_PRIVATE: c_int = 2;
++pub const MAP_FIXED: c_int = 0x10;
++pub const MAP_ANON: c_int = 0x20;
++pub const MAP_ANONYMOUS: c_int = MAP_ANON;
++
++pub const S_IFMT: mode_t = 0o170000;
++pub const S_IFCHR: mode_t = 0o020000;
++pub const S_IFDIR: mode_t = 0o040000;
++pub const S_IFLNK: mode_t = 0o120000;
++pub const S_IFREG: mode_t = 0o100000;
++
++pub const DT_UNKNOWN: u8 = 0;
++pub const DT_FIFO: u8 = 1;
++pub const DT_CHR: u8 = 2;
++pub const DT_DIR: u8 = 4;
++pub const DT_BLK: u8 = 6;
++pub const DT_REG: u8 = 8;
++pub const DT_LNK: u8 = 10;
++pub const DT_SOCK: u8 = 12;
++
++pub const CLOCK_REALTIME: clockid_t = 0;
++pub const CLOCK_MONOTONIC: clockid_t = 1;
++
++pub const PTHREAD_MUTEX_NORMAL: c_int = 0;
++pub const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = pthread_mutex_t {
++    list: oct_pthread_robust_entry { next: ptr::null_mut() },
++    state: 0,
++    flags: 0,
++};
++pub const PTHREAD_COND_INITIALIZER: pthread_cond_t = pthread_cond_t { sequence: 0 };
++
+-- 
+2.43.0

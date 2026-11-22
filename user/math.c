@@ -336,15 +336,19 @@ float sqrtf(float x)
     return (float)sqrt((double)x);
 }
 
-double fmod(double x, double y)
+static double oct_fmod_quotient(double x, double y, int *quotient_low)
 {
     double ax, ay;
     int ex, ey;
+    int low = 0;
 
+    if (quotient_low != 0)
+        *quotient_low = 0;
     if (oct_isnan(x) || oct_isnan(y) || y == 0.0 || oct_isinf(x))
         return oct_qnan();
     if (oct_isinf(y) || x == 0.0)
         return x;
+
     ax = fabs(x);
     ay = fabs(y);
     if (ax < ay)
@@ -360,48 +364,69 @@ double fmod(double x, double y)
             continue;
         }
         ax -= scaled;
-        if (ax == 0.0)
+        if (shift < 3)
+            low = (low + (1 << shift)) & 7;
+        if (ax == 0.0) {
+            if (quotient_low != 0)
+                *quotient_low = low;
             return oct_signed_zero(oct_signbit(x));
+        }
         (void)frexp(ax, &ex);
     }
+
+    if (quotient_low != 0)
+        *quotient_low = low;
     return copysign(ax, x);
+}
+
+double fmod(double x, double y)
+{
+    return oct_fmod_quotient(x, y, 0);
 }
 
 double remainder(double x, double y)
 {
     double r, ay;
+    int quotient_low = 0;
 
-    double ratio;
-    r = fmod(x, y);
+    r = oct_fmod_quotient(x, y, &quotient_low);
     if (oct_isnan(r) || r == 0.0)
         return r;
     ay = fabs(y);
-    if (fabs(r) > ay * 0.5) {
+    if (fabs(r) > ay * 0.5 ||
+        (fabs(r) == ay * 0.5 && (quotient_low & 1)))
         r -= copysign(ay, r);
-    } else if (fabs(r) == ay * 0.5) {
-        ratio = trunc(x / y);
-        if (fabs(ratio) < 4503599627370496.0 &&
-            ((long long)ratio & 1LL) != 0)
-            r -= copysign(ay, r);
-    }
     return r;
 }
 
 double remquo(double x, double y, int *quotient)
 {
-    double ratio;
-    int low = 0;
+    double r, ay;
+    int quotient_low = 0;
+    int signed_quotient;
 
+    r = oct_fmod_quotient(x, y, &quotient_low);
     if (quotient != 0) {
-        if (y != 0.0 && !oct_isnan(x) && !oct_isnan(y) &&
-            !oct_isinf(x) && !oct_isinf(y)) {
-            ratio = nearbyint(x / y);
-            if (fabs(ratio) < 4503599627370496.0)
-                low = (int)((long long)ratio & 7LL);
+        signed_quotient = ((oct_signbit(x) != oct_signbit(y))
+                           ? -quotient_low : quotient_low);
+        if (!oct_isnan(r) && r != 0.0) {
+            ay = fabs(y);
+            if (fabs(r) > ay * 0.5 ||
+                (fabs(r) == ay * 0.5 && (quotient_low & 1))) {
+                int delta = (oct_signbit(r) != oct_signbit(y)) ? -1 : 1;
+                signed_quotient += delta;
+            }
         }
-        *quotient = low;
+        *quotient = signed_quotient;
     }
-    return remainder(x, y);
+
+    if (oct_isnan(r) || r == 0.0)
+        return r;
+    ay = fabs(y);
+    if (fabs(r) > ay * 0.5 ||
+        (fabs(r) == ay * 0.5 && (quotient_low & 1)))
+        r -= copysign(ay, r);
+    return r;
 }
 
 double nextafter(double x, double y)

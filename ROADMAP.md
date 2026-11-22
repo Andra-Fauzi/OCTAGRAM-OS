@@ -323,8 +323,9 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
   - [x] Tambahkan mnemonic assembler TinyCC `xgetbv` dengan encoding
     `0F 01 D0`; source test mengompilasi/menautkan fungsi, lalu memeriksa byte `0F 01 D0`
     di kode fungsi tanpa mengeksekusi XGETBV; dua QEMU harness sudah disiapkan.
-  - [x] Tambahkan bootstrap libm `user/math.c` ke `libc.a`, dengan tes host
-    `make -C user math-test` dan program guest yang menguji link/runtime.
+  - [x] Tambahkan bootstrap libm `user/math.c` ke `libc.a`, dengan 112 simbol
+    double/float, link test `math-header-test`, runtime test `math-test`, dan
+    program guest yang menguji link/runtime.
   - [ ] Tingkatkan akurasi dan kesesuaian ISO libm; fungsi transendental kini
     aproksimasi dan belum correctly-rounded atau tervalidasi luas.
   - [ ] Verifikasi di QEMU tes builtin overflow dan kompilasi inline asm XGETBV.

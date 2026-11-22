@@ -84,6 +84,10 @@ int main(void)
     if (!near(tgamma(5.0), 24.0, 1e-8) || erf(0.0) != 0.0)
         return 14;
 
+    if (!(acosh(1.0e200) > 460.0 && acosh(1.0e200) < 462.0) ||
+        !(asinh(-1.0e200) < -460.0 && asinh(-1.0e200) > -462.0))
+        return 27;
+
     zero.value = fmax(-0.0, 0.0);
     if (zero.bits != 0)
         return 15;

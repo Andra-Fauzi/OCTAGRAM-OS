@@ -22,6 +22,11 @@ struct in6_addr {
     uint8_t s6_addr[16];
 };
 
+struct ip_mreq {
+    struct in_addr imr_multiaddr;
+    struct in_addr imr_interface;
+};
+
 struct sockaddr_in6 {
     sa_family_t sin6_family;
     in_port_t sin6_port;
@@ -35,6 +40,16 @@ struct sockaddr_in6 {
 #define IPPROTO_IP 0
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
+#define IP_TTL 2
+#define IP_ADD_MEMBERSHIP 35
+#define IP_DROP_MEMBERSHIP 36
+#define IP_MULTICAST_TTL 33
+#define IP_MULTICAST_LOOP 34
+#define TCP_NODELAY 1
+#define IPV6_UNICAST_HOPS 16
+#define IPV6_MULTICAST_HOPS 18
+#define IPV6_MULTICAST_LOOP 19
+#define IPV6_V6ONLY 26
 /* Reserved values; IPv6 multicast membership is not implemented yet. */
 #define IPV6_ADD_MEMBERSHIP 20
 #define IPV6_DROP_MEMBERSHIP 21

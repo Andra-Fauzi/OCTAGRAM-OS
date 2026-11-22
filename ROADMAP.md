@@ -312,8 +312,10 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     `no_std` menjadi 36 KB C. Harness + sumber compat di `tools/mrustc_poc/`
     (lihat `docs/native-self-hosting-roadmap.md` M4.3)
   - [ ] PoC `mrustc` end-to-end: C hasil transpile dikompilasi `tcc` di guest
-    lalu dijalankan. `tcc` guest sudah melewati 227 ribu dari 587 ribu baris;
-    4 celah nyata masih tercatat, jadi belum ada `PASS`
+    lalu dijalankan. Perbaikan header `stdint.h` untuk tipe C99 `int_leastN_t`,
+    `uint_leastN_t`, `int_fastN_t`, dan `uint_fastN_t` sudah ditambahkan beserta
+    target `make -C user stdint-test`; tiga celah guest lain (math/libm, builtin
+    overflow, dan opcode/atomic 128-bit) serta pembuktian end-to-end masih terbuka.
   - [ ] `rustc` native, `core`/`alloc` native, dan Cargo native/offline
 - [ ] M5: build kernel Rust sepenuhnya dari dalam OCTAGRAM
 - [ ] M6: native disk/boot image builder dan installer

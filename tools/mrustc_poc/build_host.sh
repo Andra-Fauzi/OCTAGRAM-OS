@@ -89,7 +89,7 @@ if [[ ! -s "$WORK/poc.c" ]]; then
     echo "ERROR: mrustc did not emit a fresh poc.c (exit status $MRUSTC_STATUS)" >&2
     exit 1
 fi
-if ! grep -Eq '(^|[[:space:]])main[[:space:]]*\\(' "$WORK/poc.c"; then
+if ! grep -Eq '(^|[[:space:]])main[[:space:]]*\(' "$WORK/poc.c"; then
     echo "ERROR: generated poc.c does not contain the expected main entry point" >&2
     exit 1
 fi

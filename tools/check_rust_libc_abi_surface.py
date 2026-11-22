@@ -66,6 +66,10 @@ def main() -> int:
             and re.search(r"struct\s+sockaddr\s*\{\s*sa_family_t\s+sa_family;\s*char\s+sa_data\[14\];", socket_header, re.S) is not None,
             "sockaddr ABI changed")
 
+    inet_header = read("user/include/netinet/in.h")
+    require("#define IPV6_ADD_MEMBERSHIP 20" in inet_header
+            and "#define IPV6_DROP_MEMBERSHIP 21" in inet_header,
+            "IPv6 multicast membership ABI constants changed")
     netdb = read("user/include/netdb.h")
     require(re.search(r"struct\s+addrinfo\s*\{\s*int\s+ai_flags;\s*int\s+ai_family;\s*int\s+ai_socktype;\s*int\s+ai_protocol;\s*socklen_t\s+ai_addrlen;\s*struct\s+sockaddr\s*\*ai_addr;\s*char\s*\*ai_canonname;\s*struct\s+addrinfo\s*\*ai_next;", netdb, re.S) is not None,
             "addrinfo field order changed")

@@ -17,7 +17,7 @@ diff --git a/library/std/build.rs b/library/std/build.rs
 index 98856b58d890..000000000000 100644
 --- a/library/std/build.rs
 +++ b/library/std/build.rs
-@@ -56,6 +56,7 @@ fn main() {
+@@ -54,6 +54,7 @@ fn main() {
          || target_os == "uefi"
          || target_os == "teeos"
          || target_os == "zkvm"

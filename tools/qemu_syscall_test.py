@@ -213,6 +213,10 @@ def main():
         print("RUST-FILE-ABI-FAIL: Rust runtime open/read/stat/close test failed")
         print(serial_text()[-5000:])
         return 1
+    if not wait_for_after("Rust runtime clock/random/pid: PASS", output_offset, 30):
+        print("RUST-OS-ABI-FAIL: clock_gettime/getrandom/getpid runtime test failed")
+        print(serial_text()[-5000:])
+        return 1
     if not wait_for_after("program exited with status 0", output_offset, 30):
         print("RUST-NOSTD-FAIL: Rust no_std + alloc program did not exit with status 0")
         print(serial_text()[-5000:])

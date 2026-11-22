@@ -198,3 +198,16 @@ The runtime now exposes `octagram_runtime::Dirent::name_bytes()`. It checks that
 ### File metadata helpers
 
 `octagram_runtime::FileStat` exposes POSIX file-type constants and helpers (`file_type`, `is_file`, `is_directory`, `is_symlink`, `is_character_device`, and `permissions`). The compact OCTAGRAM metadata record remains 16 bytes (`size`, `mode`, `modified_seconds`); these helpers interpret its mode bits without pretending that it is the larger public C `struct stat`. Host unit tests cover regular files, directories, symlinks, and permission extraction. This is a Rust runtime convenience layer, not yet the `std::fs::Metadata` implementation.
+
+
+### Typed syscall error decoding
+
+The runtime exposes `SysError` and `decode_syscall_result` for decoding the
+kernel's sign-extended negative errno convention. The decoder accepts errno
+values in the ABI range 1..=4095, preserves the positive errno code, and can
+re-encode it as the original negative return value. Common predicates cover
+interrupted operations, would-block, missing paths, and permission failures.
+This is the low-level error boundary intended for a future Rust `std` PAL;
+existing syscall wrappers still return their original `Result<T, i64>`
+signatures for compatibility. Host unit tests cover both valid errno values
+and non-error/out-of-range returns.

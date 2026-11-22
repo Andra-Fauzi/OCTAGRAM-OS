@@ -7,6 +7,18 @@ extern "C" {
 
 /* Public declarations for OCTAGRAM's bootstrap math runtime.
  * Transcendental functions are currently approximate, not correctly-rounded. */
+#ifndef __builtin_huge_val
+#define __builtin_huge_val() (1.0 / 0.0)
+#endif
+#ifndef __builtin_huge_valf
+#define __builtin_huge_valf() (1.0F / 0.0F)
+#endif
+#ifndef __builtin_huge_vall
+#define __builtin_huge_vall() (1.0L / 0.0L)
+#endif
+#ifndef __builtin_nanf
+#define __builtin_nanf(ignored) (0.0F / 0.0F)
+#endif
 #ifndef HUGE_VAL
 #define HUGE_VAL (__builtin_huge_val())
 #endif

@@ -211,7 +211,7 @@ make -C user/rust build-octagram
 Target Makefile ini menjalankan Cargo nightly dengan ekuivalen perintah:
 
 ```sh
-cargo +nightly -Z build-std=core,alloc -Z json-target-spec build \
+cargo +nightly -Z build-std=core,alloc build \
   --release --bin rust_hello \
   --target targets/x86_64-unknown-octagram.json
 ```

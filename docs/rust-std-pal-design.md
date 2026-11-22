@@ -184,3 +184,31 @@ Linux/glibc hanya karena target memakai `cfg(unix)`. Berikutnya adalah
 memetakan API PAL Unix yang benar-benar dipakai ke simbol C yang tersedia,
 lalu mengimplementasikan modul libc target-specific dan menambahkan compile
 test. Sampai itu lulus, status Rust `std` tetap belum diimplementasikan.
+
+## Inventaris awal API Unix PAL dari upstream Rust
+
+Audit source pada commit Rust
+`342d74463af7dd3018ef6aa04dd5500c2deb5bd1` menunjukkan bahwa generic Unix
+PAL membutuhkan jauh lebih banyak API daripada file I/O dasar. Area yang
+terlihat mencakup filesystem, process/wait, descriptor/poll, pthread mutex dan
+condition variable, clocks, environment, serta socket.
+
+Subset awal yang dipetakan tersedia dalam
+`tools/rust_std_pal_api_inventory.json`. Checker
+`tools/check_rust_std_pal_api_inventory.py` memastikan setiap simbol terpilih
+memiliki deklarasi pada header C OCTAGRAM dan definisi pada `user/runtime.c`.
+Workflow Rust no_std menjalankan checker ini.
+
+Inventaris menandai beberapa batas yang tidak boleh disembunyikan:
+- `pthread_detach` tersedia sebagai simbol, tetapi mengembalikan `ENOTSUP`.
+- `sendmsg/recvmsg` tersedia dengan dukungan terbatas; ancillary data dan
+  descriptor passing tidak didukung.
+- `getrandom` saat ini bukan sumber entropy kriptografis.
+- Pemeriksaan deklarasi/definisi tidak membuktikan kesamaan semantik POSIX,
+  struktur ABI, atau kecocokan semua API yang dipanggil `std`.
+
+Ini adalah subset audit, bukan daftar lengkap kebutuhan `std`. Berikutnya
+perlu membangun modul `libc` OCTAGRAM dengan tipe dan struktur yang diverifikasi,
+lalu menjalankan compile test terhadap checkout upstream. Fitur PAL yang belum
+didukung harus diberi cfg/implementasi eksplisit; jangan mengarahkan target
+OCTAGRAM ke ABI Linux.

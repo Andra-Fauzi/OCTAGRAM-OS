@@ -11,10 +11,13 @@ typedef struct {
 /* The expression shape used by patch_core.py for AtomicU128. */
 static int rewritten_atomic128_call(void *arg0,
                                     octagram_expected_holder var1,
-                                    octagram_u128_blob arg2)
+                                    octagram_u128_blob arg2,
+                                    octagram_expected_holder *updated)
 {
-    return poc_cxchg128((void *)arg0, (void *)&var1._0,
-                        (const void *)&arg2);
+    int success = poc_cxchg128((void *)arg0, (void *)&var1._0,
+                               (const void *)&arg2);
+    *updated = var1;
+    return success;
 }
 
 int main(void)
@@ -22,6 +25,7 @@ int main(void)
     octagram_u128_blob object;
     octagram_u128_blob desired;
     octagram_expected_holder expected;
+    octagram_expected_holder updated_expected;
     unsigned int index;
     static const char pass[] = "TCC-ATOMIC128-SHIM-PASS\n";
 
@@ -31,7 +35,8 @@ int main(void)
         desired.bytes[index] = (unsigned char)(0xf0u - index);
     }
 
-    if (!rewritten_atomic128_call(&object, expected, desired))
+    if (!rewritten_atomic128_call(&object, expected, desired,
+                                  &updated_expected))
         return 1;
     for (index = 0; index < 16; ++index) {
         if (object.bytes[index] != desired.bytes[index])
@@ -40,10 +45,11 @@ int main(void)
 
     for (index = 0; index < 16; ++index)
         object.bytes[index] = (unsigned char)(0x40u + index);
-    if (rewritten_atomic128_call(&object, expected, desired))
+    if (rewritten_atomic128_call(&object, expected, desired,
+                                 &updated_expected))
         return 3;
     for (index = 0; index < 16; ++index) {
-        if (expected._0.bytes[index] != object.bytes[index])
+        if (updated_expected._0.bytes[index] != object.bytes[index])
             return 4;
         if (object.bytes[index] != (unsigned char)(0x40u + index))
             return 5;

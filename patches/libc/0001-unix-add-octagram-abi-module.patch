@@ -22,7 +22,7 @@ diff --git a/src/unix/mod.rs b/src/unix/mod.rs
 index 13a27f8cb01f..000000000000 100644
 --- a/src/unix/mod.rs
 +++ b/src/unix/mod.rs
-@@ -1050,6 +1050,9 @@ cfg_if! {
+@@ -2575,6 +2575,9 @@ cfg_if! {
      } else if #[cfg(target_os = "redox")] {
          mod redox;
          pub use self::redox::*;

@@ -1,7 +1,8 @@
 #![no_std]
 
+use core::alloc::Layout;
 #[cfg(not(test))]
-use core::alloc::{GlobalAlloc, Layout};
+use core::alloc::GlobalAlloc;
 use core::ffi::{c_char, c_void, CStr};
 use core::ptr;
 #[cfg(not(test))]
@@ -635,7 +636,6 @@ pub fn exit(status: i32) -> ! {
 #[cfg(not(test))]
 struct MmapAllocator;
 
-#[cfg(not(test))]
 #[repr(C)]
 struct AllocationHeader {
     mapping_base: *mut u8,
@@ -745,6 +745,7 @@ mod tests {
     extern crate std;
 
     use super::{build_dns_query, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen};
+    use core::alloc::Layout;
 
     #[test]
     fn allocation_mapping_size_accounts_for_alignment() {

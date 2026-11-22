@@ -82,19 +82,9 @@ s! {
         pub robustness: c_int,
     }
 
-    pub const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = pthread_mutex_t {
-        next: core::ptr::null_mut(),
-        state: 0,
-        flags: 0,
-    };
-
     pub struct pthread_condattr_t {
         pub opaque: c_int,
     }
-
-    pub const PTHREAD_COND_INITIALIZER: pthread_cond_t = pthread_cond_t {
-        sequence: 0,
-    };
 
     pub struct sockaddr {
         pub sa_family: sa_family_t,
@@ -204,6 +194,13 @@ const _: [(); 48] = [(); core::mem::size_of::<passwd>()];
 const _: [(); 36] = [(); core::mem::size_of::<tm>()];
 const _: [(); 128] = [(); core::mem::size_of::<fd_set>()];
 const _: [(); 96] = [(); core::mem::size_of::<lconv>()];
+
+pub const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = pthread_mutex_t {
+    next: core::ptr::null_mut(),
+    state: 0,
+    flags: 0,
+};
+pub const PTHREAD_COND_INITIALIZER: pthread_cond_t = pthread_cond_t { sequence: 0 };
 
 pub const PATH_MAX: c_int = 4096;
 pub const AT_FDCWD: c_int = -100;

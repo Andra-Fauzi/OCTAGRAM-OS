@@ -172,6 +172,9 @@
      DEF(TOK_builtin_return_address, "__builtin_return_address")
      DEF(TOK_builtin_expect, "__builtin_expect")
      DEF(TOK_builtin_unreachable, "__builtin_unreachable")
+     DEF(TOK_builtin_add_overflow, "__builtin_add_overflow")
+     DEF(TOK_builtin_sub_overflow, "__builtin_sub_overflow")
+     DEF(TOK_builtin_mul_overflow, "__builtin_mul_overflow")
      /*DEF(TOK_builtin_va_list, "__builtin_va_list")*/
 #if defined TCC_TARGET_PE && defined TCC_TARGET_X86_64
      DEF(TOK_builtin_va_start, "__builtin_va_start")

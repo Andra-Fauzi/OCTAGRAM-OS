@@ -35,8 +35,8 @@ di `docs/native-self-hosting-roadmap.md` bagian **M4.3**.
    linker, hasil, serta overflow untuk beberapa lebar integer.
 4. Assembler x86 TinyCC kini mengenali `xgetbv` dengan encoding `0F 01 D0`.
    Source `tcc_xgetbv.c` dan dua QEMU harness mengompilasi serta menautkan
-   fungsi itu, lalu menjalankan `main()` yang tidak memanggilnya. Instruksi
-   XGETBV tidak dieksekusi. Atomic 128-bit (`uint128_t _Atomic`) masih belum didukung TinyCC. Rewrite
+   fungsi itu, lalu memeriksa byte `0F 01 D0` lewat `main()` yang tidak
+   memanggilnya. Instruksi XGETBV tidak dieksekusi. Atomic 128-bit (`uint128_t _Atomic`) masih belum didukung TinyCC. Rewrite
    PoC mengalihkan jalur yang tidak dieksekusi ke helper bytewise 16-byte;
    helper ini **bukan atomic** dan tidak aman untuk concurrency.
 
@@ -53,7 +53,7 @@ Stub matematika di `shim.c` telah dihapus agar simbol disediakan oleh
 membutuhkan pengujian numerik lebih luas.
 
 `build_host.sh` sekarang memvalidasi bahwa keluaran `mrustc` masih memuat XGETBV
-asli, lalu hanya me-rewrite AtomicU128 yang belum didukung. Lima uji regresi
+asli, lalu hanya me-rewrite AtomicU128 yang belum didukung. Enam uji regresi
 memastikan XGETBV dipertahankan, patch idempoten, dan perubahan format yang tak
 dikenali ditolak.
 

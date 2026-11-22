@@ -985,3 +985,104 @@ float fmaf(float x, float y, float z)
     return (float)fma((double)x, (double)y, (double)z);
 }
 
+
+/* Float entry points: use the double bootstrap core where a direct IEEE-754
+   float implementation is not yet available. nextafterf is bit-stepped. */
+float acosf(float x) { return (float)acos((double)x); }
+float asinf(float x) { return (float)asin((double)x); }
+float atanf(float x) { return (float)atan((double)x); }
+float atan2f(float y, float x) { return (float)atan2((double)y, (double)x); }
+float cosf(float x) { return (float)cos((double)x); }
+float sinf(float x) { return (float)sin((double)x); }
+float tanf(float x) { return (float)tan((double)x); }
+float coshf(float x) { return (float)cosh((double)x); }
+float sinhf(float x) { return (float)sinh((double)x); }
+float tanhf(float x) { return (float)tanh((double)x); }
+float expf(float x) { return (float)exp((double)x); }
+float frexpf(float x, int *exponent)
+{
+    return (float)frexp((double)x, exponent);
+}
+float ldexpf(float x, int exponent)
+{
+    return (float)ldexp((double)x, exponent);
+}
+float logf(float x) { return (float)log((double)x); }
+float log10f(float x) { return (float)log10((double)x); }
+float modff(float x, float *integer_part)
+{
+    double integer_value;
+    double fraction = modf((double)x, &integer_value);
+    if (integer_part != 0)
+        *integer_part = (float)integer_value;
+    return (float)fraction;
+}
+float powf(float x, float y) { return (float)pow((double)x, (double)y); }
+float fmodf(float x, float y) { return (float)fmod((double)x, (double)y); }
+float acoshf(float x) { return (float)acosh((double)x); }
+float asinhf(float x) { return (float)asinh((double)x); }
+float atanhf(float x) { return (float)atanh((double)x); }
+float exp2f(float x) { return (float)exp2((double)x); }
+float expm1f(float x) { return (float)expm1((double)x); }
+int ilogbf(float x) { return ilogb((double)x); }
+float log1pf(float x) { return (float)log1p((double)x); }
+float log2f(float x) { return (float)log2((double)x); }
+float logbf(float x) { return (float)logb((double)x); }
+float scalbnf(float x, int exponent)
+{
+    return (float)scalbn((double)x, exponent);
+}
+float cbrtf(float x) { return (float)cbrt((double)x); }
+float hypotf(float x, float y) { return (float)hypot((double)x, (double)y); }
+float erff(float x) { return (float)erf((double)x); }
+float erfcf(float x) { return (float)erfc((double)x); }
+float tgammaf(float x) { return (float)tgamma((double)x); }
+float lgammaf(float x) { return (float)lgamma((double)x); }
+float nearbyintf(float x) { return (float)nearbyint((double)x); }
+float rintf(float x) { return (float)rint((double)x); }
+long lrintf(float x) { return lrint((double)x); }
+long long llrintf(float x) { return llrint((double)x); }
+long lroundf(float x) { return lround((double)x); }
+long long llroundf(float x) { return llround((double)x); }
+float remainderf(float x, float y)
+{
+    return (float)remainder((double)x, (double)y);
+}
+float remquof(float x, float y, int *quotient)
+{
+    return (float)remquo((double)x, (double)y, quotient);
+}
+float nanf(const char *tag) { return (float)nan(tag); }
+
+float nextafterf(float x, float y)
+{
+    OctFloatBits bits;
+    OctFloatBits other;
+
+    if (x != x || y != y)
+        return x + y;
+    if (x == y)
+        return y;
+    if (x == 0.0f) {
+        bits.bits = (y < 0.0f || oct_signbit((double)y)
+                     ? UINT32_C(0x80000000) : 0) | 1U;
+        return bits.value;
+    }
+    bits.value = x;
+    other.value = y;
+    if (((x > 0.0f) == (y > x)))
+        ++bits.bits;
+    else
+        --bits.bits;
+    return bits.value;
+}
+
+float nexttowardf(float x, long double y)
+{
+    if ((long double)x == y)
+        return (float)y;
+    return nextafterf(x, y > (long double)x ? INFINITY : -INFINITY);
+}
+float fdimf(float x, float y) { return (float)fdim((double)x, (double)y); }
+float fmaxf(float x, float y) { return (float)fmax((double)x, (double)y); }
+float fminf(float x, float y) { return (float)fmin((double)x, (double)y); }

@@ -17,6 +17,12 @@ int main(void)
     int exponent = 0;
     double fraction;
     int quotient = 0;
+    double nan_value = NAN;
+    double huge_value = HUGE_VAL;
+
+    if (nan_value == nan_value || !(huge_value > 1.0e300) ||
+        !(INFINITY > 1.0e300))
+        return 22;
 
     zero.value = copysign(0.0, -1.0);
     if (zero.bits != UINT64_C(0x8000000000000000))

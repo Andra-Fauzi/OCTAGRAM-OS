@@ -89,7 +89,8 @@ if [[ ! -s "$WORK/poc.c" ]]; then
     echo "ERROR: mrustc did not emit a fresh poc.c (exit status $MRUSTC_STATUS)" >&2
     exit 1
 fi
-python3 "$ROOT/tools/mrustc_poc/validate_poc_output.py" "$WORK/poc.c"if [[ "$MRUSTC_STATUS" -ne 0 ]]; then
+python3 "$ROOT/tools/mrustc_poc/validate_poc_output.py" "$WORK/poc.c"
+if [[ "$MRUSTC_STATUS" -ne 0 ]]; then
     echo "NOTE: mrustc exited $MRUSTC_STATUS after emitting poc.c; continuing with the validated C output (guest tcc performs the actual link)" >&2
 fi
 

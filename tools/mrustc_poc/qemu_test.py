@@ -122,25 +122,7 @@ def main():
         command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT
     )
     monitor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    for _ in range(120):
-        try:
-            monitor.connect(MONITOR)
-            break
-        except OSError:
-            if process.poll() is not None:
-                print("QEMU-EXIT: %s" % process.returncode)
-                print(serial_text()[-3000:])
-                return 1
-            time.sleep(0.5)
-    else:
-        process.kill()
-        print("MONITOR-FAIL: cannot connect")
-        return 1
-    monitor.settimeout(2)
-    try:
-        monitor.recv(4096)
-    except OSError:
-        pass
+    connected = False
 
     def send_line(text, pause=0.04):
         for character in text:
@@ -150,6 +132,26 @@ def main():
         time.sleep(0.4)
 
     try:
+        for _ in range(120):
+            try:
+                monitor.connect(MONITOR)
+                connected = True
+                break
+            except OSError:
+                if process.poll() is not None:
+                    print("QEMU-EXIT: %s" % process.returncode)
+                    print(serial_text()[-3000:])
+                    return 1
+                time.sleep(0.5)
+        if not connected:
+            print("MONITOR-FAIL: cannot connect")
+            return 1
+        monitor.settimeout(2)
+        try:
+            monitor.recv(4096)
+        except OSError:
+            pass
+
         if not wait_for("octagram:", 0, 240):
             print("BOOT-FAIL: shell prompt never appeared")
             print(serial_text()[-4000:])
@@ -297,15 +299,24 @@ def main():
         print("MRUSTC-C-POC-PASS")
         return 0
     finally:
-        try:
-            monitor.sendall(b"quit\n")
-        except OSError:
-            pass
-        process.terminate()
-        try:
-            process.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        if connected:
+            try:
+                monitor.sendall(b"quit\\n")
+            except OSError:
+                pass
+        monitor.close()
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        for path in (MONITOR, live_vars):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == "__main__":

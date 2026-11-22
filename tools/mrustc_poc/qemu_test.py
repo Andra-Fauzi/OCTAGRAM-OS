@@ -10,6 +10,7 @@ Environment:
     OCTAGRAM_POC_SOURCES  EXT2 source disk (default: $WORK/sources.img)
     QEMU_BIN              qemu-system-x86_64 (default: $HOME/qemu-root/usr/bin)
     OCTAGRAM_OVMF_DIR     OVMF firmware directory (default: edk2-ovmf)
+    OCTAGRAM_POC_QEMU_LOG host QEMU output log (default: unique temp file)
 """
 
 import os

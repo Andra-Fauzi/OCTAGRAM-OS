@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-EXPECTED_COMMIT = "a03dd7c2e298b0ca482f30ce07efd3115938328e"
+EXPECTED_COMMIT = "ccc2ff4aaab962f7fde7b8edda7379c045b1ca12"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_SOURCE = REPO_ROOT / "patches/rust-libc/octagram/mod.rs"
 
@@ -32,8 +32,8 @@ def main() -> int:
 
     replace_once(
         root / "build.rs",
-        '            "helenos", "qtee",\n',
-        '            "helenos", "qtee", "octagram",\n',
+        '            "helenos",\n',
+        '            "helenos", "octagram",\n',
     )
 
     unix = root / "src/unix/mod.rs"

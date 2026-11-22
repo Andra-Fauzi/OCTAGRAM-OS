@@ -353,12 +353,17 @@ extern "C" {
     pub fn pthread_detach(thread: pthread_t) -> c_int;
     pub fn pthread_mutex_init(mutex: *mut pthread_mutex_t, attr: *const pthread_mutexattr_t) -> c_int;
     pub fn pthread_mutex_destroy(mutex: *mut pthread_mutex_t) -> c_int;
+    pub fn pthread_mutexattr_init(attributes: *mut pthread_mutexattr_t) -> c_int;
+    pub fn pthread_mutexattr_destroy(attributes: *mut pthread_mutexattr_t) -> c_int;
     pub fn pthread_mutexattr_settype(attributes: *mut pthread_mutexattr_t, kind: c_int) -> c_int;
     pub fn pthread_mutex_lock(mutex: *mut pthread_mutex_t) -> c_int;
     pub fn pthread_mutex_trylock(mutex: *mut pthread_mutex_t) -> c_int;
     pub fn pthread_mutex_unlock(mutex: *mut pthread_mutex_t) -> c_int;
     pub fn pthread_cond_init(cond: *mut pthread_cond_t, attr: *const pthread_condattr_t) -> c_int;
     pub fn pthread_cond_destroy(cond: *mut pthread_cond_t) -> c_int;
+    pub fn pthread_condattr_init(attributes: *mut pthread_condattr_t) -> c_int;
+    pub fn pthread_condattr_destroy(attributes: *mut pthread_condattr_t) -> c_int;
+    pub fn pthread_condattr_setclock(attributes: *mut pthread_condattr_t, clock: clockid_t) -> c_int;
     pub fn pthread_cond_wait(cond: *mut pthread_cond_t, mutex: *mut pthread_mutex_t) -> c_int;
     pub fn pthread_cond_timedwait(
         cond: *mut pthread_cond_t,

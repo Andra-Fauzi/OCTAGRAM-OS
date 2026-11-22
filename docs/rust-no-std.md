@@ -229,7 +229,7 @@ not yet provide buffered I/O, path normalization, or the complete
 
 ## `Command::output`
 
-`Command::output()` menangkap stdout ke `CapturedOutput { status, stdout }`, membaca pipe sampai EOF, dan menunggu proses selesai. `status` adalah nilai keluar mentah OCTAGRAM. stderr tetap mengikuti konfigurasi `Stdio` dan secara default diwariskan; penangkapan stderr bersamaan belum tersedia.
+`Command::output()` menangkap stdout dan stderr ke `CapturedOutput { status, stdout, stderr }`. Dua pipe dikuras bersamaan memakai `poll`, sehingga child yang menulis banyak data ke kedua stream tidak terjebak karena pipe yang tidak dibaca penuh. `status` tetap nilai keluar mentah OCTAGRAM; pemetaan ke tipe `ExitStatus` belum tersedia.
 
 ## Owned pipe dan `Stdio`
 

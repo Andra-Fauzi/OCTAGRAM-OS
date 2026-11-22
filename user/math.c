@@ -176,8 +176,10 @@ double nearbyint(double x)
     fraction = x - lower;
     if (fraction < 0.5)
         return lower;
-    if (fraction > 0.5)
-        return lower + 1.0;
+    if (fraction > 0.5) {
+        double rounded = lower + 1.0;
+        return rounded == 0.0 ? oct_signed_zero(oct_signbit(x)) : rounded;
+    }
     integer = (long long)lower;
     return (integer & 1LL) ? lower + 1.0 : lower;
 }

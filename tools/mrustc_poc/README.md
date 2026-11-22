@@ -123,9 +123,10 @@ Setiap tahap compile dan run pada harness QEMU juga menunggu status
 keluar `0` serta prompt shell kembali; marker PASS saja tidak cukup untuk
 meloloskan tahap. Ini mencegah artefak lama atau program yang mencetak marker
 tetapi gagal keluar dianggap sukses. Harness juga memakai file OVMF-vars
-sementara yang unik per proses dan membersihkan socket monitor, proses QEMU,
-serta file firmware sementara pada semua jalur keluar, termasuk kegagalan
-sebelum monitor tersambung.
+sementara, log serial, dan socket monitor memakai path unik per proses agar
+run paralel tidak saling mengganggu. Harness membersihkan socket monitor,
+proses QEMU, serta file firmware sementara pada semua jalur keluar, termasuk
+kegagalan sebelum monitor tersambung; log serial dipertahankan untuk diagnosis.
 tetapi gagal keluar dianggap sukses.
 
 ## Catatan

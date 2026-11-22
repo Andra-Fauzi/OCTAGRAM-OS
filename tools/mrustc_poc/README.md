@@ -122,12 +122,18 @@ memisahkan kegagalan fondasi dari kegagalan kompilasi seluruh core.
 Setiap tahap compile dan run pada harness QEMU juga menunggu status
 keluar `0` serta prompt shell kembali; marker PASS saja tidak cukup untuk
 meloloskan tahap. Ini mencegah artefak lama atau program yang mencetak marker
-tetapi gagal keluar dianggap sukses. Harness juga memakai file OVMF-vars
-sementara, log serial, dan socket monitor memakai path unik per proses agar
-run paralel tidak saling mengganggu. Harness membersihkan socket monitor,
-proses QEMU, serta file firmware sementara pada semua jalur keluar, termasuk
-kegagalan sebelum monitor tersambung; log serial dan log QEMU host dipertahankan untuk diagnosis. Output QEMU host (termasuk error startup) ditulis ke log terpisah yang path-nya dapat diatur lewat `OCTAGRAM_POC_QEMU_LOG`. Pembuatan proses QEMU dan socket monitor juga berada di dalam blok cleanup, sehingga kegagalan startup tidak meninggalkan proses yatim; kegagalan menyalin template OVMF-vars menghapus file temporernya.
-tetapi gagal keluar dianggap sukses.
+tetapi gagal keluar dianggap sukses. Harness memakai file OVMF-vars sementara,
+serta path unik per proses untuk log serial dan socket monitor agar run paralel
+tidak saling mengganggu. Proses QEMU, socket monitor, dan file firmware
+sementara dibersihkan pada semua jalur keluar, termasuk kegagalan sebelum
+monitor tersambung; log serial dan log QEMU host dipertahankan untuk diagnosis.
+Output QEMU host (termasuk error startup) ditulis ke log terpisah yang path-nya
+dapat diatur lewat `OCTAGRAM_POC_QEMU_LOG`. Pada setiap kegagalan setelah
+QEMU dijalankan, harness otomatis mencetak 5.000 byte terakhir log host agar
+diagnosis boot, monitor, dan kompilasi tidak hanya bergantung pada serial log.
+Pembacaan tail dilakukan secara biner agar batas UTF-8 yang terpotong tidak
+membuat pelaporan diagnostik gagal. Kegagalan menyalin template OVMF-vars juga
+menghapus file temporernya.
 
 ## Catatan
 

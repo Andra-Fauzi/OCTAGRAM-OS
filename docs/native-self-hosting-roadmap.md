@@ -1346,8 +1346,11 @@ Empat celah nyata yang tercatat:
 1. `/include/stdint.h` guest tidak punya `int_leastN_t`/`uint_leastN_t`,
    sehingga `/include/stdatomic.h` gagal lebih dulu. Ini bug header guest,
    bukan batas `tcc`.
-2. Guest tidak punya `math.h` maupun libm, sementara C `core` memakai
+2. Header publik guest `user/include/math.h` kini mendeklarasikan fungsi
+   matematika ISO C yang dipakai C `core`, termasuk
    `fabs/sqrt/floor/ceil/trunc/round/pow/copysign/fma/exp/log2/cbrt/fdim`.
+   Namun implementasi libm belum tersedia; shim PoC masih menyediakan stub
+   tidak presisi untuk jalur float yang tidak disentuh program uji.
 3. `tcc` tidak mengimplementasikan `__builtin_add_overflow`,
    `__builtin_sub_overflow`, dan `__builtin_mul_overflow` yang dipakai 1392
    kali oleh C `core`.
@@ -1376,8 +1379,9 @@ lebih jauh.
 
 1. Selesaikan run QEMU sampai `MRUSTC-C-POC-PASS` (atau kumpulkan sisa celah
    `tcc` yang muncul setelah baris 227 ribu).
-2. Perbaiki header guest yang kurang (`stdint.h` least/fast types, `math.h`)
-   di `user/include/`, bukan hanya lewat `-include` shim.
+2. Lengkapi header guest publik dan uji sintaksnya: `stdint.h` kini
+   menyediakan tipe least/fast; `math.h` mendeklarasikan API yang diperlukan.
+   Selanjutnya implementasikan dan uji libm nyata (jangan mengandalkan stub PoC).
 3. Ukur batas praktis: berapa RAM/waktu `tcc` untuk `core`, lalu putuskan
    apakah `std` layak dicoba atau cukup `core` + kernel subset.
 4. Baru setelah itu pertimbangkan memindahkan `mrustc` sendiri ke dalam guest

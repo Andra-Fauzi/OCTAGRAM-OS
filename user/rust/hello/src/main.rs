@@ -11,10 +11,10 @@ use core::panic::PanicInfo;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
-    close, clock_getres, clock_gettime, dup3, exit, futex, getpid, getrandom, mmap,
-    mprotect, munmap, nanosleep, open, pipe2, read, stat_path, thread_create,
+    close, clock_getres, clock_gettime, dup3, exit, fstat, fstatat, futex, getpid, getrandom, mmap,
+    lseek, mprotect, munmap, nanosleep, open, openat, pipe2, read, stat_path, thread_create,
     thread_exit, thread_join, thread_self, write, write_all,
-    CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, STDOUT,
+    AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
 };
 
 static RUST_THREAD_RESULT: AtomicU64 = AtomicU64::new(0);
@@ -85,16 +85,30 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(metadata) if metadata.size > 0 => metadata,
         _ => return 3,
     };
-    let fd = match open(path, O_RDONLY) {
-        Ok(fd) => fd,
-        Err(_) => return 4,
+    let relative_metadata = match fstatat(AT_FDCWD, path, 0) {
+        Ok(metadata) if metadata.size == metadata.size && metadata.size > 0 => metadata,
+        _ => return 4,
     };
+    let fd = match openat(AT_FDCWD, path, O_RDONLY, 0) {
+        Ok(fd) => fd,
+        Err(_) => return 5,
+    };
+    let descriptor_metadata = match fstat(fd) {
+        Ok(metadata) if metadata.size > 0 => metadata,
+        _ => return 6,
+    };
+    if descriptor_metadata.size != metadata.size || relative_metadata.size != metadata.size {
+        return 7;
+    }
+    if lseek(fd, 0, SEEK_SET) != Ok(0) {
+        return 8;
+    }
     let mut sample = [0u8; 32];
     let read_result = read(fd, &mut sample);
     let close_result = close(fd);
     match (read_result, close_result) {
         (Ok(count), Ok(())) if count > 0 && metadata.size >= count as u64 => {}
-        _ => return 5,
+        _ => return 9,
     }
     if write_all(STDOUT, b"Rust runtime file/stat: PASS\n").is_err() {
         return 6;

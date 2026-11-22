@@ -228,6 +228,24 @@ def main():
             return 1
         print("TCC-MATH-PASS")
 
+        # Compile and run the bytewise AtomicU128 PoC shim with TinyCC.
+        offset = len(serial_text())
+        send_line(
+            "tcc -include /mnt/src/fix.h /mnt/src/tcc_atomic128_shim.c "
+            "-o /mnt/tcc_atomic128_shim.elf"
+        )
+        if not wait_prompt(offset, 90):
+            print("TCC-ATOMIC128-SHIM-COMPILE-FAIL")
+            print(serial_text()[offset:][-3000:])
+            return 1
+        offset = len(serial_text())
+        send_line("run /mnt/tcc_atomic128_shim.elf")
+        if not wait_for("TCC-ATOMIC128-SHIM-PASS", offset, 60):
+            print("TCC-ATOMIC128-SHIM-RUN-FAIL")
+            print(serial_text()[offset:][-3000:])
+            return 1
+        print("TCC-ATOMIC128-SHIM-PASS")
+
         offset = len(serial_text())
         send_line(
             "tcc -I /mnt/src -include /mnt/src/fix.h /mnt/src/shim.c "

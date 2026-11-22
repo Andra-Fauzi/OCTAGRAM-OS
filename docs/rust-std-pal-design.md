@@ -38,7 +38,7 @@ menggunakan mrustc atau xrustc.
 | File metadata | `fstat`, `fstatat`, `stat` | Lengkapi field metadata yang dibutuhkan `Metadata` |
 | File mutation/sync | `ftruncate`, `fsync`, `fdatasync` | Semantik permissions dan durability test |
 | Positional I/O | `pread`, `pwrite` | Validasi offset signed, partial I/O, dan error |
-| Directory | `opendir`, `readdir`, `closedir`, `DirectoryIter` | Adapter Iterator sudah ada; selaraskan dot entries, error terminal, dan perubahan direktori |
+| Directory | `opendir`, `readdir`, `closedir`, `DirectoryIter`, owned `DirEntry`, `fstatat` | Adapter iterator dan metadata entry tersedia; selaraskan `OsString`/`PathBuf`, dot entries, dan perubahan direktori |
 | Path mutation | `mkdirat`, `unlinkat`, `renameat` | Mapping remove-file/remove-dir dan path edge cases |
 | VM | `mmap`, `munmap`, `mprotect`, `brk` | PAL allocator/VM dan mapping file yang teruji |
 | Process | `fork`, `execve`, `waitpid`, `pipe2(O_CLOEXEC)`, owned pipe descriptors, `dup3`, `Child`, `Stdio`, `Command::spawn` | Port ke `std::process`, signal/status mapping, full `Stdio`/`Command` semantics, and process status mapping |
@@ -66,6 +66,11 @@ Runtime menyediakan `Command::output()` membuat dua pipe `O_CLOEXEC`, mengalihka
 
 Runtime kini menyediakan `pipe2_owned(flags)` yang mengembalikan dua `OwnedFd`; kedua ujung pipe otomatis ditutup ketika owner di-drop pada target OCTAGRAM. Builder `Command` menerima `Stdio::Inherit` atau `Stdio::Fd(fd)` melalui `.stdin()`, `.stdout()`, dan `.stderr()`, sementara metode `*_from(fd)` lama tetap tersedia. Descriptor sumber dipinjam selama `spawn()` dan ownership tetap pada parent. Smoke test guest menjalankan shell builtin `printf` dengan stdout diarahkan ke pipe, menutup ujung tulis parent, membaca sampai EOF, memeriksa byte output dan exit status. Ini memberi jalur dasar untuk `std::process::Stdio`, tetapi belum menyediakan enum `Piped` yang otomatis menghasilkan handle output seperti API standar.
 
+## Byte-preserving OS strings and path helpers
+
+Runtime no_std kini menyediakan helper internal `OsStr`/`OsString` dan `Path`/`PathBuf` yang menyimpan byte mentah, sehingga nama/path non-UTF-8 tidak dipaksa menjadi UTF-8. `OsString::try_to_cstring_bytes()` dan `PathBuf::try_to_cstring_bytes()` menolak byte NUL sebelum membuat buffer NUL-terminated untuk syscall. `Path` menyediakan `is_absolute`, `file_name`, `extension`, `parent`, dan konversi ke `PathBuf`; `PathBuf::push` menangani path absolut sebagai pengganti dan path relatif sebagai komponen tambahan.
+
+Ini adalah primitive runtime internal untuk menyiapkan adapter OS, bukan implementasi tipe `std::ffi::OsStr`, `std::ffi::OsString`, `std::path::Path`, atau `std::path::PathBuf`. Normalisasi komponen (`.`/`..`), prefix/platform semantics, dan seluruh edge case kompatibilitas std belum tersedia.
 ## Directory ownership update
 
 Runtime kini menyediakan `Directory`, pembungkus RAII di atas descriptor

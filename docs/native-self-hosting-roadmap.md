@@ -1671,8 +1671,8 @@ Batasan: `PathBuf` masih helper internal, belum `std::path::PathBuf`; path relat
   `unix`; workflow Rust khusus menjalankan validator tersebut sebelum build.
 - CI Rust no_std run
   [45040711459](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45040711459)
-  telah melewati validasi target dan cfg Unix. Build runtime, unit test, dan
-  verifikasi ELF pada run itu masih berjalan saat catatan ini ditulis.
+  lulus. Run tersebut melewati validasi target dan cfg Unix, build binary
+  userspace Rust, seluruh unit test runtime host, dan verifikasi ELF statis.
 
 Batasan: `target_family = "unix"` hanya mengaktifkan pemilihan kode berbasis
 `cfg(unix)`. Ini bukan klaim bahwa seluruh ABI POSIX telah lengkap, bukan

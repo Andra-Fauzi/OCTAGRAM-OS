@@ -11,7 +11,7 @@ ATOMIC128 = (
     "&var1._0, arg2, memory_order_seq_cst, memory_order_seq_cst)"
 )
 ATOMIC128_REPLACEMENT = (
-    "poc_cxchg128((unsigned __int128 *)arg0, &var1._0, arg2)"
+    "poc_cxchg128((void *)arg0, (void *)&var1._0, (const void *)&arg2)"
 )
 
 

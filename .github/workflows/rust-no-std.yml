@@ -7,6 +7,10 @@ on:
     paths:
       - "user/rust/**"
       - "user/crt0.S"
+      - "user/include/**"
+      - "user/runtime.c"
+      - "tools/rust_libc_abi_surface.json"
+      - "tools/check_rust_libc_abi_surface.py"
       - ".github/workflows/rust-no-std.yml"
   pull_request:
     paths:
@@ -37,6 +41,9 @@ jobs:
 
       - name: Validate custom target specification and Unix cfg
         run: python3 tools/check_octagram_rust_target.py
+
+      - name: Validate OCTAGRAM libc ABI surface for upstream Rust port
+        run: python3 tools/check_rust_libc_abi_surface.py
 
       - name: Build OCTAGRAM Rust binaries
         run: make -C user/rust clean all check

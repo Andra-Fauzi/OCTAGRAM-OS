@@ -1653,3 +1653,11 @@ Batasan: ini belum `std::fs::DirEntry`; belum ada `OsString`/`PathBuf`, canonica
 - Unit test host memeriksa nama non-UTF-8, penolakan NUL, parent/root, extension, dan join path. Guest smoke test membangun `/share/octagram/message.c` dengan `PathBuf`, mengubahnya ke C string, lalu menjalankan `stat`.
 
 Batasan: tipe-tipe ini adalah primitive internal no_std, bukan tipe resmi `std::ffi` atau `std::path`; normalisasi `.`/`..`, semantics `OsStr` upstream, dan kompatibilitas penuh `PathBuf` belum ada.
+
+## 23. DirEntry filename dan path (22 November 2026)
+
+- `Directory` kini menyimpan path asal sebagai byte OS string ketika stream dibuka.
+- `DirEntry::file_name()` menghasilkan `OsString` milik sendiri; `DirEntry::path()` menghasilkan `PathBuf` dengan menggabungkan path induk dan nama entry.
+- Guest smoke test memverifikasi `file_name()` menghasilkan `message.c` dan `path()` menghasilkan `/share/octagram/message.c`, kemudian tetap menguji metadata setelah iterator selesai.
+
+Batasan: `PathBuf` masih helper internal, belum `std::path::PathBuf`; path relative/canonicalization dan edge case separator tetap memerlukan pengujian tambahan.

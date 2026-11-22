@@ -318,10 +318,12 @@ double sqrt(double x)
 {
     double result;
 
-    if (oct_isnan(x) || x == 0.0 || oct_isinf(x))
+    if (oct_isnan(x))
         return x;
     if (x < 0.0)
         return oct_qnan();
+    if (x == 0.0 || oct_isinf(x))
+        return x;
     __asm__ __volatile__("fldl %1\n\tfsqrt\n\tfstpl %0"
                          : "=m"(result) : "m"(x));
     return result;
@@ -582,6 +584,15 @@ double pow(double x, double y)
         return 1.0;
     if (oct_isnan(x) || oct_isnan(y))
         return oct_qnan();
+    if (oct_isinf(x)) {
+        int negative = oct_signbit(x) && oct_is_integer(y) &&
+                       nearbyint(y * 0.5) != y * 0.5;
+        if (y > 0.0)
+            return oct_inf(negative);
+        if (y < 0.0)
+            return oct_signed_zero(negative);
+        return 1.0;
+    }
     if (oct_isinf(y)) {
         double ax = fabs(x);
         if (ax == 1.0)
@@ -653,6 +664,15 @@ double atan2(double y, double x)
 {
     if (oct_isnan(x) || oct_isnan(y))
         return x + y;
+    if (oct_isinf(x) && oct_isinf(y)) {
+        double angle = oct_signbit(x) ? 3.0 * oct_quarter_pi
+                                      : oct_quarter_pi;
+        return copysign(angle, y);
+    }
+    if (oct_isinf(y))
+        return copysign(oct_half_pi, y);
+    if (oct_isinf(x))
+        return x > 0.0 ? copysign(0.0, y) : copysign(oct_pi, y);
     if (x == 0.0) {
         if (y == 0.0)
             return oct_signbit(x) ? copysign(oct_pi, y)

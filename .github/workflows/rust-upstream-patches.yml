@@ -1,0 +1,49 @@
+name: Upstream Rust patch validation
+
+on:
+  push:
+    branches: [feature/native-self-hosting]
+    paths:
+      - "patches/rust/**"
+      - ".github/workflows/rust-upstream-patches.yml"
+  pull_request:
+    paths:
+      - "patches/rust/**"
+      - ".github/workflows/rust-upstream-patches.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-rust-std-patch:
+    name: Check Rust std patch against pinned upstream
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout OCTAGRAM-OS
+        uses: actions/checkout@v4
+        with:
+          ref: feature/native-self-hosting
+
+      - name: Checkout pinned upstream Rust source
+        uses: actions/checkout@v4
+        with:
+          repository: rust-lang/rust
+          ref: 342d74463af7dd3018ef6aa04dd5500c2deb5bd1
+          path: rust-src
+          sparse-checkout: |
+            library/std/build.rs
+          sparse-checkout-cone-mode: false
+
+      - name: Validate patch applicability
+        working-directory: rust-src
+        run: |
+          git apply --check "$GITHUB_WORKSPACE/patches/rust/0001-std-recognize-octagram-target.patch"
+          echo "RUST-STD-PATCH-CHECK-PASS"
+
+      - name: Apply patch in disposable checkout
+        working-directory: rust-src
+        run: |
+          git apply "$GITHUB_WORKSPACE/patches/rust/0001-std-recognize-octagram-target.patch"
+          grep -n 'target_os == "octagram"' library/std/build.rs
+          echo "RUST-STD-PATCH-APPLY-PASS"

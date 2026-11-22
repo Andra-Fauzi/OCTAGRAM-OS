@@ -85,4 +85,4 @@ jobs:
         run: |
           cargo +nightly check --manifest-path libc-src/Cargo.toml --lib \
             --target user/rust/targets/x86_64-unknown-octagram.json \
-            --no-default-features -Zbuild-std=core
+            --no-default-features -Zjson-target-spec -Zbuild-std=core

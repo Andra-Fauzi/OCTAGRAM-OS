@@ -5,8 +5,6 @@ use core::alloc::Layout;
 use core::alloc::GlobalAlloc;
 use core::ffi::{c_char, c_void, CStr};
 use core::ptr;
-#[cfg(not(test))]
-use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU16, Ordering};
 
 pub const STDIN: u64 = 0;
@@ -716,8 +714,8 @@ unsafe impl GlobalAlloc for MmapAllocator {
         user_pointer
     }
 
-    unsafe fn dealloc(&self, pointer: *mut u8, _layout: Layout) {
-        if pointer.is_null() {
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        if pointer.is_null() || layout.size() == 0 {
             return;
         }
         let header = unsafe {

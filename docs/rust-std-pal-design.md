@@ -41,9 +41,9 @@ menggunakan mrustc atau xrustc.
 | Directory | `opendir`, `readdir`, `closedir` | Implementasikan iterator `ReadDir`, dot entries, dan error terminal |
 | Path mutation | `mkdirat`, `unlinkat`, `renameat` | Mapping remove-file/remove-dir dan path edge cases |
 | VM | `mmap`, `munmap`, `mprotect`, `brk` | PAL allocator/VM dan mapping file yang teruji |
-| Process | `fork`, `execve`, `waitpid`, `pipe2(O_CLOEXEC)`, owned pipe descriptors, `dup3`, `Child`, `Stdio`, `Command::spawn` | Port ke `std::process`, signal/status mapping, full `Stdio`/`Command` semantics, stderr capture and process status mapping |
+| Process | `fork`, `execve`, `waitpid`, `pipe2(O_CLOEXEC)`, owned pipe descriptors, `dup3`, `Child`, `Stdio`, `Command::spawn` | Port ke `std::process`, signal/status mapping, full `Stdio`/`Command` semantics, and process status mapping |
 | Threads | `thread_create/join/exit`, FS TLS, `futex` | Integrasi `std::thread`, mutex/condvar, TLS destructor |
-| Clock/random | `clock_gettime`, `nanosleep`, `getrandom` | Monotonic/instant semantics, error propagation, entropy tests |
+| Clock/random | `clock_gettime`, `nanosleep`, `getrandom`, `poll` | Monotonic/instant semantics, error propagation, entropy tests |
 | Dynamic loading | Loader ELF subset | Belum layak untuk mengasumsikan dylib Rust/LLVM; tentukan static-link strategy |
 
 Nomor syscall dan keberadaan wrapper bukan bukti kompatibilitas semantik.
@@ -60,7 +60,7 @@ Runtime kini menyediakan `Command::new(path, argv, envp)`, konfigurasi descripto
 
 ## `Command::output` stdout capture
 
-Runtime menyediakan `Command::output()` yang membuat pipe `O_CLOEXEC`, mengalihkan stdout child, membaca sampai EOF, lalu mereap child. Hasil `CapturedOutput` berisi status keluar mentah OCTAGRAM dan byte stdout. `stderr` mengikuti konfigurasi command (inherit secara default), sehingga implementasi ini belum identik dengan `std::process::Output` yang menangkap stdout dan stderr sekaligus. Guest smoke test memeriksa output `printf` dan status nol; QEMU gate memiliki marker khusus untuk API ini.
+Runtime menyediakan `Command::output()` membuat dua pipe `O_CLOEXEC`, mengalihkan stdout dan stderr child, lalu memakai `poll(2)` untuk menguras keduanya bersamaan sampai EOF sebelum mereap child. Pembacaan simultan mencegah deadlock ketika salah satu pipe penuh. Hasil `CapturedOutput` berisi status keluar mentah OCTAGRAM, byte stdout, dan byte stderr. API poll memakai layout `PollFd` 8-byte yang diuji terhadap ABI kernel. Ini masih bukan `std::process::Output` penuh: status belum dipetakan ke `ExitStatus`, dan semantik stdin, sinyal, serta error perlu diselaraskan. Guest smoke test memeriksa output `printf` dan status nol; QEMU gate memiliki marker khusus untuk API ini.
 
 ## Owned pipes dan konfigurasi Stdio
 

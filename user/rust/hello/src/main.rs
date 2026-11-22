@@ -23,8 +23,42 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     if write_all(STDOUT, &buffer[index..index + 1]).is_err() {
         return 1;
     }
+    drop(buffer);
+
+    // Exercise one mmap per allocation and munmap on every non-zero drop.
+    let mut allocations = Vec::new();
+    for round in 0..32usize {
+        let mut block = Vec::with_capacity(4096 + round * 16);
+        block.resize(4096 + round * 16, round as u8);
+        if block.first() != Some(&(round as u8)) {
+            return 7;
+        }
+        allocations.push(block);
+    }
+    drop(allocations);
+
+    // Check over-aligned allocations and reuse after a full release cycle.
+    let mut aligned = Vec::<u128>::with_capacity(256);
+    aligned.resize(256, 0xA55A_u128);
+    if (aligned.as_ptr() as usize) % core::mem::align_of::<u128>() != 0
+        || aligned.iter().any(|value| *value != 0xA55A_u128)
+    {
+        return 8;
+    }
+    drop(aligned);
+
+    let mut final_buffer = Vec::with_capacity(8192);
+    final_buffer.resize(8192, b'Z');
+    if final_buffer.iter().any(|byte| *byte != b'Z') {
+        return 9;
+    }
+    drop(final_buffer);
+
     if write_all(STDOUT, TARGET_MARKER).is_err() {
         return 1;
+    }
+    if write_all(STDOUT, b"Rust allocator mmap/munmap cycle: PASS\\n").is_err() {
+        return 10;
     }
 
     // Exercise the Rust runtime's file/stat syscall ABI against a seeded VFS

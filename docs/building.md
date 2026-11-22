@@ -8,7 +8,7 @@ Ubuntu/WSL, siapkan tool build:
 ```sh
 sudo apt update
 sudo apt install -y build-essential binutils nasm lld xorriso mtools gdisk qemu-system-x86 python3 curl git
-rustup toolchain install nightly --component rustfmt --target x86_64-unknown-none
+rustup toolchain install nightly --component rust-src --component rustfmt
 ```
 
 Program Rust userspace (`user/rust`) ditautkan dengan `ld.lld`; paket `lld`
@@ -108,23 +108,25 @@ menggunakan futex userspace-kernel; mutex robust dapat melaporkan `EOWNERDEAD`.
 
 ## Program Rust `no_std`
 
-Program Rust user dapat di-cross-compile di host ke ELF statis OCTAGRAM:
+Program Rust user dibangun sebagai ELF statis untuk custom target OCTAGRAM:
 
 ```sh
-rustup target add x86_64-unknown-none --toolchain nightly
-make -C user rust
-file user/rust/build/rust_hello.elf
+make -C user/rust clean all check
+file user/rust/build/rust_hello.elf user/rust/build/make.elf
 ```
 
-Build membutuhkan Rust nightly dan `ld.lld`. Runtime pada
-[`user/rust/runtime`](../user/rust/runtime/src/lib.rs) menyediakan syscall
-OCTAGRAM, allocator berbasis pemetaan anonim, dan API untuk pemetaan memori. Contoh
+Build membutuhkan Rust nightly, komponen `rust-src`, `ld.lld`, dan binutils.
+Cargo membangun `core` serta `alloc` untuk
+`user/rust/targets/x86_64-unknown-octagram.json` melalui `-Z build-std`.
+Runtime pada [`user/rust/runtime`](../user/rust/runtime/src/lib.rs)
+menyediakan syscall OCTAGRAM dan allocator berbasis pemetaan anonim. Contoh
 [`rust_hello`](../user/rust/hello/src/main.rs) memakai `alloc::Vec` untuk
-meminta heap lebih dari 1 MiB. Salin ELF ke volume yang bisa di-mount, lalu
-jalankan dengan `run /mnt/rust_hello.elf`.
+meminta heap lebih dari 1 MiB dan menguji akses file/stat. Salin ELF ke volume
+yang bisa di-mount, lalu jalankan dengan `run /mnt/rust_hello.elf`.
 
 Ini target `no_std` khusus OCTAGRAM, bukan Rust `std`/Linux ABI. Compiler masih
-berjalan di host; `rustc` dan Cargo belum berjalan di dalam OS.
+berjalan di host; `rustc` dan Cargo belum berjalan di dalam OS. Panduan detail:
+[`rust-no-std.md`](rust-no-std.md).
 
 ## Membangun aplikasi C dari dalam OCTAGRAM
 

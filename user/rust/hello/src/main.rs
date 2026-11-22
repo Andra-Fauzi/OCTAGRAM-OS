@@ -9,8 +9,9 @@ use core::alloc::Layout;
 use core::ffi::CStr;
 use core::panic::PanicInfo;
 use octagram_runtime::{
-    close, clock_gettime, exit, getpid, getrandom, open, read, stat_path, write_all,
-    CLOCK_MONOTONIC, O_RDONLY, STDOUT,
+    close, clock_gettime, dup3, exit, futex, getpid, getrandom, mmap, mprotect,
+    munmap, open, pipe2, read, stat_path, thread_self, write, write_all,
+    CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, PROT_READ, PROT_WRITE, STDOUT,
 };
 
 #[cfg(target_os = "octagram")]
@@ -103,6 +104,66 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     }
     if write_all(STDOUT, b"Rust runtime clock/random/pid: PASS\n").is_err() {
         return 14;
+    }
+
+    // Exercise the typed VM, descriptor, futex, and thread wrappers used by
+    // a future Rust std backend.
+    let mapping = match unsafe {
+        mmap(None, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0)
+    } {
+        Ok(mapping) => mapping,
+        Err(_) => return 15,
+    };
+    unsafe {
+        mapping.as_ptr().write_volatile(0x5Au8);
+    }
+    if unsafe { mapping.as_ptr().read_volatile() } != 0x5A
+        || unsafe { mprotect(mapping, 4096, PROT_READ | PROT_WRITE) }.is_err()
+        || unsafe { munmap(mapping, 4096) }.is_err()
+    {
+        return 16;
+    }
+
+    let descriptors = match pipe2(0) {
+        Ok(descriptors) if descriptors[0] >= 0 && descriptors[1] >= 0 => descriptors,
+        _ => return 17,
+    };
+    let pipe_message = *b"rust-pipe";
+    let mut pipe_buffer = [0u8; 9];
+    let pipe_result = write(descriptors[1] as u64, &pipe_message)
+        .and_then(|count| {
+            if count != pipe_message.len() { return Err(-5); }
+            read(descriptors[0] as u64, &mut pipe_buffer)
+        });
+    let close_read = close(descriptors[0] as u64);
+    let close_write = close(descriptors[1] as u64);
+    if pipe_result != Ok(pipe_buffer.len())
+        || pipe_buffer != pipe_message
+        || close_read.is_err()
+        || close_write.is_err()
+    {
+        return 18;
+    }
+
+    let mut futex_word = 0u32;
+    if unsafe { futex(&futex_word, 1, 1, 0, 0, 0) }.is_err()
+        || thread_self().map(|tid| tid == 0).unwrap_or(true)
+    {
+        return 19;
+    }
+
+    // dup3 is also part of the process plumbing needed by Cargo's subprocesses.
+    let duplicate = match dup3(STDOUT, 10, 0) {
+        Ok(fd) if fd == 10 => fd,
+        _ => return 20,
+    };
+    let duplicate_result = write_all(duplicate, b"");
+    let duplicate_close = close(duplicate);
+    if duplicate_result.is_err() || duplicate_close.is_err() {
+        return 21;
+    }
+    if write_all(STDOUT, b"Rust runtime VM/pipe/futex/thread: PASS\n").is_err() {
+        return 22;
     }
     0
 }

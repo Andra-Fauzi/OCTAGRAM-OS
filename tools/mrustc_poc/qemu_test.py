@@ -173,8 +173,10 @@ def main():
         send_line(
             "tcc /mnt/src/tcc_overflow.c -o /mnt/tcc_overflow.elf"
         )
-        if not wait_prompt(offset, 90):
-            print("TCC-OVERFLOW-COMPILE-TIMEOUT")
+        if not wait_prompt(offset, 90) or not wait_for(
+            "program exited with status 0", offset, 90
+        ):
+            print("TCC-OVERFLOW-COMPILE-FAIL")
             print(serial_text()[offset:][-4000:])
             return 1
         print("=== TCC OVERFLOW COMPILE ===")
@@ -183,10 +185,11 @@ def main():
         offset = len(serial_text())
         send_line("run /mnt/tcc_overflow.elf")
         overflow_ok = wait_for("TCC-OVERFLOW-PASS", offset, 45)
-        wait_prompt(offset, 45)
+        overflow_exit_ok = wait_for("program exited with status 0", offset, 45)
+        overflow_prompt_ok = wait_prompt(offset, 45)
         print("=== TCC OVERFLOW RUN ===")
         print(serial_text()[offset:][-2500:])
-        if not overflow_ok:
+        if not (overflow_ok and overflow_exit_ok and overflow_prompt_ok):
             print("TCC-OVERFLOW-FAIL")
             return 1
         print("TCC-OVERFLOW-PASS")
@@ -216,7 +219,9 @@ def main():
         # Ensure the freestanding math implementation is present in libc.a.
         offset = len(serial_text())
         send_line("tcc /mnt/src/tcc_math.c -o /mnt/tcc_math.elf")
-        if not wait_prompt(offset, 90):
+        if not wait_prompt(offset, 90) or not wait_for(
+            "program exited with status 0", offset, 90
+        ):
             print("TCC-MATH-COMPILE-FAIL")
             print(serial_text()[offset:][-3000:])
             return 1
@@ -238,7 +243,9 @@ def main():
             "tcc -include /mnt/src/fix.h /mnt/src/tcc_atomic128_shim.c "
             "-o /mnt/tcc_atomic128_shim.elf"
         )
-        if not wait_prompt(offset, 90):
+        if not wait_prompt(offset, 90) or not wait_for(
+            "program exited with status 0", offset, 90
+        ):
             print("TCC-ATOMIC128-SHIM-COMPILE-FAIL")
             print(serial_text()[offset:][-3000:])
             return 1
@@ -259,8 +266,10 @@ def main():
             "tcc -I /mnt/src -include /mnt/src/fix.h /mnt/src/shim.c "
             "/mnt/src/poc.c /mnt/src/libcore.c -o /mnt/poc.elf"
         )
-        if not wait_prompt(offset, COMPILE_TIMEOUT):
-            print("TCC-COMPILE-TIMEOUT")
+        if not wait_prompt(offset, COMPILE_TIMEOUT) or not wait_for(
+            "program exited with status 0", offset, COMPILE_TIMEOUT
+        ):
+            print("TCC-COMPILE-FAIL")
             print(serial_text()[offset:][-4000:])
             return 1
         print("=== TCC OUTPUT ===")
@@ -269,9 +278,11 @@ def main():
         offset = len(serial_text())
         send_line("run /mnt/poc.elf")
         ok = wait_for("mrustc-c-poc: 108", offset, 120)
+        exit_ok = wait_for("program exited with status 0", offset, 120)
+        prompt_ok = wait_prompt(offset, 120)
         print("=== RUN OUTPUT ===")
         print(serial_text()[offset:][-2000:])
-        if not ok:
+        if not (ok and exit_ok and prompt_ok):
             print("MRUSTC-C-POC-FAIL")
             return 1
 

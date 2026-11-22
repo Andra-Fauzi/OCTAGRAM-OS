@@ -125,8 +125,21 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     for _ in 0..128 {
         match readdir(directory_fd) {
             Ok(Some(entry)) => {
-                let name = unsafe { CStr::from_ptr(entry.d_name.as_ptr()) };
-                if name.to_bytes() == b"message.c" { found_message = true; }
+                if entry.d_reclen as usize != core::mem::size_of::<octagram_runtime::Dirent>() {
+                    let _ = closedir(directory_fd);
+                    return 33;
+                }
+                let name_length = match entry.d_name.iter().position(|&byte| byte == 0) {
+                    Some(length) => length,
+                    None => {
+                        let _ = closedir(directory_fd);
+                        return 34;
+                    }
+                };
+                let name_bytes = unsafe {
+                    core::slice::from_raw_parts(entry.d_name.as_ptr().cast::<u8>(), name_length)
+                };
+                if name_bytes == b"message.c" { found_message = true; }
             }
             Ok(None) => { reached_eof = true; break; }
             Err(_) => break,

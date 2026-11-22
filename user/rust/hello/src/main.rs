@@ -157,6 +157,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Err(_) => return 30,
     };
     let mut found_message = false;
+    let mut found_entry = None;
     let mut directory_error = false;
     for entry_result in directory {
         let entry = match entry_result {
@@ -166,17 +167,38 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
                 break;
             }
         };
-        if entry.d_reclen as usize != core::mem::size_of::<octagram_runtime::Dirent>() {
+        if entry.dirent().d_reclen as usize != core::mem::size_of::<octagram_runtime::Dirent>() {
             return 33;
         }
         let name_bytes = match entry.name_bytes() {
             Some(name) => name,
             None => return 34,
         };
-        if name_bytes == b"message.c" { found_message = true; }
+        if name_bytes == b"message.c" {
+            found_message = true;
+            found_entry = Some(entry);
+        }
     }
     if directory_error || !found_message {
         return 31;
+    }
+    // The iterator's parent descriptor is closed at EOF, but each DirEntry
+    // owns a duplicate so metadata remains available after iteration.
+    let found_entry = match found_entry {
+        Some(entry) => entry,
+        None => return 35,
+    };
+    let entry_metadata = match found_entry.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => return 36,
+    };
+    let entry_type = match found_entry.file_type() {
+        Ok(file_type) if file_type.is_file() => file_type,
+        _ => return 37,
+    };
+    let _ = entry_type;
+    if entry_metadata.size == 0 {
+        return 38;
     }
     if write_all(STDOUT, b"Rust runtime directory iteration: PASS\n").is_err() {
         return 32;

@@ -1959,6 +1959,17 @@ int pthread_mutexattr_destroy(pthread_mutexattr_t *attributes)
     return attributes == NULL ? EINVAL : 0;
 }
 
+/* OCTAGRAM currently supports only normal mutexes. The mutex implementation
+ * already has normal (non-recursive) semantics, so this attribute is validated
+ * but does not need additional storage in pthread_mutexattr_t. */
+int pthread_mutexattr_settype(pthread_mutexattr_t *attributes, int type)
+{
+    if (attributes == NULL || type != PTHREAD_MUTEX_NORMAL) {
+        return EINVAL;
+    }
+    return 0;
+}
+
 int pthread_mutexattr_setrobust(pthread_mutexattr_t *attributes, int robustness)
 {
     if (attributes == NULL) {

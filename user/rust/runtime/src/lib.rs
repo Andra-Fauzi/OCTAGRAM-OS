@@ -743,7 +743,7 @@ mod tests {
 
     #[test]
     fn freestanding_strlen_stops_at_nul() {
-        let bytes = b"octagram\\0ignored";
+        let bytes = b"octagram\0ignored";
         assert_eq!(unsafe { strlen(bytes.as_ptr().cast()) }, 8);
     }
 

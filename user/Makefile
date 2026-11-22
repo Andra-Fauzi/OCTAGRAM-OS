@@ -79,8 +79,11 @@ ipv6-test: build/ipv6_test
 stdint-test:
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -Iinclude -fsyntax-only tests/stdint_header_test.c
 
-math-header-test:
-	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -fno-builtin -Iinclude -fsyntax-only tests/math_header_test.c
+math-header-test: build/math_header_test
+	./build/math_header_test
+
+build/math_header_test: tests/math_header_test.c math.c | build
+	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin -Iinclude -o $@ $^
 
 overflow-test: build/tcc_overflow_runtime_test
 	./build/tcc_overflow_runtime_test

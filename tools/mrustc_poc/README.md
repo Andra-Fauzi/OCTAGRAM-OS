@@ -29,9 +29,10 @@ di `docs/native-self-hosting-roadmap.md` bagian **M4.3**.
    `__builtin_sub_overflow`, dan `__builtin_mul_overflow` ke helper runtime
    `__tcc_overflow`. Tes host helper tersedia dan QEMU harness menguji parser,
    linker, hasil, serta overflow untuk beberapa lebar integer.
-4. `tcc` masih belum memiliki opcode assembler `xgetbv` dan belum mendukung
-   atomic 128-bit (`uint128_t _Atomic`); dua hal ini masih berupa rewrite
-   khusus PoC, bukan implementasi compiler/runtime umum.
+4. Assembler x86 TinyCC kini mengenali `xgetbv` dengan encoding `0F 01 D0`.
+   Source `tcc_xgetbv.c` dan dua QEMU harness menguji kompilasi inline asm
+   tanpa mengeksekusi instruksi itu. Atomic 128-bit (`uint128_t _Atomic`)
+   masih belum didukung dan tetap menjadi rewrite khusus PoC.
 
 Helper overflow memakai aritmetika lebar untuk memeriksa rentang signed dan
 unsigned 8/16/32/64 bit, serta tetap menyimpan bit hasil terpotong saat overflow.
@@ -40,13 +41,14 @@ Status tes QEMU tetap harus dibuktikan; keberadaan harness bukan bukti PASS.
 Header `math.h` lokal di direktori ini tetap menjadi fixture PoC; stub
 matematika masih tidak presisi karena jalur float tidak dipakai program uji.
 
-`build_host.sh` sekarang memvalidasi fragmen keluaran `mrustc` sebelum dan sesudah
-rewrite kompatibilitas `XGETBV`/`AtomicU128`. Jika format C yang dihasilkan berubah,
-script berhenti dengan error alih-alih meneruskan source yang belum dipatch.
+`build_host.sh` sekarang memvalidasi bahwa keluaran `mrustc` masih memuat XGETBV
+asli, lalu hanya me-rewrite AtomicU128 yang belum didukung. Lima uji regresi
+memastikan XGETBV dipertahankan, patch idempoten, dan perubahan format yang tak
+dikenali ditolak.
 
 ## Menjalankan
 
-Uji regresi untuk rewrite kompatibilitas C (tanpa perlu build mrustc):
+Uji regresi untuk patch kompatibilitas C (tanpa perlu build mrustc):
 
 ```sh
 python3 -m unittest discover -s tools/mrustc_poc -p 'test_*.py'

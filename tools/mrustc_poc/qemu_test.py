@@ -84,6 +84,19 @@ def key_name(character):
 
 
 def main():
+    global SERIAL, MONITOR
+    if "OCTAGRAM_POC_SERIAL" not in os.environ:
+        serial_fd, SERIAL = tempfile.mkstemp(
+            prefix="octagram-mrustc-", suffix=".serial.log"
+        )
+        os.close(serial_fd)
+    if "OCTAGRAM_POC_MONITOR" not in os.environ:
+        monitor_fd, MONITOR = tempfile.mkstemp(
+            prefix="octagram-mrustc-", suffix=".monitor.sock"
+        )
+        os.close(monitor_fd)
+        os.unlink(MONITOR)
+
     for path in (BOOT, SOURCES):
         if not os.path.exists(path):
             print("SKIP: missing %s" % path)

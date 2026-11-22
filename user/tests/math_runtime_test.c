@@ -154,6 +154,21 @@ int main(void)
         return 42;
     if (remquof(7.0f, 2.0f, &quotient) != -1.0f || quotient != 4)
         return 36;
+    if (ilogbf(8.0f) != 3 || ilogbf(0.0f) != FP_ILOGB0 ||
+        ilogbf(NAN) != FP_ILOGBNAN || ilogbf(INFINITY) != INT_MAX)
+        return 45;
+    zero_float.value = nextafterf(0.0f, -1.0f);
+    if (ilogbf(zero_float.value) != -149)
+        return 46;
+    zero_float.value = fmaxf(-0.0f, -0.0f);
+    if (zero_float.bits != UINT32_C(0x80000000))
+        return 47;
+    zero_float.value = fminf(0.0f, 0.0f);
+    if (zero_float.bits != 0U)
+        return 48;
+    zero_float.value = nearbyintf(-0.5f);
+    if (zero_float.bits != UINT32_C(0x80000000))
+        return 49;
     if (nexttowardf(1.0f, 1.0L) != 1.0f || nanf("float") == nanf("float"))
         return 37;
     if (nexttoward(1.0, (long double)NAN) ==

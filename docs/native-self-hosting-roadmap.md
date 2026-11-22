@@ -1644,3 +1644,12 @@ Status: primitive iterator dan adapter internal `DirEntry` kini tersedia untuk n
 - Ditambahkan unit test host untuk klasifikasi tipe file dan guest smoke test yang menyimpan entry `message.c`, menyelesaikan iterasi, lalu memeriksa metadata dan tipe file dari entry yang masih hidup.
 
 Batasan: ini belum `std::fs::DirEntry`; belum ada `OsString`/`PathBuf`, canonicalization, metadata lengkap POSIX, atau penanganan seluruh semantik symlink/path. Perubahan perlu lulus Rust no_std dan QEMU sebelum dianggap tervalidasi di guest.
+
+## 22. Byte-preserving OS strings dan path primitives (22 November 2026)
+
+- Ditambahkan `OsStr` dan `OsString` internal yang menyimpan byte mentah dan tidak memaksa nama file menjadi UTF-8.
+- Ditambahkan `Path` dan `PathBuf` internal dengan `is_absolute`, `file_name`, `extension`, `parent`, `to_path_buf`, serta `push` untuk path absolut/relatif.
+- Konversi ke buffer NUL-terminated untuk syscall memvalidasi dan menolak byte NUL (`-EINVAL`) sebelum pemanggilan kernel.
+- Unit test host memeriksa nama non-UTF-8, penolakan NUL, parent/root, extension, dan join path. Guest smoke test membangun `/share/octagram/message.c` dengan `PathBuf`, mengubahnya ke C string, lalu menjalankan `stat`.
+
+Batasan: tipe-tipe ini adalah primitive internal no_std, bukan tipe resmi `std::ffi` atau `std::path`; normalisasi `.`/`..`, semantics `OsStr` upstream, dan kompatibilitas penuh `PathBuf` belum ada.

@@ -327,7 +327,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     }
 
     // Capture child stdout through an owned close-on-exec pipe.
-    let mut output_pipe = match pipe2_owned(O_CLOEXEC) {
+    let [output_read, output_write] = match pipe2_owned(O_CLOEXEC) {
         Ok(pipe) => pipe,
         Err(_) => return 49,
     };
@@ -339,18 +339,18 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         core::ptr::null(),
     ];
     let mut capture_child = match Command::new(shell_path, &capture_argv, &empty_env)
-        .stdout(Stdio::from_fd(output_pipe[1].as_raw_fd()))
+        .stdout(Stdio::from_fd(output_write.as_raw_fd()))
         .spawn()
     {
         Ok(child) => child,
         Err(_) => return 50,
     };
-    drop(output_pipe[1]);
+    drop(output_write);
     let mut captured = [0u8; 64];
     let mut captured_len = 0usize;
     loop {
         if captured_len == captured.len() { return 51; }
-        match output_pipe[0].read(&mut captured[captured_len..]) {
+        match output_read.read(&mut captured[captured_len..]) {
             Ok(0) => break,
             Ok(count) => captured_len += count,
             Err(_) => return 52,

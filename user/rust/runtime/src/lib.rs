@@ -1507,6 +1507,16 @@ pub struct CapturedOutput {
     pub stderr: Vec<u8>,
 }
 
+impl CapturedOutput {
+    pub const fn exit_status(&self) -> ExitStatus {
+        ExitStatus::from_raw(self.status)
+    }
+
+    pub fn success(&self) -> bool {
+        self.exit_status().success()
+    }
+}
+
 /// A standard-I/O source for a child process.
 ///
 /// `Fd` borrows a descriptor for the duration of `spawn`;
@@ -1604,12 +1614,12 @@ impl<'a> Command<'a> {
         while stdout_open || stderr_open {
             let mut descriptors = [
                 PollFd {
-                    fd: stdout_read.as_raw_fd() as i32,
+                    fd: if stdout_open { stdout_read.as_raw_fd() as i32 } else { -1 },
                     events: if stdout_open { POLLIN } else { 0 },
                     revents: 0,
                 },
                 PollFd {
-                    fd: stderr_read.as_raw_fd() as i32,
+                    fd: if stderr_open { stderr_read.as_raw_fd() as i32 } else { -1 },
                     events: if stderr_open { POLLIN } else { 0 },
                     revents: 0,
                 },
@@ -1771,6 +1781,26 @@ pub fn waitpid(pid: u64, status: Option<&mut u64>) -> Result<u64, i64> {
     waitpid_with_options(pid, status, 0)
 }
 
+/// Exit status as represented by the OCTAGRAM kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExitStatus {
+    raw: u64,
+}
+
+impl ExitStatus {
+    /// Preserve the raw 64-bit value written by the kernel wait operation.
+    pub const fn from_raw(raw: u64) -> Self { Self { raw } }
+
+    /// Return the unmodified kernel status value.
+    pub const fn raw(self) -> u64 { self.raw }
+
+    /// OCTAGRAM currently reports normal exit values only; signal termination
+    /// is not encoded in wait status yet.
+    pub const fn code(self) -> Option<i32> { Some(self.raw as i32) }
+
+    pub const fn success(self) -> bool { self.raw == 0 }
+}
+
 /// A handle to a direct child process created by fork or another spawn API.
 ///
 /// The status returned by wait methods is the raw 64-bit value passed by the
@@ -1797,6 +1827,16 @@ impl Child {
         Ok(status)
     }
 
+    /// Wait and interpret the raw kernel value as an ExitStatus.
+    pub fn wait_status(&mut self) -> Result<ExitStatus, i64> {
+        self.wait().map(ExitStatus::from_raw)
+    }
+
+    /// Nonblocking wait returning an ExitStatus when the child has exited.
+    pub fn try_wait_status(&mut self) -> Result<Option<ExitStatus>, i64> {
+        self.try_wait().map(|status| status.map(ExitStatus::from_raw))
+    }
+
     /// Check whether the child has exited without blocking.
     pub fn try_wait(&mut self) -> Result<Option<u64>, i64> {
         let pid = self.pid.ok_or(-10)?;
@@ -1818,7 +1858,6 @@ pub fn exit(status: i32) -> ! {
     }
 }
 
-#[cfg(not(test))]
 #[cfg(not(test))]
 struct MmapAllocator;
 
@@ -1936,6 +1975,21 @@ mod tests {
 
     use super::{build_dns_query, find_env_value, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen, Dirent};
     use core::alloc::Layout;
+
+    #[test]
+    fn exit_status_preserves_octagram_raw_exit_values() {
+        let success = super::ExitStatus::from_raw(0);
+        assert!(success.success());
+        assert_eq!(success.code(), Some(0));
+        assert_eq!(success.raw(), 0);
+
+        let failure = super::ExitStatus::from_raw(23);
+        assert!(!failure.success());
+        assert_eq!(failure.code(), Some(23));
+
+        let signed = super::ExitStatus::from_raw((-7i64) as u64);
+        assert_eq!(signed.code(), Some(-7));
+    }
 
     #[test]
     fn poll_fd_matches_kernel_abi_layout() {

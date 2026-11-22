@@ -95,3 +95,28 @@ Workflow ini baru menjadi gate setelah satu run CI benar-benar selesai dan
 lulus. Keberhasilan host unit test tidak menggantikan pengujian executable
 pada QEMU; syscall, allocator mmap, ELF loader, dan integrasi filesystem tetap
 memerlukan guest test.
+
+
+## Hasil CI host (2026-11-22)
+
+GitHub Actions run [45028941471](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45028941471)
+pada commit `c56ebef6d431c07ad65e3fe4e4b1435e250eab58` lulus seluruh job:
+
+- Custom target JSON terbaca dan menghasilkan `target_os="octagram"`,
+  `target_arch="x86_64"`, dan pointer width 64-bit.
+- `rust_hello.elf` dan `make.elf` berhasil di-build.
+- Keduanya terdeteksi sebagai ELF64 x86-64 `ET_EXEC`, static, dengan dua
+  `PT_LOAD` segment dan tanpa dynamic interpreter.
+- Tujuh unit test runtime pada host lulus, termasuk test `memset`,
+  `memcpy`, `memmove`, `memcmp`, `strlen`, dan parser DNS.
+
+Build awal saat ini memerlukan akses jaringan untuk mengambil dependency
+sysroot Rust yang belum ada di cache (contohnya `rustc-literal-escaper`).
+Mode offline baru aman digunakan setelah dependency tersebut di-vendor atau
+di-cache. Hal ini tidak mengubah target akhir: native OCTAGRAM build harus
+mempunyai dependency cache lokal yang lengkap.
+
+**Batas verifikasi:** run ini menguji host cross-build dan unit test runtime.
+Ia tidak menjalankan kedua ELF di QEMU. Pengujian QEMU sebelumnya untuk
+custom target tercatat pada [run 44713729286](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/44713729286);
+perubahan runtime `strlen` masih perlu masuk regresi guest.

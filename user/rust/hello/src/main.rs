@@ -364,6 +364,18 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     if write_all(STDOUT, b"Rust runtime Command stdout capture: PASS\n").is_err() {
         return 54;
     }
+
+    // Exercise the higher-level Command::output convenience path.
+    let output = match Command::new(shell_path, &capture_argv, &empty_env).output() {
+        Ok(output) => output,
+        Err(_) => return 55,
+    };
+    if output.status != 0 || output.stdout.as_slice() != b"OCTAGRAM-PIPE-PASS" {
+        return 56;
+    }
+    if write_all(STDOUT, b"Rust runtime Command::output: PASS\n").is_err() {
+        return 57;
+    }
     // Create a real Rust thread with an owned stack mapping, then join it.
     RUST_THREAD_RESULT.store(0, Ordering::SeqCst);
     let stack_length = 64 * 1024usize;

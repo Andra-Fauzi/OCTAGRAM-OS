@@ -141,6 +141,18 @@ satu deadline gabungan untuk status keluar `0` dan prompt shell, sehingga
 waktu tunggu tidak berlipat ketika salah satu penanda tidak muncul. Tes unit
 `test_qemu_test.py` mencakup kedua syarat keberhasilan tersebut.
 
+Ketika kompilasi besar gagal, harness tidak lagi hanya mencetak potongan serial
+mentah. `extract_compile_errors()` mengumpulkan baris diagnostik TinyCC berbentuk
+`file:line: error: pesan` (dan bentuk tanpa nomor baris seperti
+`tcc: error: ...`), membuang duplikat, dan membatasinya menjadi 20 entri;
+`source_excerpt()` lalu menampilkan baris `libcore.c` yang ditolak dari salinan
+host di `$OCTAGRAM_POC_SOURCE_DIR` (default `$OCTAGRAM_POC_WORK/src`). Hasilnya
+tercetak sebagai blok `=== TCC COMPILE ERRORS ===` sebelum tail serial. Bila
+TinyCC tidak mengeluarkan diagnostik sama sekali, harness mencetak
+`TCC-COMPILE-NO-DIAGNOSTIC` beserta batas waktu, sehingga timeout bisa
+dibedakan dari kesalahan source. Fitur ini hanya diagnostik: ia tidak menjadikan
+kompilasi gagal sebagai lulus.
+
 ## Catatan
 
 - `mrustc` tidak mendukung crate `#![no_core]`: tanpa `core` ia gagal dengan

@@ -1446,6 +1446,40 @@ harness, bukan bukti bahwa uji guest telah lulus.
   `BUG: src/hir/hir.cpp: ... ::ops::RangeFull`), jadi `core` wajib ikut
   di-transpile; dan injeksi crate implisit `alloc_system` harus dimatikan.
 
+### Perbaikan build libm dan diagnostik kompilasi guest (22 November 2026)
+
+CI run [45001275932](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45001275932)
+gagal pada langkah `Build user programs`, bukan pada QEMU. Penyebabnya regresi
+libm di userspace:
+
+- `user/include/math.h` mendeklarasikan `double ilogb(double)`, sedangkan C99
+dan implementasi di `user/math.c` memakai `int ilogb(double)`. `gcc -Werror`
+menghentikan build dengan `conflicting types for 'ilogb'`. Header, definisi,
+dan pointer uji di `user/tests/math_header_test.c` sekarang konsisten memakai
+`int`.
+- `nextafterf` menyimpan `OctFloatBits other` yang tidak pernah dibaca; variabel
+itu dihapus (perilakunya tidak berubah karena keputusan arah tetap memakai
+perbandingan `x`/`y`).
+
+Bukti lokal: `make -C user -j8` sukses membangun seluruh program, TinyCC,
+libc, dan dynamic userland; `make -C user math-header-test math-test` lulus,
+termasuk `ilogb(8.0)`, `ilogb(0.0) == FP_ILOGB0`, `ilogb(NAN)`,dan
+`ilogb(INFINITY)`.
+
+Harness QEMU juga tidak lagi hanya mencetak potongan serial mentah saat
+kompilasi `libcore.c` gagal. `extract_compile_errors()` mengumpulkan baris
+`file:line: error: pesan` dari TinyCC, membuang duplikat, dan membatasinya;
+`source_excerpt()` menampilkan baris source yang ditolak dari salinan host di
+`$OCTAGRAM_POC_SOURCE_DIR`. Kegagalan tanpa diagnostik dicetak sebagai
+`TCC-COMPILE-NO-DIAGNOSTIC` beserta `OCTAGRAM_POC_COMPILE_TIMEOUT`, agar timeout
+(100–170 detik untuk satu TU 34,5 MB di TCG) dapat dibedakan dari kesalahan
+source. Tujuh tes unit baru di `tools/mrustc_poc/test_qemu_test.py` mencakup
+format `file:line`, bentuk tanpa nomor baris, deduplikasi, batas entri, excerpt
+di luar jangkauan, dan file yang tidak ada; total 29 tes PoC lulus.
+
+Ini perbaikan build dan observabilitas. Belum ada bukti guest baru: status M4.3
+tetap belum lulus end-to-end dan `MRUSTC-C-POC-PASS` belum pernah tercetak.
+
 ### Langkah berikutnya
 
 1. Selesaikan run QEMU sampai `MRUSTC-C-POC-PASS` (atau kumpulkan sisa celah

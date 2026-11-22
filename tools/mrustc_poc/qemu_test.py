@@ -14,6 +14,7 @@ Environment:
 """
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -65,6 +66,91 @@ def qemu_log_tail(path, limit=5000):
         size = handle.tell()
         handle.seek(max(0, size - limit), os.SEEK_SET)
         return handle.read().decode("utf-8", errors="replace")
+
+
+COMPILE_DIAGNOSTIC_RE = re.compile(
+    r"^(?P<file>[^:\s][^:]*):(?P<line>\d+): (?P<kind>error|warning): (?P<message>.*)$"
+)
+COMPILE_FILE_ERROR_RE = re.compile(
+    r"^(?P<file>[^:\s][^:]*): (?P<kind>error|warning): (?P<message>.*)$"
+)
+
+
+def extract_compile_errors(text, limit=20):
+    """Collect the compiler diagnostics a guest run printed for a source file.
+
+    TinyCC prints diagnostics as ``file:line: error: message`` (and, for
+    conditions outside a parsed file, ``file: error: message``). Keeping only
+    those records turns a failed 587k-line compile into a short list instead of
+    a raw serial tail. Returns at most ``limit`` unique dicts in output order.
+    """
+    found = []
+    seen = set()
+    for line in text.splitlines():
+        line = line.strip()
+        match = COMPILE_DIAGNOSTIC_RE.match(line)
+        if match:
+            record = {
+                "file": match.group("file"),
+                "line": int(match.group("line")),
+                "kind": match.group("kind"),
+                "message": match.group("message"),
+            }
+        else:
+            match = COMPILE_FILE_ERROR_RE.match(line)
+            if not match:
+                continue
+            record = {
+                "file": match.group("file"),
+                "line": None,
+                "kind": match.group("kind"),
+                "message": match.group("message"),
+            }
+        key = (record["file"], record["line"], record["kind"], record["message"])
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(record)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def format_compile_errors(text, source_dir=None, limit=20, context=1):
+    """Render extracted diagnostics, with the rejected source line if known."""
+    errors = extract_compile_errors(text, limit=limit)
+    if not errors:
+        return []
+    rendered = []
+    for record in errors:
+        location = record["file"]
+        if record["line"] is not None:
+            location += ":%d" % record["line"]
+        rendered.append("%s: %s: %s" % (location, record["kind"], record["message"]))
+        excerpt = source_excerpt(source_dir, record["file"], record["line"], context)
+        rendered.extend("    " + line for line in excerpt)
+    return rendered
+
+
+def source_excerpt(source_dir, filename, line_number, context=1):
+    """Return numbered source lines around ``line_number`` from the host copy."""
+    if source_dir is None or line_number is None:
+        return []
+    candidate = os.path.join(source_dir, os.path.basename(filename))
+    try:
+        with open(candidate, "r", errors="replace") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return []
+    if not lines:
+        return []
+    line_number = min(max(1, line_number), len(lines))
+    first = max(1, line_number - context)
+    last = min(len(lines), line_number + context)
+    return [
+        "%s:%d: %s" % (os.path.basename(candidate), index, lines[index - 1])
+        for index in range(first, last + 1)
+    ]
 
 
 def wait_for(needle, offset, timeout):
@@ -332,7 +418,22 @@ def main():
         )
         if not wait_compile_success(offset, COMPILE_TIMEOUT):
             print("TCC-COMPILE-FAIL")
-            print(serial_text()[offset:][-4000:])
+            compile_serial = serial_text()[offset:]
+            diagnostics = format_compile_errors(
+                compile_serial,
+                os.environ.get("OCTAGRAM_POC_SOURCE_DIR", os.path.join(WORK, "src")),
+            )
+            if diagnostics:
+                print("=== TCC COMPILE ERRORS ===")
+                for entry in diagnostics:
+                    print(entry)
+            else:
+                print(
+                    "TCC-COMPILE-NO-DIAGNOSTIC: no file:line diagnostic and no "
+                    "successful exit within %d s" % COMPILE_TIMEOUT
+                )
+            print("=== TCC SERIAL TAIL ===")
+            print(compile_serial[-4000:])
             return 1
         print("=== TCC OUTPUT ===")
         print(serial_text()[offset:][-4000:])

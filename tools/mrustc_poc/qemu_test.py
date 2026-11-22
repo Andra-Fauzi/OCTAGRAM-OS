@@ -167,6 +167,30 @@ def main():
             print(serial_text()[-4000:])
             return 1
 
+        # Verify the compiler builtin path on a small source file before
+        # spending minutes compiling the 587k-line mrustc core translation.
+        offset = len(serial_text())
+        send_line(
+            "tcc /mnt/src/tcc_overflow_test.c -o /mnt/tcc_overflow_test.elf"
+        )
+        if not wait_prompt(offset, 90):
+            print("TCC-OVERFLOW-COMPILE-TIMEOUT")
+            print(serial_text()[offset:][-4000:])
+            return 1
+        print("=== TCC OVERFLOW COMPILE ===")
+        print(serial_text()[offset:][-2500:])
+
+        offset = len(serial_text())
+        send_line("run /mnt/tcc_overflow_test.elf")
+        overflow_ok = wait_for("TCC-OVERFLOW-PASS", offset, 45)
+        wait_prompt(offset, 45)
+        print("=== TCC OVERFLOW RUN ===")
+        print(serial_text()[offset:][-2500:])
+        if not overflow_ok:
+            print("TCC-OVERFLOW-FAIL")
+            return 1
+        print("TCC-OVERFLOW-PASS")
+
         offset = len(serial_text())
         send_line(
             "tcc -I /mnt/src -include /mnt/src/fix.h /mnt/src/shim.c "

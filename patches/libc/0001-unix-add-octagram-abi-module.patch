@@ -105,7 +105,6 @@ index 13a27f8cb01f..000000000000 100644
 @@ -2388,1 +2399,2 @@
 +            #[cfg(not(target_os = "octagram"))]
              pub fn sigaction(signum: c_int, act: *const sigaction, oldact: *mut sigaction)
-
 @@ -2575,6 +2575,9 @@ cfg_if! {
      } else if #[cfg(target_os = "redox")] {
          mod redox;

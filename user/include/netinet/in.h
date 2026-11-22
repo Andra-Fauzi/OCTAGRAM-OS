@@ -35,6 +35,9 @@ struct sockaddr_in6 {
 #define IPPROTO_IP 0
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
+/* Reserved values; IPv6 multicast membership is not implemented yet. */
+#define IPV6_ADD_MEMBERSHIP 20
+#define IPV6_DROP_MEMBERSHIP 21
 typedef uint32_t in_addr_t;
 
 static inline uint16_t htons(uint16_t value)

@@ -12,10 +12,10 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
     close, clock_getres, clock_gettime, dup3, exit, fork, fstatat, futex, getpid,
-    getrandom, mmap, mprotect, munmap, nanosleep, pipe2, read,
+    getrandom, mmap, mprotect, munmap, nanosleep, pipe2, pipe2_owned, read,
     stat_path, thread_create, unlinkat, Child, Command, Directory, File,
-    thread_exit, thread_join, thread_self, write, write_all,
-    AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, O_RDWR, O_CREAT, O_TRUNC, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
+    thread_exit, thread_join, thread_self, write, write_all, Stdio,
+    AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, O_RDWR, O_CREAT, O_TRUNC, O_CLOEXEC, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
 };
 
 static RUST_THREAD_RESULT: AtomicU64 = AtomicU64::new(0);
@@ -324,6 +324,45 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     }
     if write_all(STDOUT, b"Rust runtime Command exec handshake: PASS\\n").is_err() {
         return 48;
+    }
+
+    // Capture child stdout through an owned close-on-exec pipe.
+    let mut output_pipe = match pipe2_owned(O_CLOEXEC) {
+        Ok(pipe) => pipe,
+        Err(_) => return 49,
+    };
+    let capture_arg2 = CStr::from_bytes_with_nul(b"printf OCTAGRAM-PIPE-PASS\\0").unwrap();
+    let capture_argv = [
+        shell_arg0.as_ptr(),
+        shell_arg1.as_ptr(),
+        capture_arg2.as_ptr(),
+        core::ptr::null(),
+    ];
+    let mut capture_child = match Command::new(shell_path, &capture_argv, &empty_env)
+        .stdout(Stdio::from_fd(output_pipe[1].as_raw_fd()))
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return 50,
+    };
+    drop(output_pipe[1]);
+    let mut captured = [0u8; 64];
+    let mut captured_len = 0usize;
+    loop {
+        if captured_len == captured.len() { return 51; }
+        match output_pipe[0].read(&mut captured[captured_len..]) {
+            Ok(0) => break,
+            Ok(count) => captured_len += count,
+            Err(_) => return 52,
+        }
+    }
+    if capture_child.wait() != Ok(0)
+        || &captured[..captured_len] != b"OCTAGRAM-PIPE-PASS"
+    {
+        return 53;
+    }
+    if write_all(STDOUT, b"Rust runtime Command stdout capture: PASS\\n").is_err() {
+        return 54;
     }
     // Create a real Rust thread with an owned stack mapping, then join it.
     RUST_THREAD_RESULT.store(0, Ordering::SeqCst);

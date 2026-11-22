@@ -57,7 +57,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     if write_all(STDOUT, TARGET_MARKER).is_err() {
         return 1;
     }
-    if write_all(STDOUT, b"Rust allocator mmap/munmap cycle: PASS\\n").is_err() {
+    if write_all(STDOUT, b"Rust allocator mmap/munmap cycle: PASS\n").is_err() {
         return 10;
     }
 

@@ -1591,7 +1591,7 @@ Runtime Rust memperluas primitive proses untuk mendekati kebutuhan std::process:
 - PollFd memakai layout C 8-byte (fd:i32, events:i16, revents:i16) dan wrapper poll() memanggil syscall 97. Unit test host memeriksa ukuran, alignment, dan offset field terhadap ABI kernel.
 - Command::output() sekarang membuat pipe terpisah untuk stdout dan stderr, mengalihkan kedua descriptor pada child, lalu menguras keduanya secara bergantian menggunakan poll. Membaca dua pipe secara simultan penting untuk menghindari deadlock ketika child menulis lebih banyak dari kapasitas salah satu pipe.
 - CapturedOutput berisi status mentah OCTAGRAM, stdout, dan stderr. Smoke test guest menjalankan shell yang menulis marker berbeda ke kedua stream dan memeriksa keduanya serta status exit.
-- Ini belum std::process::Output: status belum dibungkus ExitStatus, semantik stdin belum sama, dan signal/process-group semantics masih perlu dikerjakan.
+- Adapter ExitStatus awal kini tersedia melalui CapturedOutput::exit_status()/success(); namun signal/process-group semantics dan pemetaan status penuh std::process masih perlu dikerjakan.
 
 **Perbaikan CI:** POSIX Core Stage 1 run [45038538793](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45038538793) gagal karena langkah compile runtime hanya memakai -Z build-std=core, sementara runtime kini menggunakan alloc::Vec untuk hasil Command::output(). Jalur Makefile dan workflow Rust khusus sudah memakai core,alloc; workflow POSIX disamakan menjadi -Z build-std=core,alloc. Ini memperbaiki konfigurasi build, bukan menandai PAL atau std selesai.
 
@@ -1614,8 +1614,16 @@ Status: ExitStatus ini masih adapter khusus OCTAGRAM. Kernel belum menyimpan sig
 ## 18. Owning directory iterator untuk fondasi std::fs (22 November 2026)
 
 - Ditambahkan DirectoryIter yang mengambil ownership Directory dan mengimplementasikan Iterator<Item = Result<Dirent, i64>>.
-- EOF mengakhiri iterator; error pertama dikembalikan satu kali dan iterator menjadi fused secara praktis (panggilan next selanjutnya menghasilkan None). Drop pada iterator melepaskan OwnedFd sehingga stream ditutup.
+- EOF mengakhiri iterator; error pertama dikembalikan satu kali dan iterator kini mengimplementasikan core::iter::FusedIterator secara eksplisit. Drop pada iterator melepaskan OwnedFd sehingga stream ditutup.
 - Guest smoke test kini mengiterasi /share/octagram melalui into_iter(), memvalidasi ukuran record dan terminasi nama, serta menemukan message.c. Ini menguji ownership dan jalur iterator pada guest, bukan hanya pemanggilan readdir manual.
 - Matriks PAL diperbarui: primitive iterator tersedia; adapter std::fs::ReadDir, DirEntry/PathBuf, metadata entry, dot-entry behavior, dan semantik perubahan direktori tetap terbuka.
 
 Validasi terkait: Rust no_std workflow run [45039201141](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45039201141) lulus pada commit ead26cd0 sebelum penambahan DirectoryIter. Perubahan iterator terbaru masih menunggu workflow CI baru.
+
+## 19. Kontrak FusedIterator dan konsistensi dokumentasi PAL (22 November 2026)
+
+- `DirectoryIter` kini secara eksplisit mengimplementasikan `core::iter::FusedIterator`. Ini menyatakan kontrak terminal: setelah EOF atau setelah error pertama dikembalikan, pemanggilan `next()` berikutnya selalu `None`.
+- Ditambahkan unit test host yang memverifikasi implementasi trait FusedIterator dan perilaku `next()` berulang pada iterator yang sudah selesai.
+- Dokumentasi PAL diperbaiki agar tidak lagi menyebut `CapturedOutput` belum memiliki adapter ExitStatus atau `Directory` belum mempunyai iterator. Keduanya sudah tersedia sebagai adapter awal, tetapi tetap belum setara penuh dengan API std.
+
+Validasi: run Rust no_std sebelumnya lulus untuk commit 4ed89d72 ([45039325350](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45039325350)). Perubahan FusedIterator pada commit 9d70dd15 dan dokumentasi berikutnya memerlukan CI terbaru. POSIX Core Stage 1 run [45039360299](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45039360299) masih berjalan saat pemeriksaan terakhir.

@@ -60,7 +60,9 @@ memastikan XGETBV dipertahankan, patch idempoten, dan perubahan format yang tak
 dikenali ditolak. Patch sumber Rust juga diterapkan secara fail-closed: script
 membedakan patch yang belum diterapkan, yang sudah diterapkan, dan source
 archive yang tidak cocok. Kegagalan patch tidak lagi disembunyikan oleh
-`|| true`.
+`|| true`. Tahap PoC juga menghapus `poc.c` lama sebelum transpile dan hanya
+menerima status `mrustc` nonzero bila file C baru benar-benar dihasilkan serta
+memuat entry point `main`; kegagalan tanpa output segar menghentikan build.
 
 ## Menjalankan
 

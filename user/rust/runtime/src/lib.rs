@@ -739,7 +739,13 @@ static ALLOCATOR: MmapAllocator = MmapAllocator;
 mod tests {
     extern crate std;
 
-    use super::{build_dns_query, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name};
+    use super::{build_dns_query, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen};
+
+    #[test]
+    fn freestanding_strlen_stops_at_nul() {
+        let bytes = b"octagram\\0ignored";
+        assert_eq!(unsafe { strlen(bytes.as_ptr().cast()) }, 8);
+    }
 
     #[test]
     fn freestanding_memset_memcpy_memcmp_work() {

@@ -429,6 +429,26 @@ impl FileStat {
     }
 }
 
+/// Portable file-kind view derived from OCTAGRAM metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileType {
+    kind: u32,
+}
+
+impl FileType {
+    pub const fn from_stat(metadata: FileStat) -> Self {
+        Self { kind: metadata.file_type() }
+    }
+
+    pub const fn is_file(self) -> bool { self.kind == S_IFREG }
+    pub const fn is_directory(self) -> bool { self.kind == S_IFDIR }
+    pub const fn is_symlink(self) -> bool { self.kind == S_IFLNK }
+    pub const fn is_char_device(self) -> bool { self.kind == S_IFCHR }
+    pub const fn is_block_device(self) -> bool { self.kind == S_IFBLK }
+    pub const fn is_fifo(self) -> bool { self.kind == S_IFIFO }
+    pub const fn is_socket(self) -> bool { self.kind == S_IFSOCK }
+}
+
 /// Read file metadata without opening a descriptor.
 pub const AT_FDCWD: i64 = -100;
 pub const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
@@ -740,6 +760,12 @@ pub fn poll(fds: &mut [PollFd], timeout_ms: u64) -> Result<usize, i64> {
     checked_result(result)
 }
 
+/// Duplicate a descriptor, returning the lowest available descriptor (syscall 33).
+pub fn dup(source: u64) -> Result<u64, i64> {
+    let result = unsafe { syscall1(33, source) };
+    if result < 0 { Err(result) } else { Ok(result as u64) }
+}
+
 /// Duplicate a descriptor onto a specific descriptor number.
 pub fn dup3(source: u64, target: u64, flags: u64) -> Result<u64, i64> {
     let result = unsafe { syscall3(99, source, target, flags) };
@@ -976,6 +1002,11 @@ impl OwnedFd {
         self.raw
     }
 
+    /// Duplicate this descriptor, creating an independent owned handle.
+    pub fn try_clone(&self) -> Result<Self, i64> {
+        dup(self.raw).map(|raw| unsafe { Self::from_raw_fd(raw) })
+    }
+
     /// Consume this wrapper and transfer descriptor ownership to the caller.
     pub fn into_raw_fd(mut self) -> u64 {
         core::mem::replace(&mut self.raw, INVALID_FD)
@@ -1101,12 +1132,18 @@ pub struct DirectoryIter {
 }
 
 impl Iterator for DirectoryIter {
-    type Item = Result<Dirent, i64>;
+    type Item = Result<DirEntry, i64>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.finished { return None; }
         match self.directory.next_entry() {
-            Ok(Some(entry)) => Some(Ok(entry)),
+            Ok(Some(entry)) => match self.directory.fd.try_clone() {
+                Ok(parent) => Some(Ok(DirEntry { entry, parent })),
+                Err(error) => {
+                    self.finished = true;
+                    Some(Err(error))
+                }
+            },
             Ok(None) => {
                 self.finished = true;
                 None
@@ -1122,7 +1159,7 @@ impl Iterator for DirectoryIter {
 impl core::iter::FusedIterator for DirectoryIter {}
 
 impl IntoIterator for Directory {
-    type Item = Result<Dirent, i64>;
+    type Item = Result<DirEntry, i64>;
     type IntoIter = DirectoryIter;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -1160,6 +1197,44 @@ impl Directory {
         self.fd.close_owned()
     }
 
+}
+
+/// An owned directory entry. A duplicated parent descriptor keeps
+/// metadata lookup valid even after the iterator itself has been dropped.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DirEntry {
+    entry: Dirent,
+    parent: OwnedFd,
+}
+
+impl DirEntry {
+    /// Return the entry name as raw bytes, without assuming UTF-8.
+    pub fn name_bytes(&self) -> Option<&[u8]> {
+        self.entry.name_bytes()
+    }
+
+    /// Return the entry's original OCTAGRAM directory record.
+    pub const fn dirent(&self) -> &Dirent {
+        &self.entry
+    }
+
+    fn name_cstr(&self) -> Result<&CStr, i64> {
+        if self.entry.name_bytes().is_none() {
+            return Err(-5);
+        }
+        // name_bytes() has verified that the fixed name buffer contains NUL.
+        Ok(unsafe { CStr::from_ptr(self.entry.d_name.as_ptr()) })
+    }
+
+    /// Query metadata without following a symbolic link.
+    pub fn metadata(&self) -> Result<FileStat, i64> {
+        fstatat(self.parent.as_raw_fd() as i64, self.name_cstr()?, AT_SYMLINK_NOFOLLOW)
+    }
+
+    /// Resolve the entry type from metadata, including DT_UNKNOWN entries.
+    pub fn file_type(&self) -> Result<FileType, i64> {
+        self.metadata().map(FileType::from_stat)
+    }
 }
 
 fn read_exact_with<F>(mut buffer: &mut [u8], mut read_once: F) -> Result<(), i64>
@@ -2028,6 +2103,29 @@ mod tests {
         let mut iterator = iterator;
         assert!(iterator.next().is_none());
         assert!(iterator.next().is_none());
+    }
+
+    #[test]
+    fn file_type_maps_all_supported_posix_kinds() {
+        let kinds = [
+            (super::S_IFREG, true, false, false),
+            (super::S_IFDIR, false, true, false),
+            (super::S_IFLNK, false, false, true),
+        ];
+        for (kind, is_file, is_directory, is_symlink) in kinds {
+            let file_type = super::FileType::from_stat(super::FileStat {
+                size: 0,
+                mode: kind | 0o644,
+                modified_seconds: 0,
+            });
+            assert_eq!(file_type.is_file(), is_file);
+            assert_eq!(file_type.is_directory(), is_directory);
+            assert_eq!(file_type.is_symlink(), is_symlink);
+        }
+        let device = super::FileType::from_stat(super::FileStat {
+            size: 0, mode: super::S_IFCHR, modified_seconds: 0,
+        });
+        assert!(device.is_char_device());
     }
 
     #[test]

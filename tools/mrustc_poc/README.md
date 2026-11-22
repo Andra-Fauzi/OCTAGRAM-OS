@@ -42,6 +42,12 @@ script berhenti dengan error alih-alih meneruskan source yang belum dipatch.
 
 ## Menjalankan
 
+Uji regresi untuk rewrite kompatibilitas C (tanpa perlu build mrustc):
+
+```sh
+python3 -m unittest discover -s tools/mrustc_poc -p 'test_*.py'
+```
+
 ```sh
 # 1. Build mrustc + transpile core dan program PoC ke C (host, butuh g++, curl)
 bash tools/mrustc_poc/build_host.sh

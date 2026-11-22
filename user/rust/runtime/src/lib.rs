@@ -1306,14 +1306,18 @@ mod tests {
             d_type: 8,
             d_name: [0; 256],
         };
-        entry.d_name[..9].copy_from_slice(b"message.c");
+        for (slot, byte) in entry.d_name.iter_mut().zip(b"message.c") {
+            *slot = *byte as _;
+        }
         assert_eq!(entry.name_bytes(), Some(&b"message.c"[..]));
 
         entry.d_reclen = (core::mem::offset_of!(Dirent, d_name) + 4) as u16;
         assert_eq!(entry.name_bytes(), None);
 
         entry.d_reclen = (core::mem::offset_of!(Dirent, d_name) + 3) as u16;
-        entry.d_name[..3].copy_from_slice(b"abc");
+        for (slot, byte) in entry.d_name.iter_mut().zip(b"abc") {
+            *slot = *byte as _;
+        }
         assert_eq!(entry.name_bytes(), None);
 
         entry.d_reclen = (core::mem::size_of::<Dirent>() + 1) as u16;

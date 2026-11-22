@@ -94,6 +94,13 @@ tcc -I /mnt/src -include /mnt/src/fix.h /mnt/src/shim.c /mnt/src/poc.c \
 run /mnt/poc.elf          # diharapkan mencetak: mrustc-c-poc: 108
 ```
 
+Sebelum kompilasi besar `libcore.c`, harness menjalankan tes kecil:
+`TCC-OVERFLOW-PASS` (overflow builtins), `TCC-XGETBV-ASSEMBLE-PASS`
+(encoding `0F 01 D0` ditemukan tanpa mengeksekusi instruksi),
+`TCC-MATH-PASS` (libm dari `libc.a`), dan
+`TCC-ATOMIC128-SHIM-PASS` (helper bytewise non-atomic). Hasil tersebut
+memisahkan kegagalan fondasi dari kegagalan kompilasi seluruh core.
+
 ## Catatan
 
 - `mrustc` tidak mendukung crate `#![no_core]`: tanpa `core` ia gagal dengan

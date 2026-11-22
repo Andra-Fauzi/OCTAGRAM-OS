@@ -247,6 +247,24 @@ unsafe fn syscall3(number: u64, arg1: u64, arg2: u64, arg3: u64) -> i64 {
     result
 }
 
+unsafe fn syscall4(number: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> i64 {
+    let result: i64;
+    unsafe {
+        core::arch::asm!(
+            "int 0x80",
+            inlateout("rax") number as i64 => result,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+    result
+}
+
 unsafe fn syscall6(
     number: u64,
     arg1: u64,
@@ -332,6 +350,83 @@ pub struct FileStat {
 }
 
 /// Read file metadata without opening a descriptor.
+pub const AT_FDCWD: i64 = -100;
+pub const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
+pub const SEEK_SET: u64 = 0;
+pub const SEEK_CUR: u64 = 1;
+pub const SEEK_END: u64 = 2;
+
+/// Open a path relative to a directory descriptor (syscall 40).
+pub fn openat(dirfd: i64, path: &CStr, flags: u64, mode: u32) -> Result<u64, i64> {
+    let result = unsafe {
+        syscall4(40, dirfd as u64, path.as_ptr() as usize as u64, flags, mode as u64)
+    };
+    if result < 0 { Err(result) } else { Ok(result as u64) }
+}
+
+/// Change or query a descriptor's current file offset (syscall 5).
+pub fn lseek(fd: u64, offset: i64, whence: u64) -> Result<i64, i64> {
+    let result = unsafe { syscall3(5, fd, offset as u64, whence) };
+    if result < 0 { Err(result) } else { Ok(result) }
+}
+
+/// Read metadata for an already-open descriptor (syscall 29).
+pub fn fstat(fd: u64) -> Result<FileStat, i64> {
+    let mut metadata = FileStat::default();
+    let result = unsafe { syscall2(29, fd, &mut metadata as *mut FileStat as usize as u64) };
+    if result < 0 { Err(result) } else { Ok(metadata) }
+}
+
+/// Read metadata relative to a directory descriptor (syscall 41).
+pub fn fstatat(dirfd: i64, path: &CStr, flags: u64) -> Result<FileStat, i64> {
+    let mut metadata = FileStat::default();
+    let result = unsafe {
+        syscall4(
+            41,
+            dirfd as u64,
+            path.as_ptr() as usize as u64,
+            &mut metadata as *mut FileStat as usize as u64,
+            flags,
+        )
+    };
+    if result < 0 { Err(result) } else { Ok(metadata) }
+}
+
+/// Create a directory relative to a directory descriptor (syscall 42).
+pub fn mkdirat(dirfd: i64, path: &CStr, mode: u32) -> Result<(), i64> {
+    let result = unsafe {
+        syscall3(42, dirfd as u64, path.as_ptr() as usize as u64, mode as u64)
+    };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Remove a file or directory relative to a directory descriptor (syscall 43).
+pub fn unlinkat(dirfd: i64, path: &CStr, flags: u64) -> Result<(), i64> {
+    let result = unsafe {
+        syscall3(43, dirfd as u64, path.as_ptr() as usize as u64, flags)
+    };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Rename a path between directory descriptors (syscall 44).
+pub fn renameat(
+    old_dirfd: i64,
+    old_path: &CStr,
+    new_dirfd: i64,
+    new_path: &CStr,
+) -> Result<(), i64> {
+    let result = unsafe {
+        syscall4(
+            44,
+            old_dirfd as u64,
+            old_path.as_ptr() as usize as u64,
+            new_dirfd as u64,
+            new_path.as_ptr() as usize as u64,
+        )
+    };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
 pub fn stat_path(path: &CStr) -> Result<FileStat, i64> {
     let mut metadata = FileStat::default();
     let result = unsafe {
@@ -1113,6 +1208,24 @@ mod tests {
         assert_eq!(super::MAP_SHARED, 1);
         assert_eq!(super::MAP_PRIVATE, 2);
         assert_eq!(super::MAP_ANONYMOUS, 0x20);
+    }
+
+    #[test]
+    fn file_stat_matches_octagram_c_abi() {
+        assert_eq!(core::mem::size_of::<super::FileStat>(), 16);
+        assert_eq!(core::mem::align_of::<super::FileStat>(), 8);
+        assert_eq!(core::mem::offset_of!(super::FileStat, size), 0);
+        assert_eq!(core::mem::offset_of!(super::FileStat, mode), 8);
+        assert_eq!(core::mem::offset_of!(super::FileStat, modified_seconds), 12);
+    }
+
+    #[test]
+    fn at_and_seek_constants_match_octagram_abi() {
+        assert_eq!(super::AT_FDCWD, -100);
+        assert_eq!(super::AT_SYMLINK_NOFOLLOW, 0x100);
+        assert_eq!(super::SEEK_SET, 0);
+        assert_eq!(super::SEEK_CUR, 1);
+        assert_eq!(super::SEEK_END, 2);
     }
 
     #[test]

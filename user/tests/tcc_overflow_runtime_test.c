@@ -19,7 +19,7 @@ int main(void) {
 
     error = check(__tcc_overflow(127, 1, &s8, 0, 0, 0, 1, 0) && s8 == -128, 1);
     if (error) return error;
-    error = check(__tcc_overflow((unsigned long long)-128, 1, &s16,
+    error = check(__tcc_overflow((unsigned long long)-32768, 1, &s16,
                                  1, 0, 0, 2, 0) && s16 == 32767, 2);
     if (error) return error;
     error = check(__tcc_overflow(250, 10, &u8, 0, 1, 1, 1, 1) && u8 == 4, 3);

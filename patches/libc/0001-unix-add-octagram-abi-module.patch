@@ -10,7 +10,7 @@ This is an initial compile-oriented ABI slice, not complete libc or std
 support. More constants, structures, and symbol compatibility must be added
 as upstream compile errors and ABI tests identify them.
 
-Upstream base: rust-lang/libc a03dd7c2e298b0ca482f30ce07efd3115938328
+Upstream base: rust-lang/libc a03dd7c2e298b0ca482f30ce07efd3115938328e
 
 ---
  src/unix/mod.rs            |  3 +++

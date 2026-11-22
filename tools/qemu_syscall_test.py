@@ -205,6 +205,10 @@ def main():
         print("RUST-NOSTD-FAIL: Rust no_std + alloc program did not emit its marker")
         print(serial_text()[-5000:])
         return 1
+    if not wait_for_after("Rust allocator mmap/munmap cycle: PASS", output_offset, 30):
+        print("RUST-ALLOCATOR-FAIL: allocation/drop/alignment/reallocation cycle failed")
+        print(serial_text()[-5000:])
+        return 1
     if not wait_for_after("Rust runtime file/stat: PASS", output_offset, 30):
         print("RUST-FILE-ABI-FAIL: Rust runtime open/read/stat/close test failed")
         print(serial_text()[-5000:])

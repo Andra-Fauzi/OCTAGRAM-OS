@@ -1353,8 +1353,11 @@ sudah ada di dalam OCTAGRAM sebagai backend, tanpa LLVM.
   `alloc_system` yang hilang/duplikat/bercampur, memvalidasi arsip Rust sebelum
   ekstraksi, mengekstrak ke staging bersih lalu memindahkannya hanya setelah
   `library/core/src/lib.rs` terverifikasi, dan memeriksa keberadaan patch
-  kompatibilitas sebelum dry-run. Ini memperkuat build host, bukan bukti
-  compiler Rust native atau hasil QEMU.
+  kompatibilitas sebelum dry-run. Builder disk sumber juga menjalankan
+  `e2fsck -fn`, mengekstrak kembali sembilan payload EXT2, dan membandingkan
+  masing-masing byte-per-byte dengan sumber sebelum image dinyatakan siap.
+  Ini memperkuat integritas artefak host, bukan bukti compiler Rust native atau
+  hasil QEMU.
 
 ### Status hambatan di sisi guest
 

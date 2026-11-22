@@ -94,6 +94,13 @@ int main(void)
         return 1;
     }
 
+    pthread_condattr_t condition_attributes;
+    if (pthread_condattr_init(&condition_attributes) != 0
+        || pthread_condattr_setclock(&condition_attributes, CLOCK_MONOTONIC) != 0
+        || pthread_condattr_destroy(&condition_attributes) != 0) {
+        return 1;
+    }
+
     if (pthread_attr_init(&attributes) != 0
         || pthread_attr_setstacksize(&attributes, 96u * 1024u) != 0
         || pthread_attr_getstacksize(&attributes, &configured_stack_size) != 0

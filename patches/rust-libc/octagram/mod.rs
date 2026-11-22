@@ -335,6 +335,10 @@ pub const ECONNREFUSED: c_int = 111;
 pub const EHOSTUNREACH: c_int = 113;
 pub const EALREADY: c_int = 114;
 pub const EINPROGRESS: c_int = 115;
+pub const MSG_PEEK: c_int = 0x02;
+pub const SO_LINGER: c_int = 13;
+pub const EXIT_SUCCESS: c_int = 0;
+pub const EXIT_FAILURE: c_int = 1;
 pub const EOWNERDEAD: c_int = 130;
 pub const ENOTRECOVERABLE: c_int = 131;
 

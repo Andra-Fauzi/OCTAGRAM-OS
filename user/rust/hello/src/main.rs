@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use octagram_runtime::{
     close, clock_getres, clock_gettime, dup3, exit, fork, fstatat, futex, getpid,
     getrandom, mmap, mprotect, munmap, nanosleep, pipe2, read,
-    stat_path, thread_create, unlinkat, Child, Directory, File,
+    stat_path, thread_create, unlinkat, Child, Command, Directory, File,
     thread_exit, thread_join, thread_self, write, write_all,
     AT_FDCWD, CLOCK_MONOTONIC, MAP_ANONYMOUS, MAP_PRIVATE, O_RDONLY, O_RDWR, O_CREAT, O_TRUNC, PROT_READ, PROT_WRITE, SEEK_SET, STDOUT,
 };
@@ -289,6 +289,41 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     }
     if write_all(STDOUT, b"Rust runtime child process/waitpid: PASS\\n").is_err() {
         return 43;
+    }
+
+    // Exercise Command's close-on-exec handshake with a successful shell exec.
+    let shell_path = CStr::from_bytes_with_nul(b"/bin/sh\\0").unwrap();
+    let shell_arg0 = CStr::from_bytes_with_nul(b"sh\\0").unwrap();
+    let shell_arg1 = CStr::from_bytes_with_nul(b"-c\\0").unwrap();
+    let shell_arg2 = CStr::from_bytes_with_nul(b"exit 23\\0").unwrap();
+    let shell_argv = [
+        shell_arg0.as_ptr(),
+        shell_arg1.as_ptr(),
+        shell_arg2.as_ptr(),
+        core::ptr::null(),
+    ];
+    let empty_env = [core::ptr::null()];
+    let mut command_child = match Command::new(shell_path, &shell_argv, &empty_env).spawn() {
+        Ok(child) => child,
+        Err(_) => return 44,
+    };
+    if command_child.wait() != Ok(23) {
+        return 45;
+    }
+
+    // A non-ELF source file must return execve's error, not a false spawn success.
+    let invalid_executable = match CStr::from_bytes_with_nul(b"/share/octagram/message.c\\0") {
+        Ok(path) => path,
+        Err(_) => return 46,
+    };
+    let invalid_arg = CStr::from_bytes_with_nul(b"message.c\\0").unwrap();
+    let invalid_argv = [invalid_arg.as_ptr(), core::ptr::null()];
+    match Command::new(invalid_executable, &invalid_argv, &empty_env).spawn() {
+        Err(error) if error < 0 => {}
+        _ => return 47,
+    }
+    if write_all(STDOUT, b"Rust runtime Command exec handshake: PASS\\n").is_err() {
+        return 48;
     }
     // Create a real Rust thread with an owned stack mapping, then join it.
     RUST_THREAD_RESULT.store(0, Ordering::SeqCst);

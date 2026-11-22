@@ -100,6 +100,7 @@ ALT(DEF_ASM_OP2(lzcntw, 0xf30fbd, 0, OPC_MODRM | OPC_WLX, OPT_REGW | OPT_EA, OPT
      DEF_ASM_OP0(wrmsr, 0x0f30)
      DEF_ASM_OP0(rdtsc, 0x0f31)
      DEF_ASM_OP0(rdmsr, 0x0f32)
+     DEF_ASM_OP0(xgetbv, 0x0f01d0)
      DEF_ASM_OP0(rdpmc, 0x0f33)
 
      DEF_ASM_OP0(syscall, 0x0f05)

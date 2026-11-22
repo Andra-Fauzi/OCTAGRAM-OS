@@ -38,6 +38,8 @@ struct sockaddr {
 #define SO_TYPE 3
 #define SO_ERROR 4
 #define SO_KEEPALIVE 9
+/* Reserved ABI value; OCTAGRAM currently rejects SO_LINGER with ENOPROTOOPT. */
+#define SO_LINGER 13
 
 #define SHUT_RD 0
 #define SHUT_WR 1

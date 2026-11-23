@@ -2238,3 +2238,17 @@ QEMU/EXT2 persistence belum dijalankan atau diverifikasi pada sesi ini.
 
 **Validasi:** perubahan implementasi dan test sudah di-commit. Eksekusi unit
 test kernel serta QEMU masih belum diverifikasi.
+
+
+## 62. Propagasi kegagalan rollback EXT2 rename (23 November 2026)
+
+- Jalur pemulihan ketika penggantian file gagal kini memeriksa hasil penghapusan
+  entry baru dan pemulihan entry tujuan lama.
+- Error rollback tidak lagi dibuang diam-diam; bila pemulihan gagal, error
+  tersebut dikembalikan kepada pemanggil agar kerusakan parsial tidak tampak
+  seperti kegagalan biasa yang berhasil dipulihkan.
+- Ini meningkatkan keterlihatan kegagalan, tetapi belum memberikan jaminan
+  crash-atomic untuk perubahan directory multi-block.
+
+**Validasi:** commit implementasi dan dokumentasi tersedia; unit test, build
+kernel, dan QEMU belum diverifikasi.

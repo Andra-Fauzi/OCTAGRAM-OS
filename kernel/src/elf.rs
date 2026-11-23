@@ -5938,7 +5938,8 @@ fn syscall_openat(dirfd: u64, path_address: u64, flags: u64, mode: u64) -> Resul
 }
 
 fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32> {
-    const ALLOWED_FLAGS: u64 = O_ACCESS_MASK | O_CREAT | O_TRUNC | O_APPEND | O_NONBLOCK | O_EXCL;
+    const ALLOWED_FLAGS: u64 =
+        O_ACCESS_MASK | O_CREAT | O_TRUNC | O_APPEND | O_NONBLOCK | O_EXCL | O_CLOEXEC;
     if flags & !ALLOWED_FLAGS != 0 || flags & O_ACCESS_MASK == 3 {
         return Err(EINVAL);
     }
@@ -6062,6 +6063,9 @@ fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32
     process.descriptor_flags.resize(descriptor_count, 0);
     if flags & O_NONBLOCK != 0 {
         process.descriptor_flags[fd] |= O_NONBLOCK as u32;
+    }
+    if flags & O_CLOEXEC != 0 {
+        process.descriptor_flags[fd] |= FD_CLOEXEC;
     }
     Ok(fd as u64)
 }

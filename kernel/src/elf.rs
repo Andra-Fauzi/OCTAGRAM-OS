@@ -22,7 +22,10 @@ use crate::memory::{
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const MAX_PROGRAM_HEADERS: usize = 128;
-const STACK_PAGES: u64 = 8;
+// 256 KiB gives Rust/C userspace enough room for compiler-generated stack
+// probes and nested runtime frames. The previous 32 KiB limit faulted at the
+// guard page while entering Command::output after fork/exec smoke tests.
+const STACK_PAGES: u64 = 64;
 /// Jumlah halaman entropi untuk menggeser puncak stack user per eksekusi.
 const STACK_RANDOM_PAGES: u64 = 64;
 const MAX_ARGUMENTS: usize = 64;

@@ -172,6 +172,10 @@ impl PathBuf {
     }
     pub fn push(&mut self, path: impl AsRef<[u8]>) {
         let next = path.as_ref();
+        // Match std::path::PathBuf: pushing an empty path is a no-op.
+        if next.is_empty() {
+            return;
+        }
         if next.first() == Some(&b'/') {
             self.inner.bytes.clear();
             self.inner.bytes.extend_from_slice(next);
@@ -2442,7 +2446,13 @@ mod tests {
         let base = super::PathBuf::from_bytes(b"/opt/octagram");
         assert_eq!(base.join(b"bin/rustc").as_bytes(), b"/opt/octagram/bin/rustc");
         assert_eq!(base.join(b"/tmp/cache").as_bytes(), b"/tmp/cache");
+        assert_eq!(base.join(b"").as_bytes(), b"/opt/octagram");
+        let mut unchanged = base.clone();
+        unchanged.push(b"");
+        assert_eq!(unchanged.as_bytes(), b"/opt/octagram");
         let mut empty = super::PathBuf::new();
+        empty.push(b"");
+        assert!(empty.is_empty());
         assert!(empty.is_empty());
         empty.push(b"src");
         assert!(!empty.is_empty());

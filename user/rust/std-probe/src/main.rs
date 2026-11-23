@@ -461,6 +461,27 @@ fn main() {
     let _path = std::env::var_os("PATH");
     marker("RUST-STD-ENV-PASS");
 
+    // Build scripts and tool launchers sometimes mutate their own environment
+    // before spawning children. Check the upstream std set_var/remove_var path
+    // against the process environment, including removal visibility.
+    const MUTABLE_ENV: &str = "OCTAGRAM_STD_MUTABLE_ENV";
+    unsafe {
+        std::env::remove_var(MUTABLE_ENV);
+        std::env::set_var(MUTABLE_ENV, "runtime-env-probe");
+    }
+    if !matches!(std::env::var(MUTABLE_ENV), Ok(value) if value == "runtime-env-probe") {
+        marker("RUST-STD-ENV-MUTATION-FAIL");
+        std::process::exit(50);
+    }
+    unsafe {
+        std::env::remove_var(MUTABLE_ENV);
+    }
+    if std::env::var_os(MUTABLE_ENV).is_some() {
+        marker("RUST-STD-ENV-MUTATION-FAIL");
+        std::process::exit(51);
+    }
+    marker("RUST-STD-ENV-MUTATION-PASS");
+
     let root = std::fs::metadata("/");
     if !root.as_ref().is_ok_and(|metadata| metadata.is_dir()) {
         marker("RUST-STD-FS-METADATA-FAIL");

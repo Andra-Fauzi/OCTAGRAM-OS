@@ -2333,3 +2333,18 @@ directory removal works at runtime. The next gate is the complete CI run;
 additional undefined libc symbols may appear as more std code paths are
 linked. This is incremental libc compatibility work, not a completed Rust
 std port and not a native rustc/Cargo implementation.
+
+
+## 67. Perbaikan import konstanta pada tes rename EXT2 (23 November 2026)
+
+CI POSIX Core Stage 1 pada commit 984e8183 berhasil melewati validasi target Rust, build core/alloc dan runtime Rust, serta build userspace. Kompilasi unit test kernel kemudian berhenti karena tes hard-link EXT2 menggunakan EXT2_FT_REG_FILE tanpa mengimpornya ke modul tests.
+
+Perbaikan:
+- Tambahkan EXT2_FT_REG_FILE ke daftar import super di modul tes EXT2.
+- Tidak mengubah implementasi rename atau ABI filesystem; ini hanya memperbaiki scope konstanta yang diperlukan oleh regression test.
+
+Commit: 56f4e0f6 — Fix EXT2 hard-link test constant import.
+
+CI juga melaporkan cargo fmt --check masih menemukan perbedaan format pada sejumlah file kernel (termasuk kernel/build.rs dan driver QCA9377). Ini merupakan isu terpisah dari error kompilasi test dan belum dirapikan dalam perubahan ini agar tidak menghasilkan perubahan format massal yang tidak berkaitan.
+
+Validasi: perbaikan import sudah dikomit. Hasil workflow untuk commit perbaikan ini masih harus ditunggu; unit test EXT2 belum dinyatakan lulus.

@@ -27,6 +27,7 @@ char *strtok(char *text, const char *delimiters);
 char *strtok_r(char *text, const char *delimiters, char **save_pointer);
 char *strdup(const char *text);
 char *strndup(const char *text, size_t count);
+int strerror_r(int error, char *buffer, size_t length);
 char *strerror(int error);
 char *strsignal(int signal_number);
 

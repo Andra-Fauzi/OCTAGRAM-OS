@@ -87,8 +87,10 @@ impl<'a> Path<'a> {
     pub fn starts_with(self, base: impl AsRef<[u8]>) -> bool {
         let path = trim_trailing_slashes(self.as_bytes());
         let base = trim_trailing_slashes(base.as_ref());
+        // An empty prefix contains no components and therefore matches
+        // both relative and absolute paths, as std::path::Path does.
         if base.is_empty() {
-            return path.is_empty() || path.first() != Some(&b'/');
+            return true;
         }
         if path == base { return true; }
         path.starts_with(base)
@@ -99,7 +101,8 @@ impl<'a> Path<'a> {
     pub fn ends_with(self, suffix: impl AsRef<[u8]>) -> bool {
         let path = trim_trailing_slashes(self.as_bytes());
         let suffix = trim_trailing_slashes(suffix.as_ref());
-        if suffix.is_empty() { return path.is_empty(); }
+        // An empty suffix contains no components and matches every path.
+        if suffix.is_empty() { return true; }
         if path == suffix { return true; }
         path.ends_with(suffix)
             && (suffix.first() == Some(&b'/')
@@ -2428,6 +2431,10 @@ mod tests {
         assert!(!path.starts_with(b"/opt/octagramm"));
         assert!(path.ends_with(b"bin"));
         assert!(!path.ends_with(b"binx"));
+        assert!(path.starts_with(b""));
+        assert!(path.ends_with(b""));
+        assert_eq!(super::Path::new(b"relative/path").starts_with(b""), true);
+        assert_eq!(super::Path::new(b"/absolute/path").starts_with(b""), true);
         assert_eq!(path.file_stem().unwrap().as_bytes(), b"bin");
         assert_eq!(super::Path::new(b"archive.tar.gz").file_stem().unwrap().as_bytes(), b"archive.tar");
         assert_eq!(super::Path::new(b"foo/").parent().unwrap().as_bytes(), b"");

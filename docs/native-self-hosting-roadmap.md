@@ -2361,3 +2361,14 @@ Probe upstream Rust std kini mengisi direktori terdalam dengan file artefak, mem
 Commits: 0def96bd (probe) dan b49f6bcb (QEMU assertion).
 
 Validasi runtime belum diklaim; CI dan QEMU harus menunjukkan marker baru serta exit status 0.
+
+
+## 69. Uji syscall relatif melalui descriptor direktori bertingkat (23 November 2026)
+
+Probe Rust std untuk ABI `*at` kini tidak lagi membuat file sebagai sibling langsung di `/tmp`. Setelah `mkdirat` membuat subdirektori unik, probe membuka subdirektori tersebut menjadi descriptor kedua. Operasi `openat`, `renameat`, dan `unlinkat` untuk file sumber/tujuan kemudian memakai descriptor subdirektori itu, sementara `unlinkat(AT_REMOVEDIR)` pada descriptor `/tmp` menghapus direktori setelah descriptor anak ditutup.
+
+Perubahan ini memastikan pengujian memverifikasi resolusi nama relatif terhadap descriptor direktori yang benar-benar berbeda dari root `/tmp`. Probe tetap membaca kembali file melalui path absolut untuk memverifikasi lokasi dan isi hasil rename.
+
+Commit: `f899a77a` — Exercise nested directory descriptors in Rust std probe.
+
+**Validasi:** source probe sudah di-commit. Workflow QEMU pada commit sebelumnya masih berjalan; perubahan ini memicu build dan QEMU baru. Belum ada klaim bahwa nested dirfd test berhasil dijalankan.

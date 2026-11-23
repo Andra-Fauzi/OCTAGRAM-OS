@@ -121,10 +121,33 @@ jobs:
             --target user/rust/targets/x86_64-unknown-octagram.json \
             --target-dir user/rust/std-probe/target \
             --config 'patch.crates-io.libc.path="upstream-libc"'
-          readelf -h user/rust/std-probe/target/x86_64-unknown-octagram/release/octagram-std-probe
-          readelf -l user/rust/std-probe/target/x86_64-unknown-octagram/release/octagram-std-probe
-          readelf -h user/rust/std-probe/target/x86_64-unknown-octagram/release/octagram-std-probe
-          readelf -l user/rust/std-probe/target/x86_64-unknown-octagram/release/octagram-std-probe
+          probe=user/rust/std-probe/target/x86_64-unknown-octagram/release/octagram-std-probe
+          readelf -h "$probe"
+          readelf -lW "$probe"
+          # The std probe contains a Rust thread_local! static. Require a real
+          # non-empty PT_TLS image, not just an empty header from the linker.
+          python3 - "$probe" <<'PY'
+          import re
+          import subprocess
+          import sys
+
+          output = subprocess.check_output(["readelf", "-lW", sys.argv[1]], text=True)
+          lines = output.splitlines()
+          for index, line in enumerate(lines):
+              fields = line.split()
+              if fields and fields[0] == "TLS":
+                  if index + 1 >= len(lines):
+                      break
+                  sizes = re.findall(r"0x[0-9a-fA-F]+", lines[index + 1])
+                  if len(sizes) < 2:
+                      break
+                  filesz, memsz = (int(value, 16) for value in sizes[:2])
+                  if filesz > 0 and memsz >= filesz:
+                      print(f"PT_TLS verified: filesz={filesz}, memsz={memsz}")
+                      raise SystemExit(0)
+                  break
+          raise SystemExit("Rust std probe is missing a non-empty PT_TLS segment")
+          PY
 
       - name: Build OCTAGRAM Rust binaries
         run: make -C user/rust clean all check

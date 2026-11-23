@@ -2298,3 +2298,38 @@ dukungan runtime belum boleh dinyatakan lulus sampai marker
 **Validasi:** commit perbaikan memicu ulang workflow `Rust no_std userspace`
 dan `POSIX Core Stage 1`. Keduanya masih berjalan saat catatan ini ditulis;
 hasil akhir belum diklaim lulus.
+
+
+## 66. Rust std link blocker: POSIX fdopendir (23 November 2026)
+
+The latest POSIX Core Stage 1 run reached the upstream Rust std link step but
+failed with an undefined reference to `fdopendir`, pulled in by
+`std::sys::fs::unix::remove_dir_impl::remove_dir_all_recursive`. The
+cross-check of `core`, `alloc`, and the upstream std probe had progressed
+to native linking; this failure was a missing OCTAGRAM libc symbol, not a
+Rust compiler diagnostic.
+
+Implemented on `feature/native-self-hosting`:
+
+- Declare `fdopendir(int fd)` in `user/include/dirent.h`.
+- Implement it in `user/runtime.c`: reject negative descriptors with
+  `EBADF`, validate the descriptor with `fstat`, reject non-directories
+  with `ENOTDIR`, allocate the directory stream, and transfer descriptor
+  ownership only after successful allocation.
+- Preserve the caller's descriptor on validation or allocation failure,
+  matching the POSIX ownership rule.
+- Extend the Rust/libc ABI validator and manifest with the directory-stream
+  symbol and its implementation contract.
+
+Commits:
+- `5ca04b6f` — implement `fdopendir`.
+- `34734658` — expose the public declaration.
+- `c016d5ec` — validate the ABI contract.
+- `9545a3b2` — record the directory-stream coverage.
+
+**Validation status:** source changes are committed, but CI and QEMU have not
+yet confirmed that the upstream Rust std executable links or that recursive
+directory removal works at runtime. The next gate is the complete CI run;
+additional undefined libc symbols may appear as more std code paths are
+linked. This is incremental libc compatibility work, not a completed Rust
+std port and not a native rustc/Cargo implementation.

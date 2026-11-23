@@ -2596,3 +2596,20 @@ secara POSIX merepresentasikan direktori kerja saat ini.
 **Validasi:** perubahan source, demo, dan roadmap telah di-commit secara
 terpisah. Hasil host/QEMU untuk commit ini masih menunggu workflow CI;
 perubahan belum diklaim lulus runtime.
+
+
+## 83. posix_spawnp: pencarian executable melalui PATH kosong (23 November 2026)
+
+Probe `posix_spawn_demo` kini menguji jalur `posix_spawnp`, bukan hanya
+`execvp`. Program menyimpan direktori kerja awal, berpindah ke `/bin`,
+mengatur `PATH=""`, lalu meluncurkan child dengan nama executable tanpa
+slash (`posix_spawn_demo`).
+
+Child memvalidasi environment yang diteruskan dan parent menunggu status
+keluar sukses. Tes ini memastikan komponen PATH kosong diperlakukan sebagai
+direktori kerja saat ini dalam pencarian executable `posix_spawnp`, yang
+merupakan bagian penting dari kompatibilitas proses untuk Cargo.
+
+**Validasi:** tes ditambahkan ke demo yang sudah dibangun dan dijalankan oleh
+guest QEMU. Hasil runtime untuk revisi ini menunggu workflow CI; belum
+diklaim lulus.

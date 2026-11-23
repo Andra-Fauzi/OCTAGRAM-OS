@@ -31,17 +31,16 @@ fn main() {
     marker("RUST-STD-PATH-OS-STRING-FFI-PASS");
 
     // Exercise upstream std::path lexical APIs with repeated and trailing
-    // separators. Components must preserve "." and ".." rather than resolving
-    // them through the filesystem.
+    // separators. std::path normalizes interior "." and repeated separators,
+    // while preserving ".." lexically rather than resolving it on disk.
     let lexical = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/octa//./gram/../file.bin/"));
     let components: Vec<_> = lexical.components().collect();
-    if components.len() != 6
+    if components.len() != 5
         || components[0] != std::path::Component::RootDir
         || components[1].as_os_str().as_bytes() != b"octa"
-        || components[2] != std::path::Component::CurDir
-        || components[3] != std::path::Component::Normal(std::ffi::OsStr::new("gram"))
-        || components[4] != std::path::Component::ParentDir
-        || components[5].as_os_str().as_bytes() != b"file.bin"
+        || components[2] != std::path::Component::Normal(std::ffi::OsStr::new("gram"))
+        || components[3] != std::path::Component::ParentDir
+        || components[4].as_os_str().as_bytes() != b"file.bin"
     {
         marker("RUST-STD-PATH-COMPONENTS-FAIL");
         std::process::exit(23);

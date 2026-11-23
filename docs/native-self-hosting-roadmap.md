@@ -2729,3 +2729,20 @@ offset saat ini. Offset negatif selain `-1` menghasilkan `EINVAL`.
 
 **Validasi:** source, regression demo, dan roadmap diperbarui. Hasil host dan
 QEMU untuk commit ini menunggu workflow CI.
+
+## 90. close_range menolak flag yang belum didukung (23 November 2026)
+
+Implementasi libc `close_range` sebelumnya mengabaikan seluruh argumen
+`flags`. Sekarang rentang terbalik menghasilkan `EINVAL`, sedangkan flag
+nonzero ditolak dengan `ENOTSUP` karena `CLOSE_RANGE_UNSHARE` dan
+`CLOSE_RANGE_CLOEXEC` belum diimplementasikan. Operasi dengan flag nol
+tetap menutup descriptor pada rentang yang diminta dan mengabaikan descriptor
+yang memang sudah tertutup.
+
+- Regression demo menguji flag yang belum didukung, rentang terbalik, dan
+  penutupan descriptor.
+- Tidak ada klaim dukungan terhadap semantik CLOEXEC/UNSHARE sampai kernel
+  dan runtime benar-benar mengimplementasikannya.
+
+**Validasi:** perubahan source, regression test, dan roadmap di-commit;
+hasil CI untuk revisi ini menunggu.

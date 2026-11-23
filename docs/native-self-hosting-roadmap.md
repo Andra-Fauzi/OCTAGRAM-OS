@@ -2402,3 +2402,22 @@ Commits:
 - 6ecbe9a1 — Require Rust std file permission probe in QEMU.
 
 Validasi guest masih menunggu workflow CI. Ini merupakan penguatan kompatibilitas std untuk Cargo, bukan klaim Cargo/rustc native sudah tersedia.
+
+
+
+## 72. Uji environment dan working directory pada child process Rust std (23 November 2026)
+
+Probe upstream Rust std kini menjalankan `/bin/sh` melalui `std::process::Command`
+dengan `Command::env` dan `Command::current_dir`. Child process mencetak
+environment variable yang disetel oleh parent serta direktori kerjanya; probe
+memverifikasi keduanya dari stdout hasil `Command::output`.
+
+- Marker baru: `RUST-STD-PROCESS-ENV-CWD-PASS`.
+- QEMU runner mewajibkan marker tersebut sehingga pengujian memeriksa efek
+  konfigurasi pada child, bukan hanya keberhasilan pemanggilan builder API.
+- Cakupan ini penting bagi Cargo build scripts yang meneruskan konfigurasi
+  melalui environment dan menjalankan perintah dari direktori paket/build.
+
+**Validasi:** source probe, gate QEMU, dan roadmap telah diperbarui.
+Build upstream std dan eksekusi guest untuk marker baru masih menunggu CI;
+belum ada klaim bahwa pengujian ini sudah lulus pada QEMU.

@@ -5,7 +5,7 @@
 //! exercised under QEMU rather than merely type-checked on the host.
 
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn marker(message: &str) {
     println!("{message}");
@@ -73,6 +73,8 @@ fn main() {
     let status = Command::new("/bin/sh")
         .arg("-c")
         .arg("exit 0")
+        // Inherit stdin temporarily to isolate /dev/null handling from spawn/exec.
+        .stdin(Stdio::inherit())
         .status()
         .unwrap_or_else(|error| {
             eprintln!("Command::status failed: {error}");
@@ -87,6 +89,7 @@ fn main() {
     let output = Command::new("/bin/sh")
         .arg("-c")
         .arg("echo RUST-STD-CHILD-PASS")
+        .stdin(Stdio::inherit())
         .output()
         .unwrap_or_else(|error| {
             eprintln!("Command::output failed: {error}");

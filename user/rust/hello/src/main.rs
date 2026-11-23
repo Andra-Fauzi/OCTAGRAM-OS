@@ -404,10 +404,16 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
             Err(_) => return 52,
         }
     }
-    if capture_child.wait() != Ok(0)
-        || &captured[..captured_len] != b"OCTAGRAM-PIPE-PASS"
-    {
+    let capture_status = capture_child.wait();
+    if capture_status != Ok(0) {
+        let _ = write_all(STDOUT, b"Rust runtime Command stdout capture: CHILD-STATUS-FAIL\n");
         return 53;
+    }
+    if &captured[..captured_len] != b"OCTAGRAM-PIPE-PASS" {
+        let _ = write_all(STDOUT, b"Rust runtime Command stdout capture: BYTES-FAIL\n");
+        let _ = write_all(STDOUT, &captured[..captured_len]);
+        let _ = write_all(STDOUT, b"\n");
+        return 58;
     }
     if write_all(STDOUT, b"Rust runtime Command stdout capture: PASS\n").is_err() {
         return 54;

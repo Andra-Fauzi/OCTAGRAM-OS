@@ -180,6 +180,7 @@ def main():
             "M4-RUST-TARGET-EXEC",
         ),
         ("/bin/execve-demo", "EXECVP-PATH-SEARCH-PASS", "LIBC-EXECVP-PATH-SEARCH"),
+        ("/bin/posix_spawn_demo", "posix_spawn environment/status/WNOHANG/file actions/chdir/setsid/signal attributes/scheduling/resetids/spawnp passed", "POSIX-SPAWN-PIPE-FD-PATH"),
     )
     for command, marker, label in guest_tests:
         output_offset = len(serial_text())

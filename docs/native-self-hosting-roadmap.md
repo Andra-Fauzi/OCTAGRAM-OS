@@ -2073,3 +2073,14 @@ semantik `std::path::PathBuf`.
 oleh host test atau CI target. Ini adalah interoperabilitas byte-slice dasar,
 bukan pengganti trait `AsRef<Path>` dan keseluruhan API path dari upstream
 Rust std.
+
+## 51. Konversi borrowed Path menjadi PathBuf (23 November 2026)
+
+- Menambahkan `From<Path<'_>> for PathBuf` sebagai jalur konversi ownership
+  yang setara dengan helper `Path::to_path_buf()`.
+- Regression test memastikan path yang mengandung byte non-UTF-8 disalin
+  secara persis dan tidak dipaksa menjadi teks UTF-8.
+
+**Validasi:** source dan test telah di-commit. Host unit test, target build,
+dan QEMU belum dijalankan. Konversi ini memperluas helper OCTAGRAM, tetapi
+belum menyediakan integrasi penuh dengan tipe `Path` unsized upstream.

@@ -399,6 +399,36 @@ fn main() {
     }
     marker("RUST-STD-AT-DIRFD-PASS");
 
+    // Cargo and rustc use symlinks in source trees and build outputs. Exercise
+    // the upstream std Unix symlink/read_link APIs, including lstat semantics.
+    let symlink_base = format!("/tmp/octagram-rust-symlink-{}", std::process::id());
+    let symlink_target = std::path::PathBuf::from(format!("{symlink_base}.target"));
+    let symlink_path = std::path::PathBuf::from(format!("{symlink_base}.link"));
+    let symlink_result = (|| -> std::io::Result<()> {
+        std::fs::write(&symlink_target, b"symlink-target")?;
+        std::os::unix::fs::symlink(&symlink_target, &symlink_path)?;
+        let link_metadata = std::fs::symlink_metadata(&symlink_path)?;
+        if !link_metadata.file_type().is_symlink() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "symlink metadata mismatch"));
+        }
+        let link_destination = std::fs::read_link(&symlink_path)?;
+        if link_destination != symlink_target {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "read_link target mismatch"));
+        }
+        if std::fs::read(&symlink_path)? != b"symlink-target" {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "symlink follow mismatch"));
+        }
+        std::fs::remove_file(&symlink_path)?;
+        std::fs::remove_file(&symlink_target)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&symlink_path);
+    let _ = std::fs::remove_file(&symlink_target);
+    if symlink_result.is_err() {
+        marker("RUST-STD-FS-SYMLINK-FAIL");
+        std::process::exit(46);
+    }
+    marker("RUST-STD-FS-SYMLINK-PASS");
 
     // Environment access must not panic when PATH is absent; the call itself
     // exercises std's environment PAL.

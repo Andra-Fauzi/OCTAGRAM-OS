@@ -442,7 +442,7 @@ mod tests {
         filesystem.write("/alias", 0, b"shared").unwrap();
         let mut contents = [0u8; 8];
         assert_eq!(filesystem.read("/source", 0, &mut contents), Ok(8));
-        assert_eq!(&contents, b"sharedt");
+        assert_eq!(&contents, b"sharedct");
 
         filesystem.set_permissions("/alias", 0o600).unwrap();
         assert_eq!(filesystem.metadata("/source").unwrap().permissions, 0o600);
@@ -452,7 +452,7 @@ mod tests {
         );
         filesystem.remove("/source").unwrap();
         assert_eq!(filesystem.read("/alias", 0, &mut contents), Ok(8));
-        assert_eq!(&contents, b"sharedt");
+        assert_eq!(&contents, b"sharedct");
     }
 
     #[test]

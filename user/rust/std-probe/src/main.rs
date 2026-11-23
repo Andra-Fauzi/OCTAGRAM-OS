@@ -545,6 +545,30 @@ fn main() {
     }
     marker("RUST-STD-PROCESS-PASS");
 
+    // Cargo build scripts rely on Command::env and current_dir being applied
+    // to the child before exec. Verify both through the child's observable
+    // environment and working directory, not merely by checking the builder.
+    let process_context = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("printf '%s\\n' \"$OCTAGRAM_STD_ENV\"; pwd")
+        .env("OCTAGRAM_STD_ENV", "cargo-probe-env")
+        .current_dir("/tmp")
+        .output()
+        .unwrap_or_else(|error| {
+            eprintln!("Command environment/current_dir failed: {error}");
+            std::process::exit(48);
+        });
+    let context_ok = process_context.status.success()
+        && process_context.stdout.windows(b"cargo-probe-env\\n".len())
+            .any(|bytes| bytes == b"cargo-probe-env\\n")
+        && process_context.stdout.windows(b"/tmp\\n".len())
+            .any(|bytes| bytes == b"/tmp\\n");
+    if !context_ok {
+        marker("RUST-STD-PROCESS-ENV-CWD-FAIL");
+        std::process::exit(49);
+    }
+    marker("RUST-STD-PROCESS-ENV-CWD-PASS");
+
     let mut stdout = std::io::stdout().lock();
     if stdout.write_all(b"RUST-STD-IO-WRITE-PASS\n").is_err() || stdout.flush().is_err() {
         std::process::exit(18);

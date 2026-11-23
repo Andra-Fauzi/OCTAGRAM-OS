@@ -179,6 +179,7 @@ const SYSCALL_GETPGRP: u64 = 129;
 const SYSCALL_SETPGRP: u64 = 130;
 const SYSCALL_GETSID: u64 = 131;
 const SYSCALL_SETSID: u64 = 132;
+const SYSCALL_LINKAT: u64 = 148;
 const SYSCALL_SETPRIORITY: u64 = 134;
 const SYSCALL_GETPRIORITY: u64 = 135;
 const SYSCALL_SCHED_SETSCHEDULER: u64 = 136;
@@ -2911,6 +2912,7 @@ fn dispatch_syscall(
         SYSCALL_RENAMEAT => syscall_renameat(arg1, arg2, arg3, arg4),
         SYSCALL_READLINKAT => syscall_readlinkat(arg1, arg2, arg3, arg4),
         SYSCALL_SYMLINKAT => syscall_symlinkat(arg1, arg2, arg3),
+        SYSCALL_LINKAT => syscall_linkat(arg1, arg2, arg3, arg4, arg5),
         SYSCALL_CLOCK_GETTIME => syscall_clock_gettime(arg1, arg2),
         SYSCALL_MSYNC => syscall_msync(arg1, arg2, arg3),
         SYSCALL_MPROTECT => syscall_mprotect(arg1, arg2, arg3),
@@ -6537,6 +6539,27 @@ fn syscall_unlinkat(dirfd: u64, path_address: u64, flags: u64) -> Result<u64, i3
     if flags & AT_REMOVEDIR == 0 {
         forget_shared_mapping_path(&path);
     }
+    Ok(0)
+}
+
+fn syscall_linkat(
+    olddirfd: u64,
+    oldpath_address: u64,
+    newdirfd: u64,
+    newpath_address: u64,
+    flags: u64,
+) -> Result<u64, i32> {
+    require_capability(CAP_VFS_WRITE)?;
+    // AT_SYMLINK_FOLLOW and AT_EMPTY_PATH are not implemented yet. With
+    // flags=0, the final source symlink itself is linked, as POSIX specifies.
+    if flags != 0 {
+        return Err(EINVAL);
+    }
+    let source = resolve_at_path(olddirfd, &copy_user_path(oldpath_address)?)?;
+    let target = resolve_at_path(newdirfd, &copy_user_path(newpath_address)?)?;
+    fs::with_vfs(|vfs| vfs.hard_link(&source, &target))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
     Ok(0)
 }
 

@@ -137,6 +137,45 @@ fn main() {
     }
     marker("RUST-STD-FS-DIRECTORY-PASS");
 
+    // Cargo and rustc commonly write a temporary artifact and atomically
+    // replace the previous output with rename. Also exercise ftruncate.
+    let truncate_result = (|| -> std::io::Result<()> {
+        let file = std::fs::OpenOptions::new().write(true).open(&renamed_child)?;
+        file.set_len(8)?;
+        file.sync_data()?;
+        if file.metadata()?.len() != 8 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "set_len mismatch"));
+        }
+        Ok(())
+    })();
+    if truncate_result.is_err() {
+        marker("RUST-STD-FS-TRUNCATE-FAIL");
+        std::process::exit(37);
+    }
+    marker("RUST-STD-FS-TRUNCATE-PASS");
+
+    let atomic_base = format!("/tmp/octagram-rust-atomic-{}", std::process::id());
+    let atomic_temp = std::path::PathBuf::from(format!("{atomic_base}.tmp"));
+    let atomic_output = std::path::PathBuf::from(format!("{atomic_base}.out"));
+    let atomic_result = (|| -> std::io::Result<()> {
+        std::fs::write(&atomic_output, b"previous-artifact")?;
+        std::fs::write(&atomic_temp, b"replacement-artifact")?;
+        std::fs::File::open(&atomic_temp)?.sync_all()?;
+        std::fs::rename(&atomic_temp, &atomic_output)?;
+        let result = std::fs::read(&atomic_output)?;
+        if result != b"replacement-artifact" {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "rename replacement mismatch"));
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&atomic_temp);
+    let _ = std::fs::remove_file(&atomic_output);
+    if atomic_result.is_err() {
+        marker("RUST-STD-FS-ATOMIC-RENAME-FAIL");
+        std::process::exit(38);
+    }
+    marker("RUST-STD-FS-ATOMIC-RENAME-PASS");
+
     // Cargo frequently creates nested output/cache directories and resolves
     // paths relative to its working directory. Exercise those std APIs.
     let nested_dir = renamed_dir.join("target").join("debug").join("deps");

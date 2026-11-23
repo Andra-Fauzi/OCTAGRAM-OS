@@ -24,6 +24,7 @@ struct dirent {
 };
 
 DIR *opendir(const char *path);
+DIR *fdopendir(int fd);
 struct dirent *readdir(DIR *directory);
 int closedir(DIR *directory);
 int dirfd(DIR *directory);

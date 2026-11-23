@@ -7230,9 +7230,11 @@ int execvp(const char *file, char *const arguments[])
     }
 
     const char *path = getenv("PATH");
-    if (path == NULL || path[0] == '\0') {
+    if (path == NULL) {
         path = "/bin:/usr/bin:/usr/local/bin";
     }
+    /* An explicitly empty PATH contains one empty component, which means
+     * search the current working directory. Do not treat it as unset. */
     int last_error = ENOENT;
     int access_error = 0;
     const char *component = path;

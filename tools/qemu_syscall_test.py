@@ -271,6 +271,7 @@ def main():
         ("RUST-STD-FS-PATH-MANAGEMENT-PASS", "nested directories and current directory"),
         ("RUST-STD-AT-DIRFD-PASS", "dirfd-relative openat/mkdirat/renameat/unlinkat"),
         ("RUST-STD-FS-SYMLINK-PASS", "upstream std symlink, read_link and symlink_metadata"),
+        ("RUST-STD-FS-COPY-PASS", "upstream std filesystem artifact copy and byte verification"),
         ("RUST-STD-FS-PERMISSIONS-PASS", "upstream std Unix file permission metadata and updates"),
         ("RUST-STD-ENV-PASS", "environment"),
         ("RUST-STD-ENV-MUTATION-PASS", "process environment set_var and remove_var"),

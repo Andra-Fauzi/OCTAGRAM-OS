@@ -4056,6 +4056,36 @@ DIR *opendir(const char *path)
     return directory;
 }
 
+/*
+ * POSIX fdopendir() takes ownership of fd only after successful conversion.
+ * Keep fd open on validation/allocation failure so callers can recover it.
+ */
+DIR *fdopendir(int fd)
+{
+    if (fd < 0) {
+        errno = EBADF;
+        return NULL;
+    }
+
+    struct stat metadata;
+    if (fstat(fd, &metadata) < 0) {
+        return NULL;
+    }
+    if (!S_ISDIR(metadata.st_mode)) {
+        errno = ENOTDIR;
+        return NULL;
+    }
+
+    DIR *directory = malloc(sizeof(*directory));
+    if (directory == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    directory->fd = fd;
+    return directory;
+}
+
 struct dirent *readdir(DIR *directory)
 {
     if (directory == NULL) {

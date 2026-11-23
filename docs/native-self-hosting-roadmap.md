@@ -1958,3 +1958,16 @@ canonicalization filesystem tidak dilakukan.
 **Validasi:** source dan regression test telah di-commit. Host unit test dan
 QEMU belum dijalankan untuk perubahan ini; kompatibilitas runtime belum
 dinyatakan lulus.
+
+
+## 43. Kapasitas dan mutasi OsString (23 November 2026)
+
+- Menambahkan `OsString::with_capacity`, `capacity`, `reserve`,
+  `shrink_to_fit`, `truncate`, dan `clear`.
+- Menambahkan delegasi kapasitas pada `PathBuf` agar buffer path dapat
+  disiapkan tanpa konversi UTF-8.
+- Menambahkan regression test untuk kapasitas alokasi dan pemotongan byte
+  non-UTF-8; API tetap mempertahankan representasi byte Unix.
+
+**Validasi:** source dan regression test telah di-commit. Host unit test,
+target build, dan QEMU belum dijalankan pada perubahan ini.

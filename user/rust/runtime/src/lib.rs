@@ -2581,7 +2581,6 @@ mod tests {
             &b"src/module/file.rs"[..],
             &b"src/module"[..],
             &b"src"[..],
-            &b""[..],
         ]);
 
         let trailing: alloc::vec::Vec<_> = super::Path::new(b"folder/")

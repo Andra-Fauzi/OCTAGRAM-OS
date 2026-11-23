@@ -610,17 +610,31 @@ fn main() {
     let started = std::time::Instant::now();
     let handle = std::thread::spawn(|| {
         marker("RUST-STD-THREAD-CLOSURE-ENTER-PASS");
-        7usize
+        let tls_values = RUST_TLS_PROBE.with(|value| {
+            let initial = value.get();
+            value.set(initial ^ 0x0202);
+            (initial, value.get())
+        });
+        (7usize, tls_values)
     });
     marker("RUST-STD-THREAD-SPAWN-RETURN-PASS");
-    handle
-        .join()
-        .ok()
-        .filter(|value| *value == 7)
-        .unwrap_or_else(|| {
-            marker("RUST-STD-THREAD-FAIL");
-            std::process::exit(15);
-        });
+    let worker_result = handle.join().unwrap_or_else(|_| {
+        marker("RUST-STD-THREAD-FAIL");
+        std::process::exit(15);
+    });
+    if worker_result != (
+        7usize,
+        (0x4f43_5441_4752_414d, 0x4f43_5441_4752_434f),
+    ) {
+        marker("RUST-STD-THREAD-TLS-ISOLATION-FAIL");
+        std::process::exit(70);
+    }
+    let main_tls_after_join = RUST_TLS_PROBE.with(Cell::get);
+    if main_tls_after_join != 0x4f43_5441_4752_404c {
+        marker("RUST-STD-THREAD-TLS-ISOLATION-FAIL");
+        std::process::exit(71);
+    }
+    marker("RUST-STD-THREAD-TLS-ISOLATION-PASS");
     let _elapsed = started.elapsed();
     marker("RUST-STD-THREAD-CLOCK-PASS");
 

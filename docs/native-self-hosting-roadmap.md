@@ -1823,3 +1823,30 @@ belum disalin ke ISO atau dieksekusi di QEMU. Semantik filesystem, process,
 thread, clock, entropy, panic, dan TLS harus divalidasi saat runtime sebelum
 Rust std dinyatakan siap. Rustc native dan Cargo native tetap belum dibuat.
 
+## 34. Integrasi executable upstream std ke image OCTAGRAM (23 November 2026)
+
+- Pipeline POSIX kini mengambil upstream libc pada commit tetap
+  `ccc2ff4aaab962f7fde7b8edda7379c045b1ca12`, menerapkan target glue pada
+  `rust-src`, dan membangun executable `octagram-std-probe` menggunakan
+  `-Zbuild-std=std`.
+- Build std diposisikan setelah `make -C user` agar static archive
+  `user/build/libc.a` tersedia. Linker memakai script ELF dengan PT_TLS
+  (`user/linker.ld`), startup `user/crt0.S`, dan alias archive libc untuk
+  memenuhi nama library Unix standar.
+- Menambahkan binary hasil link sebagai
+  `user/rust/build/rust_std_probe.elf`, menyematkannya di VFS sebagai
+  `/bin/rust-std-probe`, dan menambahkan QEMU test untuk environment,
+  metadata filesystem, directory iteration, thread/clock, process output,
+  dan stdout.
+- Menambahkan shim libc untuk `posix_memalign`, `errno_location`,
+  `strerror_r`, `chroot`, serta simbol unwinder minimal. Backtrace native
+  belum tersedia; shim unwinder saat ini melaporkan end-of-stack.
+- POSIX Core Stage 1 run
+  [45103601028](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45103601028)
+  telah lulus build host, termasuk compile dan link upstream std, serta
+  berhasil membangun ISO. Job QEMU masih berjalan pada saat audit ini ditulis.
+
+**Status:** implemented dan build-tested; QEMU runtime test masih pending.
+Jangan menandai Rust std runtime siap sebelum semua marker
+`RUST-STD-*-PASS` dan exit status 0 teramati di guest. Rustc native dan Cargo
+native tetap belum diimplementasikan.

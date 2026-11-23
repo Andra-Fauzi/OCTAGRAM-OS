@@ -132,16 +132,14 @@ jobs:
           import sys
 
           output = subprocess.check_output(["readelf", "-lW", sys.argv[1]], text=True)
-          lines = output.splitlines()
-          for index, line in enumerate(lines):
+          for line in output.splitlines():
               fields = line.split()
               if fields and fields[0] == "TLS":
-                  if index + 1 >= len(lines):
+                  # readelf -lW prints Offset, VirtAddr, PhysAddr, FileSiz,
+                  # MemSiz, Flags and Align on the same line.
+                  if len(fields) < 7:
                       break
-                  sizes = re.findall(r"0x[0-9a-fA-F]+", lines[index + 1])
-                  if len(sizes) < 2:
-                      break
-                  filesz, memsz = (int(value, 16) for value in sizes[:2])
+                  filesz, memsz = (int(value, 16) for value in fields[4:6])
                   if filesz > 0 and memsz >= filesz:
                       print(f"PT_TLS verified: filesz={filesz}, memsz={memsz}")
                       raise SystemExit(0)

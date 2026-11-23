@@ -2195,3 +2195,17 @@ sampai GitHub Actions menjalankan job `qemu-smoke-tests`.
 
 **Validasi:** source probe, QEMU assertion, dan roadmap telah diperbarui.
 Belum ada hasil build atau QEMU yang dapat diverifikasi untuk commit ini.
+
+
+## 59. Uji read_dir bertingkat dan nama entri non-UTF-8 (23 November 2026)
+
+- Probe filesystem kini memeriksa bahwa `std::fs::read_dir("/tmp")` dapat
+  menemukan nama file yang mengandung byte `0xff`, lalu membandingkan nama
+  melalui `DirEntry::file_name().as_bytes()` tanpa konversi UTF-8.
+- Probe direktori bertingkat memeriksa `read_dir`, `file_name`, dan
+  `DirEntry::metadata().is_file()` pada file yang baru dibuat.
+- QEMU gate mewajibkan marker `RUST-STD-READ-DIR-BYTE-NAME-PASS` dan
+  `RUST-STD-READ-DIR-NESTED-PASS`.
+
+**Validasi:** perubahan source, assertion, dan roadmap sudah di-commit.
+Build upstream std dan eksekusi QEMU untuk marker baru belum diverifikasi.

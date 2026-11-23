@@ -8,6 +8,44 @@ use std::io::{Seek, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::process::{Command, Stdio};
 
+
+// Minimal direct syscall helpers for testing the kernel's dirfd ABI independently
+// of the upstream libc/std wrappers.
+unsafe fn syscall3(number: u64, arg1: u64, arg2: u64, arg3: u64) -> i64 {
+    let result: i64;
+    unsafe {
+        std::arch::asm!(
+            "int 0x80",
+            inlateout("rax") number as i64 => result,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+    result
+}
+
+unsafe fn syscall4(number: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> i64 {
+    let result: i64;
+    unsafe {
+        std::arch::asm!(
+            "int 0x80",
+            inlateout("rax") number as i64 => result,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+    result
+}
+
 fn marker(message: &str) {
     println!("{message}");
 }
@@ -242,6 +280,86 @@ fn main() {
         std::process::exit(36);
     }
     marker("RUST-STD-FS-PATH-MANAGEMENT-PASS");
+
+    // Exercise the dirfd-relative POSIX ABI directly. These calls are kept
+    // separate from std::fs path calls so a passing test proves that the
+    // kernel resolves relative names against the supplied directory fd.
+    let dirfd_file = match std::fs::File::open("/tmp") {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("open /tmp directory descriptor failed: {error}");
+            marker("RUST-STD-AT-DIRFD-FAIL");
+            std::process::exit(40);
+        }
+    };
+    let dirfd = std::os::fd::AsRawFd::as_raw_fd(&dirfd_file) as u64;
+    let stem = format!("octagram-at-{}", std::process::id());
+    let directory_name = std::ffi::CString::new(format!("{stem}-dir")).unwrap();
+    let source_name = std::ffi::CString::new(format!("{stem}-source")).unwrap();
+    let target_name = std::ffi::CString::new(format!("{stem}-target")).unwrap();
+
+    let mkdir_result = unsafe {
+        syscall3(42, dirfd, directory_name.as_ptr() as usize as u64, 0o700)
+    };
+    if mkdir_result < 0 {
+        marker("RUST-STD-AT-DIRFD-FAIL");
+        std::process::exit(41);
+    }
+    let open_result = unsafe {
+        syscall4(
+            40,
+            dirfd,
+            source_name.as_ptr() as usize as u64,
+            0x102, // O_CREAT | O_RDWR
+            0o600,
+        )
+    };
+    if open_result < 0 {
+        let _ = unsafe { syscall3(43, dirfd, directory_name.as_ptr() as usize as u64, 0x200) };
+        marker("RUST-STD-AT-DIRFD-FAIL");
+        std::process::exit(42);
+    }
+    let mut relative_file = unsafe {
+        std::os::fd::FromRawFd::from_raw_fd(open_result as i32)
+    };
+    if relative_file.write_all(b"dirfd-relative-write").is_err()
+        || relative_file.sync_all().is_err()
+    {
+        drop(relative_file);
+        let _ = unsafe { syscall3(43, dirfd, source_name.as_ptr() as usize as u64, 0) };
+        let _ = unsafe { syscall3(43, dirfd, directory_name.as_ptr() as usize as u64, 0x200) };
+        marker("RUST-STD-AT-DIRFD-FAIL");
+        std::process::exit(43);
+    }
+    drop(relative_file);
+    let rename_result = unsafe {
+        syscall4(
+            44,
+            dirfd,
+            source_name.as_ptr() as usize as u64,
+            dirfd,
+            target_name.as_ptr() as usize as u64,
+        )
+    };
+    let read_back = std::fs::read(std::path::Path::new("/tmp").join(
+        std::ffi::OsStr::from_bytes(target_name.as_bytes())
+    ));
+    let unlink_file = unsafe {
+        syscall3(43, dirfd, target_name.as_ptr() as usize as u64, 0)
+    };
+    let unlink_dir = unsafe {
+        syscall3(43, dirfd, directory_name.as_ptr() as usize as u64, 0x200) // AT_REMOVEDIR
+    };
+    if rename_result < 0
+        || !matches!(read_back, Ok(bytes) if bytes == b"dirfd-relative-write")
+        || unlink_file < 0
+        || unlink_dir < 0
+    {
+        marker("RUST-STD-AT-DIRFD-FAIL");
+        std::process::exit(44);
+    }
+    marker("RUST-STD-AT-DIRFD-PASS");
+
 
     // Environment access must not panic when PATH is absent; the call itself
     // exercises std's environment PAL.

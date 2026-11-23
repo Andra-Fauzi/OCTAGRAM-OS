@@ -111,5 +111,5 @@ int main(void)
     if (unlink(renamed) != 0) {
         return 5;
     }
-    return puts("fstat/access/rename/umask/dup/fcntl/pread/pwrite/preadv2/pwritev2 passed") < 0 ? 6 : 0;
+    return puts("fstat/access/rename/umask/dup/fcntl/pread/pwrite passed") < 0 ? 6 : 0;
 }

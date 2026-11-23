@@ -2252,3 +2252,15 @@ test kernel serta QEMU masih belum diverifikasi.
 
 **Validasi:** commit implementasi dan dokumentasi tersedia; unit test, build
 kernel, dan QEMU belum diverifikasi.
+
+
+## 63. Validasi source untuk same-path EXT2 rename (23 November 2026)
+
+- `rename(path, path)` kini memeriksa bahwa source benar-benar ada sebelum
+  mengembalikan sukses tanpa perubahan.
+- Path yang tidak ada menghasilkan `FsError::NotFound`, konsisten dengan
+  perilaku RamFS dan menghindari sukses palsu.
+- Regression test mencakup path yang hilang dan path file yang benar-benar ada.
+
+**Validasi:** kode dan regression test sudah di-commit; eksekusi test/build/QEMU
+belum tersedia untuk diverifikasi.

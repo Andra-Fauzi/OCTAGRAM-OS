@@ -3,7 +3,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::fs::{
-    DirectoryEntry, FileSystem, FsError, Metadata, NodeType, current_timestamp, normalize_path,
+    DirectoryEntry, FileSystem, FsError, Metadata, NodeType, current_timestamp, decode_path_bytes,
+    encode_path_bytes, normalize_path,
 };
 
 use super::block::{BlockDevice, BlockDeviceRef, SECTOR_SIZE};
@@ -1021,8 +1022,7 @@ impl Ext2 {
                     if name_bytes.contains(&0) || name_bytes.contains(&b'/') {
                         return Err(FsError::InvalidData);
                     }
-                    let name =
-                        String::from_utf8(name_bytes.to_vec()).map_err(|_| FsError::InvalidData)?;
+                    let name = encode_path_bytes(name_bytes)?;
                     records.push(DirectoryRecord {
                         inode: inode_number,
                         name,
@@ -1081,6 +1081,7 @@ impl Ext2 {
         file_type: u8,
     ) -> Result<(), FsError> {
         validate_name(name)?;
+        let name_bytes = decode_path_bytes(name)?;
         let mut parent = self.read_inode(parent_number)?;
         if parent.node_type()? != NodeType::Directory {
             return Err(FsError::NotDirectory);
@@ -1098,7 +1099,7 @@ impl Ext2 {
             self.write_inode(parent_number, &parent)?;
         }
 
-        let needed = directory_record_size(name.len());
+        let needed = directory_record_size(name_bytes.len());
         let block_count = usize::try_from(parent.size(self.superblock.feature_ro_compat)?)
             .map_err(|_| FsError::InvalidData)?
             .div_ceil(self.superblock.block_size);
@@ -1431,7 +1432,7 @@ impl FileSystem for Ext2 {
                 return Err(FsError::IoError);
             }
         }
-        String::from_utf8(bytes).map_err(|_| FsError::InvalidData)
+        encode_path_bytes(&bytes)
     }
 
     fn read(&self, path: &str, offset: usize, buffer: &mut [u8]) -> Result<usize, FsError> {
@@ -1621,7 +1622,11 @@ impl FileSystem for Ext2 {
     }
 
     fn create_symlink(&mut self, target: &str, path: &str) -> Result<(), FsError> {
-        if target.is_empty() || target.len() > u32::MAX as usize || target.as_bytes().contains(&0) {
+        let target_bytes = decode_path_bytes(target)?;
+        if target_bytes.is_empty()
+            || target_bytes.len() > u32::MAX as usize
+            || target_bytes.contains(&0)
+        {
             return Err(FsError::InvalidPath);
         }
         let (parent_number, _, name) = self.parent_and_name(path)?;
@@ -1630,13 +1635,13 @@ impl FileSystem for Ext2 {
         inode.set_mode(0xA000 | 0o777);
         inode.set_links(1);
         inode.set_modified_time(current_timestamp().unwrap_or(0))?;
-        inode.set_size(target.len() as u64, self.superblock.feature_ro_compat)?;
-        let result = if target.len() <= 60 {
-            inode.bytes[EXT2_INODE_POINTERS_OFFSET..EXT2_INODE_POINTERS_OFFSET + target.len()]
-                .copy_from_slice(target.as_bytes());
+        inode.set_size(target_bytes.len() as u64, self.superblock.feature_ro_compat)?;
+        let result = if target_bytes.len() <= 60 {
+            inode.bytes[EXT2_INODE_POINTERS_OFFSET..EXT2_INODE_POINTERS_OFFSET + target_bytes.len()]
+                .copy_from_slice(&target_bytes);
             self.write_inode(inode_number, &inode)
         } else {
-            let result = self.write_file_range(&mut inode, 0, target.as_bytes());
+            let result = self.write_file_range(&mut inode, 0, &target_bytes);
             if result.is_ok() {
                 self.write_inode(inode_number, &inode)
             } else {
@@ -2303,12 +2308,13 @@ fn parse_superblock(bytes: &[u8; EXT2_SUPERBLOCK_SIZE]) -> Result<Superblock, Fs
 }
 
 fn validate_name(name: &str) -> Result<(), FsError> {
-    if name.is_empty()
-        || name.len() > MAX_FILE_NAME
-        || name == "."
-        || name == ".."
-        || name.as_bytes().contains(&0)
-        || name.as_bytes().contains(&b'/')
+    let bytes = decode_path_bytes(name)?;
+    if bytes.is_empty()
+        || bytes.len() > MAX_FILE_NAME
+        || bytes.as_slice() == b"."
+        || bytes.as_slice() == b".."
+        || bytes.contains(&0)
+        || bytes.contains(&b'/')
     {
         return Err(FsError::InvalidPath);
     }
@@ -2328,8 +2334,9 @@ fn write_directory_record(
     file_type: u8,
     has_file_type: bool,
 ) -> Result<(), FsError> {
-    if name.len() > MAX_FILE_NAME
-        || record_length < directory_record_size(name.len())
+    let name_bytes = decode_path_bytes(name)?;
+    if name_bytes.len() > MAX_FILE_NAME
+        || record_length < directory_record_size(name_bytes.len())
         || record_length > u16::MAX as usize
         || offset
             .checked_add(record_length)
@@ -2341,12 +2348,12 @@ fn write_directory_record(
     write_u32(data, offset, inode_number)?;
     write_u16(data, offset + 4, record_length as u16)?;
     if has_file_type {
-        data[offset + 6] = name.len() as u8;
+        data[offset + 6] = name_bytes.len() as u8;
         data[offset + 7] = file_type;
     } else {
-        write_u16(data, offset + 6, name.len() as u16)?;
+        write_u16(data, offset + 6, name_bytes.len() as u16)?;
     }
-    data[offset + 8..offset + 8 + name.len()].copy_from_slice(name.as_bytes());
+    data[offset + 8..offset + 8 + name_bytes.len()].copy_from_slice(&name_bytes);
     Ok(())
 }
 
@@ -2405,7 +2412,7 @@ mod tests {
     use spin::Mutex;
 
     use super::{EXT2_FT_REG_FILE, EXT2_MAGIC, Ext2};
-    use crate::fs::{FileSystem, FsError, NodeType};
+    use crate::fs::{decode_path_bytes, encode_path_bytes, FileSystem, FsError, NodeType};
     use crate::storage::block::{BlockDevice, SECTOR_SIZE};
 
     struct MemoryDisk {
@@ -2460,6 +2467,54 @@ mod tests {
             self.bytes.lock()[start..end].copy_from_slice(buffer);
             Ok(())
         }
+    }
+
+    #[test]
+    fn preserves_non_utf8_names_and_symlink_targets_on_disk() {
+        let disk = test_disk();
+        let mut filesystem = Ext2::mount(disk.clone()).unwrap();
+
+        let raw_name = b"non-utf8-\xff-name";
+        let encoded_name = encode_path_bytes(raw_name).unwrap();
+        let path = alloc::format!("/{encoded_name}");
+        filesystem.create_file(&path).unwrap();
+        assert_eq!(filesystem.metadata(&path).unwrap().node_type, NodeType::File);
+        assert!(filesystem
+            .read_dir("/")
+            .unwrap()
+            .iter()
+            .any(|entry| entry.name == encoded_name));
+
+        let raw_target = b"/tmp/target-\xfe";
+        let encoded_target = encode_path_bytes(raw_target).unwrap();
+        let link_name = encode_path_bytes(b"/raw-byte-link").unwrap();
+        filesystem.create_symlink(&encoded_target, &link_name).unwrap();
+        let stored_target = filesystem.read_link(&link_name).unwrap();
+        assert_eq!(decode_path_bytes(&stored_target).unwrap(), raw_target);
+
+        let disk_bytes = disk.bytes.lock();
+        assert!(
+            disk_bytes.windows(raw_name.len()).any(|window| window == raw_name),
+            "raw EXT2 filename bytes were not written to the directory block"
+        );
+        assert!(
+            disk_bytes.windows(raw_target.len()).any(|window| window == raw_target),
+            "raw EXT2 symlink target bytes were not written to the inode"
+        );
+        drop(disk_bytes);
+        drop(filesystem);
+
+        let remounted = Ext2::mount(disk).unwrap();
+        assert_eq!(remounted.metadata(&path).unwrap().node_type, NodeType::File);
+        assert!(remounted
+            .read_dir("/")
+            .unwrap()
+            .iter()
+            .any(|entry| entry.name == encoded_name));
+        assert_eq!(
+            decode_path_bytes(&remounted.read_link(&link_name).unwrap()).unwrap(),
+            raw_target
+        );
     }
 
     #[test]

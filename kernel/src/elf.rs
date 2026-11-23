@@ -6391,7 +6391,7 @@ fn syscall_readdir(fd: u64, address: u64) -> Result<u64, i32> {
 fn user_dirent(index: usize, entry: &DirectoryEntry) -> Result<UserDirent, i32> {
     // DirectoryEntry names use the same reversible internal representation as
     // syscall paths. The POSIX dirent ABI must expose the original byte name.
-    let name = decode_internal_path_bytes(&entry.name)?;
+    let name = fs::decode_path_bytes(&entry.name).map_err(errno_from_fs)?;
     if name.len() >= 256 {
         return Err(ENAMETOOLONG);
     }
@@ -6608,7 +6608,7 @@ fn syscall_readlink_path(path: String, buffer_address: u64, size: u64) -> Result
     let target = fs::with_vfs(|vfs| vfs.read_link(&path))
         .map_err(errno_from_fs)?
         .map_err(errno_from_fs)?;
-    let bytes = decode_internal_path_bytes(&target)?;
+    let bytes = fs::decode_path_bytes(&target).map_err(errno_from_fs)?;
     let count = bytes.len().min(size);
     if count > 0 {
         paging::validate_user_range(buffer_address, count, true).map_err(|_| EFAULT)?;
@@ -7438,7 +7438,7 @@ fn syscall_getcwd(address: u64, size: u64) -> Result<u64, i32> {
         }
         process.cwd.clone()
     };
-    let path_bytes = decode_internal_path_bytes(&path)?;
+    let path_bytes = fs::decode_path_bytes(&path).map_err(errno_from_fs)?;
     let needed = path_bytes.len().checked_add(1).ok_or(EINVAL)?;
     if size < needed {
         return Err(ERANGE);
@@ -8472,102 +8472,6 @@ fn resolve_user_path(cwd: &str, path: &str) -> Result<String, FsError> {
     fs::normalize_path(&joined)
 }
 
-// Paths are byte strings on Unix, but the current VFS interface stores
-// normalized paths as Rust String. Escape only invalid UTF-8 bytes into a
-// reserved Unicode sequence so they survive that interface without loss.
-const INTERNAL_PATH_ESCAPE: char = '\u{10fffd}';
-const INTERNAL_PATH_BYTE_BASE: u32 = 0xe000;
-
-fn encode_internal_path_bytes(bytes: &[u8]) -> Result<String, i32> {
-    let capacity = bytes.len().checked_mul(7).ok_or(ENOMEM)?;
-    let mut encoded = String::new();
-    encoded.try_reserve(capacity).map_err(|_| ENOMEM)?;
-
-    let mut remaining = bytes;
-    while !remaining.is_empty() {
-        match core::str::from_utf8(remaining) {
-            Ok(valid) => {
-                for character in valid.chars() {
-                    encoded.push(character);
-                    if character == INTERNAL_PATH_ESCAPE {
-                        // Escape the escape marker itself to keep the mapping
-                        // bijective for valid Unicode path components too.
-                        encoded.push(character);
-                    }
-                }
-                break;
-            }
-            Err(error) => {
-                let valid_length = error.valid_up_to();
-                if valid_length != 0 {
-                    let valid = core::str::from_utf8(&remaining[..valid_length])
-                        .map_err(|_| EILSEQ)?;
-                    for character in valid.chars() {
-                        encoded.push(character);
-                        if character == INTERNAL_PATH_ESCAPE {
-                            encoded.push(character);
-                        }
-                    }
-                }
-                remaining = &remaining[valid_length..];
-                let invalid_length = error.error_len().unwrap_or(remaining.len());
-                if invalid_length == 0 {
-                    return Err(EILSEQ);
-                }
-                for byte in &remaining[..invalid_length] {
-                    encoded.push(INTERNAL_PATH_ESCAPE);
-                    let codepoint = INTERNAL_PATH_BYTE_BASE + u32::from(*byte);
-                    encoded.push(char::from_u32(codepoint).ok_or(EINVAL)?);
-                }
-                remaining = &remaining[invalid_length..];
-            }
-        }
-    }
-
-    Ok(encoded)
-}
-
-fn decode_internal_path_bytes(encoded: &str) -> Result<Vec<u8>, i32> {
-    let mut bytes = Vec::new();
-    bytes.try_reserve(encoded.len()).map_err(|_| ENOMEM)?;
-    let mut characters = encoded.chars();
-
-    while let Some(character) = characters.next() {
-        if character != INTERNAL_PATH_ESCAPE {
-            let mut buffer = [0; 4];
-            bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
-            continue;
-        }
-
-        match characters.next() {
-            Some(next) if next == INTERNAL_PATH_ESCAPE => {
-                let mut buffer = [0; 4];
-                bytes.extend_from_slice(next.encode_utf8(&mut buffer).as_bytes());
-            }
-            Some(next)
-                if (INTERNAL_PATH_BYTE_BASE..=INTERNAL_PATH_BYTE_BASE + 0xff)
-                    .contains(&(next as u32)) =>
-            {
-                bytes.push((next as u32 - INTERNAL_PATH_BYTE_BASE) as u8);
-            }
-            Some(next) => {
-                // Preserve an unescaped marker in paths created by kernel
-                // internals rather than treating it as malformed user data.
-                let mut buffer = [0; 4];
-                bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
-                let mut buffer = [0; 4];
-                bytes.extend_from_slice(next.encode_utf8(&mut buffer).as_bytes());
-            }
-            None => {
-                let mut buffer = [0; 4];
-                bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
-            }
-        }
-    }
-
-    Ok(bytes)
-}
-
 fn copy_user_path(address: u64) -> Result<String, i32> {
     if address == 0 {
         return Err(EFAULT);
@@ -8579,7 +8483,7 @@ fn copy_user_path(address: u64) -> Result<String, i32> {
         paging::validate_user_range(current, 1, false).map_err(|_| EFAULT)?;
         let byte = unsafe { (current as *const u8).read() };
         if byte == 0 {
-            return encode_internal_path_bytes(&bytes);
+            return fs::encode_path_bytes(&bytes).map_err(errno_from_fs);
         }
         if bytes.len() == bytes.capacity() {
             bytes.try_reserve(1).map_err(|_| ENOMEM)?;
@@ -8588,7 +8492,6 @@ fn copy_user_path(address: u64) -> Result<String, i32> {
     }
     Err(ENAMETOOLONG)
 }
-
 fn copy_user_argument_vector(address: u64) -> Result<Vec<String>, i32> {
     if address == 0 {
         return Err(EFAULT);
@@ -9497,12 +9400,12 @@ mod tests {
         original.extend_from_slice(&[0xff, 0xfe, 0xc3, 0x28]);
         original.extend_from_slice("café".as_bytes());
         original.push(0);
-        let encoded = super::encode_internal_path_bytes(&original).unwrap();
+        let encoded = fs::encode_path_bytes(&original).unwrap();
 
         assert!(core::str::from_utf8(encoded.as_bytes()).is_ok());
-        assert_eq!(super::decode_internal_path_bytes(&encoded).unwrap(), original);
+        assert_eq!(fs::decode_path_bytes(&encoded).unwrap(), original);
         assert_eq!(
-            super::encode_internal_path_bytes(b"/tmp/ordinary-%name").unwrap(),
+            fs::encode_path_bytes(b"/tmp/ordinary-%name").unwrap(),
             "/tmp/ordinary-%name"
         );
     }
@@ -9510,7 +9413,7 @@ mod tests {
     #[test]
     fn exports_original_non_utf8_name_in_the_posix_dirent_abi() {
         let original = [b'o', b'c', b't', b'-', 0xff, 0xfe];
-        let encoded = super::encode_internal_path_bytes(&original).unwrap();
+        let encoded = fs::encode_path_bytes(&original).unwrap();
         let entry = DirectoryEntry {
             name: encoded,
             metadata: Metadata {

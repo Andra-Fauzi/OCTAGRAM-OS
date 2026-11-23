@@ -655,6 +655,99 @@ impl Default for Vfs {
     }
 }
 
+// POSIX pathnames are byte sequences, while the VFS currently uses String
+// as its common path type. Escape invalid UTF-8 bytes into a reserved Unicode
+// sequence while a pathname crosses that boundary. The encoding is
+// reversible, including for valid names containing the escape marker.
+const INTERNAL_PATH_ESCAPE: char = '\u{10fffd}';
+const INTERNAL_PATH_BYTE_BASE: u32 = 0xe000;
+
+pub(crate) fn encode_path_bytes(bytes: &[u8]) -> Result<String, FsError> {
+    let capacity = bytes.len().checked_mul(7).ok_or(FsError::NoSpace)?;
+    let mut encoded = String::new();
+    encoded.try_reserve(capacity).map_err(|_| FsError::NoSpace)?;
+
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        match core::str::from_utf8(remaining) {
+            Ok(valid) => {
+                for character in valid.chars() {
+                    encoded.push(character);
+                    if character == INTERNAL_PATH_ESCAPE {
+                        encoded.push(character);
+                    }
+                }
+                break;
+            }
+            Err(error) => {
+                let valid_length = error.valid_up_to();
+                if valid_length != 0 {
+                    let valid = core::str::from_utf8(&remaining[..valid_length])
+                        .map_err(|_| FsError::InvalidData)?;
+                    for character in valid.chars() {
+                        encoded.push(character);
+                        if character == INTERNAL_PATH_ESCAPE {
+                            encoded.push(character);
+                        }
+                    }
+                }
+                remaining = &remaining[valid_length..];
+                let invalid_length = error.error_len().unwrap_or(remaining.len());
+                if invalid_length == 0 {
+                    return Err(FsError::InvalidData);
+                }
+                for byte in &remaining[..invalid_length] {
+                    encoded.push(INTERNAL_PATH_ESCAPE);
+                    let codepoint = INTERNAL_PATH_BYTE_BASE + u32::from(*byte);
+                    encoded.push(char::from_u32(codepoint).ok_or(FsError::InvalidData)?);
+                }
+                remaining = &remaining[invalid_length..];
+            }
+        }
+    }
+
+    Ok(encoded)
+}
+
+pub(crate) fn decode_path_bytes(encoded: &str) -> Result<Vec<u8>, FsError> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve(encoded.len()).map_err(|_| FsError::NoSpace)?;
+    let mut characters = encoded.chars();
+
+    while let Some(character) = characters.next() {
+        if character != INTERNAL_PATH_ESCAPE {
+            let mut buffer = [0; 4];
+            bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+            continue;
+        }
+
+        match characters.next() {
+            Some(next) if next == INTERNAL_PATH_ESCAPE => {
+                let mut buffer = [0; 4];
+                bytes.extend_from_slice(next.encode_utf8(&mut buffer).as_bytes());
+            }
+            Some(next)
+                if (INTERNAL_PATH_BYTE_BASE..=INTERNAL_PATH_BYTE_BASE + 0xff)
+                    .contains(&(next as u32)) =>
+            {
+                bytes.push((next as u32 - INTERNAL_PATH_BYTE_BASE) as u8);
+            }
+            Some(next) => {
+                let mut buffer = [0; 4];
+                bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+                let mut buffer = [0; 4];
+                bytes.extend_from_slice(next.encode_utf8(&mut buffer).as_bytes());
+            }
+            None => {
+                let mut buffer = [0; 4];
+                bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+            }
+        }
+    }
+
+    Ok(bytes)
+}
+
 /// Normalize an absolute path and reject attempts to walk above the root.
 pub fn normalize_path(path: &str) -> Result<String, FsError> {
     if !path.starts_with('/') || path.as_bytes().contains(&0) {

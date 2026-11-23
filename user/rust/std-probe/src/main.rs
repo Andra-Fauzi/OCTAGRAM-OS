@@ -4,7 +4,15 @@
 //! kernel image so its process, filesystem, clock, thread and I/O paths can be
 //! exercised under QEMU rather than merely type-checked on the host.
 
+use std::cell::Cell;
 use std::io::{Seek, Write};
+
+// Force a real non-empty PT_TLS image in the executable. This checks that
+// Rust's local-exec TLS relocations and OCTAGRAM's startup TLS initializer
+// agree on the target ABI instead of merely emitting an empty TLS header.
+std::thread_local! {
+    static RUST_TLS_PROBE: Cell<u64> = const { Cell::new(0x4f43_5441_4752_414d) };
+}
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::process::{Command, Stdio};
 
@@ -51,6 +59,17 @@ fn marker(message: &str) {
 }
 
 fn main() {
+    let tls_value = RUST_TLS_PROBE.with(|value| {
+        let initial = value.get();
+        value.set(initial ^ 0x0101);
+        (initial, value.get())
+    });
+    if tls_value != (0x4f43_5441_4752_414d, 0x4f43_5441_4752_404c) {
+        marker("RUST-STD-TLS-FAIL");
+        std::process::exit(68);
+    }
+    marker("RUST-STD-TLS-PASS");
+
     // Exercise the upstream Unix FFI traits, not the OCTAGRAM helper wrappers.
     // Unix filenames are arbitrary bytes and must not be forced through UTF-8.
     let raw_name = vec![b'o', b'c', b't', 0xff];

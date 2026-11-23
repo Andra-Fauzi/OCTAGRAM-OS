@@ -1677,6 +1677,11 @@ impl FileSystem for Ext2 {
         // destroying the old inode until the new directory entry is installed.
         let replaced = match self.lookup_inode(&target) {
             Ok((inode_number, inode)) => {
+                // POSIX rename is a no-op when both names already refer to
+                // the same inode (for example, two hard links to one file).
+                if inode_number == source_inode_number {
+                    return Ok(());
+                }
                 if node_type != NodeType::File || inode.node_type()? != NodeType::File {
                     return Err(if inode.node_type()? == NodeType::Directory {
                         FsError::IsDirectory
@@ -2660,6 +2665,29 @@ mod tests {
             26
         );
         assert_eq!(&data, source);
+    }
+
+    #[test]
+    fn renaming_one_hard_link_over_another_link_to_same_inode_is_noop() {
+        let disk = test_disk();
+        let mut filesystem = Ext2::mount(disk).unwrap();
+        filesystem.create_file("/source").unwrap();
+        filesystem.write("/source", 0, b"shared inode").unwrap();
+        let (inode_number, mut inode) = filesystem.lookup_inode("/source").unwrap();
+        inode.set_links(2);
+        filesystem.write_inode(inode_number, &inode).unwrap();
+        filesystem
+            .insert_directory_entry(2, "alias", inode_number, EXT2_FT_REG_FILE)
+            .unwrap();
+
+        filesystem.rename("/source", "/alias").unwrap();
+
+        assert_eq!(filesystem.lookup_inode("/source").unwrap().0, inode_number);
+        assert_eq!(filesystem.lookup_inode("/alias").unwrap().0, inode_number);
+        assert_eq!(filesystem.read_inode(inode_number).unwrap().links(), 2);
+        let mut bytes = [0; 12];
+        assert_eq!(filesystem.read("/source", 0, &mut bytes).unwrap(), 12);
+        assert_eq!(&bytes, b"shared inode");
     }
 
     #[test]

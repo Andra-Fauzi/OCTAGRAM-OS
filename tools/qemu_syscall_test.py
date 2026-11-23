@@ -261,6 +261,8 @@ def main():
         ("RUST-STD-PATH-LEXICAL-PASS", "lexical path components and joins"),
         ("RUST-STD-FS-BYTE-PATH-PASS", "non-UTF-8 filesystem paths"),
         ("RUST-STD-FS-DIRECTORY-PASS", "directory rename and file descriptor I/O"),
+        ("RUST-STD-FS-TRUNCATE-PASS", "file descriptor truncation and data sync"),
+        ("RUST-STD-FS-ATOMIC-RENAME-PASS", "atomic artifact replacement"),
         ("RUST-STD-FS-PATH-MANAGEMENT-PASS", "nested directories and current directory"),
         ("RUST-STD-ENV-PASS", "environment"),
         ("RUST-STD-FS-METADATA-PASS", "filesystem metadata"),

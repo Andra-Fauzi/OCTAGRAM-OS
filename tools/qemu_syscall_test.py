@@ -179,6 +179,7 @@ def main():
             "Rust custom target x86_64-unknown-octagram runs in OCTAGRAM!",
             "M4-RUST-TARGET-EXEC",
         ),
+        ("/bin/execve-demo", "EXECVP-PATH-SEARCH-PASS", "LIBC-EXECVP-PATH-SEARCH"),
     )
     for command, marker, label in guest_tests:
         output_offset = len(serial_text())

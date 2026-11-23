@@ -2524,3 +2524,19 @@ pada kernel atau menghasilkan `ECHILD`.
 
 **Validasi:** perubahan source, gate QEMU, dan roadmap telah diperbarui.
 Runtime tetap menunggu hasil job QEMU.
+
+
+## 79. Validasi PID child dan perbaikan probe SIGTERM (23 November 2026)
+
+Probe proses Rust std diperbaiki agar child yang dikirim SIGTERM benar-benar
+menjalankan `kill -TERM $$` dan mengirim sinyal kepada dirinya sendiri.
+Perintah `kill -TERM $` sebelumnya tidak memiliki ekspansi PID yang valid,
+sehingga tidak dapat membuktikan encoding wait status untuk terminasi sinyal.
+
+Probe lifecycle juga memeriksa `Child::id()` segera setelah `spawn()` dan
+mewajibkan PID child bukan nol sebelum `try_wait`, `kill`, dan `wait`.
+Marker QEMU wajib baru: `RUST-STD-PROCESS-CHILD-ID-PASS`.
+
+**Validasi:** source probe dan gate QEMU diperbarui. Build host pada run
+sebelumnya telah menyelesaikan kompilasi target Rust std; hasil runtime QEMU
+untuk revisi ini masih menunggu workflow baru.

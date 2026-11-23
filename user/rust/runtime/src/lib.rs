@@ -330,17 +330,11 @@ impl PathBuf {
     /// Remove the final path component. Returns false when the path is empty
     /// or already denotes the root directory.
     pub fn pop(&mut self) -> bool {
-        let bytes = &mut self.inner.bytes;
-        let end = match bytes.iter().rposition(|byte| *byte != b'/') {
-            Some(index) => index + 1,
+        let parent_length = match self.as_path().parent() {
+            Some(parent) => parent.as_bytes().len(),
             None => return false,
         };
-        let parent_end = match bytes[..end].iter().rposition(|byte| *byte == b'/') {
-            Some(0) => 1,
-            Some(index) => index,
-            None => 0,
-        };
-        bytes.truncate(parent_end);
+        self.inner.bytes.truncate(parent_length);
         true
     }
 
@@ -2731,6 +2725,16 @@ mod tests {
         assert!(root_child.pop());
         assert_eq!(root_child.as_bytes(), b"/");
         assert!(!root_child.pop());
+
+        let mut repeated_relative = super::PathBuf::from_bytes(b"foo//bar");
+        assert!(repeated_relative.pop());
+        assert_eq!(repeated_relative.as_bytes(), b"foo");
+        let mut repeated_absolute = super::PathBuf::from_bytes(b"/foo///bar");
+        assert!(repeated_absolute.pop());
+        assert_eq!(repeated_absolute.as_bytes(), b"/foo");
+        let mut repeated_trailing = super::PathBuf::from_bytes(b"foo///bar///");
+        assert!(repeated_trailing.pop());
+        assert_eq!(repeated_trailing.as_bytes(), b"foo");
 
         let mut relative = super::PathBuf::from_bytes(b"one/two/");
         assert!(relative.pop());

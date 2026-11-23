@@ -2646,6 +2646,8 @@ the final source symlink is linked as a symlink rather than followed.
 - Kernel EXT2 tests cover inode identity, shared writes, duplicate/missing
   names, directory rejection, remount persistence, and hard-linking a symlink.
 
-**Known limits:** RAMFS and FAT32 do not implement hard links and retain the
-default `Unsupported` result. `AT_SYMLINK_FOLLOW` and `AT_EMPTY_PATH` are
-not implemented. Guest QEMU and CI results are pending for this revision.
+**Status and limits:** EXT2 and RAMFS implement shared-inode hard links;
+RAMFS shares file data and permissions through reference-counted inode state.
+FAT32 retains the default `Unsupported` result. `AT_SYMLINK_FOLLOW` and
+`AT_EMPTY_PATH` are not implemented. Guest QEMU and CI results are pending
+for this revision.

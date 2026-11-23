@@ -1,6 +1,8 @@
 #![no_std]
 extern crate alloc;
 
+use alloc::borrow::Cow;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 #[cfg(not(test))]
@@ -36,6 +38,10 @@ impl<'a> OsStr<'a> {
     pub const fn len(self) -> usize { self.bytes.len() }
     pub fn to_os_string(self) -> OsString { OsString { bytes: self.bytes.to_vec() } }
     pub fn to_str(self) -> Option<&'a str> { core::str::from_utf8(self.bytes).ok() }
+    /// Convert to UTF-8 text, replacing invalid byte sequences with U+FFFD.
+    pub fn to_string_lossy(self) -> Cow<'a, str> {
+        String::from_utf8_lossy(self.bytes)
+    }
     pub fn is_empty(self) -> bool { self.bytes.is_empty() }
     pub fn contains_nul(self) -> bool { self.bytes.contains(&0) }
 }
@@ -83,6 +89,10 @@ impl OsString {
 
 impl<'a> From<&'a str> for OsString {
     fn from(value: &'a str) -> Self { Self::from_bytes(value.as_bytes()) }
+}
+
+impl From<String> for OsString {
+    fn from(value: String) -> Self { Self { bytes: value.into_bytes() } }
 }
 
 /// Borrowed path view using Unix-style '/' separators and raw OS bytes.
@@ -2553,6 +2563,21 @@ mod tests {
         assert_eq!(value.try_to_cstring_bytes().unwrap(), [b'f', 0x80, b'o', 0]);
         let invalid = super::OsString::from_bytes([b'a', 0, b'b']);
         assert_eq!(invalid.try_to_cstring_bytes(), Err(-22));
+    }
+
+    #[test]
+    fn os_str_lossy_conversion_and_owned_string_conversion_work() {
+        use alloc::borrow::Cow;
+
+        let valid = super::OsStr::from_bytes("café".as_bytes());
+        assert!(matches!(valid.to_string_lossy(), Cow::Borrowed("café")));
+
+        let invalid = super::OsStr::from_bytes(&[b'a', 0x80, b'b']);
+        assert_eq!(invalid.to_string_lossy(), "a�b");
+
+        let owned = String::from("octagram");
+        let os_string = super::OsString::from(owned);
+        assert_eq!(os_string.as_bytes(), b"octagram");
     }
 
     #[test]

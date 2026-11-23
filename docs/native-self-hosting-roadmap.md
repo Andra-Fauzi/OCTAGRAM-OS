@@ -1971,3 +1971,19 @@ dinyatakan lulus.
 
 **Validasi:** source dan regression test telah di-commit. Host unit test,
 target build, dan QEMU belum dijalankan pada perubahan ini.
+
+
+## 44. Konversi UTF-8 dan panjang byte OsString (23 November 2026)
+
+- Menambahkan `OsStr::len()` dan `OsString::len()` dengan semantik panjang
+  byte, bukan jumlah karakter Unicode.
+- Menambahkan `OsString::into_string()`. Konversi berhasil menghasilkan
+  `String` untuk byte UTF-8 valid; jika byte tidak valid, error mengembalikan
+  `OsString` asli sehingga nama file non-UTF-8 tidak hilang.
+- Regression test mencakup konversi UTF-8 valid, panjang byte, serta
+  pemulihan byte invalid secara persis.
+
+**Validasi:** source dan test sudah di-commit. Host unit test, target build,
+dan QEMU belum dijalankan pada perubahan ini. Ini memperluas subset API
+`OsStr`/`OsString`, bukan berarti kompatibilitas penuh `std::ffi` telah
+tercapai. Rustc native dan Cargo native masih belum diimplementasikan.

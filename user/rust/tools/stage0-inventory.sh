@@ -59,7 +59,7 @@ if [ -f "$TARGET_JSON" ]; then
     printf 'FOUND   %s\n' "$TARGET_JSON"
     # json-target-spec is nightly-only; this checks that rustc can parse the
     # custom target before spending time compiling core/alloc.
-    rustc +nightly -Z unstable-options -Z json-target-spec \
+    rustc +nightly -Z unstable-options \
         --print cfg --target "$TARGET_JSON" >/dev/null
     printf 'PASS    rustc accepted the OCTAGRAM target JSON\n'
 else

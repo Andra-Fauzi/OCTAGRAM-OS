@@ -46,6 +46,9 @@ pub struct OsString {
 
 impl OsString {
     pub const fn new() -> Self { Self { bytes: Vec::new() } }
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { bytes: Vec::with_capacity(capacity) }
+    }
     pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Self {
         Self { bytes: bytes.as_ref().to_vec() }
     }
@@ -53,6 +56,12 @@ impl OsString {
     pub fn as_bytes(&self) -> &[u8] { &self.bytes }
     pub fn into_bytes(self) -> Vec<u8> { self.bytes }
     pub fn push(&mut self, value: OsStr<'_>) { self.bytes.extend_from_slice(value.as_bytes()); }
+    pub fn capacity(&self) -> usize { self.bytes.capacity() }
+    pub fn reserve(&mut self, additional: usize) { self.bytes.reserve(additional); }
+    pub fn shrink_to_fit(&mut self) { self.bytes.shrink_to_fit(); }
+    /// Truncate the raw byte sequence; Unix OS strings need not be UTF-8.
+    pub fn truncate(&mut self, new_len: usize) { self.bytes.truncate(new_len); }
+    pub fn clear(&mut self) { self.bytes.clear(); }
     pub fn try_to_cstring_bytes(&self) -> Result<Vec<u8>, i64> {
         if self.bytes.contains(&0) { return Err(-22); }
         let mut result = self.bytes.clone();
@@ -304,7 +313,10 @@ impl PathBuf {
     pub fn as_bytes(&self) -> &[u8] { self.inner.as_bytes() }
     pub fn into_os_string(self) -> OsString { self.inner }
     pub fn is_empty(&self) -> bool { self.inner.is_empty() }
-    pub fn clear(&mut self) { self.inner.bytes.clear(); }
+    pub fn capacity(&self) -> usize { self.inner.capacity() }
+    pub fn reserve(&mut self, additional: usize) { self.inner.reserve(additional); }
+    pub fn shrink_to_fit(&mut self) { self.inner.shrink_to_fit(); }
+    pub fn clear(&mut self) { self.inner.clear(); }
     pub fn join(&self, path: impl AsRef<[u8]>) -> Self {
         let mut joined = self.clone();
         joined.push(path);
@@ -2680,6 +2692,34 @@ mod tests {
         assert_eq!(super::Path::new(b"/").components().collect::<alloc::vec::Vec<_>>(),
             alloc::vec![Component::RootDir]);
         assert!(super::Path::new(b"////").components().next() == Some(Component::RootDir));
+    }
+
+    #[test]
+    fn os_string_capacity_and_truncation_preserve_arbitrary_bytes() {
+        let mut value = super::OsString::with_capacity(8);
+        assert!(value.capacity() >= 8);
+        value.push(super::OsStr::from_bytes(&[b'a', 0x80, b'b']));
+        value.reserve(16);
+        assert!(value.capacity() >= value.as_bytes().len() + 16);
+        assert_eq!(value.to_str(), None);
+        value.truncate(2);
+        assert_eq!(value.as_bytes(), &[b'a', 0x80]);
+        value.clear();
+        assert!(value.is_empty());
+        value.shrink_to_fit();
+        assert!(value.capacity() >= value.as_bytes().len());
+    }
+
+    #[test]
+    fn path_buf_capacity_helpers_delegate_to_owned_os_string() {
+        let mut path = super::PathBuf::from_bytes(b"/src");
+        let before = path.capacity();
+        path.reserve(32);
+        assert!(path.capacity() >= before.max(path.as_bytes().len() + 32));
+        path.push(b"/main.rs");
+        assert_eq!(path.as_bytes(), b"/main.rs");
+        path.shrink_to_fit();
+        assert!(path.capacity() >= path.as_bytes().len());
     }
 
     #[test]

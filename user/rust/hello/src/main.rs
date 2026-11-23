@@ -330,7 +330,9 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(status) => status,
         Err(_) => return 41,
     };
-    if child_status != 42 || child.id().is_some() || child.wait().is_ok() {
+    // If try_wait already reaped the child, wait() must return the cached
+    // status rather than issuing a second waitpid and reporting ECHILD.
+    if child_status != 42 || child.id().is_some() || child.wait() != Ok(42) {
         return 42;
     }
     if write_all(STDOUT, b"Rust runtime child process/waitpid: PASS\n").is_err() {

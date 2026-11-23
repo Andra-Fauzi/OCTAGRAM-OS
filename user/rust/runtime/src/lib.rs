@@ -97,6 +97,27 @@ impl<'a> Path<'a> {
             && (base.last() == Some(&b'/') || path.get(base.len()) == Some(&b'/'))
     }
 
+    /// Return the portion of this path remaining after a matching prefix.
+    ///
+    /// This helper compares raw Unix path bytes and component boundaries; it
+    /// does not resolve "." or ".." and does not access the filesystem.
+    pub fn strip_prefix(self, base: impl AsRef<[u8]>) -> Option<Path<'a>> {
+        let path = self.as_bytes();
+        let base = trim_trailing_slashes(base.as_ref());
+        if base.is_empty() {
+            let remainder = path.iter().position(|byte| *byte != b'/').unwrap_or(path.len());
+            return Some(Path::new(&path[remainder..]));
+        }
+        if !self.starts_with(base) {
+            return None;
+        }
+        let mut remainder = &path[base.len()..];
+        while remainder.first() == Some(&b'/') {
+            remainder = &remainder[1..];
+        }
+        Some(Path::new(remainder))
+    }
+
     /// Test whether this path ends with another complete path component.
     pub fn ends_with(self, suffix: impl AsRef<[u8]>) -> bool {
         let path = trim_trailing_slashes(self.as_bytes());
@@ -2435,6 +2456,13 @@ mod tests {
         assert!(path.ends_with(b""));
         assert_eq!(super::Path::new(b"relative/path").starts_with(b""), true);
         assert_eq!(super::Path::new(b"/absolute/path").starts_with(b""), true);
+        assert_eq!(path.strip_prefix(b"/opt").unwrap().as_bytes(), b"octagram/bin/");
+        assert_eq!(path.strip_prefix(b"/opt/octagram/").unwrap().as_bytes(), b"bin/");
+        assert_eq!(path.strip_prefix(b"/opt/octagram/bin").unwrap().as_bytes(), b"");
+        assert_eq!(path.strip_prefix(b"/").unwrap().as_bytes(), b"opt/octagram/bin/");
+        assert_eq!(path.strip_prefix(b"/other"), None);
+        assert_eq!(super::Path::new(b"src/main.rs").strip_prefix(b"src").unwrap().as_bytes(), b"main.rs");
+        assert_eq!(super::Path::new(b"src/main.rs").strip_prefix(b"").unwrap().as_bytes(), b"src/main.rs");
         assert_eq!(path.file_stem().unwrap().as_bytes(), b"bin");
         assert_eq!(super::Path::new(b"archive.tar.gz").file_stem().unwrap().as_bytes(), b"archive.tar");
         assert_eq!(super::Path::new(b"foo/").parent().unwrap().as_bytes(), b"");

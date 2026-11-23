@@ -464,6 +464,45 @@ fn main() {
     }
     marker("RUST-STD-FS-COPY-PASS");
 
+    // Rust's filesystem API must create a second name for the same inode.
+    // Removing the first name must not destroy the build artifact while the
+    // second hard link still exists.
+    let hard_link_source = std::path::PathBuf::from(format!(
+        "/tmp/octagram-rust-hardlink-{}.source",
+        std::process::id()
+    ));
+    let hard_link_alias = std::path::PathBuf::from(format!(
+        "/tmp/octagram-rust-hardlink-{}.alias",
+        std::process::id()
+    ));
+    let hard_link_payload = b"cargo-hard-link-artifact";
+    let hard_link_result = (|| -> std::io::Result<()> {
+        std::fs::write(&hard_link_source, hard_link_payload)?;
+        std::fs::hard_link(&hard_link_source, &hard_link_alias)?;
+        if std::fs::read(&hard_link_alias)? != hard_link_payload {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "hard-link contents mismatch",
+            ));
+        }
+        std::fs::remove_file(&hard_link_source)?;
+        if std::fs::read(&hard_link_alias)? != hard_link_payload {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "hard-link target disappeared with source name",
+            ));
+        }
+        std::fs::remove_file(&hard_link_alias)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&hard_link_alias);
+    let _ = std::fs::remove_file(&hard_link_source);
+    if hard_link_result.is_err() {
+        marker("RUST-STD-FS-HARD-LINK-FAIL");
+        std::process::exit(69);
+    }
+    marker("RUST-STD-FS-HARD-LINK-PASS");
+
     // Cargo build scripts and installed artifacts inspect and adjust Unix
     // permission bits. Exercise upstream std metadata and set_permissions.
     let permission_path = std::path::PathBuf::from(format!(

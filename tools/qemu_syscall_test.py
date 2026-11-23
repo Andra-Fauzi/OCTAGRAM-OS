@@ -265,6 +265,7 @@ def main():
         ("RUST-STD-READ-DIR-NESTED-PASS", "nested directory iteration"),
         ("RUST-STD-FS-TRUNCATE-PASS", "file descriptor truncation and data sync"),
         ("RUST-STD-FS-ATOMIC-RENAME-PASS", "atomic artifact replacement"),
+        ("RUST-STD-REMOVE-DIR-ALL-RECURSIVE-PASS", "recursive directory removal through fdopendir/readdir"),
         ("RUST-STD-FS-PATH-MANAGEMENT-PASS", "nested directories and current directory"),
         ("RUST-STD-AT-DIRFD-PASS", "dirfd-relative openat/mkdirat/renameat/unlinkat"),
         ("RUST-STD-ENV-PASS", "environment"),

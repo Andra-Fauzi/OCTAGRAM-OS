@@ -155,8 +155,9 @@ impl<'a> Path<'a> {
         let end = bytes.iter().rposition(|byte| *byte != b'/')? + 1;
         let slash = match bytes[..end].iter().rposition(|byte| *byte == b'/') {
             Some(slash) => slash,
-            None if end < bytes.len() => return Some(Path::new(b"")),
-            None => return None,
+            // A non-empty relative path has the empty path as its parent,
+            // including when the original spelling has no trailing slash.
+            None => return Some(Path::new(b"")),
         };
         if slash == 0 { Some(Path::new(b"/")) }
         else { Some(Path::new(&bytes[..slash])) }
@@ -172,6 +173,14 @@ impl<'a> Path<'a> {
     /// Iterate over slash-separated path components without UTF-8 conversion.
     pub fn components(self) -> Components<'a> {
         Components { remaining: self.as_bytes(), root_pending: self.is_absolute() }
+    }
+
+    /// Iterate over path components as borrowed OS strings.
+    ///
+    /// The root directory is yielded as the single-byte string "/".
+    /// Repeated separators are collapsed; "." and ".." remain visible.
+    pub fn iter(self) -> PathIter<'a> {
+        PathIter { components: self.components() }
     }
 
     pub fn to_path_buf(self) -> PathBuf { PathBuf { inner: self.os_str.to_os_string() } }
@@ -190,6 +199,25 @@ impl<'a> Iterator for Ancestors<'a> {
         let current = self.next?;
         self.next = current.parent();
         Some(current)
+    }
+}
+
+/// Iterator over path components as borrowed OS strings.
+#[derive(Clone, Debug)]
+pub struct PathIter<'a> {
+    components: Components<'a>,
+}
+
+impl<'a> Iterator for PathIter<'a> {
+    type Item = OsStr<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.components.next().map(|component| match component {
+            Component::RootDir => OsStr::from_bytes(b"/"),
+            Component::CurDir => OsStr::from_bytes(b"."),
+            Component::ParentDir => OsStr::from_bytes(b".."),
+            Component::Normal(name) => name,
+        })
     }
 }
 
@@ -2581,7 +2609,10 @@ mod tests {
             &b"src/module/file.rs"[..],
             &b"src/module"[..],
             &b"src"[..],
+            &b""[..],
         ]);
+        assert_eq!(super::Path::new(b"single").parent().unwrap().as_bytes(), b"");
+        assert_eq!(super::Path::new(b"").parent(), None);
 
         let trailing: alloc::vec::Vec<_> = super::Path::new(b"folder/")
             .ancestors()
@@ -2590,6 +2621,29 @@ mod tests {
         assert_eq!(trailing, alloc::vec![&b"folder/"[..], &b""[..]]);
         assert_eq!(super::Path::new(b"").ancestors().count(), 1);
         assert_eq!(super::Path::new(b"/").ancestors().count(), 1);
+    }
+
+    #[test]
+    fn path_iter_yields_root_and_non_root_components_as_os_strings() {
+        let components: alloc::vec::Vec<_> = super::Path::new(b"/opt//./octagram/../bin/")
+            .iter()
+            .map(|part| part.as_bytes())
+            .collect();
+        assert_eq!(components, alloc::vec![
+            &b"/"[..],
+            &b"opt"[..],
+            &b"."[..],
+            &b"octagram"[..],
+            &b".."[..],
+            &b"bin"[..],
+        ]);
+
+        let relative: alloc::vec::Vec<_> = super::Path::new(b"src/main.rs")
+            .iter()
+            .map(|part| part.as_bytes())
+            .collect();
+        assert_eq!(relative, alloc::vec![&b"src"[..], &b"main.rs"[..]]);
+        assert_eq!(super::Path::new(b"").iter().count(), 0);
     }
 
     #[test]

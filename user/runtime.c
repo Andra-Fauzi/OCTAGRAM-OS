@@ -4183,6 +4183,22 @@ int unlinkat(int dirfd, const char *path, int flags)
     return (int)posix_result(oct_unlinkat(dirfd, path, flags));
 }
 
+int link(const char *oldpath, const char *newpath)
+{
+    return linkat(OCT_AT_FDCWD, oldpath, OCT_AT_FDCWD, newpath, 0);
+}
+
+int linkat(int olddirfd, const char *oldpath, int newdirfd,
+           const char *newpath, int flags)
+{
+    if (flags != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return (int)posix_result(oct_linkat(olddirfd, oldpath, newdirfd,
+                                        newpath, flags));
+}
+
 int rmdir(const char *path)
 {
     return (int)posix_result(oct_rmdir(path));

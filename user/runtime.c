@@ -5052,7 +5052,7 @@ pid_t waitpid(pid_t pid, int *status, int options)
         return -1;
     }
     if (status != NULL && result > 0) {
-        *status = (int)((raw_status & 0xff) << 8);
+        *status = (int)raw_status;
     }
     return (pid_t)result;
 }

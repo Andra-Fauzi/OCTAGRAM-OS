@@ -1860,3 +1860,14 @@ native tetap belum diimplementasikan.
 - Commit a4a2845d15e3156a804b2334ae12f6bfff8a123d menambahkan marker fase sebelum spawn, sesudah spawn kembali, dan pada instruksi pertama closure. Hasil QEMU berikutnya akan membedakan kegagalan TLS/thread-init dari kegagalan closure atau join.
 
 **Status:** build host dan ISO lulus; runtime upstream std thread gagal. Jangan menonaktifkan tes atau menurunkan persyaratan marker. Berikutnya cocokkan disassembly pada RIP dengan TLS model dan implementasi local_pointer / pthread-key pada Rust std. Belum ada native rustc atau Cargo.
+
+## 36. Isolasi model TLS native Rust pada thread baru (23 November 2026)
+
+- Artefak ISO dari run 45108235145 dibongkar dan executable `/bin/rust-std-probe` didisassemble. RIP `0x4137e1` berada di `std::thread::current::set_current`:
+  `mov %fs:0x0, %rcx; mov %rax, 0x18(%rcx)`.
+- Pada saat fault, `FS_BASE` menunjuk ke alamat TLS yang valid, tetapi word pada `FS:0` bernilai `2` (TID thread), sehingga akses berikutnya mencoba menulis ke `0x1a`. Ini mengidentifikasi jalur native TLS Rust sebagai sumber langsung fault; bukan kegagalan `pthread_create` C biasa, karena tes thread/TLS C tetap lulus.
+- Target JSON sebelumnya menyatakan `has-thread-local: true`. Rust std lalu memilih implementasi TLS native dan mengasumsikan TCB layout x86_64 yang belum cocok dengan ABI OCTAGRAM.
+- Commit a6041ac0b5bdf25317a103b5d815c2d94fc24022 mengubah `has-thread-local` menjadi `false` agar Rust std menggunakan TLS berbasis POSIX pthread keys, yang sudah disediakan oleh runtime OCTAGRAM. Ini bukan menonaktifkan thread; ini memilih backend TLS yang sesuai dengan kontrak runtime yang saat ini tersedia.
+- ELF TLS untuk C runtime tetap dipertahankan; perubahan ini hanya mengubah cfg/model TLS yang dipilih Rust std. CI wajib membuktikan std dapat membangun dan probe QEMU mencapai closure, join, clock, proses, dan I/O.
+
+**Status:** perubahan model TLS Rust sudah di-commit; runtime std thread masih menunggu verifikasi QEMU. Jika probe lulus, lanjutkan menguji destructor TLS, banyak thread serentak, dan cleanup. Belum ada native rustc atau Cargo.

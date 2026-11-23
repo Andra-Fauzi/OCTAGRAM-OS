@@ -159,8 +159,14 @@ impl<'a> Path<'a> {
             // including when the original spelling has no trailing slash.
             None => return Some(Path::new(b"")),
         };
-        if slash == 0 { Some(Path::new(b"/")) }
-        else { Some(Path::new(&bytes[..slash])) }
+        // Collapse repeated separators immediately before the parent
+        // boundary, while preserving the single root separator.
+        let mut parent_end = slash;
+        while parent_end > 1 && bytes[parent_end - 1] == b'/' {
+            parent_end -= 1;
+        }
+        if parent_end == 0 { Some(Path::new(b"/")) }
+        else { Some(Path::new(&bytes[..parent_end])) }
     }
     /// Iterate over this path and each of its lexical parents.
     ///
@@ -2612,6 +2618,8 @@ mod tests {
             &b""[..],
         ]);
         assert_eq!(super::Path::new(b"single").parent().unwrap().as_bytes(), b"");
+        assert_eq!(super::Path::new(b"foo//bar").parent().unwrap().as_bytes(), b"foo");
+        assert_eq!(super::Path::new(b"/foo///bar").parent().unwrap().as_bytes(), b"/foo");
         assert_eq!(super::Path::new(b"").parent(), None);
 
         let trailing: alloc::vec::Vec<_> = super::Path::new(b"folder/")

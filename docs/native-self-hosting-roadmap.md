@@ -2283,3 +2283,18 @@ belum tersedia untuk diverifikasi.
 Compile/link target dan eksekusi QEMU belum dijalankan atau diverifikasi;
 dukungan runtime belum boleh dinyatakan lulus sampai marker
 `RUST-STD-AT-DIRFD-PASS` muncul dan proses keluar dengan status 0.
+
+
+## 65. Perbaikan kompilasi unit test runtime Rust (23 November 2026)
+
+- Hasil GitHub Actions dari perubahan probe filesystem menunjukkan dua job
+  gagal pada kompilasi unit test `octagram-runtime`: modul test menggunakan
+  `String` tetapi tidak mengimpor tipe tersebut dari crate `alloc`.
+- Modul test sekarang mengimpor `alloc::string::String`, sehingga pengujian
+  host tidak lagi bergantung pada prelude `std` untuk nama tipe tersebut.
+- Perubahan ini juga memperbaiki langkah validasi runtime freestanding pada
+  workflow POSIX yang memakai target host Linux untuk menjalankan unit test.
+
+**Validasi:** commit perbaikan memicu ulang workflow `Rust no_std userspace`
+dan `POSIX Core Stage 1`. Keduanya masih berjalan saat catatan ini ditulis;
+hasil akhir belum diklaim lulus.

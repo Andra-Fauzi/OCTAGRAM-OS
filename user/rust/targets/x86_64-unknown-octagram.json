@@ -21,7 +21,7 @@
   "features": "+sse,+sse2",
   "max-atomic-width": 64,
   "atomic-cas": true,
-  "has-thread-local": false,
+  "has-thread-local": true,
   "crt-static-default": true,
   "crt-static-respected": true,
   "dynamic-linking": false,

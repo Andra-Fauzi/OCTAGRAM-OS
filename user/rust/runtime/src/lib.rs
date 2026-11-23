@@ -452,6 +452,10 @@ impl AsRef<[u8]> for PathBuf {
     fn as_ref(&self) -> &[u8] { self.as_bytes() }
 }
 
+impl<'a> From<Path<'a>> for PathBuf {
+    fn from(value: Path<'a>) -> Self { value.to_path_buf() }
+}
+
 impl From<OsString> for PathBuf {
     fn from(inner: OsString) -> Self { Self { inner } }
 }
@@ -2672,6 +2676,15 @@ mod tests {
         assert_eq!(owned.to_str(), None);
         assert_eq!(owned.to_string_lossy(), "src/�.rs");
         assert_eq!(owned.as_bytes(), &invalid_bytes);
+    }
+
+    #[test]
+    fn path_buf_from_borrowed_path_preserves_non_utf8_bytes() {
+        let raw = [b'/', b't', b'm', b'p', b'/', 0x80];
+        let borrowed = super::Path::new(&raw);
+        let owned = super::PathBuf::from(borrowed);
+        assert_eq!(owned.as_bytes(), &raw);
+        assert_eq!(borrowed.to_path_buf().as_bytes(), &raw);
     }
 
     #[test]

@@ -2209,3 +2209,20 @@ Belum ada hasil build atau QEMU yang dapat diverifikasi untuk commit ini.
 
 **Validasi:** perubahan source, assertion, dan roadmap sudah di-commit.
 Build upstream std dan eksekusi QEMU untuk marker baru belum diverifikasi.
+
+
+## 60. EXT2 rename mengganti artefak file yang sudah ada (23 November 2026)
+
+- `Ext2::rename` kini mendukung penggantian target file reguler, yaitu pola
+  yang dipakai Cargo ketika memublikasikan artefak hasil build.
+- Inode target lama dipertahankan sampai entri sumber berhasil dipindahkan.
+  Jika pemasangan entri baru gagal, implementasi mencoba memulihkan entri
+  target lama; inode lama baru dilepas setelah rename berhasil.
+- Target direktori dan penggantian tipe node yang belum didukung ditolak
+  secara eksplisit. Pemindahan direktori lintas-parent tetap ditolak karena
+  pembaruan entri `..` belum diimplementasikan.
+- Regression test menguji isi file setelah replacement, persistensi setelah
+  remount, serta penolakan target direktori tanpa menghilangkan sumber.
+
+**Validasi:** kode dan regression test sudah di-commit. Unit test kernel dan
+QEMU/EXT2 persistence belum dijalankan atau diverifikasi pada sesi ini.

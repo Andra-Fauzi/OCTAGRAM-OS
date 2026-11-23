@@ -33,6 +33,8 @@ const GNU_MAKE_ELF: &[u8] = include_bytes!("../../../user/build/gnu-make-octagra
 const RUST_HELLO_ELF: &[u8] = include_bytes!("../../../user/rust/build/rust_hello.elf");
 const RUST_HELLO_OCTAGRAM_ELF: &[u8] =
     include_bytes!("../../../user/rust/build/rust_hello_octagram.elf");
+const RUST_STD_PROBE_ELF: &[u8] =
+    include_bytes!("../../../user/rust/build/rust_std_probe.elf");
 const SH_ELF: &[u8] = include_bytes!("../../../user/build/sh.elf");
 const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
 const FILE_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/file_api_demo.elf");
@@ -891,6 +893,7 @@ pub fn init() {
             RUST_HELLO_OCTAGRAM_ELF,
             0o755,
         );
+        seed_file(&mut vfs, "/bin/rust-std-probe", RUST_STD_PROBE_ELF, 0o755);
         seed_file(&mut vfs, "/bin/tcc", TCC_ELF, 0o755);
         seed_file(&mut vfs, "/bin/file-api-demo", FILE_API_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/path-api-demo", PATH_API_DEMO_ELF, 0o755);

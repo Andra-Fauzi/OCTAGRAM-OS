@@ -419,7 +419,7 @@ blocker remains the OCTAGRAM-specific libc/PAL contract and a successful
 
 The first OCTAGRAM-specific module for upstream `rust-lang/libc` now
 cross-compiles on the pinned upstream revision
-`a03dd7c2e298b0ca482f30ce07efd3115938328e`. The integration is applied by
+`ccc2ff4aaab962f7fde7b8edda7379c045b1ca12`. The integration is applied by
 `tools/apply_rust_libc_octagram.py`; CI runs it before compiling libc with
 `-Zbuild-std=core`. The module has compile-time ABI layout assertions and
 the public C header checker validates its source layouts.
@@ -427,3 +427,21 @@ the public C header checker validates its source layouts.
 This advances only the libc dependency groundwork. The M4.2 tasks for full
 libc/PAL conformance and Rust `std` remain open. The successful compile does
 not prove that every declared function links or behaves correctly at runtime.
+
+### M4.2 progress — Rust std compile and link probe (2026-11-23)
+
+The pinned Rust source uses upstream `libc 0.2.191`; the OCTAGRAM libc
+integration is now pinned to the matching release commit
+`ccc2ff4aaab962f7fde7b8edda7379c045b1ca12`.
+
+CI patches the installed `rust-src` with OCTAGRAM Unix target glue and
+successfully runs both `-Zbuild-std=std check` and a diagnostic
+`-Zbuild-std=std build`. The latter links an executable using the OCTAGRAM
+startup object and linker script, then inspects it with `readelf`.
+Run [45088069322](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45088069322)
+passed the complete Rust no_std workflow, including both std probes.
+
+This is compile/link evidence only. The std executable has not yet been
+included in the boot image or executed in QEMU. The next gate is guest runtime
+validation of std filesystem, environment, clock, thread, process, and panic
+paths. Native rustc and Cargo remain future milestones.

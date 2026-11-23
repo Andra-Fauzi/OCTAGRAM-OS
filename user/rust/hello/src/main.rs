@@ -112,8 +112,12 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(path) => path,
         Err(_) => return 40,
     };
-    if stat_path(runtime_c_path).map(|value| value.size != metadata.size).unwrap_or(true) {
-        return 41;
+    let rebuilt_path_metadata = match stat_path(runtime_c_path) {
+        Ok(value) => value,
+        Err(_) => return 41,
+    };
+    if rebuilt_path_metadata.size != metadata.size {
+        return 44;
     }
     if file.seek(0, SEEK_SET) != Ok(0) {
         return 8;

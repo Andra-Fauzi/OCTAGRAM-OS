@@ -2453,7 +2453,6 @@ mod tests {
         let mut empty = super::PathBuf::new();
         empty.push(b"");
         assert!(empty.is_empty());
-        assert!(empty.is_empty());
         empty.push(b"src");
         assert!(!empty.is_empty());
         empty.clear();

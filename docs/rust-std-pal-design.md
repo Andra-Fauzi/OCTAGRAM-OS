@@ -72,7 +72,7 @@ blocking, dan concurrency sesuai kebutuhan API Rust.
 
 ## Child process ownership update
 
-Runtime kini menyediakan `Child`, pembungkus PID anak langsung dengan `wait()` dan `try_wait()`. `waitpid_with_options()` mengekspos flag `WNOHANG`, sedangkan `WAIT_ANY_PID` mewakili target semua anak. Status yang dikembalikan adalah nilai 64-bit mentah dari `exit(status)`, bukan encoding bit wait-status Linux. Smoke test guest melakukan `fork`, memeriksa jalur nonblocking, menunggu anak, dan memverifikasi status `42` serta konsumsi handle setelah reap. Ini belum menjadi `std::process::Child` dan belum mengimplementasikan `Command`/`posix_spawn`.
+Runtime kini menyediakan `Child`, pembungkus PID anak langsung dengan `wait()` dan `try_wait()`. `waitpid_with_options()` mengekspos flag `WNOHANG`, sedangkan `WAIT_ANY_PID` mewakili target semua anak. Status yang dikembalikan adalah nilai 64-bit mentah dari `exit(status)`, bukan encoding bit wait-status Linux. Setelah child direap oleh `try_wait()`, hasil disimpan di handle: pemanggilan `wait()` atau `try_wait()` berikutnya mengembalikan status cache tanpa `waitpid` kedua (yang akan menghasilkan `ECHILD`). Guest smoke test memverifikasi jalur race ketika child sudah selesai sebelum pemeriksaan nonblocking, status `42`, dan hasil `wait()` berulang. Ini menyelaraskan ownership/status dengan kontrak `std::process::Child`, tetapi belum membuktikan seluruh semantik process API.
 
 ## Command spawn dan exec handshake
 

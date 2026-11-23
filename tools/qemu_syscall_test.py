@@ -278,6 +278,7 @@ def main():
         ("RUST-STD-ENV-MUTATION-PASS", "process environment set_var and remove_var"),
         ("RUST-STD-FS-METADATA-PASS", "filesystem metadata"),
         ("RUST-STD-READ-DIR-PASS", "directory iteration"),
+        ("RUST-STD-THREAD-TLS-ISOLATION-PASS", "Rust thread-local storage isolation across threads"),
         ("RUST-STD-THREAD-CLOCK-PASS", "thread and monotonic clock"),
         ("RUST-STD-PROCESS-PASS", "process spawn and output capture"),
         ("RUST-STD-PROCESS-ARGV-IO-PASS", "child argv forwarding, stderr capture and exit status"),

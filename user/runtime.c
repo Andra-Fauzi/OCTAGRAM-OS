@@ -7807,9 +7807,12 @@ int truncate(const char *path, off_t length)
 
 int close_range(unsigned int first, unsigned int last, int flags)
 {
-    (void)flags;
     if (last < first) {
         errno = EINVAL;
+        return -1;
+    }
+    if (flags != 0) {
+        errno = ENOTSUP;
         return -1;
     }
     for (unsigned int fd = first; fd <= last; ++fd) {

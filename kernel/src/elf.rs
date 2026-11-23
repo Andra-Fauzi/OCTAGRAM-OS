@@ -8794,6 +8794,22 @@ pub fn terminate_user(frame: &mut InterruptFrame, status: u64) -> *mut Interrupt
 }
 
 fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut InterruptFrame {
+    terminate_user_inner_with_wait_status(frame, status, (status & 0xff) << 8)
+}
+
+fn terminate_user_signal_inner(frame: &mut InterruptFrame, signal: u64) -> *mut InterruptFrame {
+    terminate_user_inner_with_wait_status(
+        frame,
+        128 + signal,
+        signal & 0x7f,
+    )
+}
+
+fn terminate_user_inner_with_wait_status(
+    frame: &mut InterruptFrame,
+    status: u64,
+    wait_status: u64,
+) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
     if frame.stack_frame.code_segment & 3 != 3 {
         return frame_pointer;
@@ -8810,14 +8826,14 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
             let parent_pid = scheduler.processes[current].parent_pid;
             for (index, process) in scheduler.processes.iter_mut().enumerate() {
                 if index != current && process.pid == child_pid && process.exit_status.is_none() {
-                    process.exit_status = Some(status);
+                    process.exit_status = Some(wait_status);
                     process.reaped = true;
                     process.waiting_for = None;
                     process.wait_status_pointer = 0;
                     process.state.active = false;
                 }
             }
-            scheduler.processes[current].exit_status = Some(status);
+            scheduler.processes[current].exit_status = Some(wait_status);
             let mut active_process = USER_PROCESS.lock();
             save_task_state(&mut scheduler, &mut active_process);
             scheduler.processes[current].state.active = false;
@@ -8864,7 +8880,7 @@ fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut Interru
                     (*parent_frame).rax = if status_pointer == 0 {
                         child_pid
                     } else {
-                        match write_user_u64(status_pointer, status) {
+                        match write_user_u64(status_pointer, wait_status) {
                             Ok(()) => child_pid,
                             Err(error) => (-(error as i64)) as u64,
                         }
@@ -11005,7 +11021,7 @@ fn deliver_pending_signal(frame: &mut InterruptFrame) -> Option<*mut InterruptFr
                 process.pending_signals &= !(1u64 << (number - 1));
                 continue;
             }
-            return Some(terminate_user_inner(frame, 128 + number));
+            return Some(terminate_user_signal_inner(frame, number));
         }
 
         let original_stack_pointer = frame.stack_frame.stack_pointer;

@@ -107,6 +107,72 @@ jobs:
           test -L user/build/libm.a
           test -L user/build/librt.a
           test -L user/build/libpthread.a
+          # crt0.S keeps this hook weak for binaries that do not need TLS.
+          # Force the archive member into the std probe so its weak reference
+          # resolves to the runtime's PT_TLS allocator/FS.base initializer.
+          nm -g --defined-only user/build/libc.a | grep -Eq '[[:space:]]__oct_tls_initialize
+      - name: Link a Rust std executable for OCTAGRAM
+        env:
+          RUSTC_BOOTSTRAP_SYNTHETIC_TARGET: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p user/rust/build
+          as --64 -o user/rust/build/crt0.o user/crt0.S
+          export RUSTFLAGS="-C linker=ld.lld -C link-arg=-T${GITHUB_WORKSPACE}/user/rust/linker.ld -C link-arg=${GITHUB_WORKSPACE}/user/rust/build/crt0.o -C link-arg=-u -C link-arg=__oct_tls_initialize -L native=${GITHUB_WORKSPACE}/user/build"
+          cargo +nightly -Zjson-target-spec -Zbuild-std=std build --release \
+            --manifest-path user/rust/std-probe/Cargo.toml \
+            --target user/rust/targets/x86_64-unknown-octagram.json \
+            --target-dir user/rust/std-probe/target \
+            --config 'patch.crates-io.libc.path="upstream-libc"'
+          probe=user/rust/std-probe/target/x86_64-unknown-octagram/release/octagram-std-probe
+          readelf -h "$probe"
+          readelf -lW "$probe"
+          # The std probe contains a Rust thread_local! static. Require a real
+          # non-empty PT_TLS image, not just an empty header from the linker.
+          python3 - "$probe" <<'PY'
+          import re
+          import subprocess
+          import sys
+
+          output = subprocess.check_output(["readelf", "-lW", sys.argv[1]], text=True)
+          for line in output.splitlines():
+              fields = line.split()
+              if fields and fields[0] == "TLS":
+                  # readelf -lW prints Offset, VirtAddr, PhysAddr, FileSiz,
+                  # MemSiz, Flags and Align on the same line.
+                  if len(fields) < 7:
+                      break
+                  filesz, memsz = (int(value, 16) for value in fields[4:6])
+                  if filesz > 0 and memsz >= filesz:
+                      print(f"PT_TLS verified: filesz={filesz}, memsz={memsz}")
+                      raise SystemExit(0)
+                  break
+          raise SystemExit("Rust std probe is missing a non-empty PT_TLS segment")
+          PY
+
+      - name: Build OCTAGRAM Rust binaries
+        run: make -C user/rust clean all check
+
+      - name: Run runtime unit tests on host
+        run: cargo +nightly test --manifest-path user/rust/Cargo.toml -p octagram-runtime --lib --target x86_64-unknown-linux-gnu
+
+      - name: Verify ELF output
+        shell: bash
+        run: |
+          set -euo pipefail
+          for elf in user/rust/build/rust_hello.elf user/rust/build/make.elf; do
+            test -s "$elf"
+            file "$elf"
+            header="$(readelf -h "$elf")"
+            grep -Eq 'Type:[[:space:]]+EXEC' <<< "$header"
+            grep -Eq 'Machine:[[:space:]]+Advanced Micro Devices X86-64' <<< "$header"
+            if readelf -l "$elf" | grep -q 'INTERP'; then
+              echo "Unexpected dynamic interpreter in $elf" >&2
+              exit 1
+            fi
+            readelf -l "$elf"
+          done
+
 
       - name: Link a Rust std executable for OCTAGRAM
         env:

@@ -2162,3 +2162,20 @@ dan rename pada target belum boleh dianggap lulus sampai marker QEMU muncul.
 build target atau eksekusi QEMU untuk API tambahan ini. Cargo native tetap
 belum tersedia; probe ini hanya memeriksa bagian filesystem/process substrate
 yang diperlukan sebelum implementasi Cargo.
+
+## 57. Kaitkan probe filesystem Rust std ke assertion QEMU (23 November 2026)
+
+- `tools/qemu_syscall_test.py` kini menunggu marker keberhasilan eksplisit
+  untuk preservasi byte Unix `OsString`/PathBuf, komponen path upstream,
+  filesystem path non-UTF-8, operasi direktori/descriptor, serta
+  `create_dir_all`/canonicalize/current-directory.
+- Marker diperiksa pada proses `/bin/rust-std-probe` yang sudah di-embed ke
+  kernel melalui `kernel/src/fs/mod.rs`. Test juga tetap mensyaratkan exit
+  status 0 dan shell kembali ke prompt.
+- Dengan demikian, keberhasilan tidak lagi hanya bergantung pada marker
+  generik `RUST-STD-RUNTIME-PASS`; setiap kelompok API baru menjadi gate CI
+  QEMU tersendiri.
+
+**Validasi:** perubahan test dan probe sudah di-commit. Belum ada workflow
+result yang dapat diverifikasi untuk commit ini; status QEMU tetap pending
+sampai GitHub Actions menjalankan job `qemu-smoke-tests`.

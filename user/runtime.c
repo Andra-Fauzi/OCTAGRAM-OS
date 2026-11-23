@@ -7877,14 +7877,34 @@ ssize_t pwritev(int fd, const struct iovec *vectors, int vector_count,
 ssize_t preadv2(int fd, const struct iovec *vectors, int vector_count,
                 off_t offset, int flags)
 {
-    (void)flags;
+    if (flags != 0) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    if (offset == (off_t)-1) {
+        return readv(fd, vectors, vector_count);
+    }
+    if (offset < 0) {
+        errno = EINVAL;
+        return -1;
+    }
     return preadv(fd, vectors, vector_count, offset);
 }
 
 ssize_t pwritev2(int fd, const struct iovec *vectors, int vector_count,
                  off_t offset, int flags)
 {
-    (void)flags;
+    if (flags != 0) {
+        errno = ENOTSUP;
+        return -1;
+    }
+    if (offset == (off_t)-1) {
+        return writev(fd, vectors, vector_count);
+    }
+    if (offset < 0) {
+        errno = EINVAL;
+        return -1;
+    }
     return pwritev(fd, vectors, vector_count, offset);
 }
 

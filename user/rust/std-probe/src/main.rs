@@ -320,7 +320,7 @@ fn main() {
         std::process::exit(42);
     }
     let mut relative_file = unsafe {
-        std::os::fd::FromRawFd::from_raw_fd(open_result as i32)
+        <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(open_result as i32)
     };
     if relative_file.write_all(b"dirfd-relative-write").is_err()
         || relative_file.sync_all().is_err()

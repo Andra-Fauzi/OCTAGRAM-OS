@@ -19,6 +19,7 @@ typedef struct {
     char *error;
     int append;
     int error_to_output;
+    int output_to_error;
 } sh_stage;
 
 static int last_status;
@@ -97,11 +98,15 @@ static int tokenize(const char *line, char *storage, char **tokens, int capacity
         if (count >= capacity - 1)
             return -1;
 
-        if ((line[i] == '2' && line[i + 1] == '>' ) ||
+        if ((line[i] == '2' && line[i + 1] == '>') ||
+            (line[i] == '>' && line[i + 1] == '&' && line[i + 2] == '2') ||
             is_operator_char(line[i])) {
             int length = 1;
             char *op = NULL;
-            if (line[i] == '2' && line[i + 1] == '>') {
+            if (line[i] == '>' && line[i + 1] == '&' && line[i + 2] == '2') {
+                op = operators[9];
+                length = 3;
+            } else if (line[i] == '2' && line[i + 1] == '>') {
                 if (line[i + 2] == '&' && line[i + 3] == '1') {
                     op = operators[8];
                     length = 4;
@@ -357,6 +362,10 @@ static int apply_redirections(const sh_stage *stage)
         }
         close(fd);
     }
+    if (stage->output_to_error) {
+        if (dup2(STDERR_FILENO, STDOUT_FILENO) < 0)
+            return -1;
+    }
     if (stage->error_to_output) {
         if (dup2(STDOUT_FILENO, STDERR_FILENO) < 0)
             return -1;
@@ -472,6 +481,8 @@ static int parse_pipeline(char **tokens, int begin, int end)
                 }
             } else if (!strcmp(token, "2>&1")) {
                 stage->error_to_output = 1;
+            } else if (!strcmp(token, ">&2")) {
+                stage->output_to_error = 1;
             } else {
                 if (stage->argc >= SH_ARG_MAX - 1)
                     return 2;

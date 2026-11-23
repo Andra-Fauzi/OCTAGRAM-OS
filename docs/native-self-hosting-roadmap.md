@@ -2540,3 +2540,21 @@ Marker QEMU wajib baru: `RUST-STD-PROCESS-CHILD-ID-PASS`.
 **Validasi:** source probe dan gate QEMU diperbarui. Build host pada run
 sebelumnya telah menyelesaikan kompilasi target Rust std; hasil runtime QEMU
 untuk revisi ini masih menunggu workflow baru.
+
+
+## 80. Perbaikan pencarian executable execvp untuk PATH (23 November 2026)
+
+Implementasi libc `execvp` sebelumnya menjalankan `continue` ketika entri
+PATH yang ditemukan ternyata bukan file reguler. Karena `continue` melewati
+bagian loop yang memajukan komponen PATH, direktori bernama sama dengan
+executable dapat membuat proses macet selamanya.
+
+- Cabang non-regular kini mencatat `EACCES` lalu melanjutkan ke komponen PATH
+  berikutnya secara normal.
+- `execve_demo` kini membuat direktori `/tmp/execve-demo`, menetapkan
+  `PATH=/tmp:/bin`, lalu menjalankan `execvp("execve-demo", ...)`.
+- Probe hanya berhasil bila pencarian melewati direktori yang tidak dapat
+  dieksekusi sebagai program dan menemukan executable di `/bin`.
+
+**Validasi:** source libc, demo, dan roadmap diperbarui. Tes runtime guest
+masih harus dijalankan; perubahan belum dianggap lulus QEMU.

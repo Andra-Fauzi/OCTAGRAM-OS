@@ -83,7 +83,7 @@ static int expand_variable(const char *line, size_t *position,
 static int tokenize(const char *line, char *storage, char **tokens, int capacity)
 {
     static char *operators[] = {
-        ";", "|", "||", "&&", "<", ">", ">>", "2>", "2>&1"
+        ";", "|", "||", "&&", "<", ">", ">>", "2>", "2>&1", ">&2"
     };
     size_t used = 0;
     size_t i = 0;
@@ -388,6 +388,7 @@ static int run_pipeline(sh_stage *stages, int count)
 
     if (count == 1 && !stages[0].input && !stages[0].output &&
         !stages[0].error && !stages[0].error_to_output &&
+        !stages[0].output_to_error &&
         stages[0].argc && is_builtin(stages[0].argv[0])) {
         int status = run_builtin(stages[0].argv);
         fflush(stdout);

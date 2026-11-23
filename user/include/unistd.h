@@ -51,6 +51,7 @@ ssize_t write(int fd, const void *buffer, size_t count);
 off_t lseek(int fd, off_t offset, int whence);
 int unlink(const char *path);
 int unlinkat(int dirfd, const char *path, int flags);
+int chroot(const char *path);
 int chdir(const char *path);
 char *getcwd(char *buffer, size_t size);
 pid_t getpid(void);

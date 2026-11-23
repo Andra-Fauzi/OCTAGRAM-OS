@@ -1729,12 +1729,17 @@ static void oct_pthread_start(void *opaque) __attribute__((noreturn));
 
 static void oct_pthread_start(void *opaque)
 {
-    /* Initialize shared-libc state before user code can observe errno. */
-    (void)__errno_location();
-    (void)__h_errno_location();
+    /*
+     * Rust's pthread entry trampoline must run ThreadInit::init() before any
+     * allocator activity on this thread. In particular, do not touch errno or
+     * free the argument wrapper before calling the Rust entry point: Rust's
+     * global allocator may consult std::thread::current(), which is installed
+     * by ThreadInit::init().
+     */
     ThreadStart start = *(ThreadStart *)opaque;
-    free(opaque);
     void *result = start.function(start.argument);
+    free(opaque);
+    /* errno/h_errno accessors initialize their per-TID state lazily. */
     oct_pthread_run_key_destructors();
     oct_thread_exit(result);
     for (;;) {

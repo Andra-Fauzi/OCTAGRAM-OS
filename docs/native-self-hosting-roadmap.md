@@ -1987,3 +1987,19 @@ target build, dan QEMU belum dijalankan pada perubahan ini.
 dan QEMU belum dijalankan pada perubahan ini. Ini memperluas subset API
 `OsStr`/`OsString`, bukan berarti kompatibilitas penuh `std::ffi` telah
 tercapai. Rustc native dan Cargo native masih belum diimplementasikan.
+
+
+## 45. Konversi lossy OsStr dan konstruksi OsString dari String (23 November 2026)
+
+- Menambahkan `OsStr::to_string_lossy()` berbasis
+  `String::from_utf8_lossy`; byte invalid ditampilkan sebagai karakter
+  replacement tanpa mengubah byte sumber.
+- Menambahkan `From<String> for OsString` dengan mengambil ownership buffer
+  UTF-8 tanpa menyalin ke buffer perantara.
+- Regression test memeriksa jalur borrowed untuk UTF-8 valid, replacement
+  untuk byte invalid, dan konversi ownership dari `String`.
+
+**Validasi:** source dan test sudah di-commit. Host unit test, target build,
+dan QEMU belum dijalankan. Ini adalah perluasan API string freestanding,
+bukan implementasi lengkap `std::ffi` ataupun bukti bahwa Rust std runtime
+telah stabil.

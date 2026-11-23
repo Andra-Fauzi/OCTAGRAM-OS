@@ -430,6 +430,32 @@ fn main() {
     }
     marker("RUST-STD-FS-SYMLINK-PASS");
 
+    // Cargo build scripts and installed artifacts inspect and adjust Unix
+    // permission bits. Exercise upstream std metadata and set_permissions.
+    let permission_path = std::path::PathBuf::from(format!(
+        "/tmp/octagram-rust-permissions-{}.bin",
+        std::process::id()
+    ));
+    let permission_result = (|| -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&permission_path, b"permission-probe")?;
+        let mut permissions = std::fs::metadata(&permission_path)?.permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(&permission_path, permissions)?;
+        let actual = std::fs::metadata(&permission_path)?.permissions().mode() & 0o777;
+        if actual != 0o600 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "permission mode mismatch"));
+        }
+        std::fs::remove_file(&permission_path)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&permission_path);
+    if permission_result.is_err() {
+        marker("RUST-STD-FS-PERMISSIONS-FAIL");
+        std::process::exit(47);
+    }
+    marker("RUST-STD-FS-PERMISSIONS-PASS");
+
     // Environment access must not panic when PATH is absent; the call itself
     // exercises std's environment PAL.
     let _path = std::env::var_os("PATH");

@@ -607,6 +607,47 @@ fn main() {
     }
     marker("RUST-STD-PROCESS-SIGNAL-STATUS-PASS");
 
+    // Child::try_wait must use waitpid(WNOHANG): it returns None while the
+    // child is still running. Then Child::kill and Child::wait must reap it.
+    let mut running_child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("while :; do :; done")
+        .spawn()
+        .unwrap_or_else(|error| {
+            eprintln!("Command::spawn/try_wait probe failed: {error}");
+            std::process::exit(56);
+        });
+    match running_child.try_wait() {
+        Ok(None) => {}
+        Ok(Some(status)) => {
+            marker("RUST-STD-PROCESS-TRY-WAIT-FAIL");
+            eprintln!("child exited before try_wait returned: {status:?}");
+            std::process::exit(57);
+        }
+        Err(error) => {
+            let _ = running_child.kill();
+            let _ = running_child.wait();
+            marker("RUST-STD-PROCESS-TRY-WAIT-FAIL");
+            eprintln!("Child::try_wait failed: {error}");
+            std::process::exit(58);
+        }
+    }
+    if let Err(error) = running_child.kill() {
+        let _ = running_child.wait();
+        marker("RUST-STD-PROCESS-KILL-FAIL");
+        eprintln!("Child::kill failed: {error}");
+        std::process::exit(59);
+    }
+    let killed_status = running_child.wait().unwrap_or_else(|error| {
+        eprintln!("Child::wait after kill failed: {error}");
+        std::process::exit(60);
+    });
+    if killed_status.code().is_some() || killed_status.signal() != Some(9) {
+        marker("RUST-STD-PROCESS-KILL-FAIL");
+        std::process::exit(61);
+    }
+    marker("RUST-STD-PROCESS-TRY-WAIT-KILL-PASS");
+
     // Cargo build scripts rely on Command::env and current_dir being applied
     // to the child before exec. Verify both through the child's observable
     // environment and working directory, not merely by checking the builder.

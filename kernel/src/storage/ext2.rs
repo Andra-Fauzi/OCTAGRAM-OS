@@ -1512,6 +1512,41 @@ impl FileSystem for Ext2 {
         self.write_inode(inode_number, &inode)
     }
 
+    fn hard_link(&mut self, source: &str, target: &str) -> Result<(), FsError> {
+        let source = normalize_path(source)?;
+        let target = normalize_path(target)?;
+        let (inode_number, mut inode) = self.lookup_inode(&source)?;
+        if inode.node_type()? == NodeType::Directory {
+            return Err(FsError::Unsupported);
+        }
+        let (parent_number, _, name) = self.parent_and_name(&target)?;
+        if self
+            .directory_records(&self.read_inode(parent_number)?)?
+            .iter()
+            .any(|record| record.name == name)
+        {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let old_links = inode.links();
+        let new_links = old_links.checked_add(1).ok_or(FsError::NoSpace)?;
+        inode.set_links(new_links);
+        inode.set_modified_time(current_timestamp().unwrap_or(0))?;
+        self.write_inode(inode_number, &inode)?;
+        let file_type = match inode.node_type()? {
+            NodeType::File => EXT2_FT_REG_FILE,
+            NodeType::Symlink => EXT2_FT_SYMLINK,
+            NodeType::Directory => return Err(FsError::Unsupported),
+        };
+        if let Err(error) = self.insert_directory_entry(parent_number, &name, inode_number, file_type) {
+            inode.set_links(old_links);
+            inode.set_modified_time(current_timestamp().unwrap_or(0))?;
+            self.write_inode(inode_number, &inode)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn create_file(&mut self, path: &str) -> Result<(), FsError> {
         let (parent_number, _, name) = self.parent_and_name(path)?;
         let inode_number = self.allocate_inode(false)?;

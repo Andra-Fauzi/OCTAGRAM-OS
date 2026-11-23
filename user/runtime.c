@@ -109,7 +109,7 @@ extern const uintptr_t __oct_tls_filesz[] __attribute__((weak));
 extern const uintptr_t __oct_tls_size[] __attribute__((weak));
 extern const uintptr_t __oct_tls_align[] __attribute__((weak));
 
-typedef struct AllocationHeader {
+typedef struct __attribute__((aligned(16))) AllocationHeader {
     size_t size;
     struct AllocationHeader *next_free;
     /* For aligned allocations, points to the original malloc block header. */

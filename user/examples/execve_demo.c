@@ -20,10 +20,31 @@ int main(int argc, char **argv)
         if (fstat(4, &status) != 0) {
             return 22;
         }
+
+        /* An empty PATH is not the same as an unset PATH: it searches ".". */
+        char *empty_path_arguments[] = {"execve-demo", "after-empty-path", NULL};
+        if (chdir("/bin") != 0 || setenv("PATH", "", 1) != 0) {
+            return 23;
+        }
+        execvp("execve-demo", empty_path_arguments);
+        return 24 + errno;
+    }
+    if (argc == 2 && strcmp(argv[1], "after-empty-path") == 0) {
+        const char *value = getenv("OCTAGRAM_EXECVE_TEST");
+        if (value == NULL || strcmp(value, "passed") != 0) {
+            return 25;
+        }
+        if (fcntl(3, F_GETFD) != -1 || errno != EBADF) {
+            return 26;
+        }
+        struct stat status;
+        if (fstat(4, &status) != 0) {
+            return 27;
+        }
         close(4);
         unlink("/tmp/execve-demo-file");
         rmdir("/tmp/execve-demo");
-        puts("EXECVP-PATH-SEARCH-PASS: skipped directory and found /bin executable");
+        puts("EXECVP-PATH-SEARCH-PASS: skipped directory and handled empty PATH");
         return 0;
     }
 

@@ -1501,6 +1501,7 @@ struct ScheduledProcess {
     kernel_stack_top: u64,
     frame_pointer: usize,
     exit_status: Option<u64>,
+    wait_status: Option<u64>,
     parent_pid: Option<u64>,
     is_thread: bool,
     tid: u64,
@@ -2104,6 +2105,7 @@ fn run_loaded_processes(
             kernel_stack_top,
             frame_pointer,
             exit_status: None,
+            wait_status: None,
             parent_pid: None,
             is_thread: false,
             tid: index as u64 + 1,
@@ -3201,6 +3203,7 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         kernel_stack_top,
         frame_pointer: thread_frame,
         exit_status: None,
+        wait_status: None,
         parent_pid: None,
         is_thread: true,
         tid,
@@ -3516,6 +3519,7 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
         kernel_stack_top,
         frame_pointer: child_frame,
         exit_status: None,
+        wait_status: None,
         parent_pid: Some(parent_pid),
         is_thread: false,
         tid: child_pid,
@@ -3763,7 +3767,7 @@ fn syscall_waitpid(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     };
     let child_pid = scheduler.processes[child].pid;
 
-    if let Some(status) = scheduler.processes[child].exit_status {
+    if let Some(status) = scheduler.processes[child].wait_status {
         if status_pointer != 0
             && let Err(error) = write_user_u64(status_pointer, status)
         {
@@ -8826,14 +8830,16 @@ fn terminate_user_inner_with_wait_status(
             let parent_pid = scheduler.processes[current].parent_pid;
             for (index, process) in scheduler.processes.iter_mut().enumerate() {
                 if index != current && process.pid == child_pid && process.exit_status.is_none() {
-                    process.exit_status = Some(wait_status);
+                    process.exit_status = Some(status);
+                    process.wait_status = Some(wait_status);
                     process.reaped = true;
                     process.waiting_for = None;
                     process.wait_status_pointer = 0;
                     process.state.active = false;
                 }
             }
-            scheduler.processes[current].exit_status = Some(wait_status);
+            scheduler.processes[current].exit_status = Some(status);
+            scheduler.processes[current].wait_status = Some(wait_status);
             let mut active_process = USER_PROCESS.lock();
             save_task_state(&mut scheduler, &mut active_process);
             scheduler.processes[current].state.active = false;

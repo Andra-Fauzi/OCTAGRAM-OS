@@ -13,6 +13,21 @@ userspace, dan probe untuk mengukur kesiapan port Rust upstream.
 - Binary `rustc` dan `cargo` native yang berjalan di OCTAGRAM **belum ada**.
 - Karena itu, keberhasilan cross-build tidak boleh disebut native bootstrap.
 
+## Stage 0: audit toolchain host
+
+Jalankan dari root repository:
+
+```sh
+make -C user/rust stage0-inventory
+```
+
+Pemeriksaan ini mencatat versi rustc/LLVM dan Cargo, lokasi sysroot, keberadaan
+source `rust-src`, linker LLD, serta apakah nightly dapat membaca target JSON
+OCTAGRAM. Ini adalah inventaris prasyarat host; **bukan** bukti compiler dapat
+dieksekusi di guest OCTAGRAM. Versi toolchain masih mengikuti channel
+`nightly` pada `rust-toolchain.toml`, sehingga hasil inventaris perlu
+disimpan bersama log CI untuk mengetahui versi yang benar-benar dipakai.
+
 ## Build dari host
 
 Dari root repository:
@@ -43,7 +58,7 @@ panic-abort, dan tidak menyediakan dynamic loader. Runtime freestanding
 menggunakan syscall ABI kernel dan allocator sendiri untuk `alloc`.
 Fitur yang bergantung pada thread, dynamic loading, unwinding, atau layanan
 POSIX yang belum tersedia tidak boleh diasumsikan bekerja hanya karena
-`core`/ `alloc` berhasil dikompilasi.
+`core`/`alloc` berhasil dikompilasi.
 
 ## Urutan bootstrap resmi
 

@@ -1,6 +1,7 @@
 CARGO ?= cargo
 AS ?= as
 READELF ?= readelf
+SHELL ?= /bin/sh
 
 RUST_TARGET_JSON := targets/x86_64-unknown-octagram.json
 RUST_TARGET := x86_64-unknown-octagram
@@ -9,10 +10,14 @@ RUST_MAKE := build/make.elf
 RUST_OCTAGRAM_HELLO := build/rust_hello_octagram.elf
 RUST_BUILD_FLAGS := +nightly -Z unstable-options -Z build-std=core,alloc -Z json-target-spec
 
-.PHONY: all clean make build-octagram check
+.PHONY: all clean make build-octagram check stage0-inventory
 all: $(RUST_HELLO) $(RUST_MAKE)
 
 make: $(RUST_MAKE)
+
+# Stage 0 is an inventory only: it must not be confused with a native compiler.
+stage0-inventory:
+	./tools/stage0-inventory.sh
 
 # All Rust userspace binaries are built for OCTAGRAM's own target. The host
 # runs Cargo/rustc; the resulting ELF is loaded by OCTAGRAM's user ELF loader.

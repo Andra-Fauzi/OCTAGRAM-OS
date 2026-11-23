@@ -2746,3 +2746,21 @@ yang memang sudah tertutup.
 
 **Validasi:** perubahan source, regression test, dan roadmap di-commit;
 hasil CI untuk revisi ini menunggu.
+
+
+## 91. Pemeriksaan otomatis prasyarat Stage 0 Rust (23 November 2026)
+
+Target Make `stage0-inventory` dan skrip `tools/stage0-inventory.sh` kini
+memeriksa tool host yang diperlukan sebelum pekerjaan bootstrap native:
+Rust nightly/rustup, Cargo, LLD, readelf, lokasi sysroot, source `rust-src`,
+versi LLVM yang dilaporkan rustc, dan kemampuan nightly membaca target JSON
+OCTAGRAM.
+
+Pemeriksaan ini sengaja hanya merupakan inventaris host. Ia tidak membangun
+compiler native, tidak menguji ELF compiler di guest, dan tidak mengubah status
+milestone Stage 0 execution. Channel Rust masih berupa `nightly` bergerak;
+log inventaris perlu digunakan untuk menentukan tanggal toolchain yang akan
+dipin setelah CI menjalankan pemeriksaan ini.
+
+**Validasi:** target dan skrip telah ditambahkan. Hasil CI untuk perubahan ini
+masih menunggu; belum ada klaim bahwa Stage 0 native sudah berjalan.

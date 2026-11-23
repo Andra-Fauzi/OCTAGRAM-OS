@@ -2060,3 +2060,16 @@ target kompatibilitas utama; helper `Path` OCTAGRAM belum menggantikan
 target build, dan QEMU belum dijalankan pada commit ini. Konversi tersebut
 menambah ergonomi helper path, tetapi belum menyamakan seluruh trait dan
 semantik `std::path::PathBuf`.
+
+## 50. AsRef byte slice untuk OS string dan path (23 November 2026)
+
+- Mengimplementasikan `AsRef<[u8]>` untuk `OsStr`, `OsString`,
+  `Path`, dan `PathBuf`.
+- Semua implementasi mengembalikan representasi byte yang sudah dimiliki;
+  tidak melakukan alokasi maupun konversi UTF-8.
+- Regression test memastikan byte non-UTF-8 tetap identik pada keempat tipe.
+
+**Validasi:** implementasi dan test telah di-commit, tetapi belum dijalankan
+oleh host test atau CI target. Ini adalah interoperabilitas byte-slice dasar,
+bukan pengganti trait `AsRef<Path>` dan keseluruhan API path dari upstream
+Rust std.

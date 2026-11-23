@@ -33,17 +33,16 @@ fn main() {
     // Exercise upstream std::path lexical APIs with repeated and trailing
     // separators. Components must preserve "." and ".." rather than resolving
     // them through the filesystem.
-    let lexical = std::path::Path::new(b"/octa//./gram/../file.bin/" as &[u8]);
+    let lexical = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/octa//./gram/../file.bin/"));
     let components: Vec<_> = lexical.components().collect();
-    if components.len() != 5
+    if components.len() != 6
         || components[0] != std::path::Component::RootDir
         || components[1].as_os_str().as_bytes() != b"octa"
         || components[2] != std::path::Component::CurDir
         || components[3] != std::path::Component::Normal(std::ffi::OsStr::new("gram"))
         || components[4] != std::path::Component::ParentDir
+        || components[5].as_os_str().as_bytes() != b"file.bin"
     {
-        // The final normal component is checked separately below; this branch
-        // intentionally catches unexpected component normalization.
         marker("RUST-STD-PATH-COMPONENTS-FAIL");
         std::process::exit(23);
     }

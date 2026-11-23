@@ -2032,3 +2032,17 @@ berbasis byte; belum menggantikan `std::path` upstream secara penuh.
 QEMU masih perlu dijalankan. Integrasi Rust std upstream masih menjadi
 jalur utama berikutnya; API helper ini bukan pengganti crate
 `std::ffi`/ `std::path` yang sesungguhnya.
+
+## 48. Query path kosong pada runtime Rust (23 November 2026)
+
+- Menambahkan `Path::is_empty()` sebagai query tanpa alokasi yang memeriksa
+  apakah representasi byte path kosong.
+- Menambahkan regression test untuk path kosong, root `/`, path relatif,
+  path absolut, dan delegasi dari `PathBuf`.
+- API ini mempertahankan model path Unix berbasis byte; tidak melakukan
+  normalisasi atau akses filesystem.
+
+**Validasi:** source dan test telah di-commit. Host unit test, target build,
+dan QEMU belum dijalankan pada commit ini. Rust std upstream tetap menjadi
+target kompatibilitas utama; helper `Path` OCTAGRAM belum menggantikan
+`std::path::Path` secara penuh.

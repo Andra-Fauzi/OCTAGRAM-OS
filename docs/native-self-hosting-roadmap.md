@@ -2627,3 +2627,25 @@ menyalin artefak build dan output build script.
 
 **Validasi:** probe dan gate QEMU telah diperbarui. Build host dan eksekusi
 guest untuk commit ini masih menunggu workflow CI; belum diklaim lulus.
+
+
+## 85. POSIX hard links for Rust std and Cargo (23 November 2026)
+
+EXT2, VFS, syscall ABI, and libc now expose the initial `link`/`linkat`
+path. The syscall uses number 148 and currently accepts only `flags=0`;
+the final source symlink is linked as a symlink rather than followed.
+
+- EXT2 increments the existing inode link count and inserts a second
+  directory entry; directories are rejected.
+- Removing one name decrements the inode link count and preserves its data
+  while another name remains.
+- VFS rejects cross-mount hard links.
+- libc exposes POSIX `link` and `linkat`; the Rust std guest probe checks
+  alias contents and verifies that unlinking the first name leaves the second
+  name usable.
+- Kernel EXT2 tests cover inode identity, shared writes, duplicate/missing
+  names, directory rejection, remount persistence, and hard-linking a symlink.
+
+**Known limits:** RAMFS and FAT32 do not implement hard links and retain the
+default `Unsupported` result. `AT_SYMLINK_FOLLOW` and `AT_EMPTY_PATH` are
+not implemented. Guest QEMU and CI results are pending for this revision.

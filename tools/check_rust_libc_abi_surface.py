@@ -56,9 +56,12 @@ def main() -> int:
             "POSIX link/linkat declarations missing from public unistd ABI")
 
     runtime = read("user/runtime.c")
-    require(re.search(r"int link\\(const char \\*oldpath, const char \\*newpath\\).*?return linkat\\(OCT_AT_FDCWD, oldpath, OCT_AT_FDCWD, newpath, 0\\);", runtime, re.S) is not None,
+    require("int link(const char *oldpath, const char *newpath)" in runtime
+            and "return linkat(OCT_AT_FDCWD, oldpath, OCT_AT_FDCWD, newpath, 0);" in runtime,
             "link must delegate to linkat using AT_FDCWD")
-    require(re.search(r"int linkat\\(int olddirfd, const char \\*oldpath, int newdirfd,.*?oct_linkat\\(olddirfd, oldpath, newdirfd,.*?newpath, flags\\)", runtime, re.S) is not None,
+    require("int linkat(int olddirfd, const char *oldpath, int newdirfd," in runtime
+            and "oct_linkat(olddirfd, oldpath, newdirfd," in runtime
+            and "newpath, flags)" in runtime,
             "linkat must call the kernel linkat wrapper")
 
     require("DIR *fdopendir(int fd);" in dirent,

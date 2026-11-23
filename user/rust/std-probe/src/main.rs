@@ -695,6 +695,26 @@ fn main() {
     }
     marker("RUST-STD-PROCESS-ENV-CWD-PASS");
 
+    // Cargo commonly launches helpers by name rather than by absolute path.
+    // Verify that Command resolves a bare executable using the child PATH.
+    let path_lookup = Command::new("sh")
+        .arg("-c")
+        .arg("printf 'RUST-STD-PATH-LOOKUP-CHILD\\n'")
+        .env("PATH", "/bin")
+        .output()
+        .unwrap_or_else(|error| {
+            eprintln!("Command PATH lookup failed: {error}");
+            std::process::exit(66);
+        });
+    if !path_lookup.status.success()
+        || !path_lookup.stdout.windows(b"RUST-STD-PATH-LOOKUP-CHILD\\n".len())
+            .any(|bytes| bytes == b"RUST-STD-PATH-LOOKUP-CHILD\\n")
+    {
+        marker("RUST-STD-PROCESS-PATH-LOOKUP-FAIL");
+        std::process::exit(67);
+    }
+    marker("RUST-STD-PROCESS-PATH-LOOKUP-PASS");
+
     let mut stdout = std::io::stdout().lock();
     if stdout.write_all(b"RUST-STD-IO-WRITE-PASS\n").is_err() || stdout.flush().is_err() {
         std::process::exit(18);

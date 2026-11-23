@@ -566,6 +566,30 @@ fn main() {
     }
     marker("RUST-STD-PROCESS-PASS");
 
+    // Verify argv forwarding, stderr capture, and non-zero child exit status.
+    // Cargo build scripts and compiler helpers inspect all three channels.
+    let process_io = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("printf 'ARG:%s:%s\\n' \"$1\" \"$2\"; printf 'STDERR-PASS\\n' >&2; exit 7")
+        .arg("probe-script")
+        .arg("alpha")
+        .arg("beta")
+        .output()
+        .unwrap_or_else(|error| {
+            eprintln!("Command argument/stderr probe failed: {error}");
+            std::process::exit(52);
+        });
+    if process_io.status.code() != Some(7)
+        || !process_io.stdout.windows(b"ARG:alpha:beta\\n".len())
+            .any(|bytes| bytes == b"ARG:alpha:beta\\n")
+        || !process_io.stderr.windows(b"STDERR-PASS\\n".len())
+            .any(|bytes| bytes == b"STDERR-PASS\\n")
+    {
+        marker("RUST-STD-PROCESS-ARGV-IO-FAIL");
+        std::process::exit(53);
+    }
+    marker("RUST-STD-PROCESS-ARGV-IO-PASS");
+
     // Cargo build scripts rely on Command::env and current_dir being applied
     // to the child before exec. Verify both through the child's observable
     // environment and working directory, not merely by checking the builder.

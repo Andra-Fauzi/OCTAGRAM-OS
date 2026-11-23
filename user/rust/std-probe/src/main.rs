@@ -205,9 +205,20 @@ fn main() {
         }
         Ok(())
     })();
+    if let Err(error) = &descriptor_result {
+        eprintln!("directory descriptor operation failed: {error}");
+    }
+    let directory_rename_result = std::fs::rename(&original_dir, &renamed_dir);
+    if let Err(error) = &directory_rename_result {
+        eprintln!("directory rename failed: {error}");
+    }
+    let renamed_read_result = std::fs::read(&renamed_child);
+    if let Err(error) = &renamed_read_result {
+        eprintln!("renamed child read failed: {error}");
+    }
     if descriptor_result.is_err()
-        || std::fs::rename(&original_dir, &renamed_dir).is_err()
-        || !matches!(std::fs::read(&renamed_child), Ok(bytes) if bytes == b"descriptor-roundtrip")
+        || directory_rename_result.is_err()
+        || !matches!(renamed_read_result, Ok(bytes) if bytes == b"descriptor-roundtrip")
     {
         let _ = std::fs::remove_file(&child_path);
         let _ = std::fs::remove_file(&renamed_child);

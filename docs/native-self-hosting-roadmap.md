@@ -1904,3 +1904,17 @@ lulus sampai CI host test dan QEMU runtime yang relevan benar-benar berjalan.
 semantik `std::path::Components` (khususnya normalisasi `.` pada posisi
 tertentu dan operasi prefix berbasis komponen). Tes host dan CI harus lulus
 sebelum API ini dipakai sebagai dasar implementasi `std::path` yang lebih luas.
+
+## 39. Iterator ancestors path (23 November 2026)
+
+- Menambahkan `Path::ancestors()` beserta iterator `Ancestors` yang berjalan
+  dari path awal menuju parent-parent leksikalnya.
+- Menambahkan regression test untuk path absolut sampai root, path relatif,
+  trailing slash, path kosong, dan root.
+- Iterator meminjam slice byte asli sehingga tidak mengalokasikan buffer dan
+  tidak memerlukan nama path valid UTF-8.
+
+**Batas:** perilaku `parent()` saat path relatif hanya memiliki satu
+komponen masih mengikuti implementasi helper OCTAGRAM saat ini; kompatibilitas
+penuh dengan seluruh edge case `std::path::Path` belum diklaim. CI host dan
+QEMU tetap perlu dijalankan untuk memvalidasi perubahan.

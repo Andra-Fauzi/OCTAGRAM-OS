@@ -129,6 +129,66 @@ impl PathBuf {
         }
         self.inner.bytes.extend_from_slice(next);
     }
+
+    /// Remove the final path component. Returns false when the path is empty
+    /// or already denotes the root directory.
+    pub fn pop(&mut self) -> bool {
+        let bytes = &mut self.inner.bytes;
+        let end = match bytes.iter().rposition(|byte| *byte != b'/') {
+            Some(index) => index + 1,
+            None => return false,
+        };
+        let parent_end = match bytes[..end].iter().rposition(|byte| *byte == b'/') {
+            Some(0) => 1,
+            Some(index) => index,
+            None => 0,
+        };
+        bytes.truncate(parent_end);
+        true
+    }
+
+    /// Replace the final path component with a new file name.
+    pub fn set_file_name(&mut self, file_name: impl AsRef<[u8]>) {
+        let name = file_name.as_ref();
+        if self.as_path().file_name().is_some() {
+            let _ = self.pop();
+        }
+        self.push(name);
+    }
+
+    /// Return a new path with its final component replaced.
+    pub fn with_file_name(mut self, file_name: impl AsRef<[u8]>) -> Self {
+        self.set_file_name(file_name);
+        self
+    }
+
+    /// Replace the extension of the final component. An empty extension
+    /// removes the existing extension and its separating dot.
+    pub fn set_extension(&mut self, extension: impl AsRef<[u8]>) -> bool {
+        let extension = extension.as_ref();
+        let name = match self.as_path().file_name() {
+            Some(name) => name.as_bytes(),
+            None => return false,
+        };
+        let stem_length = match name.iter().rposition(|byte| *byte == b'.') {
+            Some(dot) if dot != 0 => dot,
+            _ => name.len(),
+        };
+        let mut replacement = name[..stem_length].to_vec();
+        if !extension.is_empty() {
+            replacement.push(b'.');
+            replacement.extend_from_slice(extension);
+        }
+        self.set_file_name(replacement);
+        true
+    }
+
+    /// Return a new path with the extension replaced.
+    pub fn with_extension(mut self, extension: impl AsRef<[u8]>) -> Self {
+        let _ = self.set_extension(extension);
+        self
+    }
+
     pub fn try_to_cstring_bytes(&self) -> Result<Vec<u8>, i64> {
         self.inner.try_to_cstring_bytes()
     }
@@ -2297,6 +2357,42 @@ mod tests {
         assert_eq!(owned.as_bytes(), b"/share/octagram/message.c");
         owned.push(b"/tmp/file");
         assert_eq!(owned.as_bytes(), b"/tmp/file");
+    }
+
+    #[test]
+    fn path_buf_mutations_match_unix_path_component_rules() {
+        let mut path = super::PathBuf::from_bytes(b"/opt/octagram/bin/tool.old");
+        assert!(path.pop());
+        assert_eq!(path.as_bytes(), b"/opt/octagram/bin");
+        path.push(b"compiler");
+        assert_eq!(path.as_bytes(), b"/opt/octagram/bin/compiler");
+
+        assert!(path.set_extension(b"elf"));
+        assert_eq!(path.as_bytes(), b"/opt/octagram/bin/compiler.elf");
+        assert!(path.set_extension(b""));
+        assert_eq!(path.as_bytes(), b"/opt/octagram/bin/compiler");
+
+        path.set_file_name(b"cargo");
+        assert_eq!(path.as_bytes(), b"/opt/octagram/bin/cargo");
+        let renamed = path.clone().with_file_name(b"rustc");
+        assert_eq!(renamed.as_bytes(), b"/opt/octagram/bin/rustc");
+        let extended = renamed.with_extension(b"elf");
+        assert_eq!(extended.as_bytes(), b"/opt/octagram/bin/rustc.elf");
+
+        let mut root_child = super::PathBuf::from_bytes(b"/single");
+        assert!(root_child.pop());
+        assert_eq!(root_child.as_bytes(), b"/");
+        assert!(!root_child.pop());
+
+        let mut relative = super::PathBuf::from_bytes(b"one/two/");
+        assert!(relative.pop());
+        assert_eq!(relative.as_bytes(), b"one");
+        assert!(relative.pop());
+        assert_eq!(relative.as_bytes(), b"");
+        assert!(!relative.pop());
+
+        let hidden = super::PathBuf::from_bytes(b"/tmp/.config");
+        assert!(hidden.with_extension(b"bak").as_bytes() == b"/tmp/.config.bak");
     }
 
     #[test]

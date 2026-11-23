@@ -2372,3 +2372,18 @@ Perubahan ini memastikan pengujian memverifikasi resolusi nama relatif terhadap 
 Commit: `f899a77a` — Exercise nested directory descriptors in Rust std probe.
 
 **Validasi:** source probe sudah di-commit. Workflow QEMU pada commit sebelumnya masih berjalan; perubahan ini memicu build dan QEMU baru. Belum ada klaim bahwa nested dirfd test berhasil dijalankan.
+
+
+## 70. Probe symlink upstream Rust std untuk source tree dan build output (23 November 2026)
+
+Probe executable yang ditautkan dengan upstream Rust std kini membuat symlink ke file target di /tmp, memeriksa symlink_metadata().file_type().is_symlink(), membaca tujuan melalui read_link, mengikuti symlink untuk membaca konten, lalu menghapus link dan target secara terpisah. Jalur ini mewakili operasi yang lazim dipakai toolchain pada source tree dan artefak build.
+
+- Marker baru: RUST-STD-FS-SYMLINK-PASS.
+- QEMU runner mewajibkan marker tersebut; kegagalan pembuatan, metadata, pembacaan target, dereference, atau penghapusan membuat probe gagal.
+- Implementasi libc OCTAGRAM telah menyediakan symlink, symlinkat, readlink, dan readlinkat; probe ini sekarang memeriksa jalur upstream std di atas ABI tersebut.
+
+Commits:
+- 60048beb — Exercise upstream Rust std symlink filesystem APIs.
+- a14eabdd — Require Rust std symlink filesystem probe in QEMU.
+
+Validasi: workflow CI untuk commit ini harus membuktikan build/link std dan marker QEMU. Belum ada klaim bahwa symlink std telah lulus pada guest. Ini menambah cakupan filesystem untuk Cargo, bukan berarti Cargo native sudah berjalan.

@@ -271,6 +271,7 @@ def main():
         ("RUST-STD-FS-SYMLINK-PASS", "upstream std symlink, read_link and symlink_metadata"),
         ("RUST-STD-FS-PERMISSIONS-PASS", "upstream std Unix file permission metadata and updates"),
         ("RUST-STD-ENV-PASS", "environment"),
+        ("RUST-STD-ENV-MUTATION-PASS", "process environment set_var and remove_var"),
         ("RUST-STD-FS-METADATA-PASS", "filesystem metadata"),
         ("RUST-STD-READ-DIR-PASS", "directory iteration"),
         ("RUST-STD-THREAD-CLOCK-PASS", "thread and monotonic clock"),

@@ -1683,22 +1683,22 @@ program `std` pertama di QEMU.
 
 ## 25. Patch awal untuk upstream Rust std build gate (22 November 2026)
 
-- Dibuat patch terpisah
-  [0001-std-recognize-octagram-target.patch](../patches/rust/0001-std-recognize-octagram-target.patch)
-  untuk upstream `rust-lang/rust` base
-  `342d74463af7dd3018ef6aa04dd5500c2deb5bd1`.
-- Patch menambahkan `target_os == "octagram"` pada allowlist
-  `library/std/build.rs`. Dengan `target_family = ["unix"]` pada target
-  OCTAGRAM, dispatcher PAL upstream memilih cabang Unix generik.
-- README patch series mencatat cara menerapkan patch pada checkout yang
-  dipatok dan batas integrasinya.
+- Patch `patches/rust/0001-std-recognize-octagram-target.patch` menambahkan
+  `target_os = "octagram"` pada allowlist `library/std/build.rs` upstream
+  Rust commit `342d74463af7dd3018ef6aa04dd5500c2deb5bd1`.
+- Target JSON OCTAGRAM menetapkan `target_family = ["unix"]`, sehingga
+  dispatcher PAL Unix generik dapat dipilih setelah libc target-specific
+  tersedia.
+- Workflow upstream patch memverifikasi patch dapat diterapkan pada source
+  yang dipatok.
 
-**Belum tervalidasi sebagai patch yang diterapkan:** source Rust upstream
-belum di-vendor/checkout ke repository OCTAGRAM dan `git apply --check`
-serta build `std` belum dijalankan terhadap checkout tersebut. Ini hanya
-membuka gate build; crate `libc`, errno/constants ABI, dan PAL Unix tetap
-harus dipenuhi. Status `rust_std`, `rustc_host`, dan `cargo_host` tetap
-belum diimplementasikan. Referensi: [upstream std build.rs](https://github.com/rust-lang/rust/blob/342d74463af7dd3018ef6aa04dd5500c2deb5bd1/library/std/build.rs).
+Perkembangan selanjutnya: workflow Rust no_std kini juga memodifikasi
+`rust-src` secara terkendali untuk target glue dan berhasil menjalankan
+`build-std=std` serta menautkan executable probe. Lihat bagian 33.
+
+**Batas:** patch ini bukan registrasi builtin target pada rustc compiler,
+bukan native compiler, dan bukan bukti bahwa seluruh API `std` sudah bekerja
+di guest. Referensi: [upstream std build.rs](https://github.com/rust-lang/rust/blob/342d74463af7dd3018ef6aa04dd5500c2deb5bd1/library/std/build.rs).
 
 ## 26. Audit ABI C untuk port libc upstream Rust (22 November 2026)
 
@@ -1759,15 +1759,15 @@ test bertahap terhadap source upstream yang dipatok.
 
 ## 30. Upstream libc OCTAGRAM: applicator deterministik dan compile gate lulus (22 November 2026)
 
-- Integrasi upstream libc kini memakai source module `patches/rust-libc/octagram/mod.rs` dan script `tools/apply_rust_libc_octagram.py`, bukan unified diff yang sensitif terhadap offset baris.
-- Applicator memverifikasi checkout upstream tepat pada commit `a03dd7c2e298b0ca482f30ce07efd3115938328e`, lalu menerapkan perubahan lewat anchor unik yang harus cocok tepat satu kali. Ini membuat perubahan upstream gagal secara eksplisit jika source bergeser, alih-alih menerapkan patch secara ambigu.
-- Integrasi mendaftarkan `target_os = "octagram"`, memilih modul Unix khusus, mengimpor subset POSIX `unistd`, dan menambahkan tipe, record, konstanta, serta deklarasi ABI OCTAGRAM.
-- API yang belum disediakan OCTAGRAM dikecualikan dari binding generik, termasuk pthread rwlock, `statvfs`, dan `dladdr`. Modul target juga memiliki pemeriksaan layout compile-time terhadap ABI yang diinventarisasi.
-- Workflow Rust no_std mengambil checkout upstream yang dipatok, menjalankan applicator, kemudian melakukan `cargo +nightly -Zjson-target-spec -Zbuild-std=core check` untuk target OCTAGRAM.
-
-<badge color="success">Rust no_std CI lulus</badge> Run [45045939233](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45045939233) pada commit `3115c898` lulus seluruh langkah: validasi target dan ABI, inventaris Unix PAL, penerapan perubahan ke upstream libc, cross-compile crate libc, build userspace Rust, unit test runtime host, dan verifikasi ELF statis.
-
-**Batas:** ini membuktikan crate upstream `libc` dapat dikompilasi untuk custom target dan aplikasi `no_std` yang ada tetap terbangun. Ini belum membuktikan `std` dapat dibangun, belum menguji seluruh simbol libc saat link/run, dan belum membuat `rustc` atau Cargo native. Langkah berikutnya adalah mencoba `build-std=std` secara terkendali, menggunakan daftar error PAL/libc aktual untuk melengkapi ABI tanpa mengasumsikan kompatibilitas Linux.
+- Modul target khusus berada di `patches/rust-libc/octagram/mod.rs`; applicator
+  `tools/apply_rust_libc_octagram.py` memverifikasi upstream commit
+  `ccc2ff4aaab962f7fde7b8edda7379c045b1ca12` (release `0.2.191` yang
+  dipakai Rust std) dan menerapkan edit melalui anchor unik.
+- Modul menyediakan ABI OCTAGRAM sendiri: scalar aliases, record publik,
+  konstanta, dan deklarasi pthread/time. Layout utama dikunci dengan
+  compile-time assertions serta checker header C.
+- CI cross-compiles upstream libc untuk custom target. Ini adalah dependency
+  yang tepat untuk versi Rust std yang dipatok, bukan upstream libc main.
 
 ## 31. Pemeriksaan layout ABI publik dan validasi header penuh (22 November 2026)
 
@@ -1799,3 +1799,27 @@ semua metadata sudah tersedia. Rust `std` tetap belum dibangun.
 <badge color="success">Rust no_std CI lulus</badge> Run [45046390159](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45046390159) pada commit `7c529470` lulus validasi ABI, kompilasi upstream libc untuk target OCTAGRAM, build Rust no_std, unit test runtime host, dan verifikasi ELF. Build C userspace serta eksekusi `thread_demo` di QEMU masih harus dinilai dari POSIX Core Stage 1 run yang terpisah.
 
 **Batas:** baru tipe mutex normal yang didukung; recursive/error-checking mutex belum tersedia. `pthread_detach` masih `ENOTSUP`, sehingga semantik lifecycle thread Rust std belum lengkap. Ini belum merupakan build `std`.
+
+## 33. Rust std berhasil di-compile dan executable berhasil di-link (23 November 2026)
+
+- Patch `rust-src` melalui `tools/patch_rust_std_octagram.py` mendaftarkan
+  modul OS OCTAGRAM, memilih target pada Unix PAL generik, dan memberi
+  implementasi eksplisit untuk bagian target-specific yang belum tersedia.
+- Probe `user/rust/std-probe` memakai `std::env`, `std::fs`,
+  `std::time`, `std::thread`, dan `std::process::Command`.
+- CI menjalankan `cargo -Zbuild-std=std check`, lalu mencoba
+  `cargo -Zbuild-std=std build` dengan startup `user/crt0.S` dan
+  `user/rust/linker.ld`. Langkah link juga menjalankan `readelf -h` dan
+  `readelf -l` terhadap executable hasil.
+- Run [45088069322](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45088069322)
+  pada commit `7fa968b7` lulus seluruh workflow Rust no_std, termasuk kedua
+  probe std, build binary Rust no_std, unit test runtime host, dan verifikasi
+  ELF.
+
+<badge color="success">Compile + link probe lulus</badge>
+
+**Belum selesai:** langkah link masih diagnostic/non-blocking; binary std
+belum disalin ke ISO atau dieksekusi di QEMU. Semantik filesystem, process,
+thread, clock, entropy, panic, dan TLS harus divalidasi saat runtime sebelum
+Rust std dinyatakan siap. Rustc native dan Cargo native tetap belum dibuat.
+

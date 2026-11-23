@@ -100,3 +100,8 @@ namespace per proses.
 - Tanpa hard link, tanpa `rename` lintas mount, tanpa quota, tanpa inotify.
 - Tanpa filesystem terisolasi per proses atau per container.
 - Root RAMFS volatil; belum ada image root persisten otomatis.
+
+
+EXT2 rename supports replacing an existing regular-file target. Directory
+replacement and cross-parent directory moves remain unsupported; callers must
+not assume full POSIX rename semantics for those cases.

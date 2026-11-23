@@ -332,7 +332,9 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     };
     // If try_wait already reaped the child, wait() must return the cached
     // status rather than issuing a second waitpid and reporting ECHILD.
-    if child_status != 42 || child.id().is_some() || child.wait() != Ok(42) {
+    // Linux-compatible waitpid returns a POSIX status word, not the
+    // child's plain exit code: 42 is stored in bits 8..15.
+    if child_status != (42 << 8) || child.id().is_some() || child.wait() != Ok(42 << 8) {
         return 42;
     }
     if write_all(STDOUT, b"Rust runtime child process/waitpid: PASS\n").is_err() {

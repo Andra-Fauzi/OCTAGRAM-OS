@@ -161,7 +161,64 @@ impl<'a> Path<'a> {
         if slash == 0 { Some(Path::new(b"/")) }
         else { Some(Path::new(&bytes[..slash])) }
     }
+    /// Iterate over slash-separated path components without UTF-8 conversion.
+    pub fn components(self) -> Components<'a> {
+        Components { remaining: self.as_bytes(), root_pending: self.is_absolute() }
+    }
+
     pub fn to_path_buf(self) -> PathBuf { PathBuf { inner: self.os_str.to_os_string() } }
+}
+
+/// One lexical component of a Unix-style path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Component<'a> {
+    RootDir,
+    CurDir,
+    ParentDir,
+    Normal(OsStr<'a>),
+}
+
+/// Iterator over lexical path components.
+///
+/// Repeated separators are collapsed and trailing separators are ignored.
+/// Dot and parent components are preserved; this iterator does not resolve
+/// them against a filesystem or normalize them away.
+#[derive(Clone, Debug)]
+pub struct Components<'a> {
+    remaining: &'a [u8],
+    root_pending: bool,
+}
+
+impl<'a> Iterator for Components<'a> {
+    type Item = Component<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.root_pending {
+            self.root_pending = false;
+            while self.remaining.first() == Some(&b'/') {
+                self.remaining = &self.remaining[1..];
+            }
+            return Some(Component::RootDir);
+        }
+
+        while self.remaining.first() == Some(&b'/') {
+            self.remaining = &self.remaining[1..];
+        }
+        if self.remaining.is_empty() {
+            return None;
+        }
+
+        let end = self.remaining.iter().position(|byte| *byte == b'/')
+            .unwrap_or(self.remaining.len());
+        let component = &self.remaining[..end];
+        self.remaining = &self.remaining[end..];
+
+        Some(match component {
+            b"." => Component::CurDir,
+            b".." => Component::ParentDir,
+            bytes => Component::Normal(OsStr::from_bytes(bytes)),
+        })
+    }
 }
 
 fn trim_trailing_slashes(mut bytes: &[u8]) -> &[u8] {
@@ -2474,6 +2531,40 @@ mod tests {
         assert!(relative.starts_with(b"src"));
         assert!(relative.ends_with(b"main.rs"));
         assert!(!relative.ends_with(b"src/main"));
+    }
+
+    #[test]
+    fn path_components_preserve_raw_names_and_classify_special_components() {
+        use super::Component;
+
+        let components: alloc::vec::Vec<_> = super::Path::new(b"//src/./../main.rs///")
+            .components()
+            .collect();
+        assert_eq!(components, alloc::vec![
+            Component::RootDir,
+            Component::Normal(super::OsStr::from_bytes(b"src")),
+            Component::CurDir,
+            Component::ParentDir,
+            Component::Normal(super::OsStr::from_bytes(b"main.rs")),
+        ]);
+
+        let relative: alloc::vec::Vec<_> = super::Path::new(b"./a//b/").components().collect();
+        assert_eq!(relative, alloc::vec![
+            Component::CurDir,
+            Component::Normal(super::OsStr::from_bytes(b"a")),
+            Component::Normal(super::OsStr::from_bytes(b"b")),
+        ]);
+
+        let raw = [b'/', b'x', b'/', 0x80, b'y'];
+        let raw_components: alloc::vec::Vec<_> = super::Path::new(&raw).components().collect();
+        assert_eq!(raw_components, alloc::vec![
+            Component::RootDir,
+            Component::Normal(super::OsStr::from_bytes(&[b'x'])),
+            Component::Normal(super::OsStr::from_bytes(&[0x80, b'y'])),
+        ]);
+        assert_eq!(super::Path::new(b"/").components().collect::<alloc::vec::Vec<_>>(),
+            alloc::vec![Component::RootDir]);
+        assert!(super::Path::new(b"////").components().next() == Some(Component::RootDir));
     }
 
     #[test]

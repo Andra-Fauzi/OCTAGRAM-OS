@@ -2712,3 +2712,20 @@ mengganggu posisi I/O thread atau descriptor lain.
 
 **Validasi:** perubahan kernel, regression demo, dan dokumentasi sudah
 di-commit. Host dan QEMU CI untuk revisi ini masih menunggu.
+
+## 89. Semantik preadv2/pwritev2 yang eksplisit (23 November 2026)
+
+Libc sebelumnya mengabaikan parameter `flags` pada `preadv2` dan
+`pwritev2`, sehingga pemanggil dapat mengira mode I/O khusus berhasil
+meskipun kernel tidak menerapkannya. Implementasi kini menolak semua flag
+nonzero dengan `ENOTSUP`, menerima hanya offset non-negatif atau sentinel
+`-1`, dan meneruskan offset `-1` ke `readv`/`writev` agar memakai file
+offset saat ini. Offset negatif selain `-1` menghasilkan `EINVAL`.
+
+- `file-api-demo` menguji I/O dengan offset `-1`, perubahan file offset,
+  penolakan flag yang belum didukung, dan offset negatif yang tidak valid.
+- Flag `RWF_*` belum didukung; implementasi tidak lagi mengabaikannya diam-diam.
+- QEMU smoke test menjalankan demo file API yang diperluas.
+
+**Validasi:** source, regression demo, dan roadmap diperbarui. Hasil host dan
+QEMU untuk commit ini menunggu workflow CI.

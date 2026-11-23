@@ -2387,3 +2387,18 @@ Commits:
 - a14eabdd — Require Rust std symlink filesystem probe in QEMU.
 
 Validasi: workflow CI untuk commit ini harus membuktikan build/link std dan marker QEMU. Belum ada klaim bahwa symlink std telah lulus pada guest. Ini menambah cakupan filesystem untuk Cargo, bukan berarti Cargo native sudah berjalan.
+
+
+## 71. Probe permission metadata dan set_permissions upstream Rust std (23 November 2026)
+
+Probe upstream std kini membuat file sementara, membaca Unix permission bits melalui PermissionsExt, mengubah mode menjadi 0600 dengan std::fs::set_permissions, lalu membaca metadata kembali dan memverifikasi mode efektif sebelum cleanup. Ini menguji jalur permission yang dibutuhkan build script, instalasi artefak, dan pengelolaan file oleh toolchain.
+
+- Marker baru: RUST-STD-FS-PERMISSIONS-PASS.
+- QEMU runner mewajibkan marker ini sehingga dukungan permission tidak hanya lolos kompilasi.
+- Runtime libc OCTAGRAM telah menyediakan chmod/fchmod; probe memastikan jalur upstream std berjalan melewati antarmuka tersebut.
+
+Commits:
+- 7e65b14d — Exercise upstream Rust std file permission APIs.
+- 6ecbe9a1 — Require Rust std file permission probe in QEMU.
+
+Validasi guest masih menunggu workflow CI. Ini merupakan penguatan kompatibilitas std untuk Cargo, bukan klaim Cargo/rustc native sudah tersedia.

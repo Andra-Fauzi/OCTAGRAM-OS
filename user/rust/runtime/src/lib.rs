@@ -213,10 +213,12 @@ impl<'a> Iterator for Components<'a> {
         let component = &self.remaining[..end];
         self.remaining = &self.remaining[end..];
 
-        Some(match component {
-            b"." => Component::CurDir,
-            b".." => Component::ParentDir,
-            bytes => Component::Normal(OsStr::from_bytes(bytes)),
+        Some(if component == b"." {
+            Component::CurDir
+        } else if component == b".." {
+            Component::ParentDir
+        } else {
+            Component::Normal(OsStr::from_bytes(component))
         })
     }
 }

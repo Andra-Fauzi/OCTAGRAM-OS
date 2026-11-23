@@ -53,6 +53,9 @@ jobs:
         with:
           components: rust-src, rustfmt
 
+      - name: Audit Rust Stage 0 host prerequisites
+        run: make -C user/rust stage0-inventory
+
       - name: Validate custom target specification and Unix cfg
         run: python3 tools/check_octagram_rust_target.py
 

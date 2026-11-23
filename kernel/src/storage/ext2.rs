@@ -2747,6 +2747,55 @@ mod tests {
     }
 
     #[test]
+    fn hard_links_share_inode_and_keep_data_until_last_name_is_removed() {
+        let disk = test_disk();
+        let mut filesystem = Ext2::mount(disk.clone()).unwrap();
+        filesystem.create_file("/original").unwrap();
+        filesystem.write("/original", 0, b"shared artifact").unwrap();
+        filesystem.hard_link("/original", "/alias").unwrap();
+
+        let original_inode = filesystem.lookup_inode("/original").unwrap().0;
+        let alias_inode = filesystem.lookup_inode("/alias").unwrap().0;
+        assert_eq!(original_inode, alias_inode);
+        assert_eq!(filesystem.read_inode(original_inode).unwrap().links(), 2);
+        assert_eq!(
+            filesystem.hard_link("/original", "/alias"),
+            Err(FsError::AlreadyExists)
+        );
+        assert_eq!(
+            filesystem.hard_link("/missing", "/missing-alias"),
+            Err(FsError::NotFound)
+        );
+        filesystem.create_dir("/directory").unwrap();
+        assert_eq!(
+            filesystem.hard_link("/directory", "/directory-alias"),
+            Err(FsError::Unsupported)
+        );
+
+        filesystem.write("/alias", 0, b"updated").unwrap();
+        let mut contents = [0u8; 15];
+        assert_eq!(filesystem.read("/original", 0, &mut contents), Ok(15));
+        assert_eq!(&contents, b"updatedartifact");
+
+        filesystem.remove("/original").unwrap();
+        assert_eq!(filesystem.read_inode(alias_inode).unwrap().links(), 1);
+        drop(filesystem);
+
+        let mut remounted = Ext2::mount(disk).unwrap();
+        assert_eq!(remounted.lookup_inode("/alias").unwrap().0, alias_inode);
+        let mut persisted = [0u8; 15];
+        assert_eq!(remounted.read("/alias", 0, &mut persisted), Ok(15));
+        assert_eq!(&persisted, b"updatedartifact");
+
+        remounted.create_symlink("/alias", "/symbolic").unwrap();
+        remounted.hard_link("/symbolic", "/symbolic-alias").unwrap();
+        let symbolic_inode = remounted.lookup_inode("/symbolic").unwrap().0;
+        assert_eq!(remounted.lookup_inode("/symbolic-alias").unwrap().0, symbolic_inode);
+        assert_eq!(remounted.read_link("/symbolic-alias").unwrap(), "/alias");
+        assert_eq!(remounted.read_inode(symbolic_inode).unwrap().links(), 2);
+    }
+
+    #[test]
     fn mounts_reads_writes_and_truncates_files() {
         let disk = test_disk();
         let mut ext2 = Ext2::mount(disk.clone()).unwrap();

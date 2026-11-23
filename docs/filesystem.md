@@ -105,3 +105,12 @@ namespace per proses.
 EXT2 rename supports replacing an existing regular-file target. Directory
 replacement and cross-parent directory moves remain unsupported; callers must
 not assume full POSIX rename semantics for those cases.
+
+
+### EXT2 rename rollback errors
+
+When replacing an existing regular file, EXT2 rename attempts to restore the
+previous destination entry if installing the new entry or removing the source
+entry fails. A failure while rolling back is now propagated instead of being
+silently discarded. This makes a failed recovery visible to callers; it does
+not make multi-block directory updates crash-atomic.

@@ -213,36 +213,33 @@ lalu menjalankan compile test terhadap checkout upstream. Fitur PAL yang belum
 didukung harus diberi cfg/implementasi eksplisit; jangan mengarahkan target
 OCTAGRAM ke ABI Linux.
 
-## Upstream libc target OCTAGRAM: compile gate lulus
+## Upstream libc dan Rust std: compile serta link probe berhasil
 
-Integrasi awal upstream `rust-lang/libc` kini disimpan sebagai modul
-`patches/rust-libc/octagram/mod.rs` dan diterapkan oleh
-`tools/apply_rust_libc_octagram.py`. Applicator memverifikasi checkout
-upstream tepat pada commit
-`a03dd7c2e298b0ca482f30ce07efd3115938328e`, lalu mengubah source hanya jika
-setiap anchor ditemukan tepat satu kali. Modul tersebut mendefinisikan ABI
-OCTAGRAM sendiri dan tidak meminjam layout Linux atau Redox.
+Integrasi upstream `rust-lang/libc` memakai modul
+`patches/rust-libc/octagram/mod.rs` dan applicator
+`tools/apply_rust_libc_octagram.py`. Versi upstream dipatok pada release
+`0.2.191`, commit `ccc2ff4aaab962f7fde7b8edda7379c045b1ca12`, yaitu versi
+yang digunakan oleh source Rust yang dipatok. Applicator memverifikasi commit
+dan menerapkan perubahan melalui anchor unik.
 
-Modul awal mencakup scalar aliases, `stat`, `dirent`, `sockaddr`,
-`addrinfo`, `passwd`, `tm`, `fd_set`, `lconv`, `sem_t`, `termios`,
-`sigaction`, dan object pthread. Compile-time assertions mengunci ukuran
-struktur utama. Binding generik untuk pthread rwlock, `statvfs`, dan
-`dladdr` dikecualikan karena interface tersebut belum disediakan OCTAGRAM.
+CI sekarang menjalankan dua probe upstream Rust `std`:
+- `cargo -Zbuild-std=std check` untuk memeriksa kompilasi dan tipe generic
+  Unix PAL pada target OCTAGRAM.
+- `cargo -Zbuild-std=std build` dengan startup `crt0.S` dan linker script
+  OCTAGRAM, lalu `readelf` memeriksa executable yang dihasilkan.
 
-CI menjalankan validator header/ABI, menerapkan modul ke source upstream yang
-dipatok, lalu melakukan
-`cargo +nightly -Zjson-target-spec -Zbuild-std=core check` untuk
-`x86_64-unknown-octagram`. Run
-[45045939233](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45045939233)
-lulus, termasuk compile upstream libc, build userspace Rust, runtime host
-unit tests, dan pemeriksaan ELF statis.
+Run [45088069322](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45088069322)
+pada commit `7fa968b7` lulus kedua probe tersebut, compile crate upstream
+`libc`, build userspace Rust `no_std`, unit test runtime host, dan verifikasi
+ELF. Ini bukti bahwa `std` dapat dikompilasi dan sebuah executable dapat
+ditautkan untuk target OCTAGRAM.
 
-**Batas:** ini membuktikan crate upstream `libc` dapat di-cross-compile untuk
-custom target. Ini belum membangun Rust `std`, belum membuktikan seluruh
-simbol PAL tersedia saat link/run, dan belum menghasilkan rustc atau Cargo
-native. Tahap berikutnya adalah percobaan `build-std=std` dan penyelesaian
-error PAL yang benar-benar muncul, dengan ABI setiap fungsi diverifikasi
-terhadap header serta runtime OCTAGRAM.
+**Batas penting:** probe link masih diagnostic/non-blocking dan executable
+belum dimasukkan ke ISO atau dijalankan di QEMU. Belum ada bukti seluruh
+operasi PAL benar saat runtime, dan belum ada native `rustc` atau Cargo.
+Tahap selanjutnya adalah memasukkan probe executable ke image uji, menjalankan
+fungsi dasar `std` di guest, lalu menyelesaikan kegagalan PAL berdasarkan
+hasil runtime nyata.
 
 ### pthread mutex API required by the generic Unix PAL
 

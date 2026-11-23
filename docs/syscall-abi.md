@@ -50,6 +50,7 @@ menyediakan inline wrappers.
 | 44 | `renameat` | `RDI=olddirfd`, `RSI=oldpath`, `RDX=newdirfd`, `R10=newpath` | 0 |
 | 45 | `readlinkat` | `RDI=dirfd`, `RSI=path`, `RDX=buffer`, `R10=size` | Jumlah byte target |
 | 46 | `symlinkat` | `RDI=target`, `RSI=newdirfd`, `RDX=link_path` | 0 |
+| 148 | `linkat` | `RDI=olddirfd`, `RSI=oldpath`, `RDX=newdirfd`, `R10=newpath`, `R8=flags` (saat ini harus 0) | 0; hard-link inode yang sama tanpa mengikuti final symlink |
 | 47 | `execve` | `RDI=path`, `RSI=argv`, `RDX=envp` | Tidak kembali saat sukses |
 | 48 | `fork` | — | PID child di parent, 0 di child |
 | 50 | `clock_gettime` | `RDI=CLOCK_REALTIME`, `RSI=struct timespec*` | 0 |

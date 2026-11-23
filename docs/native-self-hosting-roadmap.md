@@ -1888,3 +1888,19 @@ native tetap belum diimplementasikan.
 komponen seperti `.` dan `..`, iterator komponen, serta integrasi
 filesystem masih belum disediakan. Perubahan source dan test belum dianggap
 lulus sampai CI host test dan QEMU runtime yang relevan benar-benar berjalan.
+
+## 38. Iterator komponen path byte-preserving (23 November 2026)
+
+- Menambahkan enum `Component` untuk `RootDir`, `CurDir`, `ParentDir`, dan
+  `Normal(OsStr)`.
+- Menambahkan `Path::components()` dan iterator `Components` tanpa alokasi
+  serta tanpa konversi UTF-8.
+- Iterator menggabungkan separator berulang, mengabaikan separator akhir,
+  dan mempertahankan komponen `.` serta `..` secara eksplisit.
+- Menambahkan regression test untuk root, path relatif, separator berulang,
+  komponen khusus, dan nama komponen non-UTF-8.
+
+**Batas:** ini iterator leksikal sederhana, belum menjamin seluruh detail
+semantik `std::path::Components` (khususnya normalisasi `.` pada posisi
+tertentu dan operasi prefix berbasis komponen). Tes host dan CI harus lulus
+sebelum API ini dipakai sebagai dasar implementasi `std::path` yang lebih luas.

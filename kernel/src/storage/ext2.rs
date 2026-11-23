@@ -1661,6 +1661,9 @@ impl FileSystem for Ext2 {
         let source = normalize_path(source)?;
         let target = normalize_path(target)?;
         if source == target {
+            // A same-path rename is a no-op only if the source exists.
+            // Resolve it first so rename("missing", "missing") reports ENOENT.
+            self.lookup_inode(&source)?;
             return Ok(());
         }
         let (source_parent_number, _, source_name) = self.parent_and_name(&source)?;
@@ -2665,6 +2668,24 @@ mod tests {
             26
         );
         assert_eq!(&data, source);
+    }
+
+    #[test]
+    fn renaming_a_path_to_itself_requires_the_source_to_exist() {
+        let disk = test_disk();
+        let mut filesystem = Ext2::mount(disk).unwrap();
+
+        assert_eq!(
+            filesystem.rename("/missing", "/missing"),
+            Err(FsError::NotFound)
+        );
+
+        filesystem.create_file("/present").unwrap();
+        filesystem.rename("/present", "/present").unwrap();
+        assert_eq!(
+            filesystem.metadata("/present").unwrap().node_type,
+            NodeType::File
+        );
     }
 
     #[test]

@@ -1381,6 +1381,28 @@ mod tests {
     }
 
     #[test]
+    fn vfs_hard_link_does_not_follow_the_final_source_symlink() {
+        let mut root = RamFs::new();
+        root.create_file("/target").unwrap();
+        root.write("/target", 0, b"payload").unwrap();
+        let mut vfs = Vfs::new();
+        vfs.mount("/", root).unwrap();
+        vfs.symlink("/target", "/link").unwrap();
+
+        vfs.hard_link("/link", "/link-alias").unwrap();
+        assert_eq!(
+            vfs.symlink_metadata("/link-alias").unwrap().node_type,
+            NodeType::Symlink
+        );
+        assert_eq!(vfs.read_link("/link-alias").unwrap(), "/target");
+        vfs.remove_file("/link").unwrap();
+        assert_eq!(vfs.read_link("/link-alias").unwrap(), "/target");
+        let mut contents = [0u8; 7];
+        assert_eq!(vfs.read("/link-alias", 0, &mut contents), Ok(7));
+        assert_eq!(&contents, b"payload");
+    }
+
+    #[test]
     fn symlink_loops_return_an_error() {
         let mut vfs = Vfs::new();
         vfs.mount("/", RamFs::new()).unwrap();

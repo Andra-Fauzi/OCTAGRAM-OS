@@ -2491,3 +2491,21 @@ dirinya sendiri dan memeriksa `ExitStatusExt::signal() == Some(15)` serta
 
 **Validasi:** perubahan kode dan gate sudah ditambahkan. Pengujian QEMU harus
 lulus sebelum kompatibilitas terminasi sinyal dianggap terverifikasi.
+
+## 77. Probe Child::try_wait, kill, dan wait pada Rust std (23 November 2026)
+
+Probe upstream Rust std kini membuat child shell yang tetap berjalan, lalu memanggil
+`Child::try_wait()`. Hasil yang diharapkan sebelum child dihentikan adalah
+`None`, yang memvalidasi jalur non-blocking `waitpid(WNOHANG)`. Probe kemudian
+memanggil `Child::kill()`, menunggu dengan `Child::wait()`, dan memastikan
+`ExitStatusExt::signal()` melaporkan SIGKILL (9), bukan exit code sintetis.
+
+- Marker QEMU wajib: `RUST-STD-PROCESS-TRY-WAIT-KILL-PASS`.
+- Probe SIGTERM sebelumnya juga diperbaiki agar shell menjalankan
+  `kill -TERM $$`, sehingga sinyal benar-benar dikirim ke proses child sendiri.
+- Kernel `syscall_waitpid` sudah memiliki cabang `WNOHANG` yang mengembalikan
+  nol ketika child belum selesai; tes upstream std sekarang menguji kontrak itu
+  dari API `Child::try_wait`.
+
+**Validasi:** perubahan source dan gate QEMU memicu workflow baru. Hasil runtime
+belum dinyatakan lulus sampai marker terlihat pada output guest.

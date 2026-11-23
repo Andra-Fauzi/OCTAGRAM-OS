@@ -314,6 +314,19 @@ int main(void)
     errno = 0;
     check(isatty(tty_pipe[0]) == 0 && errno == ENOTTY,
           "isatty(pipe) == 0 dan ENOTTY");
+    errno = 0;
+    check(close_range((unsigned int)tty_pipe[0],
+                      (unsigned int)tty_pipe[1], 1) == -1 &&
+          errno == ENOTSUP, "close_range menolak flag belum didukung");
+    errno = 0;
+    check(close_range((unsigned int)tty_pipe[1],
+                      (unsigned int)tty_pipe[0], 0) == -1 &&
+          errno == EINVAL, "close_range menolak rentang terbalik");
+    check(close_range((unsigned int)tty_pipe[0],
+                      (unsigned int)tty_pipe[0], 0) == 0 &&
+          close_range((unsigned int)tty_pipe[1],
+                      (unsigned int)tty_pipe[1], 0) == 0,
+          "close_range menutup descriptor dalam rentang");
 
     struct termios tty_settings;
     check(tcgetattr(1, &tty_settings) == 0, "tcgetattr(1)");

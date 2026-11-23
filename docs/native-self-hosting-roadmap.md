@@ -2558,3 +2558,19 @@ executable dapat membuat proses macet selamanya.
 
 **Validasi:** source libc, demo, gate QEMU, dan roadmap diperbarui. Tes runtime
 guest masih harus dijalankan; perubahan belum dianggap lulus QEMU.
+
+
+## 81. Rust std Command executable lookup melalui PATH (23 November 2026)
+
+Probe upstream Rust std kini menjalankan `Command::new("sh")` tanpa path
+absolut dan memberikan `PATH=/bin` pada child. Program harus ditemukan,
+berjalan, dan menghasilkan marker dari stdout child.
+
+- Marker QEMU wajib: `RUST-STD-PROCESS-PATH-LOOKUP-PASS`.
+- Pengujian ini memvalidasi jalur yang dipakai Cargo ketika meluncurkan
+  helper seperti compiler, linker, dan build script melalui nama executable.
+- Tes ini melengkapi regresi libc `execvp` yang melewati entri PATH berupa
+  direktori dan melanjutkan pencarian ke direktori berikutnya.
+
+**Validasi:** probe, gate QEMU, dan roadmap diperbarui. Hasil runtime guest
+masih menunggu workflow.

@@ -2145,3 +2145,20 @@ nama non-UTF-8.
 **Validasi:** probe dan assertion telah diperbarui, tetapi belum ada hasil
 compile/link atau eksekusi QEMU. Dukungan `OpenOptions`, `fsync`, `lseek`,
 dan rename pada target belum boleh dianggap lulus sampai marker QEMU muncul.
+
+## 56. Uji path management dan descriptor cloning Rust std (23 November 2026)
+
+- Probe file descriptor kini menguji `File::try_clone` dan metadata dari
+  descriptor asli maupun hasil clone.
+- Probe membuat pohon direktori bertingkat dengan `create_dir_all`, memeriksa
+  `canonicalize` menghasilkan path absolut, mengganti working directory
+  dengan `set_current_dir`, lalu memverifikasi `current_dir` dan memulihkan
+  direktori kerja semula.
+- Pohon direktori sementara dibersihkan melalui `remove_dir_all`.
+- Marker terpisah membedakan kegagalan create-dir-all, canonicalize,
+  current-dir, metadata, dan recursive cleanup.
+
+**Validasi:** source probe dan dokumentasi telah diperbarui. Belum ada hasil
+build target atau eksekusi QEMU untuk API tambahan ini. Cargo native tetap
+belum tersedia; probe ini hanya memeriksa bagian filesystem/process substrate
+yang diperlukan sebelum implementasi Cargo.

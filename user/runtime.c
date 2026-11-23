@@ -3057,7 +3057,7 @@ int strerror_r(int error, char *buffer, size_t length)
     size_t needed = strlen(message) + 1;
     if (needed > length) {
         memcpy(buffer, message, length - 1);
-        buffer[length - 1] = '\\0';
+        buffer[length - 1] = '\0';
         return ERANGE;
     }
     memcpy(buffer, message, needed);

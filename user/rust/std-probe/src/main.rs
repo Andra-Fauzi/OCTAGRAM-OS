@@ -430,6 +430,40 @@ fn main() {
     }
     marker("RUST-STD-FS-SYMLINK-PASS");
 
+    // Cargo copies build-script outputs and compiler artifacts between target
+    // directories. Exercise the upstream std::fs::copy implementation and
+    // verify both its byte count and the destination contents.
+    let copy_source = std::path::PathBuf::from(format!(
+        "/tmp/octagram-rust-copy-{}.source",
+        std::process::id()
+    ));
+    let copy_destination = std::path::PathBuf::from(format!(
+        "/tmp/octagram-rust-copy-{}.artifact",
+        std::process::id()
+    ));
+    let copy_payload = b"cargo-artifact-copy-roundtrip";
+    let copy_result = (|| -> std::io::Result<()> {
+        std::fs::write(&copy_source, copy_payload)?;
+        let copied = std::fs::copy(&copy_source, &copy_destination)?;
+        let destination = std::fs::read(&copy_destination)?;
+        if copied != copy_payload.len() as u64 || destination != copy_payload {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "copied artifact contents or byte count mismatch",
+            ));
+        }
+        std::fs::remove_file(&copy_destination)?;
+        std::fs::remove_file(&copy_source)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&copy_destination);
+    let _ = std::fs::remove_file(&copy_source);
+    if copy_result.is_err() {
+        marker("RUST-STD-FS-COPY-FAIL");
+        std::process::exit(68);
+    }
+    marker("RUST-STD-FS-COPY-PASS");
+
     // Cargo build scripts and installed artifacts inspect and adjust Unix
     // permission bits. Exercise upstream std metadata and set_permissions.
     let permission_path = std::path::PathBuf::from(format!(

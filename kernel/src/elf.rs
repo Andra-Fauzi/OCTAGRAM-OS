@@ -6215,31 +6215,31 @@ fn syscall_fcntl(fd: u64, command: u64, argument: u64) -> Result<u64, i32> {
             Ok(0)
         }
         F_GETFL => {
-            let status = process
+            let descriptor_status = process
                 .descriptor_flags
                 .get(fd)
                 .copied()
-                .unwrap_or(0) as u64
-                & (O_APPEND | O_NONBLOCK);
-            let access = match descriptor {
+                .unwrap_or(0) as u64;
+            let (access, status) = match descriptor {
                 UserDescriptor::File(file) => {
                     let file = file.lock();
-                    if !file.readable {
+                    let access = if !file.readable {
                         O_WRONLY
                     } else if file.writable {
                         O_RDWR
                     } else {
                         O_RDONLY
-                    }
+                    };
+                    // O_APPEND belongs to the shared open-file description,
+                    // unlike FD_CLOEXEC which belongs to an individual fd.
+                    (access, (if file.append { O_APPEND } else { 0 })
+                        | (descriptor_status & O_NONBLOCK))
                 }
                 UserDescriptor::Pipe(endpoint) => {
-                    if endpoint.writable {
-                        O_WRONLY
-                    } else {
-                        O_RDONLY
-                    }
+                    let access = if endpoint.writable { O_WRONLY } else { O_RDONLY };
+                    (access, descriptor_status & O_NONBLOCK)
                 }
-                _ => O_RDONLY,
+                _ => (O_RDONLY, 0),
             };
             Ok(access | status)
         }
@@ -6256,8 +6256,10 @@ fn syscall_fcntl(fd: u64, command: u64, argument: u64) -> Result<u64, i32> {
                 process.descriptor_flags.resize(descriptor_count, 0);
             }
             let cloexec = process.descriptor_flags[fd] & FD_CLOEXEC;
+            // O_APPEND lives in the shared OpenFile; this table stores
+            // only per-descriptor flags and nonblocking state.
             process.descriptor_flags[fd] =
-                cloexec | (argument as u32 & (O_APPEND | O_NONBLOCK) as u32);
+                cloexec | (argument as u32 & O_NONBLOCK as u32);
             Ok(0)
         }
         _ => Err(EINVAL),

@@ -595,7 +595,7 @@ fn main() {
     use std::os::unix::process::ExitStatusExt;
     let signaled = Command::new("/bin/sh")
         .arg("-c")
-        .arg("kill -TERM $")
+        .arg("kill -TERM $$")
         .status()
         .unwrap_or_else(|error| {
             eprintln!("Command signal status probe failed: {error}");

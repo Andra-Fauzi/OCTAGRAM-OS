@@ -707,8 +707,8 @@ fn main() {
             std::process::exit(66);
         });
     if !path_lookup.status.success()
-        || !path_lookup.stdout.windows(b"RUST-STD-PATH-LOOKUP-CHILD\\n".len())
-            .any(|bytes| bytes == b"RUST-STD-PATH-LOOKUP-CHILD\\n")
+        || !path_lookup.stdout.windows(b"RUST-STD-PATH-LOOKUP-CHILD\n".len())
+            .any(|bytes| bytes == b"RUST-STD-PATH-LOOKUP-CHILD\n")
     {
         marker("RUST-STD-PROCESS-PATH-LOOKUP-FAIL");
         std::process::exit(67);

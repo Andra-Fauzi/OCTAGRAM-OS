@@ -30,7 +30,7 @@ def main() -> int:
     replace_once(
         os_mod,
         "pub mod raw;\n",
-        "pub mod raw;\n\n#[cfg(target_os = \"octagram\")]\npub mod octagram;\n",
+        "pub mod raw;\n\n#[cfg(target_os = \"octagram\")]\npub(crate) mod octagram;\n",
     )
 
     unix_mod = std / "os/unix/mod.rs"

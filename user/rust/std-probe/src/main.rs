@@ -106,6 +106,10 @@ fn main() {
             .open(&child_path)?;
         file.write_all(b"descriptor-roundtrip")?;
         file.sync_all()?;
+        let cloned = file.try_clone()?;
+        if !file.metadata()?.is_file() || !cloned.metadata()?.is_file() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "descriptor metadata mismatch"));
+        }
         file.seek(std::io::SeekFrom::Start(0))?;
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut file, &mut bytes)?;

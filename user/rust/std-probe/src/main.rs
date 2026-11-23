@@ -319,19 +319,41 @@ fn main() {
         marker("RUST-STD-AT-DIRFD-FAIL");
         std::process::exit(41);
     }
-    let open_result = unsafe {
+    // Open the newly-created directory and use that descriptor for every
+    // child operation. This proves nested dirfd resolution rather than merely
+    // passing the same /tmp descriptor to each *at syscall.
+    let nested_result = unsafe {
         syscall4(
             40,
             dirfd,
+            directory_name.as_ptr() as usize as u64,
+            0, // O_RDONLY; the path itself names a directory
+            0,
+        )
+    };
+    if nested_result < 0 {
+        let _ = unsafe { syscall3(43, dirfd, directory_name.as_ptr() as usize as u64, 0x200) };
+        marker("RUST-STD-AT-DIRFD-FAIL");
+        std::process::exit(42);
+    }
+    let nested_directory = unsafe {
+        <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(nested_result as i32)
+    };
+    let nested_dirfd = std::os::fd::AsRawFd::as_raw_fd(&nested_directory) as u64;
+    let open_result = unsafe {
+        syscall4(
+            40,
+            nested_dirfd,
             source_name.as_ptr() as usize as u64,
             0x102, // O_CREAT | O_RDWR
             0o600,
         )
     };
     if open_result < 0 {
+        drop(nested_directory);
         let _ = unsafe { syscall3(43, dirfd, directory_name.as_ptr() as usize as u64, 0x200) };
         marker("RUST-STD-AT-DIRFD-FAIL");
-        std::process::exit(42);
+        std::process::exit(43);
     }
     let mut relative_file = unsafe {
         <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(open_result as i32)
@@ -340,30 +362,30 @@ fn main() {
         || relative_file.sync_all().is_err()
     {
         drop(relative_file);
-        let _ = unsafe { syscall3(43, dirfd, source_name.as_ptr() as usize as u64, 0) };
+        let _ = unsafe { syscall3(43, nested_dirfd, source_name.as_ptr() as usize as u64, 0) };
+        drop(nested_directory);
         let _ = unsafe { syscall3(43, dirfd, directory_name.as_ptr() as usize as u64, 0x200) };
         marker("RUST-STD-AT-DIRFD-FAIL");
-        std::process::exit(43);
+        std::process::exit(44);
     }
     drop(relative_file);
     let rename_result = unsafe {
         syscall4(
             44,
-            dirfd,
+            nested_dirfd,
             source_name.as_ptr() as usize as u64,
-            dirfd,
+            nested_dirfd,
             target_name.as_ptr() as usize as u64,
         )
     };
-    if rename_result < 0 {
-        let _ = unsafe { syscall3(43, dirfd, source_name.as_ptr() as usize as u64, 0) };
-    }
-    let read_back = std::fs::read(std::path::Path::new("/tmp").join(
-        std::ffi::OsStr::from_bytes(target_name.as_bytes())
-    ));
+    let nested_path = std::path::Path::new("/tmp")
+        .join(std::ffi::OsStr::from_bytes(directory_name.as_bytes()));
+    let target_path = nested_path.join(std::ffi::OsStr::from_bytes(target_name.as_bytes()));
+    let read_back = std::fs::read(&target_path);
     let unlink_file = unsafe {
-        syscall3(43, dirfd, target_name.as_ptr() as usize as u64, 0)
+        syscall3(43, nested_dirfd, target_name.as_ptr() as usize as u64, 0)
     };
+    drop(nested_directory);
     let unlink_dir = unsafe {
         syscall3(43, dirfd, directory_name.as_ptr() as usize as u64, 0x200) // AT_REMOVEDIR
     };
@@ -373,7 +395,7 @@ fn main() {
         || unlink_dir < 0
     {
         marker("RUST-STD-AT-DIRFD-FAIL");
-        std::process::exit(44);
+        std::process::exit(45);
     }
     marker("RUST-STD-AT-DIRFD-PASS");
 

@@ -221,6 +221,16 @@ static inline int64_t oct_symlinkat(const char *target, int newdirfd,
                         (uint64_t)(uintptr_t)link_path);
 }
 
+static inline int64_t oct_linkat(int olddirfd, const char *oldpath,
+                                 int newdirfd, const char *newpath, int flags)
+{
+    return oct_syscall6(148, (uint64_t)(int64_t)olddirfd,
+                        (uint64_t)(uintptr_t)oldpath,
+                        (uint64_t)(int64_t)newdirfd,
+                        (uint64_t)(uintptr_t)newpath,
+                        (uint64_t)(unsigned int)flags, 0);
+}
+
 static inline int64_t oct_fstat(int fd, struct oct_stat *result)
 {
     return oct_syscall2(29, (uint64_t)fd, (uint64_t)(uintptr_t)result);

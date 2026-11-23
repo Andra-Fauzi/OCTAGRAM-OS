@@ -45,8 +45,18 @@ fn main() {
     }
     marker("RUST-STD-READ-DIR-PASS");
 
+    // Keep phase markers around the first upstream std thread. If the guest
+    // faults before the closure marker, the failure is in pthread/TLS thread
+    // initialization rather than the closure body or join result handling.
+    let _main_thread = std::thread::current();
+    marker("RUST-STD-THREAD-MAIN-CURRENT-PASS");
     let started = std::time::Instant::now();
-    std::thread::spawn(|| 7usize)
+    let handle = std::thread::spawn(|| {
+        marker("RUST-STD-THREAD-CLOSURE-ENTER-PASS");
+        7usize
+    });
+    marker("RUST-STD-THREAD-SPAWN-RETURN-PASS");
+    handle
         .join()
         .ok()
         .filter(|value| *value == 7)

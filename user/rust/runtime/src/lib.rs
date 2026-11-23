@@ -113,6 +113,8 @@ impl<'a> Path<'a> {
     pub const fn new(bytes: &'a [u8]) -> Self { Self { os_str: OsStr::from_bytes(bytes) } }
     pub const fn as_os_str(self) -> OsStr<'a> { self.os_str }
     pub const fn as_bytes(self) -> &'a [u8] { self.os_str.as_bytes() }
+    /// Return whether this path contains no bytes.
+    pub const fn is_empty(self) -> bool { self.as_bytes().is_empty() }
     /// Return this path as UTF-8 when every path byte is valid UTF-8.
     pub fn to_str(self) -> Option<&'a str> { self.os_str.to_str() }
     /// Convert this path to displayable UTF-8, replacing invalid bytes.
@@ -2636,6 +2638,16 @@ mod tests {
         assert_eq!(owned.to_str(), None);
         assert_eq!(owned.to_string_lossy(), "src/�.rs");
         assert_eq!(owned.as_bytes(), &invalid_bytes);
+    }
+
+    #[test]
+    fn path_empty_query_matches_empty_and_non_empty_paths() {
+        assert!(super::Path::new(b"").is_empty());
+        assert!(!super::Path::new(b"/").is_empty());
+        assert!(!super::Path::new(b"relative").is_empty());
+        assert!(!super::Path::new(b"/tmp/file").is_empty());
+        assert!(super::PathBuf::new().as_path().is_empty());
+        assert!(!super::PathBuf::from_bytes(b".").as_path().is_empty());
     }
 
     #[test]

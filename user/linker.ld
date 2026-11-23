@@ -21,12 +21,12 @@ SECTIONS
     .tdata : ALIGN(16) {
         __oct_tls_start = .;
         *(.tdata .tdata.*)
-    } :data :tls
+    } :tls :data
 
     .tbss (NOLOAD) : ALIGN(16) {
         *(.tbss .tbss.*)
         __oct_tls_end = .;
-    } :data :tls
+    } :tls :data
 
     . = __oct_tls_end;
     .data : {

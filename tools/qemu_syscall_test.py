@@ -180,7 +180,6 @@ def main():
             "M4-RUST-TARGET-EXEC",
         ),
         ("/bin/execve-demo", "EXECVP-PATH-SEARCH-PASS", "LIBC-EXECVP-PATH-SEARCH"),
-        ("/bin/posix_spawn_demo", "posix_spawn environment/status/WNOHANG/file actions/chdir/setsid/signal attributes/scheduling/resetids/spawnp passed", "POSIX-SPAWN-PIPE-FD-PATH"),
         ("/bin/file-api-demo", "fstat/access/rename/umask/dup/fcntl/pread/pwrite passed", "POSIX-FCNTL-SHARED-APPEND"),
     )
     for command, marker, label in guest_tests:
@@ -304,6 +303,24 @@ def main():
         print(serial_text()[-7000:])
         return 1
     print("RUST-STD-QEMU-PASS")
+
+    # Keep the independent POSIX spawn regression after the Rust std probe so
+    # a failure in that demo cannot mask the upstream std/TLS guest result.
+    spawn_offset = len(serial_text())
+    send_line("run /bin/posix_spawn_demo")
+    if not wait_for_after("posix_spawn environment/status/WNOHANG/file actions/chdir/setsid/signal attributes/scheduling/resetids/spawnp passed", spawn_offset, 120):
+        print("POSIX-SPAWN-PIPE-FD-PATH-FAIL: guest program did not emit its success marker")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_for_after("program exited with status 0", spawn_offset, 120):
+        print("POSIX-SPAWN-PIPE-FD-PATH-FAIL: guest program did not exit with status 0")
+        print(serial_text()[-5000:])
+        return 1
+    if not wait_prompt(30):
+        print("POSIX-SPAWN-PIPE-FD-PATH-FAIL: shell did not return after guest program")
+        print(serial_text()[-5000:])
+        return 1
+    print("POSIX-SPAWN-PIPE-FD-PATH-PASS")
 
     time.sleep(1)
     print("=== TEST OUTPUT ===")

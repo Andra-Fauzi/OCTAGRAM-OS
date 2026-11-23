@@ -105,8 +105,7 @@ impl<'a> Path<'a> {
         let path = self.as_bytes();
         let base = trim_trailing_slashes(base.as_ref());
         if base.is_empty() {
-            let remainder = path.iter().position(|byte| *byte != b'/').unwrap_or(path.len());
-            return Some(Path::new(&path[remainder..]));
+            return Some(self);
         }
         if !self.starts_with(base) {
             return None;
@@ -2463,6 +2462,7 @@ mod tests {
         assert_eq!(path.strip_prefix(b"/other"), None);
         assert_eq!(super::Path::new(b"src/main.rs").strip_prefix(b"src").unwrap().as_bytes(), b"main.rs");
         assert_eq!(super::Path::new(b"src/main.rs").strip_prefix(b"").unwrap().as_bytes(), b"src/main.rs");
+        assert_eq!(super::Path::new(b"/src/main.rs").strip_prefix(b"").unwrap().as_bytes(), b"/src/main.rs");
         assert_eq!(path.file_stem().unwrap().as_bytes(), b"bin");
         assert_eq!(super::Path::new(b"archive.tar.gz").file_stem().unwrap().as_bytes(), b"archive.tar");
         assert_eq!(super::Path::new(b"foo/").parent().unwrap().as_bytes(), b"");

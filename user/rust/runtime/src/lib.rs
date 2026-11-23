@@ -80,6 +80,32 @@ impl<'a> Path<'a> {
     pub const fn is_absolute(self) -> bool {
         !self.as_bytes().is_empty() && self.as_bytes()[0] == b'/'
     }
+    pub const fn is_relative(self) -> bool { !self.is_absolute() }
+    pub const fn has_root(self) -> bool { self.is_absolute() }
+
+    /// Test whether this path begins with another complete path component.
+    pub fn starts_with(self, base: impl AsRef<[u8]>) -> bool {
+        let path = trim_trailing_slashes(self.as_bytes());
+        let base = trim_trailing_slashes(base.as_ref());
+        if base.is_empty() {
+            return path.is_empty() || path.first() != Some(&b'/');
+        }
+        if path == base { return true; }
+        path.starts_with(base)
+            && (base.last() == Some(&b'/') || path.get(base.len()) == Some(&b'/'))
+    }
+
+    /// Test whether this path ends with another complete path component.
+    pub fn ends_with(self, suffix: impl AsRef<[u8]>) -> bool {
+        let path = trim_trailing_slashes(self.as_bytes());
+        let suffix = trim_trailing_slashes(suffix.as_ref());
+        if suffix.is_empty() { return path.is_empty(); }
+        if path == suffix { return true; }
+        path.ends_with(suffix)
+            && (suffix.first() == Some(&b'/')
+                || path.get(path.len().saturating_sub(suffix.len() + 1)) == Some(&b'/'))
+    }
+
     pub fn file_name(self) -> Option<OsStr<'a>> {
         let bytes = self.as_bytes();
         let end = bytes.iter().rposition(|byte| *byte != b'/')? + 1;
@@ -92,14 +118,34 @@ impl<'a> Path<'a> {
         if dot == 0 || dot + 1 == name.len() { return None; }
         Some(OsStr::from_bytes(&name[dot + 1..]))
     }
+    pub fn file_stem(self) -> Option<OsStr<'a>> {
+        let name = self.file_name()?.as_bytes();
+        let stem_end = match name.iter().rposition(|byte| *byte == b'.') {
+            Some(dot) if dot != 0 => dot,
+            _ => name.len(),
+        };
+        Some(OsStr::from_bytes(&name[..stem_end]))
+    }
+
     pub fn parent(self) -> Option<Path<'a>> {
         let bytes = self.as_bytes();
         let end = bytes.iter().rposition(|byte| *byte != b'/')? + 1;
-        let slash = bytes[..end].iter().rposition(|byte| *byte == b'/')?;
+        let slash = match bytes[..end].iter().rposition(|byte| *byte == b'/') {
+            Some(slash) => slash,
+            None if end < bytes.len() => return Some(Path::new(b"")),
+            None => return None,
+        };
         if slash == 0 { Some(Path::new(b"/")) }
         else { Some(Path::new(&bytes[..slash])) }
     }
     pub fn to_path_buf(self) -> PathBuf { PathBuf { inner: self.os_str.to_os_string() } }
+}
+
+fn trim_trailing_slashes(mut bytes: &[u8]) -> &[u8] {
+    while bytes.len() > 1 && bytes.last() == Some(&b'/') {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
 }
 
 /// Owned path buffer. This is a byte-preserving path helper, not yet std::path::PathBuf.
@@ -117,6 +163,13 @@ impl PathBuf {
     pub fn as_os_str(&self) -> OsStr<'_> { self.inner.as_os_str() }
     pub fn as_bytes(&self) -> &[u8] { self.inner.as_bytes() }
     pub fn into_os_string(self) -> OsString { self.inner }
+    pub fn is_empty(&self) -> bool { self.inner.is_empty() }
+    pub fn clear(&mut self) { self.inner.bytes.clear(); }
+    pub fn join(&self, path: impl AsRef<[u8]>) -> Self {
+        let mut joined = self.clone();
+        joined.push(path);
+        joined
+    }
     pub fn push(&mut self, path: impl AsRef<[u8]>) {
         let next = path.as_ref();
         if next.first() == Some(&b'/') {
@@ -2357,6 +2410,45 @@ mod tests {
         assert_eq!(owned.as_bytes(), b"/share/octagram/message.c");
         owned.push(b"/tmp/file");
         assert_eq!(owned.as_bytes(), b"/tmp/file");
+    }
+
+    #[test]
+    fn path_queries_respect_component_boundaries_and_trailing_slashes() {
+        let path = super::Path::new(b"/opt/octagram/bin/");
+        assert!(path.is_absolute());
+        assert!(!path.is_relative());
+        assert!(path.has_root());
+        assert!(path.starts_with(b"/opt"));
+        assert!(path.starts_with(b"/opt/octagram"));
+        assert!(!path.starts_with(b"/op"));
+        assert!(!path.starts_with(b"/opt/octagramm"));
+        assert!(path.ends_with(b"bin"));
+        assert!(!path.ends_with(b"binx"));
+        assert_eq!(path.file_stem().unwrap().as_bytes(), b"bin");
+        assert_eq!(super::Path::new(b"archive.tar.gz").file_stem().unwrap().as_bytes(), b"archive.tar");
+        assert_eq!(super::Path::new(b"foo/").parent().unwrap().as_bytes(), b"");
+        assert_eq!(super::Path::new(b"/foo/").parent().unwrap().as_bytes(), b"/");
+
+        let relative = super::Path::new(b"src/main.rs");
+        assert!(relative.is_relative());
+        assert!(!relative.has_root());
+        assert!(relative.starts_with(b"src"));
+        assert!(relative.ends_with(b"main.rs"));
+        assert!(!relative.ends_with(b"src/main"));
+    }
+
+    #[test]
+    fn path_buf_join_and_clear_preserve_absolute_override() {
+        let base = super::PathBuf::from_bytes(b"/opt/octagram");
+        assert_eq!(base.join(b"bin/rustc").as_bytes(), b"/opt/octagram/bin/rustc");
+        assert_eq!(base.join(b"/tmp/cache").as_bytes(), b"/tmp/cache");
+        let mut empty = super::PathBuf::new();
+        assert!(empty.is_empty());
+        empty.push(b"src");
+        assert!(!empty.is_empty());
+        empty.clear();
+        assert!(empty.is_empty());
+        assert_eq!(empty.as_bytes(), b"");
     }
 
     #[test]

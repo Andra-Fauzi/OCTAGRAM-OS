@@ -2051,22 +2051,32 @@ impl ExitStatus {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Child {
     pid: Option<u64>,
+    // Keep the result after reaping so wait()/try_wait() are repeatable, as
+    // required by std::process::Child. The PID is cleared independently.
+    exit_status: Option<u64>,
 }
 
 impl Child {
     /// Track a PID known to be a direct child of the current process.
-    pub const fn from_pid(pid: u64) -> Self { Self { pid: Some(pid) } }
+    pub const fn from_pid(pid: u64) -> Self {
+        Self { pid: Some(pid), exit_status: None }
+    }
 
     /// Return the child's PID, or None after it has been reaped.
     pub const fn id(&self) -> Option<u64> { self.pid }
 
     /// Block until the child exits and return its raw exit value.
+    /// Repeated calls return the cached result without issuing waitpid again.
     pub fn wait(&mut self) -> Result<u64, i64> {
+        if let Some(status) = self.exit_status {
+            return Ok(status);
+        }
         let pid = self.pid.ok_or(-10)?;
         let mut status = 0u64;
         let reaped = waitpid(pid, Some(&mut status))?;
         if reaped != pid { return Err(-10); }
         self.pid = None;
+        self.exit_status = Some(status);
         Ok(status)
     }
 
@@ -2082,12 +2092,16 @@ impl Child {
 
     /// Check whether the child has exited without blocking.
     pub fn try_wait(&mut self) -> Result<Option<u64>, i64> {
+        if let Some(status) = self.exit_status {
+            return Ok(Some(status));
+        }
         let pid = self.pid.ok_or(-10)?;
         let mut status = 0u64;
         let reaped = waitpid_with_options(pid, Some(&mut status), WNOHANG)?;
         if reaped == 0 { return Ok(None); }
         if reaped != pid { return Err(-10); }
         self.pid = None;
+        self.exit_status = Some(status);
         Ok(Some(status))
     }
 }

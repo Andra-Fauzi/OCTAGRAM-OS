@@ -513,10 +513,12 @@ sebagian byte. Wrapper C: `oct_pipe(fds)`.
 `dup2` menutup descriptor tujuan bila terbuka, lalu menduplikasi sumber ke nomor
 tujuan; menggunakan descriptor yang sama tidak mengubahnya. Wrapper C:
 `oct_dup2(source, target)`. `dup` memilih descriptor terendah yang tersedia.
-Duplikat berbagi offset dan status flag open-file (`O_APPEND`). `fcntl` saat ini
-mendukung `F_DUPFD`, `F_GETFD`, `F_SETFD`, `F_GETFL`, dan `F_SETFL`; `F_SETFL`
-hanya dapat mengubah `O_APPEND`. `FD_CLOEXEC` didukung dan descriptor tersebut
-tidak diwariskan oleh `spawn`.
+Duplikat berbagi offset dan status flag open-file (`O_APPEND`). `F_GETFL`
+membaca `O_APPEND` dari objek open-file bersama, dan `F_SETFL` mengubahnya di
+objek tersebut sehingga perubahan melalui satu descriptor langsung terlihat
+melalui seluruh hasil `dup`/`F_DUPFD`. `fcntl` mendukung `F_DUPFD`,
+`F_GETFD`, `F_SETFD`, `F_GETFL`, dan `F_SETFL`; `FD_CLOEXEC` tetap bersifat
+per-descriptor dan descriptor tersebut tidak diwariskan oleh `spawn`.
 `umask(mask)` menetapkan mask permission proses dan mengembalikan nilai lama.
 Contoh uji seluruh API file tersedia di `/bin/file-api-demo` pada image OS.
 `unlink` hanya menghapus file atau symlink; `rmdir` hanya menghapus direktori

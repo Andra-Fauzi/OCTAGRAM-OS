@@ -2509,3 +2509,18 @@ memanggil `Child::kill()`, menunggu dengan `Child::wait()`, dan memastikan
 
 **Validasi:** perubahan source dan gate QEMU memicu workflow baru. Hasil runtime
 belum dinyatakan lulus sampai marker terlihat pada output guest.
+
+## 78. Validasi status Child yang sudah di-reap (23 November 2026)
+
+Setelah child dihentikan dengan SIGKILL dan `Child::wait()` berhasil, probe
+memanggil `wait()` sekali lagi dan `try_wait()`. Keduanya harus mengembalikan
+status yang sama dari cache objek `Child`, bukan mencoba melakukan reap kedua
+pada kernel atau menghasilkan `ECHILD`.
+
+- Marker QEMU wajib: `RUST-STD-PROCESS-WAIT-CACHE-PASS`.
+- Pemeriksaan memastikan status tetap menunjukkan SIGKILL (9).
+- Ini melengkapi uji `spawn`, `try_wait`, `kill`, dan `wait` dengan
+  perilaku pemanggilan berulang yang dijanjikan API Rust std.
+
+**Validasi:** perubahan source, gate QEMU, dan roadmap telah diperbarui.
+Runtime tetap menunggu hasil job QEMU.

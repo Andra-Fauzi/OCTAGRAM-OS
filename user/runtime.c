@@ -7265,10 +7265,11 @@ int execvp(const char *file, char *const arguments[])
             struct stat metadata;
             if (stat(candidate, &metadata) == 0) {
                 if (!S_ISREG(metadata.st_mode)) {
+                    /* Skip directories and other non-regular PATH entries.
+                     * Do not continue here: the loop tail must advance to the
+                     * next PATH component or a directory can cause a hang. */
                     last_error = EACCES;
-                    continue;
-                }
-                if (access(candidate, X_OK) != 0) {
+                } else if (access(candidate, X_OK) != 0) {
                     access_error = errno;
                     if (*separator == '\0') {
                         break;

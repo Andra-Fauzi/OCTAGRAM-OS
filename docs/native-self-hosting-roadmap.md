@@ -2017,3 +2017,18 @@ telah stabil.
 **Validasi:** source dan test sudah di-commit. Host tests, target build, dan
 QEMU belum dijalankan untuk perubahan ini. API tetap subset leksikal
 berbasis byte; belum menggantikan `std::path` upstream secara penuh.
+
+
+## 47. Penyelesaian jalur konversi OsStr ke OsString (23 November 2026)
+
+- Menambahkan `From<OsStr> for OsString` agar borrowed OS string dapat
+  diubah menjadi owned tanpa konversi UTF-8.
+- Menambahkan `OsString::to_string_lossy()` sebagai accessor langsung
+  untuk tampilan teks; operasi ini tidak mengubah byte yang disimpan.
+- Regression test memastikan byte non-UTF-8 tetap sama setelah konversi
+  ownership dan setelah pembuatan tampilan lossy.
+
+**Validasi:** source dan test sudah di-commit. CI host, target build, dan
+QEMU masih perlu dijalankan. Integrasi Rust std upstream masih menjadi
+jalur utama berikutnya; API helper ini bukan pengganti crate
+`std::ffi`/ `std::path` yang sesungguhnya.

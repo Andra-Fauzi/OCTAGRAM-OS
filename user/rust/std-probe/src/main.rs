@@ -5,6 +5,7 @@
 //! exercised under QEMU rather than merely type-checked on the host.
 
 use std::io::Write;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::process::{Command, Stdio};
 
 fn marker(message: &str) {
@@ -12,6 +13,23 @@ fn marker(message: &str) {
 }
 
 fn main() {
+    // Exercise the upstream Unix FFI traits, not the OCTAGRAM helper wrappers.
+    // Unix filenames are arbitrary bytes and must not be forced through UTF-8.
+    let raw_name = vec![b'o', b'c', b't', 0xff];
+    let os_name = std::ffi::OsString::from_vec(raw_name.clone());
+    if os_name.as_bytes() != raw_name.as_slice() || os_name.clone().into_vec() != raw_name {
+        marker("RUST-STD-OS-STRING-FFI-FAIL");
+        std::process::exit(21);
+    }
+    marker("RUST-STD-OS-STRING-FFI-PASS");
+
+    let path = std::path::PathBuf::from(os_name);
+    if path.as_os_str().as_bytes() != [b'o', b'c', b't', 0xff] {
+        marker("RUST-STD-PATH-OS-STRING-FFI-FAIL");
+        std::process::exit(22);
+    }
+    marker("RUST-STD-PATH-OS-STRING-FFI-PASS");
+
     // Environment access must not panic when PATH is absent; the call itself
     // exercises std's environment PAL.
     let _path = std::env::var_os("PATH");

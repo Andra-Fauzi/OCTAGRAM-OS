@@ -170,7 +170,8 @@ impl FileSystem for RamFs {
         {
             let mut file_data = file.lock();
             if end > file_data.bytes.len() {
-                grow_vec(&mut file_data.bytes, end - file_data.bytes.len())?;
+                let additional = end - file_data.bytes.len();
+                grow_vec(&mut file_data.bytes, additional)?;
                 file_data.bytes.resize(end, 0);
             }
             file_data.bytes[offset..end].copy_from_slice(bytes);
@@ -189,7 +190,8 @@ impl FileSystem for RamFs {
         {
             let mut file_data = file.lock();
             if len > file_data.bytes.len() {
-                grow_vec(&mut file_data.bytes, len - file_data.bytes.len())?;
+                let additional = len - file_data.bytes.len();
+                grow_vec(&mut file_data.bytes, additional)?;
                 file_data.bytes.resize(len, 0);
             } else {
                 file_data.bytes.truncate(len);
@@ -428,6 +430,43 @@ mod tests {
             filesystem.read_dir("/").unwrap()[0].metadata.modified,
             Some(truncated)
         );
+    }
+
+    #[test]
+    fn hard_links_share_file_contents_permissions_and_lifetime() {
+        let mut filesystem = RamFs::new();
+        filesystem.create_file("/source").unwrap();
+        filesystem.write("/source", 0, b"artifact").unwrap();
+        filesystem.hard_link("/source", "/alias").unwrap();
+
+        filesystem.write("/alias", 0, b"shared").unwrap();
+        let mut contents = [0u8; 8];
+        assert_eq!(filesystem.read("/source", 0, &mut contents), Ok(8));
+        assert_eq!(&contents, b"sharedt");
+
+        filesystem.set_permissions("/alias", 0o600).unwrap();
+        assert_eq!(filesystem.metadata("/source").unwrap().permissions, 0o600);
+        assert_eq!(
+            filesystem.hard_link("/source", "/alias"),
+            Err(FsError::AlreadyExists)
+        );
+        filesystem.remove("/source").unwrap();
+        assert_eq!(filesystem.read("/alias", 0, &mut contents), Ok(8));
+        assert_eq!(&contents, b"sharedt");
+    }
+
+    #[test]
+    fn hard_link_preserves_final_symlink_instead_of_following_it() {
+        let mut filesystem = RamFs::new();
+        filesystem.create_file("/target").unwrap();
+        filesystem.create_symlink("/target", "/link").unwrap();
+        filesystem.hard_link("/link", "/link-alias").unwrap();
+
+        assert_eq!(
+            filesystem.metadata("/link-alias").unwrap().node_type,
+            NodeType::Symlink
+        );
+        assert_eq!(filesystem.read_link("/link-alias").unwrap(), "/target");
     }
 
     #[test]

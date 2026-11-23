@@ -8238,20 +8238,90 @@ fn syscall_dup3(oldfd: u64, newfd: u64, _flags: u64) -> Result<u64, i32> {
 }
 
 fn syscall_pread(fd: u64, buf: u64, count: u64, offset: u64) -> Result<u64, i32> {
-    // lseek ke offset, baca, lseek kembali
-    let old_pos = dispatch_syscall(SYSCALL_LSEEK, fd, 0, 1 /* SEEK_CUR */, 0, 0, 0)?;
-    dispatch_syscall(SYSCALL_LSEEK, fd, offset, 0 /* SEEK_SET */, 0, 0, 0)?;
-    let n = dispatch_syscall(SYSCALL_READ, fd, buf, count, 0, 0, 0);
-    let _ = dispatch_syscall(SYSCALL_LSEEK, fd, old_pos, 0, 0, 0, 0);
-    n
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let count = usize::try_from(count).map_err(|_| EINVAL)?;
+    let offset = usize::try_from(offset).map_err(|_| EINVAL)?;
+    if count > MAX_SYSCALL_IO || offset.checked_add(count).is_none() {
+        return Err(EINVAL);
+    }
+    if count == 0 {
+        return Ok(0);
+    }
+    paging::validate_user_range(buf, count, true).map_err(|_| EFAULT)?;
+    let output = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, count) };
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let descriptor = process
+        .descriptors
+        .get_mut(fd)
+        .and_then(Option::as_mut)
+        .ok_or(EBADF)?;
+    let UserDescriptor::File(file) = descriptor else {
+        return Err(ESPIPE);
+    };
+    let file = file.lock();
+    if !file.readable {
+        return Err(EBADF);
+    }
+    if fs::is_tty_path(&file.path) {
+        return Err(ESPIPE);
+    }
+    let count = fs::with_vfs(|vfs| vfs.read(&file.path, offset, output))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    if !fs::is_fb_path(&file.path) {
+        overlay_shared_mapping_pages(&file.path, offset, &mut output[..count]);
+    }
+    Ok(count as u64)
 }
 
 fn syscall_pwrite(fd: u64, buf: u64, count: u64, offset: u64) -> Result<u64, i32> {
-    let old_pos = dispatch_syscall(SYSCALL_LSEEK, fd, 0, 1, 0, 0, 0)?;
-    dispatch_syscall(SYSCALL_LSEEK, fd, offset, 0, 0, 0, 0)?;
-    let n = dispatch_syscall(SYSCALL_WRITE, fd, buf, count, 0, 0, 0);
-    let _ = dispatch_syscall(SYSCALL_LSEEK, fd, old_pos, 0, 0, 0, 0);
-    n
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let count = usize::try_from(count).map_err(|_| EINVAL)?;
+    let offset = usize::try_from(offset).map_err(|_| EINVAL)?;
+    if count > MAX_SYSCALL_IO || offset.checked_add(count).is_none() {
+        return Err(EINVAL);
+    }
+    if count == 0 {
+        return Ok(0);
+    }
+    paging::validate_user_range(buf, count, false).map_err(|_| EFAULT)?;
+    let input = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
+    let caller_capabilities = current_capabilities()?;
+    let caller_euid = current_euid()?;
+    let mut process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    let terminal = process.terminal;
+    let descriptor = process
+        .descriptors
+        .get_mut(fd)
+        .and_then(Option::as_mut)
+        .ok_or(EBADF)?;
+    let UserDescriptor::File(file) = descriptor else {
+        return Err(ESPIPE);
+    };
+    capability_present(caller_capabilities, CAP_VFS_WRITE)?;
+    let file = file.lock();
+    if !file.writable {
+        return Err(EBADF);
+    }
+    if !device_access_allowed(&file.path, terminal, caller_euid, caller_capabilities) {
+        return Err(EPERM);
+    }
+    if fs::is_tty_path(&file.path) {
+        return Err(ESPIPE);
+    }
+    let written = fs::with_vfs(|vfs| vfs.write(&file.path, offset, input))
+        .map_err(errno_from_fs)?
+        .map_err(errno_from_fs)?;
+    if !fs::is_fb_path(&file.path) {
+        update_shared_mapping_pages(&file.path, offset, &input[..written]);
+    }
+    Ok(written as u64)
 }
 
 fn syscall_writev(fd: u64, iov_addr: u64, iovcnt: u64) -> Result<u64, i32> {

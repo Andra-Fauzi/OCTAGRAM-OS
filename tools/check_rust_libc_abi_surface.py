@@ -45,6 +45,12 @@ def main() -> int:
     octagram = read("user/include/octagram.h")
     require(re.search(r"struct\s+oct_stat\s*\{\s*uint64_t\s+size;\s*uint32_t\s+mode;\s*uint32_t\s+modified_seconds;", octagram, re.S) is not None,
             "oct_stat kernel ABI changed; update manifest and PAL mapping")
+    require("static inline int64_t oct_linkat" in octagram
+            and "oct_syscall6(148" in octagram,
+            "kernel linkat syscall wrapper missing or assigned the wrong number")
+    syscall_abi = read("docs/syscall-abi.md")
+    require("| 148 | `linkat` |" in syscall_abi,
+            "linkat syscall ABI documentation missing")
 
     dirent = read("user/include/dirent.h")
     require(re.search(r"struct\s+dirent\s*\{\s*uint64_t\s+d_ino;\s*off_t\s+d_off;\s*uint16_t\s+d_reclen;\s*unsigned\s+char\s+d_type;\s*char\s+d_name\[256\];", dirent, re.S) is not None,

@@ -256,6 +256,12 @@ def main():
     std_offset = len(serial_text())
     send_line("run /bin/rust-std-probe")
     for marker, label in (
+        ("RUST-STD-OS-STRING-FFI-PASS", "Unix OS string byte preservation"),
+        ("RUST-STD-PATH-OS-STRING-FFI-PASS", "PathBuf OS string byte preservation"),
+        ("RUST-STD-PATH-LEXICAL-PASS", "lexical path components and joins"),
+        ("RUST-STD-FS-BYTE-PATH-PASS", "non-UTF-8 filesystem paths"),
+        ("RUST-STD-FS-DIRECTORY-PASS", "directory rename and file descriptor I/O"),
+        ("RUST-STD-FS-PATH-MANAGEMENT-PASS", "nested directories and current directory"),
         ("RUST-STD-ENV-PASS", "environment"),
         ("RUST-STD-FS-METADATA-PASS", "filesystem metadata"),
         ("RUST-STD-READ-DIR-PASS", "directory iteration"),

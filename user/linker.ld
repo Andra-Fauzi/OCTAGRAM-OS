@@ -17,6 +17,15 @@ SECTIONS
         *(.rodata .rodata.*)
     } :text
 
+    /* Place GOT sections before TLS. Otherwise LLD may insert an orphan
+       .got between .tdata and .tbss, splitting the PT_TLS image. */
+    .got : {
+        *(.got .got.*)
+        *(.igot .igot.*)
+        *(.got.plt)
+        *(.igot.plt)
+    } :data
+
     . = ALIGN(0x1000);
     .tdata : ALIGN(16) {
         __oct_tls_start = .;

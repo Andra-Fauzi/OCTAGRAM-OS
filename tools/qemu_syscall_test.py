@@ -251,6 +251,33 @@ def main():
         return 1
     print("RUST-NOSTD-PASS")
 
+    # This executable is built from upstream rust-src std, linked for the
+    # OCTAGRAM ABI, embedded into the kernel image, and exercised in the guest.
+    std_offset = len(serial_text())
+    send_line("run /bin/rust-std-probe")
+    for marker, label in (
+        ("RUST-STD-ENV-PASS", "environment"),
+        ("RUST-STD-FS-METADATA-PASS", "filesystem metadata"),
+        ("RUST-STD-READ-DIR-PASS", "directory iteration"),
+        ("RUST-STD-THREAD-CLOCK-PASS", "thread and monotonic clock"),
+        ("RUST-STD-PROCESS-PASS", "process spawn and output capture"),
+        ("RUST-STD-IO-WRITE-PASS", "standard output"),
+        ("RUST-STD-RUNTIME-PASS", "upstream std runtime"),
+    ):
+        if not wait_for_after(marker, std_offset, 45):
+            print("RUST-STD-" + label.upper().replace(" ", "-") + "-FAIL: expected marker missing")
+            print(serial_text()[-7000:])
+            return 1
+    if not wait_for_after("program exited with status 0", std_offset, 45):
+        print("RUST-STD-RUNTIME-FAIL: upstream std probe did not exit successfully")
+        print(serial_text()[-7000:])
+        return 1
+    if not wait_prompt(30):
+        print("RUST-STD-RUNTIME-FAIL: shell did not return after upstream std probe")
+        print(serial_text()[-7000:])
+        return 1
+    print("RUST-STD-QEMU-PASS")
+
     time.sleep(1)
     print("=== TEST OUTPUT ===")
     text = serial_text()

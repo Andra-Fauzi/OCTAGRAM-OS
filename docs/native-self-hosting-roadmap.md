@@ -2106,8 +2106,8 @@ ketika marker `RUST-STD-OS-STRING-FFI-PASS` dan
 - Probe kini membuat `Path` dari `OsStr::from_bytes` agar input non-UTF-8
   mengikuti kontrak Unix upstream, bukan mengandalkan konversi `&[u8]`
   langsung ke `Path`.
-- Memeriksa komponen path yang memiliki separator berulang, trailing slash,
-  komponen `.` dan `..`, serta nama file non-directory.
+- Memeriksa normalisasi separator berulang dan komponen `.` oleh upstream
+  `std::path`, pelestarian `..` secara leksikal, trailing slash, serta nama file.
 - Memeriksa `file_name`, `extension`, dan konstruksi `PathBuf` melalui
   operasi `push` berurutan.
 - Assertion dipisah dari tes OS-string supaya kegagalan komponen, nama file,

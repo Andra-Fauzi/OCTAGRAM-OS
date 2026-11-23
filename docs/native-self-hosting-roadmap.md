@@ -2084,3 +2084,19 @@ Rust std.
 **Validasi:** source dan test telah di-commit. Host unit test, target build,
 dan QEMU belum dijalankan. Konversi ini memperluas helper OCTAGRAM, tetapi
 belum menyediakan integrasi penuh dengan tipe `Path` unsized upstream.
+
+## 52. Probe upstream std untuk Unix OS-string dan path byte API (23 November 2026)
+
+- Memperluas `user/rust/std-probe` agar memakai trait upstream
+  `std::os::unix::ffi::OsStrExt` dan `OsStringExt`, bukan helper runtime
+  OCTAGRAM.
+- Probe membangun `OsString` dari byte non-UTF-8, memeriksa
+  `as_bytes()`/ `into_vec()`, lalu memastikan byte yang sama dapat diakses
+  melalui `PathBuf::as_os_str()`.
+- Marker terpisah membedakan kegagalan OS-string FFI dari kegagalan integrasi
+  path. Ini menguji apakah API Unix upstream tersedia pada target custom.
+
+**Validasi:** perubahan probe telah di-commit, tetapi belum ada hasil
+compile/link atau QEMU untuk commit ini. Tes hanya akan dianggap berhasil
+ketika marker `RUST-STD-OS-STRING-FFI-PASS` dan
+`RUST-STD-PATH-OS-STRING-FFI-PASS` muncul di guest.

@@ -139,7 +139,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
 
     // Verify writable-file operations required by std::fs::File:
     // create, partial overwrite via truncate, fsync/fdatasync, metadata, unlink.
-    let scratch_path = match CStr::from_bytes_with_nul(b"/tmp/rust-runtime-sync-test.tmp\\0") {
+    let scratch_path = match CStr::from_bytes_with_nul(b"/tmp/rust-runtime-sync-test.tmp\0") {
         Ok(path) => path,
         Err(_) => return 35,
     };
@@ -157,7 +157,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     {
         return 37;
     }
-    if write_all(STDOUT, b"Rust runtime file mutation/sync: PASS\\n").is_err() {
+    if write_all(STDOUT, b"Rust runtime file mutation/sync: PASS\n").is_err() {
         return 38;
     }
 
@@ -329,7 +329,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     if child_status != 42 || child.id().is_some() || child.wait().is_ok() {
         return 42;
     }
-    if write_all(STDOUT, b"Rust runtime child process/waitpid: PASS\\n").is_err() {
+    if write_all(STDOUT, b"Rust runtime child process/waitpid: PASS\n").is_err() {
         return 43;
     }
 

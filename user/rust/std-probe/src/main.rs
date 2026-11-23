@@ -139,8 +139,13 @@ fn main() {
 
     // Cargo and rustc commonly write a temporary artifact and atomically
     // replace the previous output with rename. Also exercise ftruncate.
+    let truncate_path = std::path::PathBuf::from(format!(
+        "/tmp/octagram-rust-truncate-{}.bin",
+        std::process::id()
+    ));
     let truncate_result = (|| -> std::io::Result<()> {
-        let file = std::fs::OpenOptions::new().write(true).open(&renamed_child)?;
+        std::fs::write(&truncate_path, b"truncate-this-payload")?;
+        let file = std::fs::OpenOptions::new().write(true).open(&truncate_path)?;
         file.set_len(8)?;
         file.sync_data()?;
         if file.metadata()?.len() != 8 {
@@ -148,6 +153,7 @@ fn main() {
         }
         Ok(())
     })();
+    let _ = std::fs::remove_file(&truncate_path);
     if truncate_result.is_err() {
         marker("RUST-STD-FS-TRUNCATE-FAIL");
         std::process::exit(37);

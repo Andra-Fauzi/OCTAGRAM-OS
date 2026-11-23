@@ -133,6 +133,45 @@ fn main() {
     }
     marker("RUST-STD-FS-DIRECTORY-PASS");
 
+    // Cargo frequently creates nested output/cache directories and resolves
+    // paths relative to its working directory. Exercise those std APIs.
+    let nested_dir = renamed_dir.join("target").join("debug").join("deps");
+    if std::fs::create_dir_all(&nested_dir).is_err() {
+        marker("RUST-STD-FS-CREATE-DIR-ALL-FAIL");
+        std::process::exit(31);
+    }
+    let saved_cwd = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(_) => {
+            marker("RUST-STD-CURRENT-DIR-FAIL");
+            std::process::exit(32);
+        }
+    };
+    let canonical_nested = match std::fs::canonicalize(&nested_dir) {
+        Ok(path) if path.is_absolute() => path,
+        _ => {
+            marker("RUST-STD-CANONICALIZE-FAIL");
+            std::process::exit(33);
+        }
+    };
+    if std::env::set_current_dir(&nested_dir).is_err()
+        || !matches!(std::env::current_dir(), Ok(path) if path == canonical_nested)
+        || std::env::set_current_dir(&saved_cwd).is_err()
+    {
+        let _ = std::env::set_current_dir(&saved_cwd);
+        marker("RUST-STD-CURRENT-DIR-FAIL");
+        std::process::exit(34);
+    }
+    if !std::fs::metadata(&canonical_nested).is_ok_and(|metadata| metadata.is_dir()) {
+        marker("RUST-STD-CANONICALIZE-METADATA-FAIL");
+        std::process::exit(35);
+    }
+    if std::fs::remove_dir_all(&renamed_dir).is_err() {
+        marker("RUST-STD-REMOVE-DIR-ALL-FAIL");
+        std::process::exit(36);
+    }
+    marker("RUST-STD-FS-PATH-MANAGEMENT-PASS");
+
     // Environment access must not panic when PATH is absent; the call itself
     // exercises std's environment PAL.
     let _path = std::env::var_os("PATH");

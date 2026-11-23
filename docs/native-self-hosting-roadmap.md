@@ -2475,3 +2475,19 @@ normal sebagai status POSIX, tetapi terminasi akibat sinyal masih disimpan
 sebagai nilai `128 + signal`. Karena itu, makro header sudah mengikuti
 encoding POSIX, tetapi klasifikasi sinyal belum dapat dianggap terintegrasi
 penuh sampai kernel menyimpan status terminasi bertipe secara terpisah.
+
+## 76. Encoding wait status untuk terminasi sinyal (23 November 2026)
+
+Kernel kini membedakan status wait untuk exit normal dan terminasi akibat
+sinyal. Exit normal disimpan sebagai `(code & 0xff) << 8`, sedangkan
+terminasi sinyal menyimpan nomor sinyal pada tujuh bit rendah. Syscall
+`waitpid` mengirim encoding tersebut apa adanya; libc tidak lagi mengubah
+setiap hasil menjadi exit normal.
+
+Probe upstream Rust std mengeksekusi child shell yang mengirim SIGTERM ke
+dirinya sendiri dan memeriksa `ExitStatusExt::signal() == Some(15)` serta
+`code() == None`. QEMU gate mewajibkan marker
+`RUST-STD-PROCESS-SIGNAL-STATUS-PASS`.
+
+**Validasi:** perubahan kode dan gate sudah ditambahkan. Pengujian QEMU harus
+lulus sebelum kompatibilitas terminasi sinyal dianggap terverifikasi.

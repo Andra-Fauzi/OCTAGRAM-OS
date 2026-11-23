@@ -32,6 +32,8 @@ pub struct OsStr<'a> {
 impl<'a> OsStr<'a> {
     pub const fn from_bytes(bytes: &'a [u8]) -> Self { Self { bytes } }
     pub const fn as_bytes(self) -> &'a [u8] { self.bytes }
+    /// Return the byte length of this operating-system string.
+    pub const fn len(self) -> usize { self.bytes.len() }
     pub fn to_os_string(self) -> OsString { OsString { bytes: self.bytes.to_vec() } }
     pub fn to_str(self) -> Option<&'a str> { core::str::from_utf8(self.bytes).ok() }
     pub fn is_empty(self) -> bool { self.bytes.is_empty() }
@@ -54,7 +56,14 @@ impl OsString {
     }
     pub fn as_os_str(&self) -> OsStr<'_> { OsStr::from_bytes(&self.bytes) }
     pub fn as_bytes(&self) -> &[u8] { &self.bytes }
+    /// Return the byte length of this operating-system string.
+    pub fn len(&self) -> usize { self.bytes.len() }
     pub fn into_bytes(self) -> Vec<u8> { self.bytes }
+    /// Convert into UTF-8, returning the original bytes if they are invalid.
+    pub fn into_string(self) -> Result<String, Self> {
+        String::from_utf8(self.bytes)
+            .map_err(|error| Self { bytes: error.into_bytes() })
+    }
     pub fn push(&mut self, value: OsStr<'_>) { self.bytes.extend_from_slice(value.as_bytes()); }
     pub fn capacity(&self) -> usize { self.bytes.capacity() }
     pub fn reserve(&mut self, additional: usize) { self.bytes.reserve(additional); }
@@ -2544,6 +2553,21 @@ mod tests {
         assert_eq!(value.try_to_cstring_bytes().unwrap(), [b'f', 0x80, b'o', 0]);
         let invalid = super::OsString::from_bytes([b'a', 0, b'b']);
         assert_eq!(invalid.try_to_cstring_bytes(), Err(-22));
+    }
+
+    #[test]
+    fn os_string_length_and_into_string_preserve_invalid_bytes_on_error() {
+        let valid = super::OsString::from_bytes(b"octagram");
+        assert_eq!(valid.len(), 8);
+        assert_eq!(valid.as_os_str().len(), 8);
+        assert_eq!(valid.clone().into_string().unwrap(), "octagram");
+
+        let invalid_bytes = [b'o', 0x80, b's'];
+        let invalid = super::OsString::from_bytes(invalid_bytes);
+        assert_eq!(invalid.len(), invalid_bytes.len());
+        let recovered = invalid.into_string().unwrap_err();
+        assert_eq!(recovered.as_bytes(), &invalid_bytes);
+        assert_eq!(recovered.into_bytes(), invalid_bytes);
     }
 
     #[test]

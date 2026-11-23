@@ -2421,3 +2421,22 @@ memverifikasi keduanya dari stdout hasil `Command::output`.
 **Validasi:** source probe, gate QEMU, dan roadmap telah diperbarui.
 Build upstream std dan eksekusi guest untuk marker baru masih menunggu CI;
 belum ada klaim bahwa pengujian ini sudah lulus pada QEMU.
+
+
+
+## 73. Uji mutasi environment melalui upstream Rust std (23 November 2026)
+
+Probe kini menguji `std::env::set_var`, `std::env::var`, dan
+`std::env::remove_var` pada proses yang sedang berjalan. Probe memastikan
+nilai yang ditulis dapat dibaca kembali dan benar-benar tidak lagi tersedia
+setelah dihapus. Mutasi dilakukan setelah tes thread selesai agar tidak ada
+thread aplikasi lain yang membaca environment secara bersamaan.
+
+- Marker baru: `RUST-STD-ENV-MUTATION-PASS`.
+- QEMU runner mewajibkan marker tersebut.
+- Jalur ini memvalidasi implementasi environment POSIX `setenv`/`unsetenv`
+  melalui abstraksi upstream std, bukan hanya konfigurasi environment child
+  lewat `Command::env`.
+
+**Validasi:** source probe, gate QEMU, dan roadmap telah diperbarui.
+Build Rust userspace dan eksekusi QEMU untuk marker ini masih menunggu CI.

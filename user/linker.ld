@@ -26,7 +26,7 @@ SECTIONS
     .tbss (NOLOAD) : ALIGN(16) {
         *(.tbss .tbss.*)
         __oct_tls_end = .;
-    } :tls :data
+    } :data :tls
 
     . = __oct_tls_end;
     .data : {

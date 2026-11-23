@@ -2409,7 +2409,7 @@ impl Child {
     /// Return the child's PID, or None after it has been reaped.
     pub const fn id(&self) -> Option<u64> { self.pid }
 
-    /// Block until the child exits and return its raw exit value.
+    /// Block until the child exits and return its POSIX wait-status word.
     /// Repeated calls return the cached result without issuing waitpid again.
     pub fn wait(&mut self) -> Result<u64, i64> {
         if let Some(status) = self.exit_status {
@@ -2434,7 +2434,8 @@ impl Child {
         self.try_wait().map(|status| status.map(ExitStatus::from_raw))
     }
 
-    /// Check whether the child has exited without blocking.
+    /// Check whether the child has exited without blocking, returning its
+    /// POSIX wait-status word when the kernel has reaped it.
     pub fn try_wait(&mut self) -> Result<Option<u64>, i64> {
         if let Some(status) = self.exit_status {
             return Ok(Some(status));
@@ -3025,18 +3026,20 @@ mod tests {
     }
 
     #[test]
-    fn exit_status_preserves_octagram_raw_exit_values() {
+    fn exit_status_preserves_posix_wait_status_words() {
         let success = super::ExitStatus::from_raw(0);
         assert!(success.success());
         assert_eq!(success.code(), Some(0));
         assert_eq!(success.raw(), 0);
 
-        let failure = super::ExitStatus::from_raw(23);
+        let failure = super::ExitStatus::from_raw(23 << 8);
         assert!(!failure.success());
         assert_eq!(failure.code(), Some(23));
+        assert_eq!(failure.raw(), 23 << 8);
 
-        let signed = super::ExitStatus::from_raw((-7i64) as u64);
-        assert_eq!(signed.code(), Some(-7));
+        let signaled = super::ExitStatus::from_raw(9);
+        assert!(!signaled.success());
+        assert_eq!(signaled.code(), None);
     }
 
     #[test]

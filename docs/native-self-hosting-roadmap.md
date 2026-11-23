@@ -2226,3 +2226,15 @@ Build upstream std dan eksekusi QEMU untuk marker baru belum diverifikasi.
 
 **Validasi:** kode dan regression test sudah di-commit. Unit test kernel dan
 QEMU/EXT2 persistence belum dijalankan atau diverifikasi pada sesi ini.
+
+
+## 61. EXT2 rename untuk dua hard link ke inode yang sama (23 November 2026)
+
+- `Ext2::rename` kini mengembalikan sukses tanpa mengubah directory entry
+  ketika nama sumber dan tujuan menunjuk inode yang sama. Ini mengikuti
+  semantik POSIX dan mencegah pengurangan link count yang keliru.
+- Regression test membuat dua nama yang menunjuk inode yang sama, menjalankan
+  rename, lalu memastikan kedua nama dan link count tetap utuh.
+
+**Validasi:** perubahan implementasi dan test sudah di-commit. Eksekusi unit
+test kernel serta QEMU masih belum diverifikasi.

@@ -2440,3 +2440,21 @@ thread aplikasi lain yang membaca environment secara bersamaan.
 
 **Validasi:** source probe, gate QEMU, dan roadmap telah diperbarui.
 Build Rust userspace dan eksekusi QEMU untuk marker ini masih menunggu CI.
+
+
+## 74. Uji argumen, stderr, dan exit status child process Rust std (23 November 2026)
+
+Probe upstream `std::process::Command` kini memanggil shell dengan argumen
+posisional tambahan dan memverifikasi bahwa `$1` serta `$2` diteruskan
+dengan urutan yang benar. Child process juga menulis keluaran terpisah ke
+stderr dan keluar dengan status non-zero (7).
+
+- Marker baru: `RUST-STD-PROCESS-ARGV-IO-PASS`.
+- QEMU runner mewajibkan marker tersebut; tes gagal jika argumen berubah,
+  stderr tidak tertangkap, atau status keluar tidak dilaporkan sebagai 7.
+- Cakupan ini memvalidasi lebih jauh kontrak `Command::output` yang
+  dibutuhkan Cargo untuk menjalankan build script dan helper compiler.
+
+**Validasi:** probe, gate QEMU, dan roadmap telah diperbarui. Hasil QEMU
+belum diklaim lulus sampai marker baru muncul dan proses probe berakhir
+dengan status 0.

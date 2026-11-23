@@ -2574,3 +2574,25 @@ berjalan, dan menghasilkan marker dari stdout child.
 
 **Validasi:** probe, gate QEMU, dan roadmap diperbarui. Hasil runtime guest
 masih menunggu workflow.
+
+
+## 82. execvp: bedakan PATH kosong dan PATH yang tidak disetel (23 November 2026)
+
+Implementasi `execvp` sebelumnya menggunakan fallback direktori standar
+ketika `PATH` bernilai string kosong. Ini keliru: PATH yang tidak disetel
+dapat memakai fallback implementasi, tetapi komponen kosong pada PATH
+secara POSIX merepresentasikan direktori kerja saat ini.
+
+- Fallback `/bin:/usr/bin:/usr/local/bin` sekarang hanya dipakai jika
+  `getenv("PATH")` menghasilkan NULL.
+- PATH kosong tetap diproses sebagai satu komponen kosong sehingga kandidat
+  executable dicari relatif terhadap current working directory.
+- `execve_demo` kini menguji dua perilaku berurutan: melewati direktori
+  bernama sama pada `PATH=/tmp:/bin`, lalu berpindah ke `/bin` dan
+  menjalankan executable dengan `PATH=""`.
+- Marker guest tetap `EXECVP-PATH-SEARCH-PASS`, tetapi kini baru dicetak
+  setelah kedua skenario berhasil.
+
+**Validasi:** perubahan source, demo, dan roadmap telah di-commit secara
+terpisah. Hasil host/QEMU untuk commit ini masih menunggu workflow CI;
+perubahan belum diklaim lulus runtime.

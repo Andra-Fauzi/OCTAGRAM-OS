@@ -86,6 +86,53 @@ fn main() {
     }
     marker("RUST-STD-FS-BYTE-PATH-PASS");
 
+    // Exercise directory creation, file-descriptor I/O, seek, sync and rename
+    // through upstream std. All paths are unique to this process.
+    let base = format!("/tmp/octagram-rust-std-dir-{}", std::process::id());
+    let original_dir = std::path::PathBuf::from(&base);
+    let renamed_dir = std::path::PathBuf::from(format!("{base}-renamed"));
+    let child_path = original_dir.join("probe.bin");
+    let renamed_child = renamed_dir.join("probe.bin");
+    if let Err(error) = std::fs::create_dir(&original_dir) {
+        eprintln!("create_dir failed: {error}");
+        marker("RUST-STD-FS-DIRECTORY-FAIL");
+        std::process::exit(28);
+    }
+    let descriptor_result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&child_path)?;
+        file.write_all(b"descriptor-roundtrip")?;
+        file.sync_all()?;
+        file.seek(std::io::SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut bytes)?;
+        if bytes != b"descriptor-roundtrip" {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "file contents mismatch"));
+        }
+        Ok(())
+    })();
+    if descriptor_result.is_err()
+        || std::fs::rename(&original_dir, &renamed_dir).is_err()
+        || std::fs::read(&renamed_child).as_deref().is_err()
+    {
+        let _ = std::fs::remove_file(&child_path);
+        let _ = std::fs::remove_file(&renamed_child);
+        let _ = std::fs::remove_dir(&original_dir);
+        let _ = std::fs::remove_dir(&renamed_dir);
+        marker("RUST-STD-FS-DIRECTORY-FAIL");
+        std::process::exit(29);
+    }
+    if std::fs::remove_file(&renamed_child).is_err()
+        || std::fs::remove_dir(&renamed_dir).is_err()
+    {
+        marker("RUST-STD-FS-DIRECTORY-CLEANUP-FAIL");
+        std::process::exit(30);
+    }
+    marker("RUST-STD-FS-DIRECTORY-PASS");
+
     // Environment access must not panic when PATH is absent; the call itself
     // exercises std's environment PAL.
     let _path = std::env::var_os("PATH");

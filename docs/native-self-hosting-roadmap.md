@@ -1850,3 +1850,13 @@ Rust std dinyatakan siap. Rustc native dan Cargo native tetap belum dibuat.
 Jangan menandai Rust std runtime siap sebelum semua marker
 `RUST-STD-*-PASS` dan exit status 0 teramati di guest. Rustc native dan Cargo
 native tetap belum diimplementasikan.
+
+## 35. Isolasi kegagalan thread upstream Rust std di QEMU (23 November 2026)
+
+- Run POSIX Core Stage 1 [45107032289](https://github.com/Andra-Fauzi/OCTAGRAM-OS/actions/runs/45107032289) lulus seluruh job build host: upstream std executable berhasil dibangun, GNU Make berhasil di-cross-build, dynamic userland, kernel host tests, libc tests, kernel, ISO, dan manifest juga lulus.
+- QEMU native TinyCC smoke test lulus. QEMU syscall compatibility test gagal hanya ketika menjalankan /bin/rust-std-probe.
+- Probe berhasil melewati environment, filesystem metadata, dan directory iteration. Guest kemudian mengalami user page fault pada TID 2 ketika memasuki jalur thread pertama; marker thread/clock tidak tercapai.
+- Fault diagnostic mencatat FS_BASE=0x10025e470, RIP=0x413731, RAX=2, RCX=2, dan akses alamat rendah 0x1. Ini mempersempit area investigasi ke inisialisasi thread/TLS upstream std, tetapi belum cukup untuk menyimpulkan akar masalah.
+- Commit a4a2845d15e3156a804b2334ae12f6bfff8a123d menambahkan marker fase sebelum spawn, sesudah spawn kembali, dan pada instruksi pertama closure. Hasil QEMU berikutnya akan membedakan kegagalan TLS/thread-init dari kegagalan closure atau join.
+
+**Status:** build host dan ISO lulus; runtime upstream std thread gagal. Jangan menonaktifkan tes atau menurunkan persyaratan marker. Berikutnya cocokkan disassembly pada RIP dengan TLS model dan implementasi local_pointer / pthread-key pada Rust std. Belum ada native rustc atau Cargo.

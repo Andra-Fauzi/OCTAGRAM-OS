@@ -2179,3 +2179,19 @@ yang diperlukan sebelum implementasi Cargo.
 **Validasi:** perubahan test dan probe sudah di-commit. Belum ada workflow
 result yang dapat diverifikasi untuk commit ini; status QEMU tetap pending
 sampai GitHub Actions menjalankan job `qemu-smoke-tests`.
+
+## 58. Uji truncation dan atomic artifact replacement Rust std (23 November 2026)
+
+- Probe membuat file sementara unik, mengubah panjangnya melalui
+  `File::set_len(8)`, menjalankan `sync_data`, lalu memeriksa metadata
+  descriptor memastikan ukuran file tepat delapan byte.
+- Probe atomic replacement membuat output lama dan file sementara baru,
+  melakukan `sync_all` pada file sementara, lalu memakai
+  `std::fs::rename` untuk mengganti output lama. Isi output baru diverifikasi
+  sebelum kedua file dibersihkan.
+- QEMU gate kini mewajibkan marker `RUST-STD-FS-TRUNCATE-PASS` dan
+  `RUST-STD-FS-ATOMIC-RENAME-PASS`, sehingga regresi pada `ftruncate`,
+  data sync, atau semantik rename replacement menghentikan smoke test.
+
+**Validasi:** source probe, QEMU assertion, dan roadmap telah diperbarui.
+Belum ada hasil build atau QEMU yang dapat diverifikasi untuk commit ini.

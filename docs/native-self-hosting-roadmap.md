@@ -1918,3 +1918,18 @@ sebelum API ini dipakai sebagai dasar implementasi `std::path` yang lebih luas.
 komponen masih mengikuti implementasi helper OCTAGRAM saat ini; kompatibilitas
 penuh dengan seluruh edge case `std::path::Path` belum diklaim. CI host dan
 QEMU tetap perlu dijalankan untuk memvalidasi perubahan.
+
+## 40. Penyelarasan parent dan iterator Path (23 November 2026)
+
+- Memperbaiki `Path::parent()` agar path relatif non-kosong tanpa separator
+  (misalnya `single`) memiliki parent berupa path kosong, sesuai perilaku
+  Unix `std::path::Path`.
+- Menambahkan `Path::iter()` dengan `PathIter`, yang menghasilkan komponen
+  sebagai `OsStr` pinjaman; root dipresentasikan sebagai `/`, sementara `.`
+  dan `..` dipertahankan.
+- Memperluas regression test untuk parent path tunggal, ancestors relatif,
+  komponen root, dan path kosong.
+
+**Validasi:** source dan regression test telah diperbarui. Workflow CI untuk
+commit ini belum tersedia; jalankan host tests runtime dan QEMU sebelum
+menganggap kompatibilitas API meningkat ini terverifikasi.

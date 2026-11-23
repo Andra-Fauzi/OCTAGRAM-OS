@@ -130,6 +130,12 @@ jobs:
             user/rust/build/rust_std_probe.elf
           readelf -h user/rust/build/rust_std_probe.elf
           readelf -l user/rust/build/rust_std_probe.elf
+          # Diagnose the exact TLS symbol offsets and initialized template bytes.
+          readelf -SW user/rust/build/rust_std_probe.elf
+          readelf -sW user/rust/build/rust_std_probe.elf | grep -Ei 'TLS|thread_local|RUST_TLS|oct_tls' || true
+          objdump -s -j .tdata user/rust/build/rust_std_probe.elf || true
+          objdump -s -j .tbss user/rust/build/rust_std_probe.elf || true
+          nm -an user/rust/build/rust_std_probe.elf | grep -Ei 'TLS|thread_local|RUST_TLS|oct_tls' || true
 
       - name: Cross-build upstream GNU Make for OCTAGRAM
         run: bash tools/build_gnu_make_octagram.sh

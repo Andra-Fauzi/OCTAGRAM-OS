@@ -112,6 +112,8 @@ extern const uintptr_t __oct_tls_align[] __attribute__((weak));
 typedef struct AllocationHeader {
     size_t size;
     struct AllocationHeader *next_free;
+    /* For aligned allocations, points to the original malloc block header. */
+    struct AllocationHeader *allocation_base;
 } AllocationHeader;
 
 #if defined(OCTAGRAM_TLS_ERRNO) && !defined(OCTAGRAM_SHARED)
@@ -3043,6 +3045,32 @@ char *strdup(const char *text)
     return strndup(text, strlen(text));
 }
 
+int strerror_r(int error, char *buffer, size_t length)
+{
+    if (buffer == NULL) {
+        return EINVAL;
+    }
+    if (length == 0) {
+        return ERANGE;
+    }
+    const char *message = strerror(error);
+    size_t needed = strlen(message) + 1;
+    if (needed > length) {
+        memcpy(buffer, message, length - 1);
+        buffer[length - 1] = '\\0';
+        return ERANGE;
+    }
+    memcpy(buffer, message, needed);
+    return 0;
+}
+
+int chroot(const char *path)
+{
+    (void)path;
+    errno = ENOSYS;
+    return -1;
+}
+
 char *strerror(int error)
 {
     switch (error) {
@@ -5238,6 +5266,22 @@ void perror(const char *message)
     fprintf(stderr, "%s\n", strerror(errno));
 }
 
+/* panic=abort has no language-level unwinding. Keep std's optional
+ * backtrace formatting linkable and report an empty trace until OCTAGRAM
+ * grows a native unwinder. */
+int _Unwind_Backtrace(int (*trace)(void *, void *), void *context)
+{
+    (void)trace;
+    (void)context;
+    return 5; /* _URC_END_OF_STACK */
+}
+
+uintptr_t _Unwind_GetIP(void *context)
+{
+    (void)context;
+    return 0;
+}
+
 size_t fread(void *buffer, size_t size, size_t count, FILE *stream)
 {
     if (size == 0 || count == 0) {
@@ -6584,6 +6628,7 @@ void *malloc(size_t size)
                         (AllocationHeader *)((unsigned char *)(header + 1) + size);
                     remainder->size = header->size - size - sizeof(*header);
                     remainder->next_free = header->next_free;
+                    remainder->allocation_base = remainder;
                     *free_link = remainder;
                     header->size = size;
                 } else {
@@ -6615,6 +6660,7 @@ void *malloc(size_t size)
         }
         AllocationHeader *header = mapping;
         header->size = mapping_size - sizeof(*header);
+        header->allocation_base = header;
         oct_allocator_lock_acquire();
         header->next_free = free_list;
         free_list = header;
@@ -6651,10 +6697,42 @@ void free(void *pointer)
         return;
     }
     AllocationHeader *header = (AllocationHeader *)pointer - 1;
+    AllocationHeader *allocation = header->allocation_base != NULL
+        ? header->allocation_base : header;
     oct_allocator_lock_acquire();
-    header->next_free = free_list;
-    free_list = header;
+    allocation->next_free = free_list;
+    free_list = allocation;
     oct_allocator_lock_release();
+}
+
+int posix_memalign(void **result, size_t alignment, size_t size)
+{
+    if (result == NULL || alignment < sizeof(void *) ||
+        (alignment & (alignment - 1)) != 0 ||
+        alignment % sizeof(void *) != 0) {
+        return EINVAL;
+    }
+    if (size == 0) {
+        size = 1;
+    }
+    if (size > SIZE_MAX - alignment - sizeof(AllocationHeader)) {
+        return ENOMEM;
+    }
+
+    size_t request = size + alignment + sizeof(AllocationHeader);
+    void *base_pointer = malloc(request);
+    if (base_pointer == NULL) {
+        return ENOMEM;
+    }
+    AllocationHeader *base = (AllocationHeader *)base_pointer - 1;
+    uintptr_t first = (uintptr_t)base_pointer + sizeof(AllocationHeader);
+    uintptr_t aligned = (first + alignment - 1) & ~(uintptr_t)(alignment - 1);
+    AllocationHeader *header = (AllocationHeader *)aligned - 1;
+    header->size = (size + 15) & ~(size_t)15;
+    header->next_free = NULL;
+    header->allocation_base = base;
+    *result = (void *)aligned;
+    return 0;
 }
 
 void *calloc(size_t count, size_t size)
@@ -6802,6 +6880,11 @@ static OctRuntimeThreadState *oct_runtime_state_for_thread(void)
     return slot != NULL ? slot : &oct_runtime_fallback_state;
 }
 #endif
+
+int *errno_location(void)
+{
+    return __errno_location();
+}
 
 int *__errno_location(void)
 {

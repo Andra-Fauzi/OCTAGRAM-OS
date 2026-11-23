@@ -60,6 +60,32 @@ fn main() {
     }
     marker("RUST-STD-PATH-LEXICAL-PASS");
 
+    // Round-trip a real filename containing a non-UTF-8 byte through the
+    // upstream std filesystem API. Keep the test isolated by including PID.
+    let mut raw_file_name = b"octagram-rust-std-".to_vec();
+    raw_file_name.extend_from_slice(std::process::id().to_string().as_bytes());
+    raw_file_name.extend_from_slice(b"-");
+    raw_file_name.push(0xff);
+    let mut raw_file_path = std::path::PathBuf::from("/tmp");
+    raw_file_path.push(std::ffi::OsString::from_vec(raw_file_name));
+    let payload = b"octagram std filesystem byte-path probe";
+    if let Err(error) = std::fs::write(&raw_file_path, payload) {
+        eprintln!("non-UTF-8 path write failed: {error}");
+        marker("RUST-STD-FS-BYTE-PATH-FAIL");
+        std::process::exit(26);
+    }
+    let read_back = std::fs::read(&raw_file_path);
+    let metadata = std::fs::metadata(&raw_file_path);
+    let removed = std::fs::remove_file(&raw_file_path);
+    if read_back.as_deref() != Ok(payload.as_slice())
+        || !metadata.as_ref().is_ok_and(|value| value.is_file() && value.len() == payload.len() as u64)
+        || removed.is_err()
+    {
+        marker("RUST-STD-FS-BYTE-PATH-FAIL");
+        std::process::exit(27);
+    }
+    marker("RUST-STD-FS-BYTE-PATH-PASS");
+
     // Environment access must not panic when PATH is absent; the call itself
     // exercises std's environment PAL.
     let _path = std::env::var_os("PATH");

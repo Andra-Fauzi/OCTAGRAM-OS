@@ -50,6 +50,9 @@ def main() -> int:
     require(re.search(r"struct\s+dirent\s*\{\s*uint64_t\s+d_ino;\s*off_t\s+d_off;\s*uint16_t\s+d_reclen;\s*unsigned\s+char\s+d_type;\s*char\s+d_name\[256\];", dirent, re.S) is not None,
             "dirent layout changed; update manifest and tests")
 
+    require("DIR *fdopendir(int fd);" in dirent,
+            "fdopendir declaration missing from public dirent ABI")
+
     timespec = read("user/include/time.h")
     require("time_t tv_sec;" in timespec and "long tv_nsec;" in timespec,
             "timespec fields changed")
@@ -126,6 +129,11 @@ def main() -> int:
     pthread = read("user/runtime.c")
     require(re.search(r"int pthread_detach\(pthread_t thread\).*?return ENOTSUP;", pthread, re.S) is not None,
             "pthread_detach behavior changed; update capability notes")
+
+    require(re.search(
+        r"DIR \*fdopendir\(int fd\).*?fstat\(fd, &metadata\).*?S_ISDIR\(metadata\.st_mode\).*?directory->fd = fd;",
+        runtime, re.S) is not None,
+        "fdopendir must validate a directory and transfer descriptor ownership on success")
 
     gaps = data.get("known_gaps", [])
     require(any("not glibc or musl" in item for item in gaps),

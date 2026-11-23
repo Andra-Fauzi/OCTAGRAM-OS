@@ -67,6 +67,23 @@ fn main() {
     let _elapsed = started.elapsed();
     marker("RUST-STD-THREAD-CLOCK-PASS");
 
+    // Separate the basic spawn/wait path from the stdio-pipe capture path.
+    // If this passes but output() fails, the remaining fault is in pipe setup,
+    // descriptor actions, or output collection rather than exec itself.
+    let status = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("exit 0")
+        .status()
+        .unwrap_or_else(|error| {
+            eprintln!("Command::status failed: {error}");
+            std::process::exit(19);
+        });
+    if !status.success() {
+        marker("RUST-STD-PROCESS-INHERITED-STDIO-FAIL");
+        std::process::exit(20);
+    }
+    marker("RUST-STD-PROCESS-INHERITED-STDIO-PASS");
+
     let output = Command::new("/bin/sh")
         .arg("-c")
         .arg("echo RUST-STD-CHILD-PASS")

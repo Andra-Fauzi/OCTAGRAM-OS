@@ -2567,6 +2567,7 @@ static ALLOCATOR: MmapAllocator = MmapAllocator;
 #[cfg(test)]
 mod tests {
     extern crate std;
+    use alloc::string::String;
 
     use super::{build_dns_query, find_env_value, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen, Dirent};
     use core::alloc::Layout;

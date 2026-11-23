@@ -1694,26 +1694,7 @@ impl FileSystem for Ext2 {
             NodeType::Directory => EXT2_FT_DIR,
             NodeType::Symlink => EXT2_FT_SYMLINK,
         };
-        if let Some((_, replaced_inode)) = replaced.as_ref() {
-            let target_parent = self.read_inode(target_parent_number)?;
-            if let Err(error) = self.remove_directory_entry(&target_parent, &target_name) {
-                return Err(error);
-            }
-            let replaced_type = match replaced_inode.node_type()? {
-                NodeType::File => EXT2_FT_REG_FILE,
-                NodeType::Directory => EXT2_FT_DIR,
-                NodeType::Symlink => EXT2_FT_SYMLINK,
-            };
-            if let Err(error) = self.insert_directory_entry(
-                target_parent_number,
-                &target_name,
-                replaced.unwrap().0,
-                replaced_type,
-            ) {
-                return Err(error);
-            }
-            // The entry is restored for now; remove it again immediately before
-            // installing the source so a failed insertion can restore the old file.
+        if replaced.is_some() {
             let target_parent = self.read_inode(target_parent_number)?;
             self.remove_directory_entry(&target_parent, &target_name)?;
         }

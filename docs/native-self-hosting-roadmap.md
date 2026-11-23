@@ -2673,3 +2673,23 @@ keluar dengan kode 42 terlihat sebagai `42 << 8`, dan probe mengembalikan 42.
 libc tests, ISO, native TinyCC dan GNU Make. QEMU syscall suite gagal pada
 probe Rust target akibat mismatch encoding ini. Perubahan koreksi sudah
 di-commit; hasil host dan QEMU untuk revisi koreksi menunggu CI berikutnya.
+
+
+## 87. Berbagi status O_APPEND pada descriptor hasil dup (23 November 2026)
+
+Audit kompatibilitas POSIX menemukan bahwa `F_SETFL(O_APPEND)` sudah
+mengubah flag pada objek `OpenFile` yang dibagi oleh descriptor hasil
+`dup`, tetapi `F_GETFL` sebelumnya membaca salinan flag per-descriptor.
+Akibatnya, perubahan melalui descriptor pertama tidak terlihat ketika
+dibaca melalui descriptor duplikat.
+
+- `F_GETFL` kini mengambil `O_APPEND` dari objek open-file bersama.
+- `F_SETFL` tidak lagi menyimpan salinan `O_APPEND` pada tabel flag per-fd;
+  tabel tersebut tetap menyimpan `FD_CLOEXEC` dan status nonblocking yang
+  saat ini dikelola per descriptor.
+- `file-api-demo` kini memeriksa `F_GETFL` melalui descriptor hasil `dup`.
+- QEMU smoke suite menjalankan demo tersebut dan mewajibkan marker
+  `POSIX-FCNTL-SHARED-APPEND`.
+
+**Validasi:** perubahan kode, demo, dan QEMU gate sudah di-commit.
+Hasil workflow untuk commit terbaru masih menunggu.

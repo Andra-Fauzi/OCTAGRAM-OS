@@ -436,6 +436,24 @@ impl PathBuf {
 
 
 
+impl From<OsString> for PathBuf {
+    fn from(inner: OsString) -> Self { Self { inner } }
+}
+
+impl<'a> From<OsStr<'a>> for PathBuf {
+    fn from(value: OsStr<'a>) -> Self { value.to_os_string().into() }
+}
+
+impl From<&str> for PathBuf {
+    fn from(value: &str) -> Self { Self::from_bytes(value.as_bytes()) }
+}
+
+impl From<String> for PathBuf {
+    fn from(value: String) -> Self { Self { inner: value.into() } }
+}
+
+
+
 /// Freestanding C memory primitives required by Rust core/alloc when linking
 /// without a hosted libc. OCTAGRAM currently targets x86_64.
 #[no_mangle]
@@ -2638,6 +2656,24 @@ mod tests {
         assert_eq!(owned.to_str(), None);
         assert_eq!(owned.to_string_lossy(), "src/�.rs");
         assert_eq!(owned.as_bytes(), &invalid_bytes);
+    }
+
+    #[test]
+    fn path_buf_from_conversions_preserve_bytes_and_ownership() {
+        let from_str = super::PathBuf::from("src/main.rs");
+        assert_eq!(from_str.as_bytes(), b"src/main.rs");
+
+        let from_string = super::PathBuf::from(String::from("target/octagram.elf"));
+        assert_eq!(from_string.as_bytes(), b"target/octagram.elf");
+
+        let raw = [b's', b'r', b'c', b'/', 0x80];
+        let os_string = super::OsString::from_bytes(&raw);
+        let from_owned_os_string = super::PathBuf::from(os_string);
+        assert_eq!(from_owned_os_string.as_bytes(), &raw);
+
+        let borrowed = super::OsStr::from_bytes(&raw);
+        let from_os_str = super::PathBuf::from(borrowed);
+        assert_eq!(from_os_str.as_bytes(), &raw);
     }
 
     #[test]

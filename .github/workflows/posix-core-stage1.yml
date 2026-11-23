@@ -153,6 +153,7 @@ jobs:
           make -C user math-test
           make -C user math-header-test
           make -C user stdint-test
+          make -C user wait-status-test
 
       - name: Build kernel
         run: make -C kernel KARCH=x86_64

@@ -67,7 +67,7 @@ fn main() {
     raw_file_name.extend_from_slice(b"-");
     raw_file_name.push(0xff);
     let mut raw_file_path = std::path::PathBuf::from("/tmp");
-    raw_file_path.push(std::ffi::OsString::from_vec(raw_file_name));
+    raw_file_path.push(std::ffi::OsString::from_vec(raw_file_name.clone()));
     let payload = b"octagram std filesystem byte-path probe";
     if let Err(error) = std::fs::write(&raw_file_path, payload) {
         eprintln!("non-UTF-8 path write failed: {error}");
@@ -76,6 +76,10 @@ fn main() {
     }
     let read_back = std::fs::read(&raw_file_path);
     let metadata = std::fs::metadata(&raw_file_path);
+    let byte_name_found = std::fs::read_dir("/tmp")
+        .is_ok_and(|entries| entries.filter_map(Result::ok).any(|entry| {
+            entry.file_name().as_bytes() == raw_file_name.as_slice()
+        }));
     let removed = std::fs::remove_file(&raw_file_path);
     if !matches!(read_back, Ok(ref bytes) if bytes.as_slice() == payload)
         || !metadata.as_ref().is_ok_and(|value| value.is_file() && value.len() == payload.len() as u64)
@@ -85,6 +89,11 @@ fn main() {
         std::process::exit(27);
     }
     marker("RUST-STD-FS-BYTE-PATH-PASS");
+    if !byte_name_found {
+        marker("RUST-STD-READ-DIR-BYTE-NAME-FAIL");
+        std::process::exit(39);
+    }
+    marker("RUST-STD-READ-DIR-BYTE-NAME-PASS");
 
     // Exercise directory creation, file-descriptor I/O, seek, sync and rename
     // through upstream std. All paths are unique to this process.
@@ -105,6 +114,18 @@ fn main() {
             .create_new(true)
             .open(&child_path)?;
         file.write_all(b"descriptor-roundtrip")?;
+        let mut found_child = false;
+        for entry in std::fs::read_dir(&original_dir)? {
+            let entry = entry?;
+            if entry.file_name() == std::ffi::OsStr::new("probe.bin")
+                && entry.metadata()?.is_file()
+            {
+                found_child = true;
+            }
+        }
+        if !found_child {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "nested read_dir entry missing"));
+        }
         file.sync_all()?;
         let cloned = file.try_clone()?;
         if !file.metadata()?.is_file() || !cloned.metadata()?.is_file() {
@@ -136,6 +157,7 @@ fn main() {
         std::process::exit(30);
     }
     marker("RUST-STD-FS-DIRECTORY-PASS");
+    marker("RUST-STD-READ-DIR-NESTED-PASS");
 
     // Cargo and rustc commonly write a temporary artifact and atomically
     // replace the previous output with rename. Also exercise ftruncate.

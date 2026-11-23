@@ -38,6 +38,7 @@ const RUST_STD_PROBE_ELF: &[u8] =
 const SH_ELF: &[u8] = include_bytes!("../../../user/build/sh.elf");
 const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
 const FILE_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/file_api_demo.elf");
+const POSIX_SPAWN_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/posix_spawn_demo.elf");
 const PATH_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/path_api_demo.elf");
 const AT_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/at_api_demo.elf");
 const EXECVE_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/execve_demo.elf");
@@ -915,6 +916,7 @@ pub fn init() {
         seed_file(&mut vfs, "/bin/rust-std-probe", RUST_STD_PROBE_ELF, 0o755);
         seed_file(&mut vfs, "/bin/tcc", TCC_ELF, 0o755);
         seed_file(&mut vfs, "/bin/file-api-demo", FILE_API_DEMO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/posix_spawn_demo", POSIX_SPAWN_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/path-api-demo", PATH_API_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/at-api-demo", AT_API_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/execve-demo", EXECVE_DEMO_ELF, 0o755);

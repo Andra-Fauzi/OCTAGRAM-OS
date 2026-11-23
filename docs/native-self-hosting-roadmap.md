@@ -1944,3 +1944,17 @@ menganggap kompatibilitas API meningkat ini terverifikasi.
 **Validasi:** perubahan source dan test sudah di-commit, tetapi belum ada
 hasil CI host/QEMU untuk commit ini. Perilaku path tetap bersifat leksikal;
 canonicalization filesystem tidak dilakukan.
+
+
+## 42. Penyelarasan PathBuf::pop dengan parent leksikal (23 November 2026)
+
+- Mengubah `PathBuf::pop()` agar memakai batas parent yang sama dengan
+  `Path::parent()`, sehingga separator berulang tidak tertinggal.
+- Menambahkan regression test untuk `foo//bar`, `/foo///bar`, dan path
+  dengan separator berulang di akhir.
+- Root tetap tidak dapat di-pop; path relatif satu komponen tetap berubah
+  menjadi path kosong.
+
+**Validasi:** source dan regression test telah di-commit. Host unit test dan
+QEMU belum dijalankan untuk perubahan ini; kompatibilitas runtime belum
+dinyatakan lulus.

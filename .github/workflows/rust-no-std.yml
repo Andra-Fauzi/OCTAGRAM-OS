@@ -91,6 +91,25 @@ jobs:
             --target user/rust/targets/x86_64-unknown-octagram.json \
             --config 'patch.crates-io.libc.path="upstream-libc"'
 
+      - name: Link a Rust std executable for OCTAGRAM (diagnostic, non-blocking)
+        continue-on-error: true
+        env:
+          RUSTC_BOOTSTRAP_SYNTHETIC_TARGET: "1"
+          RUSTFLAGS: >-
+            -C linker=ld.lld
+            -C link-arg=-Tuser/rust/linker.ld
+            -C link-arg=user/rust/build/crt0.o
+        run: |
+          mkdir -p user/rust/build
+          as --64 -o user/rust/build/crt0.o user/crt0.S
+          cargo +nightly -Zjson-target-spec -Zbuild-std=std build --release \
+            --manifest-path user/rust/std-probe/Cargo.toml \
+            --target user/rust/targets/x86_64-unknown-octagram.json \
+            --target-dir user/rust/std-probe/target \
+            --config 'patch.crates-io.libc.path="upstream-libc"'
+          readelf -h user/rust/std-probe/target/x86_64-unknown-octagram/release/octagram-std-probe
+          readelf -l user/rust/std-probe/target/x86_64-unknown-octagram/release/octagram-std-probe
+
       - name: Build OCTAGRAM Rust binaries
         run: make -C user/rust clean all check
 

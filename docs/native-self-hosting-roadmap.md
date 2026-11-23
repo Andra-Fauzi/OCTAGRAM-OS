@@ -2458,3 +2458,20 @@ stderr dan keluar dengan status non-zero (7).
 **Validasi:** probe, gate QEMU, dan roadmap telah diperbarui. Hasil QEMU
 belum diklaim lulus sampai marker baru muncul dan proses probe berakhir
 dengan status 0.
+
+## 75. Makro status proses POSIX (23 November 2026)
+
+Header `sys/wait.h` kini mendekode format status wait POSIX untuk exit normal,
+terminasi sinyal, core dump, proses berhenti, dan status continued. Sebelumnya
+beberapa makro selalu mengembalikan nilai konstan sehingga program dapat
+salah mengklasifikasikan hasil child process.
+
+- Tes host baru: `user/tests/wait_status_test.c`.
+- Target Make: `make -C user wait-status-test`.
+- POSIX Core Stage 1 menjalankan tes tersebut pada job host.
+
+**Batasan kernel yang masih terbuka:** jalur wait saat ini mengirim kode exit
+normal sebagai status POSIX, tetapi terminasi akibat sinyal masih disimpan
+sebagai nilai `128 + signal`. Karena itu, makro header sudah mengikuti
+encoding POSIX, tetapi klasifikasi sinyal belum dapat dianggap terintegrasi
+penuh sampai kernel menyimpan status terminasi bertipe secara terpisah.

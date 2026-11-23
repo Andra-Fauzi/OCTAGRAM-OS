@@ -323,6 +323,10 @@ pub trait FileSystem: Send {
     fn create_symlink(&mut self, _target: &str, _path: &str) -> Result<(), FsError> {
         Err(FsError::Unsupported)
     }
+    /// Create another directory entry for the same non-directory inode.
+    fn hard_link(&mut self, _source: &str, _target: &str) -> Result<(), FsError> {
+        Err(FsError::Unsupported)
+    }
     fn remove(&mut self, path: &str) -> Result<(), FsError>;
     fn rename(&mut self, _source: &str, _target: &str) -> Result<(), FsError> {
         Err(FsError::Unsupported)
@@ -505,6 +509,21 @@ impl Vfs {
             return Err(FsError::NotSymlink);
         }
         filesystem.read_link(&relative_path)
+    }
+
+    /// Create a hard link without following the final source symlink.
+    /// Both names must resolve to the same mounted filesystem.
+    pub fn hard_link(&mut self, source: &str, target: &str) -> Result<(), FsError> {
+        let source = self.resolve_symlinks(source, false)?;
+        let target = self.resolve_symlinks(target, false)?;
+        let (source_mount, source_path) = self.resolve(&source)?;
+        let (target_mount, target_path) = self.resolve(&target)?;
+        if source_mount != target_mount {
+            return Err(FsError::Unsupported);
+        }
+        self.mounts[source_mount]
+            .filesystem
+            .hard_link(&source_path, &target_path)
     }
 
     pub fn remove(&mut self, path: &str) -> Result<(), FsError> {

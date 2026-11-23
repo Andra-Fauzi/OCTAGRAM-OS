@@ -1672,31 +1672,119 @@ impl FileSystem for Ext2 {
         if node_type == NodeType::Directory && source_parent_number != target_parent_number {
             return Err(FsError::Unsupported);
         }
-        // Replacing an existing name is refused: the caller must remove it first.
-        if self.lookup_inode(&target).is_ok() {
-            return Err(FsError::AlreadyExists);
-        }
+        // Cargo publishes build artifacts by renaming a temporary file over
+        // the previous output. Support that common POSIX case without
+        // destroying the old inode until the new directory entry is installed.
+        let replaced = match self.lookup_inode(&target) {
+            Ok((inode_number, inode)) => {
+                if node_type != NodeType::File || inode.node_type()? != NodeType::File {
+                    return Err(if inode.node_type()? == NodeType::Directory {
+                        FsError::IsDirectory
+                    } else {
+                        FsError::Unsupported
+                    });
+                }
+                Some((inode_number, inode))
+            }
+            Err(FsError::NotFound) => None,
+            Err(error) => return Err(error),
+        };
         let file_type = match node_type {
             NodeType::File => EXT2_FT_REG_FILE,
             NodeType::Directory => EXT2_FT_DIR,
             NodeType::Symlink => EXT2_FT_SYMLINK,
         };
-        self.insert_directory_entry(
+        if let Some((_, replaced_inode)) = replaced.as_ref() {
+            let target_parent = self.read_inode(target_parent_number)?;
+            if let Err(error) = self.remove_directory_entry(&target_parent, &target_name) {
+                return Err(error);
+            }
+            let replaced_type = match replaced_inode.node_type()? {
+                NodeType::File => EXT2_FT_REG_FILE,
+                NodeType::Directory => EXT2_FT_DIR,
+                NodeType::Symlink => EXT2_FT_SYMLINK,
+            };
+            if let Err(error) = self.insert_directory_entry(
+                target_parent_number,
+                &target_name,
+                replaced.unwrap().0,
+                replaced_type,
+            ) {
+                return Err(error);
+            }
+            // The entry is restored for now; remove it again immediately before
+            // installing the source so a failed insertion can restore the old file.
+            let target_parent = self.read_inode(target_parent_number)?;
+            self.remove_directory_entry(&target_parent, &target_name)?;
+        }
+        if let Err(error) = self.insert_directory_entry(
             target_parent_number,
             &target_name,
             source_inode_number,
             file_type,
-        )?;
+        ) {
+            if let Some((replaced_number, replaced_inode)) = replaced.as_ref() {
+                let restore_type = match replaced_inode.node_type()? {
+                    NodeType::File => EXT2_FT_REG_FILE,
+                    NodeType::Directory => EXT2_FT_DIR,
+                    NodeType::Symlink => EXT2_FT_SYMLINK,
+                };
+                let _ = self.insert_directory_entry(
+                    target_parent_number,
+                    &target_name,
+                    *replaced_number,
+                    restore_type,
+                );
+            }
+            return Err(error);
+        }
         let source_parent = match self.read_inode(source_parent_number) {
             Ok(inode) => inode,
             Err(error) => {
                 self.rollback_rename_entry(target_parent_number, &target_name);
+                if let Some((replaced_number, replaced_inode)) = replaced.as_ref() {
+                    let restore_type = match replaced_inode.node_type()? {
+                        NodeType::File => EXT2_FT_REG_FILE,
+                        NodeType::Directory => EXT2_FT_DIR,
+                        NodeType::Symlink => EXT2_FT_SYMLINK,
+                    };
+                    let _ = self.insert_directory_entry(
+                        target_parent_number,
+                        &target_name,
+                        *replaced_number,
+                        restore_type,
+                    );
+                }
                 return Err(error);
             }
         };
         if let Err(error) = self.remove_directory_entry(&source_parent, &source_name) {
             self.rollback_rename_entry(target_parent_number, &target_name);
+            if let Some((replaced_number, replaced_inode)) = replaced.as_ref() {
+                let restore_type = match replaced_inode.node_type()? {
+                    NodeType::File => EXT2_FT_REG_FILE,
+                    NodeType::Directory => EXT2_FT_DIR,
+                    NodeType::Symlink => EXT2_FT_SYMLINK,
+                };
+                let _ = self.insert_directory_entry(
+                    target_parent_number,
+                    &target_name,
+                    *replaced_number,
+                    restore_type,
+                );
+            }
             return Err(error);
+        }
+        if let Some((replaced_number, mut replaced_inode)) = replaced {
+            if replaced_inode.links() > 1 {
+                replaced_inode.set_links(replaced_inode.links() - 1);
+                self.write_inode(replaced_number, &replaced_inode)?;
+            } else {
+                self.free_inode_storage(&replaced_inode)?;
+                replaced_inode.clear();
+                self.write_inode(replaced_number, &replaced_inode)?;
+                self.free_inode(replaced_number, false)?;
+            }
         }
         let timestamp = current_timestamp().unwrap_or(0);
         for parent_number in [source_parent_number, target_parent_number] {
@@ -2555,10 +2643,17 @@ mod tests {
         assert_eq!(filesystem.metadata("/build/program.c").unwrap().len, 26);
 
         filesystem.create_file("/build/other.c").unwrap();
+        filesystem.write("/build/other.c", 0, b"old artifact").unwrap();
+        filesystem
+            .rename("/build/program.c", "/build/other.c")
+            .expect("replace existing build artifact");
+        assert!(filesystem.metadata("/build/program.c").is_err());
+        let mut replaced_data = [0u8; 26];
         assert_eq!(
-            filesystem.rename("/build/program.c", "/build/other.c"),
-            Err(FsError::AlreadyExists)
+            filesystem.read("/build/other.c", 0, &mut replaced_data).unwrap(),
+            26
         );
+        assert_eq!(&replaced_data, source);
         assert_eq!(
             filesystem.rename("/src", "/build/src"),
             Err(FsError::Unsupported)
@@ -2573,7 +2668,7 @@ mod tests {
         );
         let mut data = [0u8; 26];
         assert_eq!(
-            remounted.read("/build/program.c", 0, &mut data).unwrap(),
+            remounted.read("/build/other.c", 0, &mut data).unwrap(),
             26
         );
         assert_eq!(&data, source);

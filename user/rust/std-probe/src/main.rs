@@ -59,12 +59,21 @@ fn marker(message: &str) {
 }
 
 fn main() {
-    let tls_value = RUST_TLS_PROBE.with(|value| {
+    let (tls_value, tls_address) = RUST_TLS_PROBE.with(|value| {
         let initial = value.get();
+        let address = value as *const Cell<u64> as usize;
         value.set(initial ^ 0x0101);
-        (initial, value.get())
+        ((initial, value.get()), address)
     });
+    let fs_base: usize;
+    unsafe {
+        std::arch::asm!("mov {}, fs:0", out(reg) fs_base, options(nostack, preserves_flags));
+    }
     if tls_value != (0x4f43_5441_4752_414d, 0x4f43_5441_4752_404c) {
+        println!(
+            "RUST-STD-TLS-DIAG initial={:#018x} changed={:#018x} address={:#x} fsbase={:#x}",
+            tls_value.0, tls_value.1, tls_address, fs_base
+        );
         marker("RUST-STD-TLS-FAIL");
         std::process::exit(68);
     }

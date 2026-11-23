@@ -2362,30 +2362,36 @@ pub fn waitpid(pid: u64, status: Option<&mut u64>) -> Result<u64, i64> {
     waitpid_with_options(pid, status, 0)
 }
 
-/// Exit status as represented by the OCTAGRAM kernel.
+/// POSIX wait status returned by the OCTAGRAM kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExitStatus {
     raw: u64,
 }
 
 impl ExitStatus {
-    /// Preserve the raw 64-bit value written by the kernel wait operation.
+    /// Preserve the POSIX wait-status word written by the kernel.
     pub const fn from_raw(raw: u64) -> Self { Self { raw } }
 
-    /// Return the unmodified kernel status value.
+    /// Return the unmodified POSIX wait-status word.
     pub const fn raw(self) -> u64 { self.raw }
 
-    /// OCTAGRAM currently reports normal exit values only; signal termination
-    /// is not encoded in wait status yet.
-    pub const fn code(self) -> Option<i32> { Some(self.raw as i32) }
+    /// Return the exit code for normal termination, or None for signal stops.
+    pub const fn code(self) -> Option<i32> {
+        if self.raw & 0x7f == 0 {
+            Some(((self.raw >> 8) & 0xff) as i32)
+        } else {
+            None
+        }
+    }
 
-    pub const fn success(self) -> bool { self.raw == 0 }
+    /// True only when the child exited normally with status zero.
+    pub const fn success(self) -> bool { self.raw & 0x7f == 0 && (self.raw >> 8) & 0xff == 0 }
 }
 
 /// A handle to a direct child process created by fork or another spawn API.
 ///
-/// The status returned by wait methods is the raw 64-bit value passed by the
-/// child to exit; OCTAGRAM does not apply Linux wait-status bit encoding.
+/// The status returned by wait methods is the POSIX wait-status word; normal
+/// exit codes occupy bits 8..15 and signal termination occupies bits 0..6.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Child {
     pid: Option<u64>,

@@ -41,6 +41,8 @@ int access(const char *path, int mode);
 int execve(const char *path, char *const argv[], char *const envp[]);
 int execvp(const char *file, char *const argv[]);
 pid_t fork(void);
+int link(const char *oldpath, const char *newpath);
+int linkat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath, int flags);
 int rmdir(const char *path);
 int symlink(const char *target, const char *link_path);
 int symlinkat(const char *target, int dirfd, const char *link_path);

@@ -2100,3 +2100,19 @@ belum menyediakan integrasi penuh dengan tipe `Path` unsized upstream.
 compile/link atau QEMU untuk commit ini. Tes hanya akan dianggap berhasil
 ketika marker `RUST-STD-OS-STRING-FFI-PASS` dan
 `RUST-STD-PATH-OS-STRING-FFI-PASS` muncul di guest.
+
+## 53. Perluas probe lexical `std::path` upstream (23 November 2026)
+
+- Probe kini membuat `Path` dari `OsStr::from_bytes` agar input non-UTF-8
+  mengikuti kontrak Unix upstream, bukan mengandalkan konversi `&[u8]`
+  langsung ke `Path`.
+- Memeriksa komponen path yang memiliki separator berulang, trailing slash,
+  komponen `.` dan `..`, serta nama file non-directory.
+- Memeriksa `file_name`, `extension`, dan konstruksi `PathBuf` melalui
+  operasi `push` berurutan.
+- Assertion dipisah dari tes OS-string supaya kegagalan komponen, nama file,
+  dan join dapat dibedakan dari marker serial.
+
+**Validasi:** source probe sudah diperbarui. Compile/link upstream std dan
+eksekusi QEMU belum terkonfirmasi; bagian ini tetap berstatus implemented,
+belum build-tested atau QEMU-tested.

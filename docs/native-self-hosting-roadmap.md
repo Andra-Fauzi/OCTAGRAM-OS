@@ -1933,3 +1933,14 @@ QEMU tetap perlu dijalankan untuk memvalidasi perubahan.
 **Validasi:** source dan regression test telah diperbarui. Workflow CI untuk
 commit ini belum tersedia; jalankan host tests runtime dan QEMU sebelum
 menganggap kompatibilitas API meningkat ini terverifikasi.
+
+## 41. Perbaikan parent pada separator berulang (23 November 2026)
+
+- Memperbaiki `Path::parent()` agar separator berulang sebelum komponen
+  terakhir tidak tertinggal pada hasil parent; contoh `foo//bar` menjadi
+  `foo`, dan `/foo///bar` menjadi `/foo`.
+- Menambahkan regression test untuk bentuk relatif dan absolut tersebut.
+
+**Validasi:** perubahan source dan test sudah di-commit, tetapi belum ada
+hasil CI host/QEMU untuk commit ini. Perilaku path tetap bersifat leksikal;
+canonicalization filesystem tidak dilakukan.

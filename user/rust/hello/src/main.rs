@@ -357,7 +357,7 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         Ok(child) => child,
         Err(_) => return 44,
     };
-    if command_child.wait() != Ok(23) {
+    if command_child.wait_status().map(|status| status.code()) != Ok(Some(23)) {
         return 45;
     }
 

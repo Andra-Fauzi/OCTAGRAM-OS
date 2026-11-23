@@ -23,7 +23,7 @@ int main(int argc, char **argv)
         close(4);
         unlink("/tmp/execve-demo-file");
         rmdir("/tmp/execve-demo");
-        puts("execve replaced image and preserved process state");
+        puts("EXECVP-PATH-SEARCH-PASS: skipped directory and found /bin executable");
         return 0;
     }
 

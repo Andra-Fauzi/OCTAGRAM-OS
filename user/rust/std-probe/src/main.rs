@@ -275,10 +275,24 @@ fn main() {
         marker("RUST-STD-CANONICALIZE-METADATA-FAIL");
         std::process::exit(35);
     }
-    if std::fs::remove_dir_all(&renamed_dir).is_err() {
-        marker("RUST-STD-REMOVE-DIR-ALL-FAIL");
+    // Populate the deepest directory so remove_dir_all must enumerate and
+    // unlink a child before removing each directory level (fdopendir/readdir).
+    let recursive_file = nested_dir.join("cargo-probe.rmeta");
+    if std::fs::write(&recursive_file, b"recursive directory cleanup").is_err()
+        || !std::fs::metadata(&recursive_file).is_ok_and(|metadata| metadata.is_file())
+    {
+        marker("RUST-STD-REMOVE-DIR-ALL-SETUP-FAIL");
         std::process::exit(36);
     }
+    if std::fs::remove_dir_all(&renamed_dir).is_err() {
+        marker("RUST-STD-REMOVE-DIR-ALL-FAIL");
+        std::process::exit(37);
+    }
+    if std::fs::symlink_metadata(&renamed_dir).is_ok() {
+        marker("RUST-STD-REMOVE-DIR-ALL-LEFTOVER-FAIL");
+        std::process::exit(38);
+    }
+    marker("RUST-STD-REMOVE-DIR-ALL-RECURSIVE-PASS");
     marker("RUST-STD-FS-PATH-MANAGEMENT-PASS");
 
     // Exercise the dirfd-relative POSIX ABI directly. These calls are kept

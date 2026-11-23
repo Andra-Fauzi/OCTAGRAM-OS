@@ -2369,7 +2369,7 @@ mod tests {
     use alloc::vec;
     use spin::Mutex;
 
-    use super::{EXT2_MAGIC, Ext2};
+    use super::{EXT2_FT_REG_FILE, EXT2_MAGIC, Ext2};
     use crate::fs::{FileSystem, FsError, NodeType};
     use crate::storage::block::{BlockDevice, SECTOR_SIZE};
 

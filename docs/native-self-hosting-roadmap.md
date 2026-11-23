@@ -2131,3 +2131,17 @@ belum build-tested atau QEMU-tested.
 QEMU yang membuktikan filesystem target melewati tes ini. Jika tes gagal,
 marker `RUST-STD-FS-BYTE-PATH-FAIL` mengisolasi jalur operasi file berbasis
 nama non-UTF-8.
+
+## 55. Uji direktori, rename, dan file descriptor melalui Rust std (23 November 2026)
+
+- Probe membuat direktori unik per PID di `/tmp`, membuat file dengan
+  `OpenOptions::create_new`, lalu menguji `write_all`, `sync_all`,
+  `SeekFrom::Start`, dan `Read::read_to_end`.
+- Direktori kemudian dipindahkan menggunakan `std::fs::rename`; isi file
+  diverifikasi lagi melalui path baru sebelum file dan direktori dibersihkan.
+- Jalur gagal melakukan cleanup best-effort dan mengeluarkan marker khusus
+  untuk membedakan kegagalan operasi direktori dari cleanup.
+
+**Validasi:** probe dan assertion telah diperbarui, tetapi belum ada hasil
+compile/link atau eksekusi QEMU. Dukungan `OpenOptions`, `fsync`, `lseek`,
+dan rename pada target belum boleh dianggap lulus sampai marker QEMU muncul.

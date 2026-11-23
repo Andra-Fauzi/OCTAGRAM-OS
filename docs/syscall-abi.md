@@ -608,3 +608,13 @@ prioritas nice dengan aging; lihat [`docs/process.md`](process.md#penjadwalan).
 `EAGAIN` ketika belum ada input. Menambahkan nomor syscall adalah
 perubahan ABI; jaga nomor lama dan update header, tabel ini, implementasi, dan
 contoh program secara bersamaan.
+
+
+### Positional file I/O
+
+`pread(fd, buffer, count, offset)` dan `pwrite(fd, buffer, count, offset)`
+mengakses offset eksplisit tanpa mengubah file offset pada open-file
+description, sehingga aman terhadap descriptor duplikat yang berbagi offset.
+Keduanya hanya menerima regular file; pipe, socket, dan terminal menghasilkan
+`ESPIPE`. `pwrite` menggunakan offset eksplisit dan tidak mengubah offset
+bersama.

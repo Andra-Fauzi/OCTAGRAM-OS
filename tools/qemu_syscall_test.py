@@ -201,7 +201,7 @@ def main():
     # executed as a native OCTAGRAM ELF. It is not rustc-host self-hosting.
     output_offset = len(serial_text())
     send_line("run /bin/rust-hello")
-    if not wait_for_after("Rust no_std + alloc runs in OCTAGRAM!", output_offset, 120):
+    if not wait_for_after("Rust custom target x86_64-unknown-octagram runs in OCTAGRAM!", output_offset, 120):
         print("RUST-NOSTD-FAIL: Rust no_std + alloc program did not emit its marker")
         print(serial_text()[-5000:])
         return 1

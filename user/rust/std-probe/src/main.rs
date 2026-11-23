@@ -4,7 +4,7 @@
 //! kernel image so its process, filesystem, clock, thread and I/O paths can be
 //! exercised under QEMU rather than merely type-checked on the host.
 
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::process::{Command, Stdio};
 
@@ -116,7 +116,7 @@ fn main() {
     })();
     if descriptor_result.is_err()
         || std::fs::rename(&original_dir, &renamed_dir).is_err()
-        || std::fs::read(&renamed_child).as_deref().is_err()
+        || !matches!(std::fs::read(&renamed_child), Ok(bytes) if bytes == b"descriptor-roundtrip")
     {
         let _ = std::fs::remove_file(&child_path);
         let _ = std::fs::remove_file(&renamed_child);

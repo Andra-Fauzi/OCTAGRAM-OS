@@ -72,7 +72,7 @@ fn main() {
     marker("RUST-STD-PROCESS-PASS");
 
     let mut stdout = std::io::stdout().lock();
-    if stdout.write_all(b"RUST-STD-IO-WRITE-PASS\\n").is_err() || stdout.flush().is_err() {
+    if stdout.write_all(b"RUST-STD-IO-WRITE-PASS\n").is_err() || stdout.flush().is_err() {
         std::process::exit(18);
     }
     marker("RUST-STD-RUNTIME-PASS");

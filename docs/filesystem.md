@@ -114,3 +114,8 @@ previous destination entry if installing the new entry or removing the source
 entry fails. A failure while rolling back is now propagated instead of being
 silently discarded. This makes a failed recovery visible to callers; it does
 not make multi-block directory updates crash-atomic.
+
+
+A rename whose normalized source and destination paths are identical is a
+successful no-op only when the source exists. A missing same-path source returns
+`NotFound`, matching the behavior already used by the in-memory filesystem.

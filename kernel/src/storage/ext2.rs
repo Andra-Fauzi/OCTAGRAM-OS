@@ -1194,10 +1194,10 @@ impl Ext2 {
 
     /// Best-effort undo of a partially applied rename so a failure cannot make
     /// the same inode reachable from two names.
-    fn rollback_rename_entry(&self, parent_number: u32, name: &str) {
-        if let Ok(parent) = self.read_inode(parent_number) {
-            let _ = self.remove_directory_entry(&parent, name);
-        }
+    fn rollback_rename_entry(&self, parent_number: u32, name: &str) -> Result<(), FsError> {
+        let parent = self.read_inode(parent_number)?;
+        self.remove_directory_entry(&parent, name)?;
+        Ok(())
     }
 
     fn remove_directory_entry(&self, parent: &Inode, name: &str) -> Result<u32, FsError> {
@@ -1715,49 +1715,49 @@ impl FileSystem for Ext2 {
                     NodeType::Directory => EXT2_FT_DIR,
                     NodeType::Symlink => EXT2_FT_SYMLINK,
                 };
-                let _ = self.insert_directory_entry(
+                self.insert_directory_entry(
                     target_parent_number,
                     &target_name,
                     *replaced_number,
                     restore_type,
-                );
+                )?;
             }
             return Err(error);
         }
         let source_parent = match self.read_inode(source_parent_number) {
             Ok(inode) => inode,
             Err(error) => {
-                self.rollback_rename_entry(target_parent_number, &target_name);
+                self.rollback_rename_entry(target_parent_number, &target_name)?;
                 if let Some((replaced_number, replaced_inode)) = replaced.as_ref() {
                     let restore_type = match replaced_inode.node_type()? {
                         NodeType::File => EXT2_FT_REG_FILE,
                         NodeType::Directory => EXT2_FT_DIR,
                         NodeType::Symlink => EXT2_FT_SYMLINK,
                     };
-                    let _ = self.insert_directory_entry(
+                    self.insert_directory_entry(
                         target_parent_number,
                         &target_name,
                         *replaced_number,
                         restore_type,
-                    );
+                    )?;
                 }
                 return Err(error);
             }
         };
         if let Err(error) = self.remove_directory_entry(&source_parent, &source_name) {
-            self.rollback_rename_entry(target_parent_number, &target_name);
+            self.rollback_rename_entry(target_parent_number, &target_name)?;
             if let Some((replaced_number, replaced_inode)) = replaced.as_ref() {
                 let restore_type = match replaced_inode.node_type()? {
                     NodeType::File => EXT2_FT_REG_FILE,
                     NodeType::Directory => EXT2_FT_DIR,
                     NodeType::Symlink => EXT2_FT_SYMLINK,
                 };
-                let _ = self.insert_directory_entry(
+                self.insert_directory_entry(
                     target_parent_number,
                     &target_name,
                     *replaced_number,
                     restore_type,
-                );
+                )?;
             }
             return Err(error);
         }

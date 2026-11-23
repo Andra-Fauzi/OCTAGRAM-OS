@@ -2693,3 +2693,22 @@ dibaca melalui descriptor duplikat.
 
 **Validasi:** perubahan kode, demo, dan QEMU gate sudah di-commit.
 Hasil workflow untuk commit terbaru masih menunggu.
+
+
+## 88. Implementasi positional I/O tanpa mengubah file offset (23 November 2026)
+
+Audit menemukan bahwa `pread` dan `pwrite` sebelumnya diimplementasikan
+dengan urutan `lseek -> read/write -> lseek kembali`. Pola ini tidak aman:
+descriptor hasil `dup` berbagi offset, sehingga operasi positional dapat
+mengganggu posisi I/O thread atau descriptor lain.
+
+- Kernel kini membaca dan menulis regular file langsung pada offset eksplisit.
+- File offset pada open-file description tidak diubah.
+- Operasi pada pipe/socket/terminal mengembalikan `ESPIPE`.
+- Penulisan tetap memeriksa capability dan permission perangkat serta
+  memperbarui halaman shared mapping setelah perubahan data.
+- `file-api-demo` menguji `pwrite`, `pread`, dan bahwa offset descriptor
+  asli maupun duplikat tetap pada posisi semula; QEMU mewajibkan demo tersebut.
+
+**Validasi:** perubahan kernel, regression demo, dan dokumentasi sudah
+di-commit. Host dan QEMU CI untuk revisi ini masih menunggu.

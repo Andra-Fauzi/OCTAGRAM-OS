@@ -580,10 +580,10 @@ fn main() {
             std::process::exit(52);
         });
     if process_io.status.code() != Some(7)
-        || !process_io.stdout.windows(b"ARG:alpha:beta\\n".len())
-            .any(|bytes| bytes == b"ARG:alpha:beta\\n")
-        || !process_io.stderr.windows(b"STDERR-PASS\\n".len())
-            .any(|bytes| bytes == b"STDERR-PASS\\n")
+        || !process_io.stdout.windows(b"ARG:alpha:beta\n".len())
+            .any(|bytes| bytes == b"ARG:alpha:beta\n")
+        || !process_io.stderr.windows(b"STDERR-PASS\n".len())
+            .any(|bytes| bytes == b"STDERR-PASS\n")
     {
         marker("RUST-STD-PROCESS-ARGV-IO-FAIL");
         std::process::exit(53);
@@ -604,10 +604,10 @@ fn main() {
             std::process::exit(48);
         });
     let context_ok = process_context.status.success()
-        && process_context.stdout.windows(b"cargo-probe-env\\n".len())
-            .any(|bytes| bytes == b"cargo-probe-env\\n")
-        && process_context.stdout.windows(b"/tmp\\n".len())
-            .any(|bytes| bytes == b"/tmp\\n");
+        && process_context.stdout.windows(b"cargo-probe-env\n".len())
+            .any(|bytes| bytes == b"cargo-probe-env\n")
+        && process_context.stdout.windows(b"/tmp\n".len())
+            .any(|bytes| bytes == b"/tmp\n");
     if !context_ok {
         marker("RUST-STD-PROCESS-ENV-CWD-FAIL");
         std::process::exit(49);

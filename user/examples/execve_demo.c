@@ -22,6 +22,7 @@ int main(int argc, char **argv)
         }
         close(4);
         unlink("/tmp/execve-demo-file");
+        rmdir("/tmp/execve-demo");
         puts("execve replaced image and preserved process state");
         return 0;
     }
@@ -43,6 +44,14 @@ int main(int argc, char **argv)
     if (execve("/tmp", arguments, environment) != -1 || errno != ENOEXEC) {
         return 3;
     }
-    execve("/bin/execve-demo", arguments, environment);
-    return 10 + errno;
+    /* The first PATH component is a directory with the same basename as
+     * the executable. execvp must skip it and continue to /bin, not loop. */
+    (void)rmdir("/tmp/execve-demo");
+    if (mkdir("/tmp/execve-demo", 0700) != 0 ||
+        setenv("PATH", "/tmp:/bin", 1) != 0 ||
+        setenv("OCTAGRAM_EXECVE_TEST", "passed", 1) != 0) {
+        return 4;
+    }
+    execvp("execve-demo", arguments);
+    return 30 + errno;
 }

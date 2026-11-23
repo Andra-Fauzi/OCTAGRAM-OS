@@ -2556,5 +2556,5 @@ executable dapat membuat proses macet selamanya.
 - Probe hanya berhasil bila pencarian melewati direktori yang tidak dapat
   dieksekusi sebagai program dan menemukan executable di `/bin`.
 
-**Validasi:** source libc, demo, dan roadmap diperbarui. Tes runtime guest
-masih harus dijalankan; perubahan belum dianggap lulus QEMU.
+**Validasi:** source libc, demo, gate QEMU, dan roadmap diperbarui. Tes runtime
+guest masih harus dijalankan; perubahan belum dianggap lulus QEMU.

@@ -70,6 +70,10 @@ impl OsString {
         String::from_utf8(self.bytes)
             .map_err(|error| Self { bytes: error.into_bytes() })
     }
+    /// Convert to displayable UTF-8, replacing invalid byte sequences.
+    pub fn to_string_lossy(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.bytes)
+    }
     pub fn push(&mut self, value: OsStr<'_>) { self.bytes.extend_from_slice(value.as_bytes()); }
     pub fn capacity(&self) -> usize { self.bytes.capacity() }
     pub fn reserve(&mut self, additional: usize) { self.bytes.reserve(additional); }
@@ -93,6 +97,10 @@ impl<'a> From<&'a str> for OsString {
 
 impl From<String> for OsString {
     fn from(value: String) -> Self { Self { bytes: value.into_bytes() } }
+}
+
+impl<'a> From<OsStr<'a>> for OsString {
+    fn from(value: OsStr<'a>) -> Self { value.to_os_string() }
 }
 
 /// Borrowed path view using Unix-style '/' separators and raw OS bytes.
@@ -2586,6 +2594,16 @@ mod tests {
         let owned = String::from("octagram");
         let os_string = super::OsString::from(owned);
         assert_eq!(os_string.as_bytes(), b"octagram");
+    }
+
+    #[test]
+    fn os_string_lossy_display_and_os_str_ownership_conversion_work() {
+        let raw = [b'o', 0x80, b's'];
+        let borrowed = super::OsStr::from_bytes(&raw);
+        let owned = super::OsString::from(borrowed);
+        assert_eq!(owned.as_bytes(), &raw);
+        assert_eq!(owned.to_string_lossy(), "o�s");
+        assert_eq!(owned.as_bytes(), &raw);
     }
 
     #[test]

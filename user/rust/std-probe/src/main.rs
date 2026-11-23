@@ -341,6 +341,9 @@ fn main() {
             target_name.as_ptr() as usize as u64,
         )
     };
+    if rename_result < 0 {
+        let _ = unsafe { syscall3(43, dirfd, source_name.as_ptr() as usize as u64, 0) };
+    }
     let read_back = std::fs::read(std::path::Path::new("/tmp").join(
         std::ffi::OsStr::from_bytes(target_name.as_bytes())
     ));

@@ -65,8 +65,8 @@ def main() -> int:
     args_unix = std / "sys/args/unix.rs"
     replace_once(
         args_unix,
-        '    target_os = "nuttx",\n)))]',
-        '    target_os = "nuttx",\n    target_os = "octagram",\n)))]',
+        '    target_os = "nuttx",\n))]\nmod imp {',
+        '    target_os = "nuttx",\n    target_os = "octagram",\n))]\nmod imp {',
     )
 
     random_mod = std / "sys/random/mod.rs"

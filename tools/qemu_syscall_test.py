@@ -181,6 +181,7 @@ def main():
         ),
         ("/bin/execve-demo", "EXECVP-PATH-SEARCH-PASS", "LIBC-EXECVP-PATH-SEARCH"),
         ("/bin/posix_spawn_demo", "posix_spawn environment/status/WNOHANG/file actions/chdir/setsid/signal attributes/scheduling/resetids/spawnp passed", "POSIX-SPAWN-PIPE-FD-PATH"),
+        ("/bin/file-api-demo", "fstat/access/rename/umask/dup/fcntl passed", "POSIX-FCNTL-SHARED-APPEND"),
     )
     for command, marker, label in guest_tests:
         output_offset = len(serial_text())

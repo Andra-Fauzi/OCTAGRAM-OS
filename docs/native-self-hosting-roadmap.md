@@ -2348,3 +2348,16 @@ Commit: 56f4e0f6 — Fix EXT2 hard-link test constant import.
 CI juga melaporkan cargo fmt --check masih menemukan perbedaan format pada sejumlah file kernel (termasuk kernel/build.rs dan driver QCA9377). Ini merupakan isu terpisah dari error kompilasi test dan belum dirapikan dalam perubahan ini agar tidak menghasilkan perubahan format massal yang tidak berkaitan.
 
 Validasi: perbaikan import sudah dikomit. Hasil workflow untuk commit perbaikan ini masih harus ditunggu; unit test EXT2 belum dinyatakan lulus.
+
+
+## 68. Probe rekursif remove_dir_all untuk validasi fdopendir (23 November 2026)
+
+Probe upstream Rust std kini mengisi direktori terdalam dengan file artefak, memverifikasi file tersebut, menjalankan std::fs::remove_dir_all pada pohon direktori bertingkat, lalu memastikan path root benar-benar hilang. Ini memaksa implementasi std filesystem menelusuri isi direktori dan menghapus file sebelum direktori induk; jalur ini menggunakan fdopendir/readdir, bukan hanya membuat dan menghapus direktori kosong.
+
+- Marker baru: RUST-STD-REMOVE-DIR-ALL-RECURSIVE-PASS.
+- QEMU runner mewajibkan marker tersebut sebelum menganggap probe filesystem berhasil.
+- Perubahan probe dan gate ini juga memicu workflow Rust userspace yang mem-build/link upstream std diagnostic.
+
+Commits: 0def96bd (probe) dan b49f6bcb (QEMU assertion).
+
+Validasi runtime belum diklaim; CI dan QEMU harus menunjukkan marker baru serta exit status 0.

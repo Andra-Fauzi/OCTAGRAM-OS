@@ -2046,3 +2046,17 @@ jalur utama berikutnya; API helper ini bukan pengganti crate
 dan QEMU belum dijalankan pada commit ini. Rust std upstream tetap menjadi
 target kompatibilitas utama; helper `Path` OCTAGRAM belum menggantikan
 `std::path::Path` secara penuh.
+
+## 49. Konversi ownership dan string untuk PathBuf (23 November 2026)
+
+- Menambahkan `From<OsString>` dan `From<OsStr>` untuk membentuk
+  `PathBuf` tanpa mengasumsikan path valid UTF-8.
+- Menambahkan `From<&str>` dan `From<String>` untuk konstruksi path teks;
+  konversi dari `String` memindahkan buffer ke `OsString`.
+- Regression test mencakup semua jalur konversi, termasuk byte non-UTF-8
+  yang harus tetap identik setelah konstruksi.
+
+**Validasi:** implementasi dan regression test telah di-commit. Tes host,
+target build, dan QEMU belum dijalankan pada commit ini. Konversi tersebut
+menambah ergonomi helper path, tetapi belum menyamakan seluruh trait dan
+semantik `std::path::PathBuf`.

@@ -2264,3 +2264,22 @@ kernel, dan QEMU belum diverifikasi.
 
 **Validasi:** kode dan regression test sudah di-commit; eksekusi test/build/QEMU
 belum tersedia untuk diverifikasi.
+
+
+## 64. Uji syscall filesystem relatif terhadap directory descriptor (23 November 2026)
+
+- Upstream Rust std probe kini membuka `/tmp` sebagai directory descriptor,
+  lalu memanggil syscall `mkdirat`, `openat`, `renameat`, dan
+  `unlinkat` secara langsung dengan nama relatif.
+- File yang dibuat melalui `openat` ditulis dan di-`fsync`, kemudian
+  dipindahkan melalui `renameat`, dibaca kembali lewat path absolut untuk
+  memeriksa isi, dan dihapus dengan `unlinkat`. Direktori sementara juga
+  dihapus menggunakan flag `AT_REMOVEDIR`.
+- Pengujian langsung ini memisahkan validasi ABI kernel dari wrapper libc/std.
+  Marker QEMU khusus memastikan semua operasi relatif terhadap descriptor
+  berhasil sebelum probe dianggap lulus.
+
+**Validasi:** source probe, gate QEMU, dan roadmap telah diperbarui.
+Compile/link target dan eksekusi QEMU belum dijalankan atau diverifikasi;
+dukungan runtime belum boleh dinyatakan lulus sampai marker
+`RUST-STD-AT-DIRFD-PASS` muncul dan proses keluar dengan status 0.

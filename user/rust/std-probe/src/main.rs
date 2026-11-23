@@ -65,7 +65,7 @@ fn main() {
             eprintln!("Command::output failed: {error}");
             std::process::exit(16);
         });
-    if !output.status.success() || !output.stdout.windows(20).any(|bytes| bytes == b"RUST-STD-CHILD-PASS") {
+    if !output.status.success() || !output.stdout.windows(19).any(|bytes| bytes == b"RUST-STD-CHILD-PASS") {
         marker("RUST-STD-PROCESS-FAIL");
         std::process::exit(17);
     }

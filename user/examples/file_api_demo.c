@@ -62,6 +62,7 @@ int main(void)
         fcntl(duplicate, F_GETFD) != FD_CLOEXEC ||
         fcntl(fd, F_SETFL, O_APPEND) != 0 ||
         (fcntl(fd, F_GETFL) & O_APPEND) == 0 ||
+        (fcntl(duplicate, F_GETFL) & O_APPEND) == 0 ||
         write(duplicate, "ok", 2) != 2 || lseek(fd, 0, SEEK_CUR) != 2) {
         close(fd);
         unlink(path);

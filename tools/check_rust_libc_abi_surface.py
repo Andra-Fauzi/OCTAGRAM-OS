@@ -50,6 +50,17 @@ def main() -> int:
     require(re.search(r"struct\s+dirent\s*\{\s*uint64_t\s+d_ino;\s*off_t\s+d_off;\s*uint16_t\s+d_reclen;\s*unsigned\s+char\s+d_type;\s*char\s+d_name\[256\];", dirent, re.S) is not None,
             "dirent layout changed; update manifest and tests")
 
+    unistd = read("user/include/unistd.h")
+    require("int link(const char *oldpath, const char *newpath);" in unistd
+            and "int linkat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath, int flags);" in unistd,
+            "POSIX link/linkat declarations missing from public unistd ABI")
+
+    runtime = read("user/runtime.c")
+    require(re.search(r"int link\\(const char \\*oldpath, const char \\*newpath\\).*?return linkat\\(OCT_AT_FDCWD, oldpath, OCT_AT_FDCWD, newpath, 0\\);", runtime, re.S) is not None,
+            "link must delegate to linkat using AT_FDCWD")
+    require(re.search(r"int linkat\\(int olddirfd, const char \\*oldpath, int newdirfd,.*?oct_linkat\\(olddirfd, oldpath, newdirfd,.*?newpath, flags\\)", runtime, re.S) is not None,
+            "linkat must call the kernel linkat wrapper")
+
     require("DIR *fdopendir(int fd);" in dirent,
             "fdopendir declaration missing from public dirent ABI")
 

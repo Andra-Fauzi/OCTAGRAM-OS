@@ -2576,6 +2576,26 @@ mod tests {
     use alloc::string::String;
 
     use super::{build_dns_query, find_env_value, memcmp, memcpy, memmove, memset, parse_dns_response, skip_dns_name, strlen, Dirent};
+    #[test]
+    fn exit_status_decodes_posix_wait_words() {
+        let success = super::ExitStatus::from_raw(0);
+        assert_eq!(success.code(), Some(0));
+        assert!(success.success());
+
+        let exited = super::ExitStatus::from_raw(42 << 8);
+        assert_eq!(exited.code(), Some(42));
+        assert!(!exited.success());
+        assert_eq!(exited.raw(), 42 << 8);
+
+        let signaled = super::ExitStatus::from_raw(9);
+        assert_eq!(signaled.code(), None);
+        assert!(!signaled.success());
+
+        let stopped = super::ExitStatus::from_raw((19 << 8) | 0x7f);
+        assert_eq!(stopped.code(), None);
+        assert!(!stopped.success());
+    }
+
     use core::alloc::Layout;
 
     #[test]

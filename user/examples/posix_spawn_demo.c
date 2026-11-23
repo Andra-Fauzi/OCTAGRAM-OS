@@ -83,6 +83,10 @@ int main(int argc, char **argv)
         /* POSIX_SPAWN_SETSIGDEF resets SIGUSR1 from SIG_IGN to SIG_DFL. */
         return signal(SIGUSR1, SIG_IGN) == SIG_DFL ? 0 : 3;
     }
+    if (argc == 2 && strcmp(argv[1], "spawnp-child") == 0) {
+        const char *value = getenv("OCTAGRAM_SPAWN_PROBE");
+        return value != NULL && strcmp(value, "child-environment") == 0 ? 0 : 1;
+    }
     if (argc != 1) {
         return 2;
     }
@@ -336,8 +340,25 @@ int main(int argc, char **argv)
         return 30;
     }
 
+    /* posix_spawnp treats an empty PATH component as the current directory. */
+    char original_cwd[256];
+    if (getcwd(original_cwd, sizeof(original_cwd)) == NULL ||
+        chdir("/bin") != 0 || setenv("PATH", "", 1) != 0) {
+        return 45;
+    }
+    char *spawnp_arguments[] = {"posix_spawn_demo", "spawnp-child", NULL};
+    pid_t spawnp_child = 0;
+    error = posix_spawnp(&spawnp_child, "posix_spawn_demo", NULL, NULL,
+                         spawnp_arguments, environment);
+    if (error != 0 || wait_for_child(spawnp_child) != 0) {
+        return 46;
+    }
+    if (chdir(original_cwd) != 0) {
+        return 47;
+    }
+
     return printf("posix_spawn environment/status/WNOHANG/file actions/"
-                  "chdir/setsid/signal attributes/scheduling/resetids passed\n") < 0
+                  "chdir/setsid/signal attributes/scheduling/resetids/spawnp passed\n") < 0
                ? 31
                : 0;
 }

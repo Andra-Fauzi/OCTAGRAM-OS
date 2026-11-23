@@ -278,6 +278,7 @@ def main():
         ("RUST-STD-PROCESS-PASS", "process spawn and output capture"),
         ("RUST-STD-PROCESS-ARGV-IO-PASS", "child argv forwarding, stderr capture and exit status"),
         ("RUST-STD-PROCESS-SIGNAL-STATUS-PASS", "POSIX signal termination wait status"),
+        ("RUST-STD-PROCESS-TRY-WAIT-KILL-PASS", "Rust child try_wait, kill, and wait lifecycle"),
         ("RUST-STD-PROCESS-ENV-CWD-PASS", "child process environment and working directory"),
         ("RUST-STD-IO-WRITE-PASS", "standard output"),
         ("RUST-STD-RUNTIME-PASS", "upstream std runtime"),

@@ -648,6 +648,24 @@ fn main() {
     }
     marker("RUST-STD-PROCESS-TRY-WAIT-KILL-PASS");
 
+    // A successfully waited child must retain its cached status: repeated
+    // wait/try_wait calls must not issue a second kernel reap.
+    let repeated_wait = running_child.wait().unwrap_or_else(|error| {
+        eprintln!("repeated Child::wait failed: {error}");
+        std::process::exit(62);
+    });
+    let repeated_try_wait = running_child.try_wait().unwrap_or_else(|error| {
+        eprintln!("Child::try_wait after wait failed: {error}");
+        std::process::exit(63);
+    });
+    if repeated_wait.signal() != Some(9)
+        || !repeated_try_wait.is_some_and(|status| status.signal() == Some(9))
+    {
+        marker("RUST-STD-PROCESS-WAIT-CACHE-FAIL");
+        std::process::exit(64);
+    }
+    marker("RUST-STD-PROCESS-WAIT-CACHE-PASS");
+
     // Cargo build scripts rely on Command::env and current_dir being applied
     // to the child before exec. Verify both through the child's observable
     // environment and working directory, not merely by checking the builder.

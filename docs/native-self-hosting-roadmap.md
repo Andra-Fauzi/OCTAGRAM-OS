@@ -2116,3 +2116,18 @@ ketika marker `RUST-STD-OS-STRING-FFI-PASS` dan
 **Validasi:** source probe sudah diperbarui. Compile/link upstream std dan
 eksekusi QEMU belum terkonfirmasi; bagian ini tetap berstatus implemented,
 belum build-tested atau QEMU-tested.
+
+## 54. Uji filesystem upstream dengan nama file non-UTF-8 (23 November 2026)
+
+- Probe membuat nama file sementara di `/tmp` menggunakan byte `0xff` dan
+  PID proses agar nama uji tidak bertabrakan dengan proses lain.
+- Melakukan round-trip `std::fs::write`, `read`, `metadata`, dan
+  `remove_file` menggunakan `PathBuf` yang dibentuk dari `OsStringExt`.
+- Memeriksa isi file, tipe metadata, ukuran, dan keberhasilan penghapusan.
+- Assertion hasil baca menggunakan pattern matching agar tidak memerlukan
+  `PartialEq` pada tipe error I/O.
+
+**Validasi:** implementasi probe telah di-commit. Belum ada hasil build atau
+QEMU yang membuktikan filesystem target melewati tes ini. Jika tes gagal,
+marker `RUST-STD-FS-BYTE-PATH-FAIL` mengisolasi jalur operasi file berbasis
+nama non-UTF-8.

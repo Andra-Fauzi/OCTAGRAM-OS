@@ -110,7 +110,7 @@ jobs:
           # crt0.S keeps this hook weak for binaries that do not need TLS.
           # Force the archive member into the std probe so its weak reference
           # resolves to the runtime's PT_TLS allocator/FS.base initializer.
-          nm -g --defined-only user/build/libc.a | grep -Eq '[[:space:]]__oct_tls_initialize
+          nm -g --defined-only user/build/libc.a | grep __oct_tls_initialize >/dev/null
       - name: Link a Rust std executable for OCTAGRAM
         env:
           RUSTC_BOOTSTRAP_SYNTHETIC_TARGET: "1"

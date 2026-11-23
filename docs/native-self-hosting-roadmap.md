@@ -2783,3 +2783,22 @@ melewati build CI:
 bukan eksekusi program `std` di guest dan bukan compiler native. Tahap
 berikutnya tetap menjalankan probe di QEMU, lalu membangun Stage 0 compiler
 yang dapat dieksekusi oleh OCTAGRAM.
+
+
+## 93. Perbaiki lingkungan link Rust std dengan runtime target (23 November 2026)
+
+Gate linking Rust std mengungkap dua kesalahan konfigurasi build, bukan
+kegagalan kompilasi std: path linker script dan `crt0.o` relatif terhadap
+direktori kerja linker, serta pustaka target `-lc`, `-lm`, `-lrt`, dan
+`-lpthread` belum disediakan.
+
+CI kini membangun `user/build/libc.a` dari runtime C OCTAGRAM dan membuat
+alias nama pustaka Unix konvensional ke arsip runtime terpadu tersebut.
+Langkah link menggunakan path absolut untuk linker script dan startup object,
+serta menambahkan direktori arsip target ke native library search path.
+
+**Batas validasi:** alias `libm`, `librt`, dan `libpthread` adalah
+kompatibilitas penamaan sementara karena runtime masih satu arsip; ini bukan
+klaim bahwa subsistem pustaka tersebut telah dipisahkan. Hasil linking
+selanjutnya tetap harus lolos CI. Executable belum dianggap berjalan di QEMU,
+dan rustc/Cargo belum native.

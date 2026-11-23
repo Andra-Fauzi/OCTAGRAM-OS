@@ -2623,6 +2623,13 @@ mod tests {
         assert!(filesystem.metadata("/src/program.c").is_err());
         assert_eq!(filesystem.metadata("/build/program.c").unwrap().len, 26);
 
+        filesystem.create_dir("/build/directory-target").unwrap();
+        assert_eq!(
+            filesystem.rename("/build/program.c", "/build/directory-target"),
+            Err(FsError::IsDirectory)
+        );
+        assert_eq!(filesystem.metadata("/build/program.c").unwrap().len, 26);
+
         filesystem.create_file("/build/other.c").unwrap();
         filesystem.write("/build/other.c", 0, b"old artifact").unwrap();
         filesystem

@@ -69,6 +69,18 @@ int main(void)
         return 3;
     }
 
+    char positional[3] = {0, 0, 0};
+    if (fcntl(fd, F_SETFL, 0) != 0 ||
+        pwrite(duplicate, "X", 1, 0) != 1 ||
+        lseek(fd, 0, SEEK_CUR) != 2 ||
+        pread(fd, positional, 2, 0) != 2 ||
+        positional[0] != 'X' || positional[1] != 'k' ||
+        lseek(duplicate, 0, SEEK_CUR) != 2) {
+        close(fd);
+        unlink(path);
+        return 6;
+    }
+
     if (rename(path, renamed) != 0 || access(path, F_OK) == 0 ||
         access(renamed, F_OK) != 0 || fstat(fd, &status) != 0 ||
         status.st_size != 2) {
@@ -83,5 +95,5 @@ int main(void)
     if (unlink(renamed) != 0) {
         return 5;
     }
-    return puts("fstat/access/rename/umask/dup/fcntl passed") < 0 ? 6 : 0;
+    return puts("fstat/access/rename/umask/dup/fcntl/pread/pwrite passed") < 0 ? 6 : 0;
 }

@@ -1871,3 +1871,20 @@ native tetap belum diimplementasikan.
 - ELF TLS untuk C runtime tetap dipertahankan; perubahan ini hanya mengubah cfg/model TLS yang dipilih Rust std. CI wajib membuktikan std dapat membangun dan probe QEMU mencapai closure, join, clock, proses, dan I/O.
 
 **Status:** perubahan model TLS Rust sudah di-commit; runtime std thread masih menunggu verifikasi QEMU. Jika probe lulus, lanjutkan menguji destructor TLS, banyak thread serentak, dan cleanup. Belum ada native rustc atau Cargo.
+
+## 37. Perluasan helper path runtime Rust (23 November 2026)
+
+- Menambahkan `Path::strip_prefix` pada helper path berbasis byte untuk
+  mendukung pemotongan prefix berdasarkan batas komponen, tanpa mengubah
+  nama file non-UTF-8.
+- Menambahkan regression test untuk prefix absolut/relatif, prefix yang
+  memiliki trailing slash, prefix yang tidak cocok, prefix kosong, dan
+  hasil path kosong.
+- Memperbaiki semantik prefix/suffix kosong pada `starts_with` dan
+  `ends_with`.
+
+**Batas:** helper ini masih merupakan subset byte-preserving di
+`octagram-runtime`, bukan implementasi penuh `std::path::Path`; normalisasi
+komponen seperti `.` dan `..`, iterator komponen, serta integrasi
+filesystem masih belum disediakan. Perubahan source dan test belum dianggap
+lulus sampai CI host test dan QEMU runtime yang relevan benar-benar berjalan.

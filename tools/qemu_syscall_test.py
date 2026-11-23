@@ -280,6 +280,7 @@ def main():
         ("RUST-STD-PROCESS-SIGNAL-STATUS-PASS", "POSIX signal termination wait status"),
         ("RUST-STD-PROCESS-TRY-WAIT-KILL-PASS", "Rust child try_wait, kill, and wait lifecycle"),
         ("RUST-STD-PROCESS-WAIT-CACHE-PASS", "Rust child repeated wait and cached try_wait status"),
+        ("RUST-STD-PROCESS-CHILD-ID-PASS", "Rust Child::id reports the spawned process PID"),
         ("RUST-STD-PROCESS-ENV-CWD-PASS", "child process environment and working directory"),
         ("RUST-STD-IO-WRITE-PASS", "standard output"),
         ("RUST-STD-RUNTIME-PASS", "upstream std runtime"),

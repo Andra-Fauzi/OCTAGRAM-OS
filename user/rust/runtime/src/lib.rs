@@ -161,12 +161,36 @@ impl<'a> Path<'a> {
         if slash == 0 { Some(Path::new(b"/")) }
         else { Some(Path::new(&bytes[..slash])) }
     }
+    /// Iterate over this path and each of its lexical parents.
+    ///
+    /// The original spelling is preserved at each step; no filesystem
+    /// canonicalization or resolution of "." and ".." is performed.
+    pub fn ancestors(self) -> Ancestors<'a> {
+        Ancestors { next: Some(self) }
+    }
+
     /// Iterate over slash-separated path components without UTF-8 conversion.
     pub fn components(self) -> Components<'a> {
         Components { remaining: self.as_bytes(), root_pending: self.is_absolute() }
     }
 
     pub fn to_path_buf(self) -> PathBuf { PathBuf { inner: self.os_str.to_os_string() } }
+}
+
+/// Iterator over a path followed by its parents.
+#[derive(Clone, Debug)]
+pub struct Ancestors<'a> {
+    next: Option<Path<'a>>,
+}
+
+impl<'a> Iterator for Ancestors<'a> {
+    type Item = Path<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.next?;
+        self.next = current.parent();
+        Some(current)
+    }
 }
 
 /// One lexical component of a Unix-style path.
@@ -2533,6 +2557,40 @@ mod tests {
         assert!(relative.starts_with(b"src"));
         assert!(relative.ends_with(b"main.rs"));
         assert!(!relative.ends_with(b"src/main"));
+    }
+
+    #[test]
+    fn path_ancestors_walk_from_path_to_root_or_empty_parent() {
+        let absolute: alloc::vec::Vec<_> = super::Path::new(b"/usr/local/bin/tool")
+            .ancestors()
+            .map(|path| path.as_bytes())
+            .collect();
+        assert_eq!(absolute, alloc::vec![
+            &b"/usr/local/bin/tool"[..],
+            &b"/usr/local/bin"[..],
+            &b"/usr/local"[..],
+            &b"/usr"[..],
+            &b"/"[..],
+        ]);
+
+        let relative: alloc::vec::Vec<_> = super::Path::new(b"src/module/file.rs")
+            .ancestors()
+            .map(|path| path.as_bytes())
+            .collect();
+        assert_eq!(relative, alloc::vec![
+            &b"src/module/file.rs"[..],
+            &b"src/module"[..],
+            &b"src"[..],
+            &b""[..],
+        ]);
+
+        let trailing: alloc::vec::Vec<_> = super::Path::new(b"folder/")
+            .ancestors()
+            .map(|path| path.as_bytes())
+            .collect();
+        assert_eq!(trailing, alloc::vec![&b"folder/"[..], &b""[..]]);
+        assert_eq!(super::Path::new(b"").ancestors().count(), 1);
+        assert_eq!(super::Path::new(b"/").ancestors().count(), 1);
     }
 
     #[test]

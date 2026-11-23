@@ -2613,3 +2613,17 @@ merupakan bagian penting dari kompatibilitas proses untuk Cargo.
 **Validasi:** tes ditambahkan ke demo yang sudah dibangun dan dijalankan oleh
 guest QEMU. Hasil runtime untuk revisi ini menunggu workflow CI; belum
 diklaim lulus.
+
+
+## 84. Rust std filesystem artifact copy (23 November 2026)
+
+Probe upstream Rust std kini menguji `std::fs::copy`, API yang relevan untuk
+menyalin artefak build dan output build script.
+
+- Probe menulis payload sumber, menyalinnya ke file tujuan, memeriksa jumlah
+  byte yang dilaporkan, lalu membandingkan seluruh isi file tujuan.
+- File sumber dan tujuan dibersihkan setelah pengujian, termasuk jalur gagal.
+- Marker QEMU wajib: `RUST-STD-FS-COPY-PASS`.
+
+**Validasi:** probe dan gate QEMU telah diperbarui. Build host dan eksekusi
+guest untuk commit ini masih menunggu workflow CI; belum diklaim lulus.

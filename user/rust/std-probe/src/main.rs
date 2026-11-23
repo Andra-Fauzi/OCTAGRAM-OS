@@ -30,6 +30,38 @@ fn main() {
     }
     marker("RUST-STD-PATH-OS-STRING-FFI-PASS");
 
+    // Exercise upstream std::path lexical APIs with repeated and trailing
+    // separators. Components must preserve "." and ".." rather than resolving
+    // them through the filesystem.
+    let lexical = std::path::Path::new(b"/octa//./gram/../file.bin/" as &[u8]);
+    let components: Vec<_> = lexical.components().collect();
+    if components.len() != 5
+        || components[0] != std::path::Component::RootDir
+        || components[1].as_os_str().as_bytes() != b"octa"
+        || components[2] != std::path::Component::CurDir
+        || components[3] != std::path::Component::Normal(std::ffi::OsStr::new("gram"))
+        || components[4] != std::path::Component::ParentDir
+    {
+        // The final normal component is checked separately below; this branch
+        // intentionally catches unexpected component normalization.
+        marker("RUST-STD-PATH-COMPONENTS-FAIL");
+        std::process::exit(23);
+    }
+    if lexical.file_name().is_none_or(|name| name.as_bytes() != b"file.bin")
+        || lexical.extension().is_none_or(|extension| extension.as_bytes() != b"bin")
+    {
+        marker("RUST-STD-PATH-FILENAME-FAIL");
+        std::process::exit(24);
+    }
+    let mut joined = std::path::PathBuf::from("/octagram");
+    joined.push("src");
+    joined.push("main.rs");
+    if joined != std::path::PathBuf::from("/octagram/src/main.rs") {
+        marker("RUST-STD-PATH-JOIN-FAIL");
+        std::process::exit(25);
+    }
+    marker("RUST-STD-PATH-LEXICAL-PASS");
+
     // Environment access must not panic when PATH is absent; the call itself
     // exercises std's environment PAL.
     let _path = std::env::var_os("PATH");

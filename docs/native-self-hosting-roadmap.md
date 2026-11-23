@@ -2651,3 +2651,25 @@ RAMFS shares file data and permissions through reference-counted inode state.
 FAT32 retains the default `Unsupported` result. `AT_SYMLINK_FOLLOW` and
 `AT_EMPTY_PATH` are not implemented. Guest QEMU and CI results are pending
 for this revision.
+
+
+## 86. Samakan Rust runtime dengan POSIX wait status (23 November 2026)
+
+QEMU mengungkap kegagalan probe Rust target setelah syscall waitpid diubah
+agar mengembalikan status POSIX. Kernel sudah mengemas exit code normal pada
+bit 8..15, tetapi helper `Child` pada `octagram-runtime` dan assertion probe
+masih menganggap hasil wait sebagai angka exit mentah. Akibatnya child yang
+keluar dengan kode 42 terlihat sebagai `42 << 8`, dan probe mengembalikan 42.
+
+- `ExitStatus::code()` kini mendekode exit code dari status POSIX dan
+  mengembalikan `None` untuk terminasi sinyal atau status non-normal.
+- `ExitStatus::success()` kini memeriksa status normal dengan exit code nol.
+- Probe no_std memeriksa nilai wait yang benar, yaitu `42 << 8`, sekaligus
+  memastikan hasil `wait()` yang sudah di-cache tetap sama.
+- Unit test mencakup exit sukses, exit nonzero, terminasi sinyal, dan status
+  stopped.
+
+**Validasi:** workflow sebelumnya berhasil pada build host, kernel tests,
+libc tests, ISO, native TinyCC dan GNU Make. QEMU syscall suite gagal pada
+probe Rust target akibat mismatch encoding ini. Perubahan koreksi sudah
+di-commit; hasil host dan QEMU untuk revisi koreksi menunggu CI berikutnya.

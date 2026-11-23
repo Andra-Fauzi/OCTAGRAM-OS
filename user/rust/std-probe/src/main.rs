@@ -77,7 +77,7 @@ fn main() {
     let read_back = std::fs::read(&raw_file_path);
     let metadata = std::fs::metadata(&raw_file_path);
     let removed = std::fs::remove_file(&raw_file_path);
-    if read_back.as_deref() != Ok(payload.as_slice())
+    if !matches!(read_back, Ok(ref bytes) if bytes.as_slice() == payload)
         || !metadata.as_ref().is_ok_and(|value| value.is_file() && value.len() == payload.len() as u64)
         || removed.is_err()
     {

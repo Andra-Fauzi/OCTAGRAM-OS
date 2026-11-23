@@ -617,6 +617,11 @@ fn main() {
             eprintln!("Command::spawn/try_wait probe failed: {error}");
             std::process::exit(56);
         });
+    if running_child.id() == 0 {
+        marker("RUST-STD-PROCESS-CHILD-ID-FAIL");
+        std::process::exit(65);
+    }
+    marker("RUST-STD-PROCESS-CHILD-ID-PASS");
     match running_child.try_wait() {
         Ok(None) => {}
         Ok(Some(status)) => {

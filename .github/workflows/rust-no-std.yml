@@ -84,8 +84,7 @@ jobs:
       - name: Patch installed rust-src with OCTAGRAM std target glue
         run: python3 tools/patch_rust_std_octagram.py
 
-      - name: Probe upstream Rust std for OCTAGRAM (diagnostic, non-blocking)
-        continue-on-error: true
+      - name: Probe upstream Rust std for OCTAGRAM
         env:
           RUSTC_BOOTSTRAP_SYNTHETIC_TARGET: "1"
         run: |
@@ -94,8 +93,7 @@ jobs:
             --target user/rust/targets/x86_64-unknown-octagram.json \
             --config 'patch.crates-io.libc.path="upstream-libc"'
 
-      - name: Link a Rust std executable for OCTAGRAM (diagnostic, non-blocking)
-        continue-on-error: true
+      - name: Link a Rust std executable for OCTAGRAM
         env:
           RUSTC_BOOTSTRAP_SYNTHETIC_TARGET: "1"
           RUSTFLAGS: >-

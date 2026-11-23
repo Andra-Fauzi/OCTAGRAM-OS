@@ -2764,3 +2764,22 @@ dipin setelah CI menjalankan pemeriksaan ini.
 
 **Validasi:** target dan skrip telah ditambahkan. Hasil CI untuk perubahan ini
 masih menunggu; belum ada klaim bahwa Stage 0 native sudah berjalan.
+
+
+## 92. Jadikan build dan link upstream Rust std sebagai gate CI (23 November 2026)
+
+Probe upstream Rust `std` dan proses link executable OCTAGRAM sebelumnya
+memakai `continue-on-error`, sehingga kegagalan keduanya tidak menggagalkan
+workflow. Pada revisi ini kedua langkah dijadikan gate wajib setelah berhasil
+melewati build CI:
+
+- `cargo -Zbuild-std=std check` harus berhasil untuk target OCTAGRAM.
+- Executable probe `std` harus berhasil ditautkan dengan linker OCTAGRAM.
+- Pemeriksaan ELF tetap memvalidasi executable x86_64 statis.
+- Build no_std, unit test runtime host, dan validasi ELF tetap menjadi gate
+  terpisah.
+
+**Batas validasi:** ini membuktikan kompilasi dan linking silang dari host,
+bukan eksekusi program `std` di guest dan bukan compiler native. Tahap
+berikutnya tetap menjalankan probe di QEMU, lalu membangun Stage 0 compiler
+yang dapat dieksekusi oleh OCTAGRAM.

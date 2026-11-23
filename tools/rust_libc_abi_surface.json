@@ -151,7 +151,8 @@
     "getrandom currently uses xorshift seeded from TSC and is not a cryptographic entropy guarantee.",
     "The manifest records source-level ABI facts; it does not prove Rust std builds or runs.",
     "The initial upstream libc target module compiles for the custom target, but full Rust std linkage and runtime behavior are not yet verified.",
-    "The initial upstream rust-lang/libc OCTAGRAM module compiles for the custom target, but this does not prove Rust std PAL conformance or runtime symbol availability."
+    "The initial upstream rust-lang/libc OCTAGRAM module compiles for the custom target, but this does not prove Rust std PAL conformance or runtime symbol availability.",
+    "fdopendir is implemented for directory descriptors; full POSIX directory-stream semantics and error/EOF distinction still need conformance tests."
   ],
   "upstream_libc": {
     "repository": "rust-lang/libc",
@@ -320,5 +321,12 @@
       "size": 4,
       "align": 4
     }
+  ],
+  "directory_functions": [
+    "opendir",
+    "fdopendir",
+    "readdir",
+    "closedir",
+    "dirfd"
   ]
 }

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <sys/uio.h>
 
 int main(void)
 {
@@ -81,9 +82,24 @@ int main(void)
         return 6;
     }
 
+    struct iovec append_vector = {(void *)"!", 1};
+    if (lseek(fd, 0, SEEK_END) != 2 ||
+        pwritev2(fd, &append_vector, 1, (off_t)-1, 0) != 1 ||
+        lseek(fd, 0, SEEK_CUR) != 3 ||
+        pwritev2(fd, &append_vector, 1, 0, 1) != -1 ||
+        errno != ENOTSUP ||
+        preadv2(fd, &append_vector, 1, 0, 1) != -1 ||
+        errno != ENOTSUP ||
+        preadv2(fd, &append_vector, 1, (off_t)-2, 0) != -1 ||
+        errno != EINVAL) {
+        close(fd);
+        unlink(path);
+        return 7;
+    }
+
     if (rename(path, renamed) != 0 || access(path, F_OK) == 0 ||
         access(renamed, F_OK) != 0 || fstat(fd, &status) != 0 ||
-        status.st_size != 2) {
+        status.st_size != 3) {
         close(fd);
         unlink(renamed);
         return 4;
@@ -95,5 +111,5 @@ int main(void)
     if (unlink(renamed) != 0) {
         return 5;
     }
-    return puts("fstat/access/rename/umask/dup/fcntl/pread/pwrite passed") < 0 ? 6 : 0;
+    return puts("fstat/access/rename/umask/dup/fcntl/pread/pwrite/preadv2/pwritev2 passed") < 0 ? 6 : 0;
 }

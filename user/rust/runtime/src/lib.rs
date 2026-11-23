@@ -91,6 +91,14 @@ impl OsString {
     pub fn is_empty(&self) -> bool { self.bytes.is_empty() }
 }
 
+impl<'a> AsRef<[u8]> for OsStr<'a> {
+    fn as_ref(&self) -> &[u8] { self.bytes }
+}
+
+impl AsRef<[u8]> for OsString {
+    fn as_ref(&self) -> &[u8] { self.as_bytes() }
+}
+
 impl<'a> From<&'a str> for OsString {
     fn from(value: &'a str) -> Self { Self::from_bytes(value.as_bytes()) }
 }
@@ -435,6 +443,14 @@ impl PathBuf {
 }
 
 
+
+impl<'a> AsRef<[u8]> for Path<'a> {
+    fn as_ref(&self) -> &[u8] { self.as_bytes() }
+}
+
+impl AsRef<[u8]> for PathBuf {
+    fn as_ref(&self) -> &[u8] { self.as_bytes() }
+}
 
 impl From<OsString> for PathBuf {
     fn from(inner: OsString) -> Self { Self { inner } }
@@ -2656,6 +2672,24 @@ mod tests {
         assert_eq!(owned.to_str(), None);
         assert_eq!(owned.to_string_lossy(), "src/�.rs");
         assert_eq!(owned.as_bytes(), &invalid_bytes);
+    }
+
+    #[test]
+    fn os_strings_and_paths_expose_byte_slice_as_ref() {
+        let raw = [b'a', 0x80, b'b'];
+        let os_str = super::OsStr::from_bytes(&raw);
+        let os_string = super::OsString::from_bytes(&raw);
+        let path = super::Path::new(&raw);
+        let path_buf = super::PathBuf::from_bytes(&raw);
+
+        let borrowed: &[u8] = os_str.as_ref();
+        assert_eq!(borrowed, &raw);
+        let owned: &[u8] = os_string.as_ref();
+        assert_eq!(owned, &raw);
+        let borrowed_path: &[u8] = path.as_ref();
+        assert_eq!(borrowed_path, &raw);
+        let owned_path: &[u8] = path_buf.as_ref();
+        assert_eq!(owned_path, &raw);
     }
 
     #[test]

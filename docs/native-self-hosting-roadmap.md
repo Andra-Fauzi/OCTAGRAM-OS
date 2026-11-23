@@ -2003,3 +2003,17 @@ tercapai. Rustc native dan Cargo native masih belum diimplementasikan.
 dan QEMU belum dijalankan. Ini adalah perluasan API string freestanding,
 bukan implementasi lengkap `std::ffi` ataupun bukti bahwa Rust std runtime
 telah stabil.
+
+
+## 46. Akses UTF-8 dan tampilan lossy untuk Path (23 November 2026)
+
+- Menambahkan `Path::to_str()` dan `Path::to_string_lossy()` dengan
+  meneruskan operasi ke representasi `OsStr`.
+- Menambahkan accessor serupa pada `PathBuf`, tanpa mengubah byte path
+  yang dimiliki buffer.
+- Regression test mencakup path UTF-8 valid, path dengan komponen non-UTF-8,
+  tampilan replacement character, dan verifikasi byte asli tetap utuh.
+
+**Validasi:** source dan test sudah di-commit. Host tests, target build, dan
+QEMU belum dijalankan untuk perubahan ini. API tetap subset leksikal
+berbasis byte; belum menggantikan `std::path` upstream secara penuh.

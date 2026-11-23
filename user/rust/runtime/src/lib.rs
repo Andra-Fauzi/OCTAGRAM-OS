@@ -105,6 +105,10 @@ impl<'a> Path<'a> {
     pub const fn new(bytes: &'a [u8]) -> Self { Self { os_str: OsStr::from_bytes(bytes) } }
     pub const fn as_os_str(self) -> OsStr<'a> { self.os_str }
     pub const fn as_bytes(self) -> &'a [u8] { self.os_str.as_bytes() }
+    /// Return this path as UTF-8 when every path byte is valid UTF-8.
+    pub fn to_str(self) -> Option<&'a str> { self.os_str.to_str() }
+    /// Convert this path to displayable UTF-8, replacing invalid bytes.
+    pub fn to_string_lossy(self) -> Cow<'a, str> { self.os_str.to_string_lossy() }
     pub const fn is_absolute(self) -> bool {
         !self.as_bytes().is_empty() && self.as_bytes()[0] == b'/'
     }
@@ -330,6 +334,10 @@ impl PathBuf {
     pub fn as_path(&self) -> Path<'_> { Path::new(self.inner.as_bytes()) }
     pub fn as_os_str(&self) -> OsStr<'_> { self.inner.as_os_str() }
     pub fn as_bytes(&self) -> &[u8] { self.inner.as_bytes() }
+    /// Return this path as UTF-8 when every path byte is valid UTF-8.
+    pub fn to_str(&self) -> Option<&str> { self.as_path().to_str() }
+    /// Convert this path to displayable UTF-8, replacing invalid bytes.
+    pub fn to_string_lossy(&self) -> Cow<'_, str> { self.as_path().to_string_lossy() }
     pub fn into_os_string(self) -> OsString { self.inner }
     pub fn is_empty(&self) -> bool { self.inner.is_empty() }
     pub fn capacity(&self) -> usize { self.inner.capacity() }
@@ -2593,6 +2601,23 @@ mod tests {
         let recovered = invalid.into_string().unwrap_err();
         assert_eq!(recovered.as_bytes(), &invalid_bytes);
         assert_eq!(recovered.into_bytes(), invalid_bytes);
+    }
+
+    #[test]
+    fn path_utf8_accessors_preserve_raw_bytes_and_offer_lossy_display() {
+        let valid = super::Path::new("src/café.rs".as_bytes());
+        assert_eq!(valid.to_str(), Some("src/café.rs"));
+        assert_eq!(valid.to_string_lossy(), "src/café.rs");
+
+        let invalid_bytes = [b's', b'r', b'c', b'/', 0x80, b'.', b'r', b's'];
+        let invalid = super::Path::new(&invalid_bytes);
+        assert_eq!(invalid.to_str(), None);
+        assert_eq!(invalid.to_string_lossy(), "src/�.rs");
+
+        let owned = super::PathBuf::from_bytes(&invalid_bytes);
+        assert_eq!(owned.to_str(), None);
+        assert_eq!(owned.to_string_lossy(), "src/�.rs");
+        assert_eq!(owned.as_bytes(), &invalid_bytes);
     }
 
     #[test]

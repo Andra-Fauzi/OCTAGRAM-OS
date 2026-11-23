@@ -6,7 +6,9 @@
   "target-pointer-width": 64,
   "target-c-int-width": 32,
   "os": "octagram",
-  "target-family": ["unix"],
+  "target-family": [
+    "unix"
+  ],
   "env": "",
   "vendor": "unknown",
   "executables": true,
@@ -19,7 +21,7 @@
   "features": "+sse,+sse2",
   "max-atomic-width": 64,
   "atomic-cas": true,
-  "has-thread-local": true,
+  "has-thread-local": false,
   "crt-static-default": true,
   "crt-static-respected": true,
   "dynamic-linking": false,

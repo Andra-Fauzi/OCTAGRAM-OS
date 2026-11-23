@@ -1,13 +1,20 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use spin::Mutex;
 
 use super::{DirectoryEntry, FileSystem, FsError, Metadata, NodeType, normalize_path};
 
+struct FileData {
+    bytes: Vec<u8>,
+    permissions: u16,
+}
+
 enum Node {
     Directory { permissions: u16 },
-    File { data: Vec<u8>, permissions: u16 },
-    Symlink(String),
+    File { file: Arc<Mutex<FileData>> },
+    Symlink(Arc<String>),
 }
 
 /// In-memory filesystem. All data is lost when the kernel stops.
@@ -55,18 +62,40 @@ impl RamFs {
                 permissions: *permissions,
                 modified,
             },
-            Node::File { data, permissions } => Metadata {
-                node_type: NodeType::File,
-                len: data.len(),
-                permissions: *permissions,
-                modified,
-            },
+            Node::File { file } => {
+                let file = file.lock();
+                Metadata {
+                    node_type: NodeType::File,
+                    len: file.bytes.len(),
+                    permissions: file.permissions,
+                    modified,
+                }
+            }
             Node::Symlink(target) => Metadata {
                 node_type: NodeType::Symlink,
                 len: target.len(),
                 permissions: 0o777,
                 modified,
             },
+        }
+    }
+
+    fn touch_file_aliases(&mut self, file: &Arc<Mutex<FileData>>) {
+        let Some(timestamp) = super::current_timestamp() else {
+            return;
+        };
+        let aliases: Vec<String> = self
+            .nodes
+            .iter()
+            .filter_map(|(path, node)| match node {
+                Node::File { file: candidate } if Arc::ptr_eq(file, candidate) => {
+                    Some(path.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for path in aliases {
+            self.modified.insert(path, timestamp);
         }
     }
 }
@@ -106,12 +135,13 @@ impl FileSystem for RamFs {
         let path = normalize_path(path)?;
         match self.nodes.get(&path).ok_or(FsError::NotFound)? {
             Node::Directory { .. } => Err(FsError::IsDirectory),
-            Node::File { data, .. } => {
-                if offset >= data.len() {
+            Node::File { file } => {
+                let file = file.lock();
+                if offset >= file.bytes.len() {
                     return Ok(0);
                 }
-                let count = buffer.len().min(data.len() - offset);
-                buffer[..count].copy_from_slice(&data[offset..offset + count]);
+                let count = buffer.len().min(file.bytes.len() - offset);
+                buffer[..count].copy_from_slice(&file.bytes[offset..offset + count]);
                 Ok(count)
             }
             Node::Symlink(_) => Err(FsError::InvalidData),
@@ -121,7 +151,7 @@ impl FileSystem for RamFs {
     fn read_link(&self, path: &str) -> Result<String, FsError> {
         let path = normalize_path(path)?;
         match self.nodes.get(&path).ok_or(FsError::NotFound)? {
-            Node::Symlink(target) => Ok(target.clone()),
+            Node::Symlink(target) => Ok(target.as_str().into()),
             _ => Err(FsError::InvalidData),
         }
     }
@@ -129,46 +159,45 @@ impl FileSystem for RamFs {
     fn write(&mut self, path: &str, offset: usize, bytes: &[u8]) -> Result<usize, FsError> {
         let path = normalize_path(path)?;
         let end = offset.checked_add(bytes.len()).ok_or(FsError::NoSpace)?;
-        let written = match self.nodes.get_mut(&path).ok_or(FsError::NotFound)? {
+        let file = match self.nodes.get(&path).ok_or(FsError::NotFound)? {
             Node::Directory { .. } => return Err(FsError::IsDirectory),
-            Node::File { data, .. } => {
-                if bytes.is_empty() {
-                    return Ok(0);
-                }
-                if end > data.len() {
-                    grow_vec(data, end - data.len())?;
-                    data.resize(end, 0);
-                }
-                data[offset..end].copy_from_slice(bytes);
-                bytes.len()
-            }
+            Node::File { file } => Arc::clone(file),
             Node::Symlink(_) => return Err(FsError::InvalidData),
         };
-        if let Some(timestamp) = super::current_timestamp() {
-            self.modified.insert(path, timestamp);
+        if bytes.is_empty() {
+            return Ok(0);
         }
-        Ok(written)
+        {
+            let mut file_data = file.lock();
+            if end > file_data.bytes.len() {
+                grow_vec(&mut file_data.bytes, end - file_data.bytes.len())?;
+                file_data.bytes.resize(end, 0);
+            }
+            file_data.bytes[offset..end].copy_from_slice(bytes);
+        }
+        self.touch_file_aliases(&file);
+        Ok(bytes.len())
     }
 
     fn truncate(&mut self, path: &str, len: usize) -> Result<(), FsError> {
         let path = normalize_path(path)?;
-        match self.nodes.get_mut(&path).ok_or(FsError::NotFound)? {
+        let file = match self.nodes.get(&path).ok_or(FsError::NotFound)? {
             Node::Directory { .. } => return Err(FsError::IsDirectory),
-            Node::File { data, .. } => {
-                if len > data.len() {
-                    grow_vec(data, len - data.len())?;
-                    data.resize(len, 0);
-                } else {
-                    data.truncate(len);
-                    // Give the memory back: it is the same heap every file shares.
-                    data.shrink_to_fit();
-                }
-            }
+            Node::File { file } => Arc::clone(file),
             Node::Symlink(_) => return Err(FsError::InvalidData),
+        };
+        {
+            let mut file_data = file.lock();
+            if len > file_data.bytes.len() {
+                grow_vec(&mut file_data.bytes, len - file_data.bytes.len())?;
+                file_data.bytes.resize(len, 0);
+            } else {
+                file_data.bytes.truncate(len);
+                // Give the memory back: it is the same heap every file shares.
+                file_data.bytes.shrink_to_fit();
+            }
         }
-        if let Some(timestamp) = super::current_timestamp() {
-            self.modified.insert(path, timestamp);
-        }
+        self.touch_file_aliases(&file);
         Ok(())
     }
 
@@ -180,12 +209,12 @@ impl FileSystem for RamFs {
         match self.nodes.get_mut(&path).ok_or(FsError::NotFound)? {
             Node::Directory {
                 permissions: current,
-            }
-            | Node::File {
-                permissions: current,
-                ..
             } => {
                 *current = permissions;
+                Ok(())
+            }
+            Node::File { file } => {
+                file.lock().permissions = permissions;
                 Ok(())
             }
             Node::Symlink(_) => Err(FsError::InvalidData),
@@ -201,8 +230,10 @@ impl FileSystem for RamFs {
         self.nodes.insert(
             path.clone(),
             Node::File {
-                data: Vec::new(),
-                permissions: 0o644,
+                file: Arc::new(Mutex::new(FileData {
+                    bytes: Vec::new(),
+                    permissions: 0o644,
+                })),
             },
         );
         if let Some(timestamp) = super::current_timestamp() {
@@ -234,9 +265,31 @@ impl FileSystem for RamFs {
             return Err(FsError::AlreadyExists);
         }
         self.ensure_parent_directory(&path)?;
-        self.nodes.insert(path.clone(), Node::Symlink(String::from(target)));
+        self.nodes
+            .insert(path.clone(), Node::Symlink(Arc::new(String::from(target))));
         if let Some(timestamp) = super::current_timestamp() {
             self.modified.insert(path, timestamp);
+        }
+        Ok(())
+    }
+
+    fn hard_link(&mut self, source: &str, target: &str) -> Result<(), FsError> {
+        let source = normalize_path(source)?;
+        let target = normalize_path(target)?;
+        if self.nodes.contains_key(&target) {
+            return Err(FsError::AlreadyExists);
+        }
+        self.ensure_parent_directory(&target)?;
+        let node = match self.nodes.get(&source).ok_or(FsError::NotFound)? {
+            Node::Directory { .. } => return Err(FsError::Unsupported),
+            Node::File { file } => Node::File {
+                file: Arc::clone(file),
+            },
+            Node::Symlink(target) => Node::Symlink(Arc::clone(target)),
+        };
+        self.nodes.insert(target.clone(), node);
+        if let Some(timestamp) = self.modified.get(&source).copied() {
+            self.modified.insert(target, timestamp);
         }
         Ok(())
     }

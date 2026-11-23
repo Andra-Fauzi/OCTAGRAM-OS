@@ -590,6 +590,23 @@ fn main() {
     }
     marker("RUST-STD-PROCESS-ARGV-IO-PASS");
 
+    // A signal-terminated child must not be reported as an ordinary exit with
+    // a synthetic 128+signal code. This checks kernel wait status encoding.
+    use std::os::unix::process::ExitStatusExt;
+    let signaled = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("kill -TERM $")
+        .status()
+        .unwrap_or_else(|error| {
+            eprintln!("Command signal status probe failed: {error}");
+            std::process::exit(54);
+        });
+    if signaled.code().is_some() || signaled.signal() != Some(15) {
+        marker("RUST-STD-PROCESS-SIGNAL-STATUS-FAIL");
+        std::process::exit(55);
+    }
+    marker("RUST-STD-PROCESS-SIGNAL-STATUS-PASS");
+
     // Cargo build scripts rely on Command::env and current_dir being applied
     // to the child before exec. Verify both through the child's observable
     // environment and working directory, not merely by checking the builder.

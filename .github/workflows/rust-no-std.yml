@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/native-self-hosting
+      - feature/native-self-hosting-testing-3
     paths:
       - "user/rust/**"
       - "user/crt0.S"

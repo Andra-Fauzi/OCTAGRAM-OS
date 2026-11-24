@@ -31,7 +31,7 @@ git clone --branch feature/native-self-hosting-testing-2 --single-branch https:/
 cd OCTAGRAM-OS
 ```
 
-Keep your normal development checkout separate. The agent creates its own worktree under `.octagram-ai/worktree`.
+Keep your normal development checkout separate. The agent creates its own worktree in a sibling directory named `OCTAGRAM-OS-ai-worktree` by default, outside the main checkout.
 
 ## 2. Start llama.cpp
 
@@ -61,7 +61,7 @@ Set the variables in your shell (or export them from your local environment):
 ```bash
 export OCTAGRAM_REPO="$PWD"
 export OCTAGRAM_BASE_REF="feature/native-self-hosting-testing-2"
-export OCTAGRAM_WORKTREE="$PWD/.octagram-ai/worktree"
+export OCTAGRAM_WORKTREE="$PWD/../OCTAGRAM-OS-ai-worktree"
 export OCTAGRAM_LLM_BASE_URL="http://127.0.0.1:8080/v1"
 export OCTAGRAM_LLM_MODEL="qwen2.5-coder-3b-instruct"
 ```

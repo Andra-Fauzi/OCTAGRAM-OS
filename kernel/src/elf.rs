@@ -8476,8 +8476,13 @@ fn syscall_sendmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
         return syscall_udp_sendto(fd, u32::from_be_bytes(destination) as u64, port as u64,
             if payload.is_empty() { 0 } else { payload.as_ptr() as u64 }, payload.len() as u64);
     }
-    let ptr = if payload.is_empty() { 0 } else { payload.as_ptr() as u64 };
-    syscall_send(fd, ptr, payload.len() as u64, flags)
+    if let Ok(socket) = udp_socket_for_fd(fd) {
+        crate::network::send_udp_socket_connected(&socket, &payload)
+            .map(|()| payload.len() as u64).map_err(errno_from_network)
+    } else {
+        crate::network::send_tcp_socket(&tcp_socket_for_fd(fd)?, &payload)
+            .map(|sent| sent as u64).map_err(errno_from_network)
+    }
 }
 
 fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
@@ -8510,9 +8515,9 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
         source = Some((source_ip, source_port));
         if flags & 0x20 != 0 { datagram_len } else { copied }
     } else {
-        let ptr = if payload.is_empty() { 0 } else { payload.as_mut_ptr() as u64 };
         header.flags = 0;
-        syscall_recv(fd, ptr, total as u64, flags)? as usize
+        crate::network::receive_tcp_socket(&tcp_socket_for_fd(fd)?, &mut payload, flags & 0x02 != 0)
+            .map_err(errno_from_network)?
     };
     let mut offset = 0usize;
     for (base, len) in vectors {

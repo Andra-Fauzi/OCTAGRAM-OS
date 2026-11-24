@@ -5132,7 +5132,7 @@ fn syscall_write_bytes(fd: usize, bytes: &[u8]) -> Result<u64, i32> {
         }
         UserDescriptor::SocketPair(endpoint) => {
             if !endpoint.write_end.writable {
-                return Err(EBADF);
+                return Err(EPIPE);
             }
             let mut pipe = endpoint.write_end.pipe.lock();
             let count = pipe.write(bytes)?;
@@ -5567,12 +5567,13 @@ fn syscall_read(fd: u64, address: u64, length: u64) -> Result<u64, i32> {
             .map_err(|_| EAGAIN),
         UserDescriptor::SocketPair(endpoint) => {
             if !endpoint.read_end.readable {
-                return Err(EBADF);
+                Ok(0)
+            } else {
+                let mut pipe = endpoint.read_end.pipe.lock();
+                let count = pipe.read(output)?;
+                pipe_id = Some(pipe.id);
+                Ok(count as u64)
             }
-            let mut pipe = endpoint.read_end.pipe.lock();
-            let count = pipe.read(output)?;
-            pipe_id = Some(pipe.id);
-            Ok(count as u64)
         }
         UserDescriptor::EventFd(state) => {
             if output.len() < core::mem::size_of::<u64>() {

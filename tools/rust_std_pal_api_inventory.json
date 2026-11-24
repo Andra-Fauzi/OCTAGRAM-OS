@@ -303,7 +303,7 @@
       "symbol": "getrandom",
       "header": "user/include/sys/random.h",
       "status": "partial",
-      "notes": "Current implementation is xorshift seeded from TSC; not cryptographic entropy"
+      "notes": "Kernel validates GRND_NONBLOCK, GRND_RANDOM, and GRND_INSECURE flag bits and returns immediately; entropy source remains xorshift seeded from TSC and is NOT cryptographically secure"
     },
     {
       "symbol": "sendmsg",

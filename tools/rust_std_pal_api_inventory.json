@@ -156,6 +156,12 @@
       "notes": "Duplicate descriptor"
     },
     {
+      "symbol": "fcntl",
+      "header": "user/include/fcntl.h",
+      "status": "implemented",
+      "notes": "F_DUPFD and F_DUPFD_CLOEXEC (OCTAGRAM value 5 and Linux-compatible value 1030), descriptor flags, and file status flags"
+    },
+    {
       "symbol": "poll",
       "header": "user/include/poll.h",
       "status": "implemented",

@@ -420,6 +420,8 @@ const O_TRUNC: u64 = 1 << 9;
 const O_APPEND: u64 = 1 << 10;
 const O_NONBLOCK: u64 = 1 << 11;
 const O_EXCL: u64 = 1 << 12;
+const O_DIRECTORY: u64 = 1 << 16;
+const O_NOFOLLOW: u64 = 1 << 17;
 const O_CLOEXEC: u64 = 1 << 19;
 const FD_CLOEXEC: u32 = 1;
 const F_DUPFD: u64 = 0;
@@ -2791,10 +2793,27 @@ fn syscall_get_thread_pointer() -> Result<u64, i32> {
 }
 
 fn syscall_ioctl(fd: u64, request: u64, arg: u64) -> Result<u64, i32> {
+    const FIOCLEX: u64 = 0x5451;
+    const FIONCLEX: u64 = 0x5450;
     let fd = usize::try_from(fd).map_err(|_| EBADF)?;
     let process = USER_PROCESS.lock();
     if !process.active {
         return Err(EINTR);
+    }
+    if request == FIOCLEX || request == FIONCLEX {
+        // POSIX descriptor-flag ioctls apply to every descriptor kind. Rust
+        // std uses FIOCLEX on pipe descriptors after libc::pipe().
+        if process.descriptors.get(fd).and_then(Option::as_ref).is_none() {
+            return Err(EBADF);
+        }
+        drop(process);
+        let mut process = USER_PROCESS.lock();
+        if request == FIOCLEX {
+            process.descriptor_flags[fd] |= FD_CLOEXEC;
+        } else {
+            process.descriptor_flags[fd] &= !FD_CLOEXEC;
+        }
+        return Ok(0);
     }
     let terminal = process.terminal;
     let descriptor = process
@@ -6198,22 +6217,33 @@ fn syscall_openat(dirfd: u64, path_address: u64, flags: u64, mode: u64) -> Resul
 }
 
 fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32> {
-    const ALLOWED_FLAGS: u64 =
-        O_ACCESS_MASK | O_CREAT | O_TRUNC | O_APPEND | O_NONBLOCK | O_EXCL | O_CLOEXEC;
+    const ALLOWED_FLAGS: u64 = O_ACCESS_MASK
+        | O_CREAT
+        | O_TRUNC
+        | O_APPEND
+        | O_NONBLOCK
+        | O_EXCL
+        | O_DIRECTORY
+        | O_NOFOLLOW
+        | O_CLOEXEC;
     if flags & !ALLOWED_FLAGS != 0 || flags & O_ACCESS_MASK == 3 {
         return Err(EINVAL);
     }
     if flags & O_EXCL != 0 && flags & O_CREAT == 0 {
         return Err(EINVAL);
     }
+    if flags & O_DIRECTORY != 0 && flags & O_CREAT != 0 {
+        // A directory cannot be created by open(); std never asks for this.
+        return Err(EINVAL);
+    }
     if flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND) != 0 {
         require_capability(CAP_VFS_WRITE)?;
     }
     let mode = if flags & O_CREAT != 0 {
-        let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
-        if mode & !0o777 != 0 {
-            return Err(EINVAL);
-        }
+        // POSIX ignores the file-type bits of open()'s mode argument. Rust std
+        // passes the source metadata's full st_mode (for example 0o100644)
+        // when std::fs::copy creates its destination file.
+        let mode = u16::try_from(mode).map_err(|_| EINVAL)? & 0o777;
         let process = USER_PROCESS.lock();
         if !process.active {
             return Err(EINTR);
@@ -6270,6 +6300,16 @@ fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32
     }
     let size = match fs::with_vfs(|vfs| {
         let mut created = false;
+        if flags & O_NOFOLLOW != 0 {
+            match vfs.symlink_metadata(&path) {
+                Ok(metadata) if metadata.node_type == NodeType::Symlink => {
+                    return Err(FsError::SymlinkLoop);
+                }
+                Ok(_) => {}
+                Err(FsError::NotFound) if flags & O_CREAT != 0 => {}
+                Err(error) => return Err(error),
+            }
+        }
         let metadata = match vfs.metadata(&path) {
             Ok(_) if flags & O_CREAT != 0 && flags & O_EXCL != 0 => {
                 return Err(FsError::AlreadyExists);
@@ -6285,8 +6325,14 @@ fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32
             }
             Err(error) => return Err(error),
         };
+        // POSIX allows a read-only open() of a directory; that descriptor is
+        // what Rust std converts with fdopendir() for remove_dir_all().
         if metadata.node_type == NodeType::Directory {
-            return Err(FsError::IsDirectory);
+            if writable || flags & (O_CREAT | O_TRUNC) != 0 {
+                return Err(FsError::IsDirectory);
+            }
+        } else if flags & O_DIRECTORY != 0 {
+            return Err(FsError::NotDirectory);
         }
         if !created
             && ((readable && metadata.permissions & 0o400 == 0)
@@ -6729,15 +6775,62 @@ fn syscall_opendir(address: u64) -> Result<u64, i32> {
 
 fn syscall_readdir(fd: u64, address: u64) -> Result<u64, i32> {
     let fd = usize::try_from(fd).map_err(|_| EBADF)?;
-    let directory = {
+    // POSIX permits readdir() on any descriptor that refers to a directory,
+    // including one opened with openat()/O_DIRECTORY rather than opendir().
+    // Rust std's remove_dir_all() opens directories with openat() and converts
+    // the descriptor with fdopendir(), so a file descriptor naming a directory
+    // is promoted into a directory stream here on first use.
+    enum ReaddirAction {
+        Stream(Arc<Mutex<DirectoryStream>>),
+        Promote(String),
+    }
+    let action = {
         let process = USER_PROCESS.lock();
         if !process.active {
             return Err(EINTR);
         }
         match process.descriptors.get(fd).and_then(Option::as_ref) {
-            Some(UserDescriptor::Directory(directory)) => Arc::clone(directory),
+            Some(UserDescriptor::Directory(directory)) => {
+                ReaddirAction::Stream(Arc::clone(directory))
+            }
+            Some(UserDescriptor::File(file)) => {
+                ReaddirAction::Promote(file.lock().path.clone())
+            }
             Some(_) => return Err(ENOTDIR),
             None => return Err(EBADF),
+        }
+    };
+    let directory = match action {
+        ReaddirAction::Stream(directory) => directory,
+        ReaddirAction::Promote(path) => {
+            // Resolve the directory outside the process lock: VFS and process
+            // locks are never taken in the opposite order.
+            let entries = fs::with_vfs(|vfs| vfs.read_dir(&path))
+                .map_err(errno_from_fs)?
+                .map_err(errno_from_fs)?;
+            let mut process = USER_PROCESS.lock();
+            if !process.active {
+                return Err(EINTR);
+            }
+            let still_promotable = matches!(
+                process.descriptors.get(fd).and_then(Option::as_ref),
+                Some(UserDescriptor::File(file)) if file.lock().path == path
+            );
+            if !still_promotable {
+                match process.descriptors.get(fd).and_then(Option::as_ref) {
+                    Some(UserDescriptor::Directory(directory)) => Arc::clone(directory),
+                    Some(_) => return Err(ENOTDIR),
+                    None => return Err(EBADF),
+                }
+            } else {
+                let directory = Arc::new(Mutex::new(DirectoryStream {
+                    path,
+                    entries,
+                    next_entry: 0,
+                }));
+                process.descriptors[fd] = Some(UserDescriptor::Directory(Arc::clone(&directory)));
+                directory
+            }
         }
     };
 
@@ -6851,10 +6944,8 @@ fn syscall_mkdirat(dirfd: u64, path_address: u64, mode: u64) -> Result<u64, i32>
 
 fn syscall_mkdir_path(path: String, mode: u64) -> Result<u64, i32> {
     require_capability(CAP_VFS_WRITE)?;
-    let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
-    if mode & !0o777 != 0 {
-        return Err(EINVAL);
-    }
+    // As with open(), POSIX ignores file-type bits in mkdir()'s mode argument.
+    let mode = u16::try_from(mode).map_err(|_| EINVAL)? & 0o777;
     let mode = {
         let process = USER_PROCESS.lock();
         if !process.active {
@@ -7743,10 +7834,9 @@ fn syscall_chdir(path_address: u64) -> Result<u64, i32> {
 
 fn syscall_chmod(path_address: u64, mode: u64) -> Result<u64, i32> {
     require_capability(CAP_VFS_WRITE)?;
-    let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
-    if mode & !0o777 != 0 {
-        return Err(EINVAL);
-    }
+    // POSIX ignores the file-type bits of the mode argument, and Rust std passes
+    // PermissionsExt::mode() (which includes them) to chmod/fchmod.
+    let mode = u16::try_from(mode).map_err(|_| EINVAL)? & 0o777;
     let path = resolve_process_path(&copy_user_path(path_address)?)?;
     fs::with_vfs(|vfs| vfs.set_permissions(&path, mode))
         .map_err(errno_from_fs)?
@@ -7755,10 +7845,7 @@ fn syscall_chmod(path_address: u64, mode: u64) -> Result<u64, i32> {
 }
 
 fn syscall_fchmod(fd: u64, mode: u64) -> Result<u64, i32> {
-    let mode = u16::try_from(mode).map_err(|_| EINVAL)?;
-    if mode & !0o777 != 0 {
-        return Err(EINVAL);
-    }
+    let mode = u16::try_from(mode).map_err(|_| EINVAL)? & 0o777;
     let fd = usize::try_from(fd).map_err(|_| EBADF)?;
     let path = {
         let process = USER_PROCESS.lock();
@@ -9000,22 +9087,36 @@ fn resolve_at_path(dirfd: u64, path: &str) -> Result<String, i32> {
         return resolve_process_path(path);
     }
 
-    let cwd = {
+    let (cwd, directory_was_opened_as_file) = {
         let process = USER_PROCESS.lock();
         if !process.active {
             return Err(EINTR);
         }
         if dirfd as i64 == AT_FDCWD {
-            process.cwd.clone()
+            (process.cwd.clone(), false)
         } else {
             let fd = usize::try_from(dirfd).map_err(|_| EBADF)?;
             match process.descriptors.get(fd).and_then(Option::as_ref) {
-                Some(UserDescriptor::Directory(directory)) => directory.lock().path.clone(),
+                Some(UserDescriptor::Directory(directory)) => {
+                    (directory.lock().path.clone(), false)
+                }
+                Some(UserDescriptor::File(file)) => (file.lock().path.clone(), true),
                 Some(_) => return Err(ENOTDIR),
                 None => return Err(EBADF),
             }
         }
     };
+    if directory_was_opened_as_file {
+        // POSIX accepts any descriptor that refers to a directory, not only one
+        // created by opendir(). Rust std opens build directories with openat()
+        // and then uses the descriptor as a dirfd.
+        let is_directory = fs::with_vfs(|vfs| vfs.metadata(&cwd))
+            .map_err(errno_from_fs)?
+            .is_ok_and(|metadata| metadata.node_type == NodeType::Directory);
+        if !is_directory {
+            return Err(ENOTDIR);
+        }
+    }
     resolve_user_path(&cwd, path).map_err(errno_from_fs)
 }
 

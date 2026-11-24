@@ -2471,3 +2471,42 @@ kompatibilitas penamaan sementara karena runtime masih satu arsip; ini bukan
 klaim bahwa subsistem pustaka tersebut telah dipisahkan. Hasil linking
 selanjutnya tetap harus lolos CI. Executable belum dianggap berjalan di QEMU,
 dan rustc/Cargo belum native.
+
+## 94. Celah PAL yang ditemukan saat menjalankan std asli di guest (24 November 2026)
+
+- `user/rust/std-probe` dibangun ulang dengan `-Zbuild-std=std` dari `rust-src`
+  terpatched plus upstream libc commit `ccc2ff4aaab962f7fde7b8edda7379c045b1ca12`,
+  lalu ditautkan memakai `user/crt0.S`, `user/linker.ld`, dan
+  `user/build/libc.a`. Hasilnya ELF64 `EXEC` x86-64 639936 byte tanpa
+  `PT_INTERP`, tanpa dynamic section, tanpa simbol undefined, dan dengan
+  `PT_TLS` (FileSiz 0x48, MemSiz 0x480).
+- Eksekusi guest QEMU (2 GiB, TCG) menjalankan `/bin/rust-std-probe` dan
+  melewati 41 marker, termasuk getrandom, socketpair/sendmsg/recvmsg, TLS
+  local-exec, OsString/Path byte-preserving, filesystem nama non-UTF-8,
+  `remove_dir_all` rekursif, operasi `*at` relatif, symlink, `fs::copy`,
+  hard link, permission, mutasi environment, metadata, serta thread
+  spawn/join, isolasi TLS, dan detach.
+- Celah yang ditemukan lalu diperbaiki di kernel:
+  - `open()` read-only pada direktori kini diizinkan; sebelumnya selalu
+    `EISDIR`, sehingga `std::fs::File::open` pada direktori gagal.
+  - `O_DIRECTORY` dan `O_NOFOLLOW` diterima dan diterapkan (`ENOTDIR` /
+    `ELOOP`), bukan diabaikan; `O_CREAT | O_DIRECTORY` tetap `EINVAL`.
+  - `readdir` menerima descriptor `open()` yang menunjuk direktori dan
+    mempromosikannya menjadi directory stream, sesuai `fdopendir()` POSIX.
+    `std::fs::remove_dir_all` memakai jalur ini.
+  - `openat`, `mkdirat`, `renameat`, `unlinkat`, dan `fstatat` menerima
+    dirfd dari `open()` direktori, tidak hanya dari `opendir()`.
+  - Argumen `mode` pada `open`, `mkdir`, `chmod`, dan `fchmod` memakai mask
+    `0o777` sehingga bit tipe file diabaikan; `std::fs::copy` dan
+    `set_permissions` meneruskan `st_mode` penuh.
+  - `ioctl(FIOCLEX)`/`ioctl(FIONCLEX)` kini mengubah `FD_CLOEXEC` untuk semua
+    jenis descriptor; Rust std memakai `FIOCLEX` pada pipe hasil
+    `libc::pipe()`.
+- Probe kini mencetak error `remove_dir_all` dan langkah `fs::copy` yang
+  gagal, serta memisahkan kegagalan `Command::spawn` dari `wait`.
+
+**Validasi:** build host dan `cargo check --tests` kernel lulus. Marker guest
+di atas teramati pada run QEMU sebelum perbaikan `FIOCLEX`/`FIONCLEX`;
+perbaikan tersebut dan sisa marker proses belum terverifikasi guest karena
+run berikutnya terputus. `RUST-STD-RUNTIME-PASS` belum diklaim tercapai, dan
+native rustc/Cargo tetap belum ada.

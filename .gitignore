@@ -5,5 +5,7 @@
 /user/build/
 /user/rust/build/
 /user/rust/target/
+/user/rust/std-probe/target/
+/user/rust/std-probe/Cargo.lock
 /build/
 qemu.log/iso_root/

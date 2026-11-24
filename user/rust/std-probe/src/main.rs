@@ -990,7 +990,8 @@ fn main() {
         marker("RUST-STD-REMOVE-DIR-ALL-SETUP-FAIL");
         std::process::exit(36);
     }
-    if std::fs::remove_dir_all(&renamed_dir).is_err() {
+    if let Err(error) = std::fs::remove_dir_all(&renamed_dir) {
+        eprintln!("remove_dir_all({}) failed: {error:?}", renamed_dir.display());
         marker("RUST-STD-REMOVE-DIR-ALL-FAIL");
         std::process::exit(37);
     }
@@ -1148,10 +1149,16 @@ fn main() {
         std::process::id()
     ));
     let copy_payload = b"cargo-artifact-copy-roundtrip";
+    let trace_copy = |step: &str, error: std::io::Error| {
+        eprintln!("fs::copy probe step `{step}` failed: {error:?}");
+        error
+    };
     let copy_result = (|| -> std::io::Result<()> {
-        std::fs::write(&copy_source, copy_payload)?;
-        let copied = std::fs::copy(&copy_source, &copy_destination)?;
-        let destination = std::fs::read(&copy_destination)?;
+        std::fs::write(&copy_source, copy_payload).map_err(|e| trace_copy("write source", e))?;
+        let copied = std::fs::copy(&copy_source, &copy_destination)
+            .map_err(|e| trace_copy("fs::copy", e))?;
+        let destination =
+            std::fs::read(&copy_destination).map_err(|e| trace_copy("read destination", e))?;
         if copied != copy_payload.len() as u64 || destination != copy_payload {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -1347,16 +1354,30 @@ fn main() {
     // Separate the basic spawn/wait path from the stdio-pipe capture path.
     // If this passes but output() fails, the remaining fault is in pipe setup,
     // descriptor actions, or output collection rather than exec itself.
-    let status = Command::new("/bin/sh")
+    // Inherit stdin temporarily to isolate /dev/null handling from spawn/exec.
+    // Split spawn and wait so a stdio setup error is distinguishable from a
+    // waitpid error.
+    let mut inherited_child = match Command::new("/bin/sh")
         .arg("-c")
         .arg("exit 0")
-        // Inherit stdin temporarily to isolate /dev/null handling from spawn/exec.
         .stdin(Stdio::inherit())
-        .status()
-        .unwrap_or_else(|error| {
-            eprintln!("Command::status failed: {error}");
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("Command::spawn with inherited stdin failed: {error:?}");
+            marker("RUST-STD-PROCESS-SPAWN-FAIL");
             std::process::exit(19);
-        });
+        }
+    };
+    let status = match inherited_child.wait() {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("Command::wait failed: {error:?}");
+            marker("RUST-STD-PROCESS-WAIT-FAIL");
+            std::process::exit(20);
+        }
+    };
     if !status.success() {
         marker("RUST-STD-PROCESS-INHERITED-STDIO-FAIL");
         std::process::exit(20);

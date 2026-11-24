@@ -340,7 +340,6 @@ def workspace_status() -> dict[str, str]:
 
 
 @app.post("/agent/task")
-@app.post("/agent/task")
 def agent_task(request: AgentRequest) -> dict[str, Any]:
     ensure_worktree()
     if request.build_recipe not in BUILD_RECIPES:

@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <locale.h>
 #include <stddef.h>
 #include <sys/types.h>
 
@@ -12,10 +13,17 @@ struct tm;
 
 typedef long clock_t;
 #define CLOCKS_PER_SEC 1000000
+
+/* C11 timespec_get bases. */
+#define TIME_UTC 1
 clock_t clock(void);
 double difftime(time_t later, time_t earlier);
 time_t mktime(struct tm *time_value);
 char *asctime(const struct tm *time_value);
+size_t strftime(char *buffer, size_t capacity, const char *format,
+                const struct tm *time_value);
+size_t strftime_l(char *buffer, size_t capacity, const char *format,
+                  const struct tm *time_value, locale_t locale);
 
 #define CLOCK_REALTIME 0
 #define CLOCK_MONOTONIC 1
@@ -53,6 +61,7 @@ struct tm {
 time_t time(time_t *result);
 int clock_gettime(clockid_t clock_id, struct timespec *time_value);
 int clock_getres(clockid_t clock_id, struct timespec *resolution);
+int timespec_get(struct timespec *time_value, int base);
 struct tm *gmtime(const time_t *time_value);
 struct tm *localtime(const time_t *time_value);
 char *ctime(const time_t *time_value);

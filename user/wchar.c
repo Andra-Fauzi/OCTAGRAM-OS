@@ -144,6 +144,31 @@ size_t mbrlen(const char *input, size_t count, mbstate_t *state)
 }
 
 
+/* POSIX version of mbsrtowcs that also stops after `byte_count` input bytes. */
+size_t mbsnrtowcs(wchar_t *destination, const char **source, size_t byte_count,
+                  size_t count, mbstate_t *state)
+{
+    oct_mbstate_clear(state);
+    const char *cursor = *source;
+    size_t written = 0;
+    size_t consumed = 0;
+    while (consumed < byte_count && (destination == NULL || written < count)) {
+        const unsigned char byte = (unsigned char)*cursor;
+        if (destination != NULL) {
+            destination[written] = (wchar_t)byte;
+        }
+        ++cursor;
+        ++consumed;
+        if (byte == 0) {
+            *source = NULL;
+            return written;
+        }
+        ++written;
+    }
+    *source = cursor;
+    return written;
+}
+
 size_t mbsrtowcs(wchar_t *destination, const char **source, size_t count,
                  mbstate_t *state)
 {
@@ -157,6 +182,35 @@ size_t mbsrtowcs(wchar_t *destination, const char **source, size_t count,
         }
         ++cursor;
         if (byte == 0) {
+            *source = NULL;
+            return written;
+        }
+        ++written;
+    }
+    *source = cursor;
+    return written;
+}
+
+/* POSIX version of wcsrtombs that also stops after `wide_count` wide
+ * characters, which is what libc++'s codecvt for wchar_t uses. */
+size_t wcsnrtombs(char *destination, const wchar_t **source, size_t wide_count,
+                  size_t count, mbstate_t *state)
+{
+    oct_mbstate_clear(state);
+    const wchar_t *cursor = *source;
+    size_t written = 0;
+    size_t consumed = 0;
+    while (consumed < wide_count && (destination == NULL || written < count)) {
+        const wchar_t character = *cursor;
+        if (character > 0xff) {
+            return (size_t)-1;
+        }
+        if (destination != NULL) {
+            destination[written] = (char)character;
+        }
+        ++cursor;
+        ++consumed;
+        if (character == 0) {
             *source = NULL;
             return written;
         }
@@ -306,4 +360,58 @@ wchar_t *wmemchr(const wchar_t *memory, wchar_t character, size_t count)
         }
     }
     return NULL;
+}
+
+/* Locale-aware wide conversions: the C locale is the only locale, so these
+ * forward to the plain conversions. */
+long wcstol_l(const wchar_t *text, wchar_t **end, int base, locale_t locale)
+{
+    (void)locale;
+    return wcstol(text, end, base);
+}
+
+long long wcstoll_l(const wchar_t *text, wchar_t **end, int base, locale_t locale)
+{
+    (void)locale;
+    return wcstoll(text, end, base);
+}
+
+unsigned long wcstoul_l(const wchar_t *text, wchar_t **end, int base, locale_t locale)
+{
+    (void)locale;
+    return wcstoul(text, end, base);
+}
+
+unsigned long long wcstoull_l(const wchar_t *text, wchar_t **end, int base, locale_t locale)
+{
+    (void)locale;
+    return wcstoull(text, end, base);
+}
+
+double wcstod_l(const wchar_t *text, wchar_t **end, locale_t locale)
+{
+    (void)locale;
+    return wcstod(text, end);
+}
+
+float wcstof_l(const wchar_t *text, wchar_t **end, locale_t locale)
+{
+    (void)locale;
+    return wcstof(text, end);
+}
+
+long double wcstold_l(const wchar_t *text, wchar_t **end, locale_t locale)
+{
+    (void)locale;
+    return wcstold(text, end);
+}
+
+intmax_t wcstoimax(const wchar_t *text, wchar_t **end, int base)
+{
+    return (intmax_t)wcstoll(text, end, base);
+}
+
+uintmax_t wcstoumax(const wchar_t *text, wchar_t **end, int base)
+{
+    return (uintmax_t)wcstoull(text, end, base);
 }

@@ -3,6 +3,7 @@
 
 #include <stdarg.h>
 #include <stddef.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,6 +48,8 @@ FILE *freopen(const char *path, const char *mode, FILE *stream);
 int rename(const char *source, const char *target);
 int renameat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath);
 int fseek(FILE *stream, long offset, int whence);
+int fseeko(FILE *stream, off_t offset, int whence);
+off_t ftello(FILE *stream);
 long ftell(FILE *stream);
 void rewind(FILE *stream);
 size_t fread(void *buffer, size_t size, size_t count, FILE *stream);
@@ -76,6 +79,10 @@ int fprintf(FILE *stream, const char *format, ...);
 int vprintf(const char *format, va_list arguments);
 int printf(const char *format, ...);
 int vsnprintf(char *buffer, size_t size, const char *format, va_list arguments);
+
+/* GNU extensions used by libc++'s locale and chrono formatting. */
+int asprintf(char **result, const char *format, ...);
+int vasprintf(char **result, const char *format, va_list arguments);
 int snprintf(char *buffer, size_t size, const char *format, ...);
 int vsprintf(char *buffer, const char *format, va_list arguments);
 int sprintf(char *buffer, const char *format, ...);

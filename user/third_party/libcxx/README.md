@@ -24,7 +24,9 @@ That is why the build links against OCTAGRAM's own runtime (`user/runtime.c`,
 Upstream generates these with CMake. They are checked in here because the ABI
 choice belongs to the port, not to a build directory:
 
-- `include/__config_site` — selects the default ABI namespace (`std::__1`), turns
+- `include/__config_site` — selects the default ABI namespace (`std::__1`; without
+  this the inline namespace is literally named `_LIBCPP_ABI_NAMESPACE`, which
+  still compiles but mangles every `std::` symbol wrongly), turns
   hardening off (a hardening failure would abort a guest program with no way to
   report it), selects the serial PSTL backend (there is no thread pool yet), and
   sets `_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE` because OCTAGRAM does not implement

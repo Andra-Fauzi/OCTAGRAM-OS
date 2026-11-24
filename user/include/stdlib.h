@@ -1,6 +1,7 @@
 #ifndef OCTAGRAM_STDLIB_H
 #define OCTAGRAM_STDLIB_H
 
+#include <locale.h>
 #include <stddef.h>
 
 #ifndef MB_CUR_MAX
@@ -34,6 +35,16 @@ double strtod(const char *text, char **end);
 double atof(const char *text);
 float strtof(const char *text, char **end);
 long double strtold(const char *text, char **end);
+
+/* POSIX.1-2008 locale-aware conversions; the locale argument is ignored because
+ * OCTAGRAM has only the C locale. */
+long strtol_l(const char *text, char **end, int base, locale_t locale);
+long long strtoll_l(const char *text, char **end, int base, locale_t locale);
+unsigned long strtoul_l(const char *text, char **end, int base, locale_t locale);
+unsigned long long strtoull_l(const char *text, char **end, int base, locale_t locale);
+double strtod_l(const char *text, char **end, locale_t locale);
+float strtof_l(const char *text, char **end, locale_t locale);
+long double strtold_l(const char *text, char **end, locale_t locale);
 char *getenv(const char *name);
 // `template` is a C++ keyword, so the parameter needs a neutral name for
 // C++ translation units that include this header.

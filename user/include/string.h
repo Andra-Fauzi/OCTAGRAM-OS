@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <locale.h>
 #include <stddef.h>
 
 void *memcpy(void *destination, const void *source, size_t count);
@@ -21,6 +22,8 @@ size_t strlen(const char *text);
 size_t strspn(const char *text, const char *accept);
 int strcoll(const char *left, const char *right);
 size_t strxfrm(char *destination, const char *source, size_t count);
+int strcoll_l(const char *left, const char *right, locale_t locale);
+size_t strxfrm_l(char *destination, const char *source, size_t count, locale_t locale);
 size_t strcspn(const char *text, const char *reject);
 int strcmp(const char *left, const char *right);
 int strncmp(const char *left, const char *right, size_t count);

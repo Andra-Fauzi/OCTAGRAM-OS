@@ -251,19 +251,35 @@ long double roundl(long double arg0)
     return (long double)round((double)arg0);
 }
 
+static int oct_clamp_exponent(long exponent)
+{
+    if (exponent > 100000L) {
+        return 100000;
+    }
+    if (exponent < -100000L) {
+        return -100000;
+    }
+    return (int)exponent;
+}
+
 double scalbln(double value, long exponent)
 {
-    return ldexp(value, (int)exponent);
+    return ldexp(value, oct_clamp_exponent(exponent));
 }
 
 float scalblnf(float value, long exponent)
 {
-    return ldexpf(value, (int)exponent);
+    return ldexpf(value, oct_clamp_exponent(exponent));
 }
 
-long double scalbnl(long double arg0, int arg1)
+long double scalbnl(long double value, int exponent)
 {
-    return (long double)scalbn((double)arg0, arg1);
+    return ldexpl(value, exponent);
+}
+
+long double scalblnl(long double value, long exponent)
+{
+    return ldexpl(value, oct_clamp_exponent(exponent));
 }
 
 long double sinhl(long double arg0)

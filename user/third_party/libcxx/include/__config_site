@@ -6,6 +6,9 @@
 // selects the serial PSTL backend because there is no thread pool yet, and
 // provides its own ctype/rune table because OCTAGRAM does not implement the
 // glibc, musl or newlib locale internals libc++ would otherwise detect.
+// Upstream generates this from CMake; without it the inline namespace would
+// literally be named _LIBCPP_ABI_NAMESPACE instead of __1.
+#define _LIBCPP_ABI_NAMESPACE __1
 #define _LIBCPP_HARDENING_MODE _LIBCPP_HARDENING_MODE_NONE
 #define _LIBCPP_PSTL_CPU_BACKEND_SERIAL 1
 #define _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE

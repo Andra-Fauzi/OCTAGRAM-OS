@@ -241,26 +241,37 @@ diketahui (misalnya `fs::devfs` yang masih mengharapkan 10 entri `/dev`).## C++ 
 Header libc++ 18.1.8 di-vendor di
 [user/third_party/libcxx](../user/third_party/libcxx/README.md) (hanya `include/`,
 seperti upstream, plus `__config_site` dan `__assertion_handler` buatan kita).
-Program C++ memakainya dengan `-nostdinc`:
+Program C++ memakainya dengan `-nostdinc` dan urutan `-isystem` yang sama seperti
+build guest:
 
 ```sh
-make -C user build/libcxx_smoke.elf   # contoh yang memakai <type_traits>, <limits>, <new>
+make -C user build/libcxx_smoke.elf   # std::array/vector/optional/tuple/string_view
 make -C user libcxx-header-check      # ratchet: header mana yang sudah bisa dikompilasi
 ```
 
-`libcxx-header-check` mewajibkan enam header (`cstddef`, `cstdint`, `cstring`,
-`limits`, `new`, `type_traits`) tetap lulus; header lain dilaporkan sebagai
-"pending" beserta error pertamanya, jadi kemajuan terlihat tanpa membuat CI merah
-karena pekerjaan yang memang belum selesai.
+Status per gelombang ini: **102 header standar bisa dikompilasi** (semua yang
+dilacak kecuali `cstdalign`, `flat_map`, `flat_set` yang memang tidak ada di
+libc++ 18). `libcxx-header-check` gagal bila salah satu dari daftar itu mundur.
 
-Blocker yang tersisa (per gelombang ini):
+Yang membuat ini mungkin, dan yang perlu diingat kalau ada yang rusak lagi:
 
-| Header | Yang kurang |
-| --- | --- |
-| `<cmath>`, `<tuple>`, `<utility>`, `<string>` | `scalblnl` (butuh `ldexpl` yang belum diimplementasikan libm) |
-| `<ctime>`, `<mutex>` | `strftime` |
-| `<vector>`, `<string>` | `struct __mbstate_t` bentrok dengan `mbstate_t` kita |
-| `<cwchar>` | implementasi wide stdio (`fgetwc`, `wprintf`, …) |
-| banyak header | tabel locale/facet libc++ |
+- `__config_site` **wajib** mendefinisikan `_LIBCPP_ABI_NAMESPACE __1`. Tanpa
+  itu inline namespace-nya benar-benar bernama `_LIBCPP_ABI_NAMESPACE` dan semua
+  simbol `std::__1::…` jadi salah nama (gejalanya: `std::sort` tidak ketemu saat
+  link, bukan error kompilasi).
+- Checker memakai `-nostdinc` seperti build guest. Tanpa itu, `__has_include`
+  libc++ menemukan header glibc host (mis. `<bits/types/mbstate_t.h>`) dan
+  bertengkar dengan `mbstate_t` milik OCTAGRAM — persis kegagalan yang dulu
+  dilaporkan sebagai "blocker mbstate_t".
+- `user/include/features.h` sengaja kosong untuk guest, tetapi melakukan
+  `#include_next <features.h>` bila header host masih terjangkau. Tanpa rantai
+  itu, `tccrun.c` (yang mencampur header kita dengan `<signal.h>` glibc) gagal
+  karena `__BEGIN_DECLS` tidak pernah didefinisikan.
 
+Yang **belum** bisa dipakai bukan lagi header, melainkan isi library libc++ yang
+dikompilasi (`libcxx/src`): `std::string` butuh `basic_string::__init`/`append`,
+`std::sort` butuh instantiasi eksplisit `std::__1::__sort` (ditandai
+`__exclude_from_explicit_instantiation__`), dan `std::iostream` butuh seluruh
+locale/facet. Langkah berikutnya adalah membangun `libcxx/src` dengan
+`-nostdinc` yang sama dan menautkannya sebagai `libc++.a`.
 

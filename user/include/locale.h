@@ -40,8 +40,30 @@ struct lconv {
 #define LC_MESSAGES 5
 #define LC_ALL 6
 
+/* POSIX.1-2008 category masks, used by the *_l and newlocale/duplocale family
+ * and by libc++'s locale implementation. */
+#define LC_CTYPE_MASK (1u << LC_CTYPE)
+#define LC_NUMERIC_MASK (1u << LC_NUMERIC)
+#define LC_TIME_MASK (1u << LC_TIME)
+#define LC_COLLATE_MASK (1u << LC_COLLATE)
+#define LC_MONETARY_MASK (1u << LC_MONETARY)
+#define LC_MESSAGES_MASK (1u << LC_MESSAGES)
+#define LC_ALL_MASK                                                              \
+    (LC_CTYPE_MASK | LC_NUMERIC_MASK | LC_TIME_MASK | LC_COLLATE_MASK |          \
+     LC_MONETARY_MASK | LC_MESSAGES_MASK)
+
+/* POSIX.1-2008 locale objects. OCTAGRAM has exactly one locale (the C locale),
+ * so every object is the same singleton and the *_l functions ignore it. */
+typedef struct oct_ctagram_locale *locale_t;
+
+#define LC_GLOBAL_LOCALE ((locale_t)-1L)
+
 char *setlocale(int category, const char *locale);
 struct lconv *localeconv(void);
+locale_t newlocale(int category_mask, const char *name, locale_t base);
+locale_t duplocale(locale_t object);
+locale_t uselocale(locale_t object);
+void freelocale(locale_t object);
 
 
 #ifdef __cplusplus

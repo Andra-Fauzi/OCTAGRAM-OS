@@ -1,6 +1,7 @@
 #ifndef OCTAGRAM_WCHAR_H
 #define OCTAGRAM_WCHAR_H
 
+#include <locale.h>
 #include <stdarg.h>
 #include <stddef.h>
 
@@ -49,6 +50,14 @@ unsigned long long wcstoull(const wchar_t *text, wchar_t **end, int base);
 double wcstod(const wchar_t *text, wchar_t **end);
 float wcstof(const wchar_t *text, wchar_t **end);
 long double wcstold(const wchar_t *text, wchar_t **end);
+long wcstol_l(const wchar_t *text, wchar_t **end, int base, locale_t locale);
+long long wcstoll_l(const wchar_t *text, wchar_t **end, int base, locale_t locale);
+unsigned long wcstoul_l(const wchar_t *text, wchar_t **end, int base, locale_t locale);
+unsigned long long wcstoull_l(const wchar_t *text, wchar_t **end, int base,
+                              locale_t locale);
+double wcstod_l(const wchar_t *text, wchar_t **end, locale_t locale);
+float wcstof_l(const wchar_t *text, wchar_t **end, locale_t locale);
+long double wcstold_l(const wchar_t *text, wchar_t **end, locale_t locale);
 wchar_t *wcstok(wchar_t *text, const wchar_t *delimiter,
                 wchar_t **context);
 wchar_t *wcscat(wchar_t *destination, const wchar_t *source);
@@ -65,8 +74,12 @@ int mbsinit(const mbstate_t *state);
 size_t mbrlen(const char *input, size_t count, mbstate_t *state);
 size_t mbsrtowcs(wchar_t *destination, const char **source, size_t count,
                  mbstate_t *state);
+size_t mbsnrtowcs(wchar_t *destination, const char **source, size_t byte_count,
+                  size_t count, mbstate_t *state);
 size_t wcsrtombs(char *destination, const wchar_t **source, size_t count,
                  mbstate_t *state);
+size_t wcsnrtombs(char *destination, const wchar_t **source, size_t wide_count,
+                  size_t count, mbstate_t *state);
 
 /* Wide stdio and wcsftime are declared for header compatibility but are not
  * implemented yet: calling one is a link error rather than a silent stub. */

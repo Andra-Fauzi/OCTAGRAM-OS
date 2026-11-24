@@ -6,7 +6,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <inttypes.h>
 #include <limits.h>
+#include <nl_types.h>
 #include <pwd.h>
 #include <sched.h>
 #include <stddef.h>
@@ -1874,6 +1876,7 @@ static void oct_futex_wake_uint(volatile unsigned int *address, int count)
 #define OCT_FUTEX_TID_MASK 0x3fffffffu
 #define OCT_MUTEX_FLAG_ROBUST 0x1u
 #define OCT_MUTEX_FLAG_NOTRECOVERABLE 0x2u
+#define OCT_MUTEX_FLAG_RECURSIVE 0x4u
 #define OCT_ROBUST_HEAD_LENGTH 24u
 #define OCT_MAX_ROBUST_HEADS 64u
 
@@ -1975,6 +1978,7 @@ int pthread_mutexattr_init(pthread_mutexattr_t *attributes)
         return EINVAL;
     }
     attributes->robustness = PTHREAD_MUTEX_STALLED;
+    attributes->type = PTHREAD_MUTEX_DEFAULT;
     return 0;
 }
 
@@ -1983,14 +1987,26 @@ int pthread_mutexattr_destroy(pthread_mutexattr_t *attributes)
     return attributes == NULL ? EINVAL : 0;
 }
 
-/* OCTAGRAM currently supports only normal mutexes. The mutex implementation
- * already has normal (non-recursive) semantics, so this attribute is validated
- * but does not need additional storage in pthread_mutexattr_t. */
+/* Normal and recursive mutexes are implemented; error-checking mutexes are not,
+ * so asking for one fails rather than silently behaving like a normal mutex. */
 int pthread_mutexattr_settype(pthread_mutexattr_t *attributes, int type)
 {
-    if (attributes == NULL || type != PTHREAD_MUTEX_NORMAL) {
+    if (attributes == NULL) {
         return EINVAL;
     }
+    if (type != PTHREAD_MUTEX_NORMAL && type != PTHREAD_MUTEX_RECURSIVE) {
+        return EINVAL;
+    }
+    attributes->type = type;
+    return 0;
+}
+
+int pthread_mutexattr_gettype(const pthread_mutexattr_t *attributes, int *type)
+{
+    if (attributes == NULL || type == NULL) {
+        return EINVAL;
+    }
+    *type = attributes->type;
     return 0;
 }
 
@@ -2025,10 +2041,21 @@ int pthread_mutex_init(pthread_mutex_t *mutex,
     mutex->list.next = NULL;
     mutex->state = 0;
     mutex->flags = 0;
+    mutex->count = 0;
     if (attributes != NULL) {
         if (attributes->robustness == PTHREAD_MUTEX_ROBUST) {
             mutex->flags = OCT_MUTEX_FLAG_ROBUST;
         } else if (attributes->robustness != PTHREAD_MUTEX_STALLED) {
+            return EINVAL;
+        }
+        if (attributes->type == PTHREAD_MUTEX_RECURSIVE) {
+            /* A robust recursive mutex would need the owner TID for both the
+             * kernel robust list and the recursion depth; reject the mix. */
+            if ((mutex->flags & OCT_MUTEX_FLAG_ROBUST) != 0) {
+                return EINVAL;
+            }
+            mutex->flags |= OCT_MUTEX_FLAG_RECURSIVE;
+        } else if (attributes->type != PTHREAD_MUTEX_NORMAL) {
             return EINVAL;
         }
     }
@@ -2168,6 +2195,87 @@ int pthread_mutex_consistent(pthread_mutex_t *mutex)
     }
 }
 
+/* Recursive mutexes store the owner TID in the futex word and the recursion
+ * depth in `count`, so a re-lock by the owner never touches the futex. Without
+ * the recursion depth a mutex would deadlock on its owner instead of failing,
+ * which is what makes the difference visible to std::recursive_mutex. */
+static int oct_mutex_lock_recursive(pthread_mutex_t *mutex)
+{
+    const unsigned int tid = (unsigned int)pthread_self() & OCT_FUTEX_TID_MASK;
+
+    if (tid == 0) {
+        return EINVAL;
+    }
+    for (;;) {
+        const unsigned int word = __atomic_load_n(&mutex->state, __ATOMIC_ACQUIRE);
+        if ((word & OCT_FUTEX_TID_MASK) == tid) {
+            if (mutex->count == UINT_MAX) {
+                return EAGAIN;
+            }
+            ++mutex->count;
+            return 0;
+        }
+        if ((word & OCT_FUTEX_TID_MASK) == 0 &&
+            __sync_bool_compare_and_swap(&mutex->state, word,
+                                         tid | (word & OCT_FUTEX_WAITERS))) {
+            mutex->count = 0;
+            return 0;
+        }
+        if ((word & OCT_FUTEX_TID_MASK) != 0) {
+            if ((word & OCT_FUTEX_WAITERS) == 0) {
+                __sync_bool_compare_and_swap(&mutex->state, word,
+                                             word | OCT_FUTEX_WAITERS);
+            }
+            oct_futex_wait_uint((volatile unsigned int *)&mutex->state,
+                                word | OCT_FUTEX_WAITERS);
+        }
+    }
+}
+
+static int oct_mutex_trylock_recursive(pthread_mutex_t *mutex)
+{
+    const unsigned int tid = (unsigned int)pthread_self() & OCT_FUTEX_TID_MASK;
+
+    if (tid == 0) {
+        return EINVAL;
+    }
+    const unsigned int word = __atomic_load_n(&mutex->state, __ATOMIC_ACQUIRE);
+    if ((word & OCT_FUTEX_TID_MASK) == tid) {
+        if (mutex->count == UINT_MAX) {
+            return EAGAIN;
+        }
+        ++mutex->count;
+        return 0;
+    }
+    if ((word & OCT_FUTEX_TID_MASK) != 0) {
+        return EBUSY;
+    }
+    if (!__sync_bool_compare_and_swap(&mutex->state, word, tid)) {
+        return EBUSY;
+    }
+    mutex->count = 0;
+    return 0;
+}
+
+static int oct_mutex_unlock_recursive(pthread_mutex_t *mutex)
+{
+    const unsigned int tid = (unsigned int)pthread_self() & OCT_FUTEX_TID_MASK;
+
+    if (tid == 0 ||
+        (__atomic_load_n(&mutex->state, __ATOMIC_ACQUIRE) & OCT_FUTEX_TID_MASK) != tid) {
+        return EPERM;
+    }
+    if (mutex->count != 0) {
+        --mutex->count;
+        return 0;
+    }
+    const unsigned int word = __atomic_exchange_n(&mutex->state, 0, __ATOMIC_RELEASE);
+    if ((word & OCT_FUTEX_WAITERS) != 0) {
+        oct_futex_wake_uint((volatile unsigned int *)&mutex->state, 1);
+    }
+    return 0;
+}
+
 int pthread_mutex_lock(pthread_mutex_t *mutex)
 {
     if (mutex == NULL) {
@@ -2175,6 +2283,9 @@ int pthread_mutex_lock(pthread_mutex_t *mutex)
     }
     if ((mutex->flags & OCT_MUTEX_FLAG_ROBUST) != 0) {
         return oct_mutex_lock_robust(mutex);
+    }
+    if ((mutex->flags & OCT_MUTEX_FLAG_RECURSIVE) != 0) {
+        return oct_mutex_lock_recursive(mutex);
     }
     if (__sync_bool_compare_and_swap(&mutex->state, 0, 1)) {
         return 0;
@@ -2198,6 +2309,9 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
     if ((mutex->flags & OCT_MUTEX_FLAG_ROBUST) != 0) {
         return oct_mutex_trylock_robust(mutex);
     }
+    if ((mutex->flags & OCT_MUTEX_FLAG_RECURSIVE) != 0) {
+        return oct_mutex_trylock_recursive(mutex);
+    }
     /* CAS, bukan xchg: menimpa state 2 akan menghilangkan wakeup untuk waiter. */
     return __sync_bool_compare_and_swap(&mutex->state, 0, 1) ? 0 : EBUSY;
 }
@@ -2209,6 +2323,9 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex)
     }
     if ((mutex->flags & OCT_MUTEX_FLAG_ROBUST) != 0) {
         return oct_mutex_unlock_robust(mutex);
+    }
+    if ((mutex->flags & OCT_MUTEX_FLAG_RECURSIVE) != 0) {
+        return oct_mutex_unlock_recursive(mutex);
     }
     if (__sync_lock_test_and_set(&mutex->state, 0) == 2) {
         oct_futex_wake_uint((volatile unsigned int *)&mutex->state, 1);
@@ -5642,6 +5759,38 @@ long ftell(FILE *stream)
     return (long)position;
 }
 
+/* The off_t versions exist so that libc++'s <fstream> does not have to go
+ * through `long`; OCTAGRAM's streams already track 64-bit offsets. */
+int fseeko(FILE *stream, off_t offset, int whence)
+{
+    if (!stream_is_open(stream)) {
+        return stream_failure(stream, EBADF);
+    }
+    if (lseek(stream->fd, offset, whence) < 0) {
+        stream->flags |= STREAM_ERROR;
+        return -1;
+    }
+    stream->flags &= ~(STREAM_EOF | STREAM_PUSHBACK);
+    return 0;
+}
+
+off_t ftello(FILE *stream)
+{
+    if (!stream_is_open(stream)) {
+        stream_failure(stream, EBADF);
+        return (off_t)-1;
+    }
+    off_t position = lseek(stream->fd, 0, SEEK_CUR);
+    if (position < 0) {
+        stream->flags |= STREAM_ERROR;
+        return (off_t)-1;
+    }
+    if ((stream->flags & STREAM_PUSHBACK) != 0) {
+        --position;
+    }
+    return position;
+}
+
 void rewind(FILE *stream)
 {
     if (fseek(stream, 0, SEEK_SET) == 0) {
@@ -6725,6 +6874,48 @@ int snprintf(char *buffer, size_t size, const char *format, ...)
     return result;
 }
 
+/* GNU extensions: allocate the formatted string instead of writing into a
+ * caller-sized buffer. The length pass and the render pass both consume the
+ * same va_list, so each one gets its own copy. */
+int vasprintf(char **result, const char *format, va_list arguments)
+{
+    if (result == NULL || format == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    va_list measure;
+    va_copy(measure, arguments);
+    const int length = vsnprintf(NULL, 0, format, measure);
+    va_end(measure);
+    if (length < 0) {
+        return -1;
+    }
+    char *buffer = malloc((size_t)length + 1);
+    if (buffer == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+    va_list render;
+    va_copy(render, arguments);
+    const int written = vsnprintf(buffer, (size_t)length + 1, format, render);
+    va_end(render);
+    if (written < 0) {
+        free(buffer);
+        return -1;
+    }
+    *result = buffer;
+    return written;
+}
+
+int asprintf(char **result, const char *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    const int written = vasprintf(result, format, arguments);
+    va_end(arguments);
+    return written;
+}
+
 int vsprintf(char *buffer, const char *format, va_list arguments)
 {
     if (buffer == NULL) {
@@ -7308,23 +7499,77 @@ struct tm *localtime_r(const time_t *time_value, struct tm *result)
     return result;
 }
 
+/* long double is the x87 80-bit format here: a 64-bit mantissa with an explicit
+ * integer bit followed by a 16-bit sign and exponent word. Scaling by a power of
+ * two is a pure exponent update -- no arithmetic and no rounding error, unlike
+ * multiplying by 2.0L in a loop. */
+typedef union {
+    long double value;
+    struct {
+        unsigned long long mantissa;
+        unsigned short exponent;
+    } parts;
+} oct_long_double_bits;
+
+#define OCT_LD_EXP_MASK 0x7fffu
+#define OCT_LD_SIGN 0x8000u
+#define OCT_LD_ONE 0x8000000000000000ULL
+
 long double ldexpl(long double value, int exponent)
 {
-    if (exponent > 16384) {
-        return __builtin_huge_vall();
+    oct_long_double_bits bits;
+    int field;
+    long long target;
+
+    bits.value = value;
+    field = bits.parts.exponent & OCT_LD_EXP_MASK;
+    if (field == OCT_LD_EXP_MASK || field == 0) {
+        return value; /* infinity, NaN or zero (including subnormals) */
     }
-    if (exponent < -16384) {
-        return 0.0L;
+    target = (long long)field + exponent;
+    if (target >= OCT_LD_EXP_MASK) {
+        bits.parts.exponent =
+            (unsigned short)((bits.parts.exponent & OCT_LD_SIGN) | OCT_LD_EXP_MASK);
+        bits.parts.mantissa = OCT_LD_ONE;
+        return bits.value;
     }
-    while (exponent > 0) {
-        value *= 2.0L;
-        --exponent;
+    if (target <= 0) {
+        const int shift = 1 - (int)target;
+        unsigned long long mantissa = bits.parts.mantissa;
+        unsigned long long rounded;
+        unsigned long long remainder;
+        unsigned long long halfway;
+
+        if (shift > 64) {
+            bits.parts.exponent = (unsigned short)(bits.parts.exponent & OCT_LD_SIGN);
+            bits.parts.mantissa = 0;
+            return bits.value;
+        }
+        if (shift == 64) {
+            rounded = 0;
+            remainder = mantissa;
+            halfway = OCT_LD_ONE;
+        } else {
+            rounded = mantissa >> shift;
+            remainder = mantissa & ((1ULL << shift) - 1);
+            halfway = 1ULL << (shift - 1);
+        }
+        /* Round to nearest, ties to even, before the result becomes subnormal. */
+        if (remainder > halfway || (remainder == halfway && (rounded & 1ULL) != 0)) {
+            ++rounded;
+        }
+        bits.parts.exponent = (unsigned short)(bits.parts.exponent & OCT_LD_SIGN);
+        bits.parts.mantissa = rounded;
+        if (rounded == OCT_LD_ONE) {
+            /* Rounding carried into the smallest normal value. */
+            bits.parts.exponent =
+                (unsigned short)((bits.parts.exponent & OCT_LD_SIGN) | 1u);
+        }
+        return bits.value;
     }
-    while (exponent < 0) {
-        value /= 2.0L;
-        ++exponent;
-    }
-    return value;
+    bits.parts.exponent =
+        (unsigned short)((bits.parts.exponent & OCT_LD_SIGN) | (unsigned short)target);
+    return bits.value;
 }
 
 long sysconf(int name)
@@ -8576,6 +8821,43 @@ int clock_getres(clockid_t clock_id, struct timespec *resolution)
         oct_clock_getres(clock_id, (struct oct_timespec *)resolution));
 }
 
+/* C11 <time.h> base for timespec_get; only TIME_UTC exists. */
+int timespec_get(struct timespec *time_value, int base)
+{
+    if (time_value == NULL || base != TIME_UTC) {
+        return 0;
+    }
+    if (clock_gettime(CLOCK_REALTIME, time_value) != 0) {
+        return 0;
+    }
+    return base;
+}
+
+/* POSIX message catalogs. There are no catalog files in OCTAGRAM, so catopen
+ * fails (callers then use their compiled-in strings) and catgets ignores the
+ * catalog entirely. */
+nl_catd catopen(const char *name, int flag)
+{
+    (void)name;
+    (void)flag;
+    return (nl_catd)-1;
+}
+
+char *catgets(nl_catd catalog, int set_number, int message_number,
+              const char *message)
+{
+    (void)catalog;
+    (void)set_number;
+    (void)message_number;
+    return (char *)message;
+}
+
+int catclose(nl_catd catalog)
+{
+    (void)catalog;
+    return 0;
+}
+
 ssize_t getrandom(void *buffer, size_t length, unsigned int flags)
 {
     if (buffer == NULL && length != 0) {
@@ -8700,6 +8982,72 @@ static struct lconv oct_locale_conv = {
     .int_p_sign_posn = 127,
     .int_n_sign_posn = 127
 };
+
+/* Both `locale.h` and `libc++`'s <locale> pull in the POSIX.1-2008 locale
+ * objects. OCTAGRAM has only the C locale, so there is a single object and the
+ * per-object functions are no-ops that still report errors honestly. */
+struct oct_ctagram_locale {
+    int marker;
+};
+
+static struct oct_ctagram_locale oct_c_locale = {0};
+
+static int oct_locale_name_is_c(const char *name)
+{
+    return name == NULL || name[0] == '\0' || strcmp(name, "C") == 0 ||
+           strcmp(name, "POSIX") == 0;
+}
+
+locale_t newlocale(int category_mask, const char *name, locale_t base)
+{
+    (void)base;
+    if ((category_mask & ~(int)LC_ALL_MASK) != 0) {
+        errno = EINVAL;
+        return (locale_t)0;
+    }
+    if (category_mask == 0) {
+        errno = EINVAL;
+        return (locale_t)0;
+    }
+    if (!oct_locale_name_is_c(name)) {
+        errno = ENOENT; /* no locale files are installed */
+        return (locale_t)0;
+    }
+    return &oct_c_locale;
+}
+
+locale_t duplocale(locale_t object)
+{
+    if (object == (locale_t)0 || object == LC_GLOBAL_LOCALE) {
+        errno = EINVAL;
+        return (locale_t)0;
+    }
+    /* The C locale object is stateless, so a "copy" is the same object. */
+    return &oct_c_locale;
+}
+
+static _Thread_local locale_t oct_current_locale;
+
+locale_t uselocale(locale_t object)
+{
+    locale_t previous = oct_current_locale != (locale_t)0 ? oct_current_locale
+                                                          : LC_GLOBAL_LOCALE;
+    if (object == (locale_t)0) {
+        return previous;
+    }
+    if (object == LC_GLOBAL_LOCALE) {
+        oct_current_locale = (locale_t)0;
+        return previous;
+    }
+    oct_current_locale = object;
+    return previous;
+}
+
+void freelocale(locale_t object)
+{
+    /* Nothing to release: every object is the shared C locale singleton. */
+    (void)object;
+}
 
 char *setlocale(int category, const char *locale)
 {
@@ -9103,6 +9451,47 @@ size_t mbstowcs(wchar_t *destination, const char *source, size_t count)
         destination[used] = 0;
     }
     return used;
+}
+
+/* The multibyte encoding is one byte per character (Latin-1), matching mbrtowc,
+ * so a char16_t or char32_t conversion never needs more than one byte and never
+ * produces a surrogate pair. */
+size_t mbrtoc16(char16_t *restrict unit, const char *restrict input, size_t count,
+                mbstate_t *restrict state)
+{
+    if (state != NULL) {
+        *state = (mbstate_t){0, {0, 0, 0, 0}, 0};
+    }
+    if (input == NULL) {
+        return 0;
+    }
+    if (count == 0) {
+        return (size_t)-2;
+    }
+    const unsigned char byte = (unsigned char)*input;
+    if (unit != NULL) {
+        *unit = (char16_t)byte;
+    }
+    return byte == 0 ? 0 : 1;
+}
+
+size_t mbrtoc32(char32_t *restrict wide, const char *restrict input, size_t count,
+                mbstate_t *restrict state)
+{
+    if (state != NULL) {
+        *state = (mbstate_t){0, {0, 0, 0, 0}, 0};
+    }
+    if (input == NULL) {
+        return 0;
+    }
+    if (count == 0) {
+        return (size_t)-2;
+    }
+    const unsigned char byte = (unsigned char)*input;
+    if (wide != NULL) {
+        *wide = (char32_t)byte;
+    }
+    return byte == 0 ? 0 : 1;
 }
 
 size_t c32rtomb(char *restrict output, char32_t wide, mbstate_t *restrict state)
@@ -9986,6 +10375,307 @@ char *asctime(const struct tm *value)
              months[month], value->tm_mday, value->tm_hour, value->tm_min, value->tm_sec,
              value->tm_year + 1900);
     return buffer;
+}
+
+/* strftime in the C locale (English month and weekday names, "UTC" zone).
+ * The `E` and `O` modifiers select an alternative representation in a locale;
+ * with only the C locale available they are dropped, as the standard allows. */
+static const char *const oct_strftime_weekdays_short[7] = {"Sun", "Mon", "Tue", "Wed",
+                                                           "Thu", "Fri", "Sat"};
+static const char *const oct_strftime_weekdays_long[7] = {"Sunday",   "Monday",    "Tuesday",
+                                                          "Wednesday", "Thursday", "Friday",
+                                                          "Saturday"};
+static const char *const oct_strftime_months_short[12] = {"Jan", "Feb", "Mar", "Apr", "May",
+                                                           "Jun", "Jul", "Aug", "Sep", "Oct",
+                                                           "Nov", "Dec"};
+static const char *const oct_strftime_months_long[12] = {
+    "January", "February", "March",     "April",   "May",      "June",
+    "July",    "August",   "September", "October", "November", "December"};
+
+static int oct_strftime_is_leap(long long year)
+{
+    return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+}
+
+static int oct_strftime_iso_week(long long year, int yday, int weekday)
+{
+    const int monday_based = (weekday + 6) % 7; /* Monday == 0 */
+    const int jan1 = ((weekday - yday) % 7 + 7) % 7;
+    const int days = oct_strftime_is_leap(year) ? 366 : 365;
+    int week = (yday - monday_based + 10) / 7;
+    if (week < 1) {
+        const long long previous = year - 1;
+        const int previous_days = oct_strftime_is_leap(previous) ? 366 : 365;
+        const int december31 = (jan1 + 6) % 7;
+        return oct_strftime_iso_week(previous, previous_days - 1, december31);
+    }
+    if (week == 53) {
+        const int next_jan1 = (jan1 + days) % 7;
+        /* A year has 53 ISO weeks only when January 1st is a Thursday, or a
+         * Wednesday in a leap year; otherwise that week belongs to next year. */
+        const int long_year = next_jan1 == 4 || (next_jan1 == 3 && days == 366);
+        if (!long_year) {
+            week = 1;
+        }
+    }
+    return week;
+}
+
+size_t strftime(char *buffer, size_t capacity, const char *format, const struct tm *value)
+{
+    size_t used = 0;
+    if (buffer == NULL || format == NULL || value == NULL || capacity == 0) {
+        return 0;
+    }
+    const long long year = (long long)value->tm_year + 1900;
+    const int weekday = ((value->tm_wday % 7) + 7) % 7;
+    const int month = value->tm_mon >= 0 && value->tm_mon < 12 ? value->tm_mon : 0;
+    const int yday = value->tm_yday;
+    int hour12 = value->tm_hour % 12;
+    if (hour12 == 0) {
+        hour12 = 12;
+    }
+    for (const char *cursor = format; *cursor != '\0'; ++cursor) {
+        char text[32];
+        const char *piece = text;
+        size_t length = 0;
+        if (*cursor != '%') {
+            text[0] = *cursor;
+            piece = text;
+            length = 1;
+        } else {
+            ++cursor;
+            if (*cursor == 'E' || *cursor == 'O') {
+                ++cursor;
+            }
+            switch (*cursor) {
+            case '\0':
+                /* A trailing "%" is undefined behaviour; emit it literally. */
+                text[0] = '%';
+                length = 1;
+                --cursor;
+                break;
+            case '%':
+                text[0] = '%';
+                length = 1;
+                break;
+            case 'a':
+                piece = oct_strftime_weekdays_short[weekday];
+                break;
+            case 'A':
+                piece = oct_strftime_weekdays_long[weekday];
+                break;
+            case 'b':
+            case 'h':
+                piece = oct_strftime_months_short[month];
+                break;
+            case 'B':
+                piece = oct_strftime_months_long[month];
+                break;
+            case 'c':
+                length = (size_t)snprintf(text, sizeof text, "%s %s %2d %02d:%02d:%02d %lld",
+                                         oct_strftime_weekdays_short[weekday],
+                                         oct_strftime_months_short[month], value->tm_mday,
+                                         value->tm_hour, value->tm_min, value->tm_sec, year);
+                break;
+            case 'C':
+                length = (size_t)snprintf(text, sizeof text, "%02lld", year / 100);
+                break;
+            case 'd':
+                length = (size_t)snprintf(text, sizeof text, "%02d", value->tm_mday);
+                break;
+            case 'D':
+            case 'x':
+                length = (size_t)snprintf(text, sizeof text, "%02d/%02d/%02d", month + 1,
+                                         value->tm_mday, (int)(year % 100));
+                break;
+            case 'e':
+                length = (size_t)snprintf(text, sizeof text, "%2d", value->tm_mday);
+                break;
+            case 'F':
+                length = (size_t)snprintf(text, sizeof text, "%04lld-%02d-%02d", year, month + 1,
+                                         value->tm_mday);
+                break;
+            case 'H':
+                length = (size_t)snprintf(text, sizeof text, "%02d", value->tm_hour);
+                break;
+            case 'I':
+                length = (size_t)snprintf(text, sizeof text, "%02d", hour12);
+                break;
+            case 'j':
+                length = (size_t)snprintf(text, sizeof text, "%03d", yday + 1);
+                break;
+            case 'm':
+                length = (size_t)snprintf(text, sizeof text, "%02d", month + 1);
+                break;
+            case 'M':
+                length = (size_t)snprintf(text, sizeof text, "%02d", value->tm_min);
+                break;
+            case 'n':
+                text[0] = '\n';
+                length = 1;
+                break;
+            case 'p':
+                piece = value->tm_hour < 12 ? "AM" : "PM";
+                break;
+            case 'r':
+                length = (size_t)snprintf(text, sizeof text, "%02d:%02d:%02d %s", hour12,
+                                         value->tm_min, value->tm_sec,
+                                         value->tm_hour < 12 ? "AM" : "PM");
+                break;
+            case 'R':
+                length = (size_t)snprintf(text, sizeof text, "%02d:%02d", value->tm_hour,
+                                         value->tm_min);
+                break;
+            case 'S':
+                length = (size_t)snprintf(text, sizeof text, "%02d", value->tm_sec);
+                break;
+            case 't':
+                text[0] = '\t';
+                length = 1;
+                break;
+            case 'T':
+            case 'X':
+                length = (size_t)snprintf(text, sizeof text, "%02d:%02d:%02d", value->tm_hour,
+                                         value->tm_min, value->tm_sec);
+                break;
+            case 'u':
+                length = (size_t)snprintf(text, sizeof text, "%d", weekday == 0 ? 7 : weekday);
+                break;
+            case 'U':
+                length = (size_t)snprintf(text, sizeof text, "%02d", (yday + 7 - weekday) / 7);
+                break;
+            case 'V':
+                length = (size_t)snprintf(text, sizeof text, "%02d",
+                                         oct_strftime_iso_week(year, yday, weekday));
+                break;
+            case 'w':
+                length = (size_t)snprintf(text, sizeof text, "%d", weekday);
+                break;
+            case 'W':
+                length = (size_t)snprintf(text, sizeof text, "%02d",
+                                         (yday + 7 - (weekday + 6) % 7) / 7);
+                break;
+            case 'y':
+                length = (size_t)snprintf(text, sizeof text, "%02d", (int)(year % 100));
+                break;
+            case 'Y':
+                length = (size_t)snprintf(text, sizeof text, "%lld", year);
+                break;
+            case 'z':
+                /* OCTAGRAM keeps the wall clock in UTC, so the offset is zero. */
+                piece = "+0000";
+                break;
+            case 'Z':
+                piece = "UTC";
+                break;
+            default:
+                /* Unsupported conversions are undefined behaviour in C; keep the
+                 * directive visible instead of silently dropping it. */
+                length = (size_t)snprintf(text, sizeof text, "%%%c", *cursor);
+                break;
+            }
+            if (length == 0) {
+                length = strlen(piece);
+            }
+        }
+        if (used + length >= capacity) {
+            buffer[used] = '\0';
+            return 0;
+        }
+        memcpy(buffer + used, piece, length);
+        used += length;
+    }
+    buffer[used] = '\0';
+    return used;
+}
+
+/* Locale-aware variants. The C locale is the only one OCTAGRAM has, so each of
+ * these forwards to its plain counterpart and ignores the locale argument. */
+size_t strftime_l(char *buffer, size_t capacity, const char *format,
+                  const struct tm *time_value, locale_t locale)
+{
+    (void)locale;
+    return strftime(buffer, capacity, format, time_value);
+}
+
+long strtol_l(const char *text, char **end, int base, locale_t locale)
+{
+    (void)locale;
+    return strtol(text, end, base);
+}
+
+long long strtoll_l(const char *text, char **end, int base, locale_t locale)
+{
+    (void)locale;
+    return strtoll(text, end, base);
+}
+
+unsigned long strtoul_l(const char *text, char **end, int base, locale_t locale)
+{
+    (void)locale;
+    return strtoul(text, end, base);
+}
+
+unsigned long long strtoull_l(const char *text, char **end, int base, locale_t locale)
+{
+    (void)locale;
+    return strtoull(text, end, base);
+}
+
+double strtod_l(const char *text, char **end, locale_t locale)
+{
+    (void)locale;
+    return strtod(text, end);
+}
+
+float strtof_l(const char *text, char **end, locale_t locale)
+{
+    (void)locale;
+    return strtof(text, end);
+}
+
+long double strtold_l(const char *text, char **end, locale_t locale)
+{
+    (void)locale;
+    return strtold(text, end);
+}
+
+/* <inttypes.h>. intmax_t is 64-bit on this ABI, so these are the long long
+ * conversions with the standard's names. */
+intmax_t imaxabs(intmax_t value)
+{
+    return value < 0 ? -value : value;
+}
+
+imaxdiv_t imaxdiv(intmax_t numerator, intmax_t denominator)
+{
+    imaxdiv_t result;
+    result.quot = numerator / denominator;
+    result.rem = numerator % denominator;
+    return result;
+}
+
+intmax_t strtoimax(const char *text, char **end, int base)
+{
+    return (intmax_t)strtoll(text, end, base);
+}
+
+uintmax_t strtoumax(const char *text, char **end, int base)
+{
+    return (uintmax_t)strtoull(text, end, base);
+}
+
+int strcoll_l(const char *left, const char *right, locale_t locale)
+{
+    (void)locale;
+    return strcoll(left, right);
+}
+
+size_t strxfrm_l(char *destination, const char *source, size_t count, locale_t locale)
+{
+    (void)locale;
+    return strxfrm(destination, source, count);
 }
 
 /* tmpnam only needs to exist for header compatibility; it returns a name that is

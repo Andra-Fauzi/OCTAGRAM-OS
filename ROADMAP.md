@@ -333,17 +333,14 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     `float`, dengan pembulatan IEEE manual dan uji host bit-per-bit
   - [x] Varian `long double` x87 (`__floatuntixf`, `__floattixf`,
     `__fixunsxfti`, `__fixxfti`) dengan format 80-bit manual
-  - [x] libc++ 18.1.8 headers di-vendor (`user/third_party/libcxx`) dengan
-    `__config_site` OCTAGRAM; `<type_traits>`, `<limits>`, `<new>`, `<cstddef>`,
-    `<cstdint>`, `<cstring>` lulus dan `build/libcxx_smoke.elf` ter-link
-  - [x] Kelengkapan C library untuk libc++: `max_align_t`, `div`/`ldiv`/`lldiv`,
-    `atol`/`atoll`/`labs`/`llabs`, `rand`/`srand`, `bsearch`, `_Exit`,
-    `at_quick_exit`/`quick_exit`, `aligned_alloc`, `mblen`/`mbtowc`/`wctomb`,
-    `strcoll`/`strxfrm`, `difftime`/`mktime`/`asctime`/`clock`,
-    `fgetpos`/`fsetpos`/`setbuf`/`setvbuf`/`tmpnam`, API wide-string penuh
-    (`user/wchar.c`), dan varian `long double` libm (`user/math_wide.c`)
-  - [ ] Blocker libc++ berikutnya: `strftime`, `ldexpl`/`scalblnl`,
-    `struct __mbstate_t`, wide stdio, dan tabel locale
+  - [x] 102 header standar libc++ 18.1.8 terkompilasi; `<array>`, `<vector>`,
+    `<optional>`, `<tuple>`, `<string_view>` dipakai `build/libcxx_smoke.elf`
+    tanpa simbol undefined
+  - [x] Kelengkapan C library untuk libc++: `fenv.h` (x87), `inttypes.h`,
+    `mbrtoc16`/`mbrtoc32`, `timespec_get`, `nl_types.h`, objek locale POSIX,
+    varian `_l`, `strftime`, dan `ldexpl` eksak berbasis eksponen x87
+  - [ ] Bangun `libcxx/src` (`libc++.a`) supaya `std::string`, `std::sort`, dan
+    iostream bisa ditautkan
   - [x] Implementasi parser TinyCC untuk `__builtin_add_overflow`,
     `__builtin_sub_overflow`, dan `__builtin_mul_overflow`; runtime helper
     mendukung hasil signed/unsigned 8/16/32/64 bit dan tes host tersedia.

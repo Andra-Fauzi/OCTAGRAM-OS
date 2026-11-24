@@ -8,6 +8,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <limits.h>
+#include <fenv.h>
 
 typedef union {
     double value;
@@ -1102,3 +1103,151 @@ float nexttowardf(float x, long double y)
 float fdimf(float x, float y) { return (float)fdim((double)x, (double)y); }
 float fmaxf(float x, float y) { return (float)fmax((double)x, (double)y); }
 float fminf(float x, float y) { return (float)fmin((double)x, (double)y); }
+
+/* x87 floating-point environment (see include/fenv.h). */
+static unsigned short oct_fenv_control(void)
+{
+    unsigned short word;
+    __asm__ __volatile__("fnstcw %0" : "=m"(word));
+    return word;
+}
+
+static void oct_fenv_set_control(unsigned short word)
+{
+    __asm__ __volatile__("fldcw %0" : : "m"(word) : "memory");
+}
+
+static unsigned short oct_fenv_status(void)
+{
+    unsigned short word;
+    __asm__ __volatile__("fnstsw %0" : "=am"(word));
+    return word;
+}
+
+int fegetround(void)
+{
+    return oct_fenv_control() & FE_ROUND_MASK;
+}
+
+int fesetround(int rounding)
+{
+    if (rounding != FE_TONEAREST && rounding != FE_DOWNWARD && rounding != FE_UPWARD &&
+        rounding != FE_TOWARDZERO) {
+        return -1;
+    }
+    oct_fenv_set_control(
+        (unsigned short)((oct_fenv_control() & ~(unsigned short)FE_ROUND_MASK) | rounding));
+    return 0;
+}
+
+int feclearexcept(int excepts)
+{
+    if ((excepts & ~FE_ALL_EXCEPT) != 0) {
+        return -1;
+    }
+    /* The x87 can only clear the whole status word, which is a superset of the
+     * requested flags; fenv.h documents that deviation. */
+    __asm__ __volatile__("fnclex" ::: "memory");
+    return 0;
+}
+
+int fetestexcept(int excepts)
+{
+    return oct_fenv_status() & excepts & FE_ALL_EXCEPT;
+}
+
+int fegetexceptflag(fexcept_t *flag, int excepts)
+{
+    if (flag == 0) {
+        return -1;
+    }
+    *flag = (fexcept_t)(oct_fenv_status() & excepts & FE_ALL_EXCEPT);
+    return 0;
+}
+
+int feraiseexcept(int excepts)
+{
+    if ((excepts & ~FE_ALL_EXCEPT) != 0) {
+        return -1;
+    }
+    volatile double zero = 0.0;
+    volatile double one = 1.0;
+    volatile double big = 1e308;
+    volatile double tiny = 1e-308;
+    if ((excepts & FE_INVALID) != 0) {
+        volatile double result = zero / zero;
+        (void)result;
+    }
+    if ((excepts & FE_DIVBYZERO) != 0) {
+        volatile double result = one / zero;
+        (void)result;
+    }
+    if ((excepts & FE_OVERFLOW) != 0) {
+        volatile double result = big * big;
+        (void)result;
+    }
+    if ((excepts & FE_UNDERFLOW) != 0) {
+        volatile double result = tiny * tiny;
+        (void)result;
+    }
+    if ((excepts & FE_INEXACT) != 0) {
+        volatile double result = one / 3.0;
+        (void)result;
+    }
+    return 0;
+}
+
+int fesetexceptflag(const fexcept_t *flag, int excepts)
+{
+    if (flag == 0) {
+        return -1;
+    }
+    const int bits = (int)*flag & excepts & FE_ALL_EXCEPT;
+    return bits == 0 ? 0 : feraiseexcept(bits);
+}
+
+int fegetenv(fenv_t *environment)
+{
+    if (environment == 0) {
+        return -1;
+    }
+    environment->control = oct_fenv_control();
+    environment->status = oct_fenv_status();
+    return 0;
+}
+
+int fesetenv(const fenv_t *environment)
+{
+    if (environment == FE_DFL_ENV) {
+        oct_fenv_set_control(0x037f); /* default x87 control word */
+        __asm__ __volatile__("fnclex" ::: "memory");
+        return 0;
+    }
+    if (environment == 0) {
+        return -1;
+    }
+    oct_fenv_set_control(environment->control);
+    if ((environment->status & FE_ALL_EXCEPT) == 0) {
+        __asm__ __volatile__("fnclex" ::: "memory");
+    }
+    return 0;
+}
+
+int feholdexcept(fenv_t *environment)
+{
+    if (fegetenv(environment) != 0) {
+        return -1;
+    }
+    oct_fenv_set_control((unsigned short)(oct_fenv_control() | FE_ALL_EXCEPT));
+    __asm__ __volatile__("fnclex" ::: "memory");
+    return 0;
+}
+
+int feupdateenv(const fenv_t *environment)
+{
+    const int raised = fetestexcept(FE_ALL_EXCEPT);
+    if (fesetenv(environment) != 0) {
+        return -1;
+    }
+    return raised == 0 ? 0 : feraiseexcept(raised);
+}

@@ -20,6 +20,7 @@ typedef struct {
     struct oct_pthread_robust_entry list; /* offset 0 */
     volatile unsigned int state;          /* offset 8: kata futex */
     volatile unsigned int flags;
+    volatile unsigned int count; /* recursion depth of a recursive mutex */
 } pthread_mutex_t;
 typedef struct {
     uintptr_t opaque;
@@ -38,9 +39,10 @@ typedef struct {
 
 typedef struct {
     int robustness;
+    int type;
 } pthread_mutexattr_t;
 
-#define PTHREAD_MUTEX_INITIALIZER {{0}, 0, 0}
+#define PTHREAD_MUTEX_INITIALIZER {{0}, 0, 0, 0}
 #define PTHREAD_ONCE_INIT {0}
 #define PTHREAD_COND_INITIALIZER {0}
 
@@ -48,6 +50,9 @@ typedef struct {
 #define PTHREAD_MUTEX_NORMAL 0
 #define PTHREAD_MUTEX_DEFAULT PTHREAD_MUTEX_NORMAL
 #define PTHREAD_MUTEX_ROBUST 1
+#define PTHREAD_MUTEX_RECURSIVE 1
+#define PTHREAD_MUTEX_ERRORCHECK 2
+#define PTHREAD_MUTEX_ADAPTIVE_NP 3
 #define PTHREAD_KEYS_MAX 64
 #define PTHREAD_DESTRUCTOR_ITERATIONS 4
 
@@ -68,6 +73,7 @@ int pthread_mutex_consistent(pthread_mutex_t *mutex);
 int pthread_mutexattr_init(pthread_mutexattr_t *attributes);
 int pthread_mutexattr_destroy(pthread_mutexattr_t *attributes);
 int pthread_mutexattr_settype(pthread_mutexattr_t *attributes, int type);
+int pthread_mutexattr_gettype(const pthread_mutexattr_t *attributes, int *type);
 int pthread_mutexattr_setrobust(pthread_mutexattr_t *attributes,
                                 int robustness);
 int pthread_mutexattr_getrobust(const pthread_mutexattr_t *attributes,

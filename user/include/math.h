@@ -182,11 +182,6 @@ float fmaxf(float, float);
 float fminf(float, float);
 float fmaf(float, float, float);
 
-#ifdef __cplusplus
-}
-#endif
-
-#endif
 
 
 
@@ -250,3 +245,11 @@ long double tanhl(long double arg0);
 long double tanl(long double arg0);
 long double tgammal(long double arg0);
 long double truncl(long double arg0);
+
+long double scalblnl(long double arg0, long arg1);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

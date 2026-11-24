@@ -246,6 +246,28 @@ fn main() {
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-CLOEXEC-PASS");
 
+    // SOCK_NONBLOCK must be visible through F_GETFL on both socket endpoints.
+    let mut nonblock_pair = [-1i32; 2];
+    let nonblock_result = unsafe {
+        syscall4(127, 1, 1 | 0x800, 0, nonblock_pair.as_mut_ptr() as usize as u64)
+    };
+    let nonblock_ok = nonblock_result == 0
+        && nonblock_pair[0] >= 0
+        && nonblock_pair[1] >= 0
+        && unsafe { syscall3(34, nonblock_pair[0] as u64, 3, 0) } == 0x802
+        && unsafe { syscall3(34, nonblock_pair[1] as u64, 3, 0) } == 0x802;
+    if nonblock_pair[0] >= 0 {
+        unsafe { syscall3(4, nonblock_pair[0] as u64, 0, 0); }
+    }
+    if nonblock_pair[1] >= 0 {
+        unsafe { syscall3(4, nonblock_pair[1] as u64, 0, 0); }
+    }
+    if !nonblock_ok {
+        marker("RUST-STD-UNIX-SOCKETPAIR-NONBLOCK-FAIL");
+        std::process::exit(76);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-NONBLOCK-PASS");
+
     let (tls_value, tls_address) = RUST_TLS_PROBE.with(|value| {
         let initial = value.get();
         let address = value as *const Cell<u64> as usize;

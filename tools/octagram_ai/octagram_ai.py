@@ -20,9 +20,9 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
-REPO = Path(os.environ.get("OCTAGRAM_REPO", ".")).expanduser().resolve()
+REPO = Path(os.environ.get("OCTAGRAM_REPO") or ".").expanduser().resolve()
 BASE_REF = os.environ.get("OCTAGRAM_BASE_REF", "feature/native-self-hosting-testing-2")
-WORKTREE = Path(os.environ.get("OCTAGRAM_WORKTREE", str(REPO.parent / (REPO.name + "-ai-worktree")))).expanduser().resolve()
+WORKTREE = Path(os.environ.get("OCTAGRAM_WORKTREE") or str(REPO.parent / (REPO.name + "-ai-worktree"))).expanduser().resolve()
 LLM_BASE_URL = os.environ.get("OCTAGRAM_LLM_BASE_URL", "http://127.0.0.1:8080/v1").rstrip("/")
 LLM_MODEL = os.environ.get("OCTAGRAM_LLM_MODEL", "qwen2.5-coder-3b-instruct")
 LLM_API_KEY = os.environ.get("OCTAGRAM_LLM_API_KEY", "local")
@@ -133,6 +133,17 @@ def repo_read(raw_path: str) -> str:
 
 
 def apply_patch(patch: str) -> str:
+    # Reject traversal and Git metadata paths before invoking git.
+    for line in patch.splitlines():
+        if line.startswith(("+++ ", "--- ")):
+            raw_path = line[4:].split("\\t", 1)[0]
+            if raw_path == "/dev/null":
+                continue
+            if raw_path.startswith(("a/", "b/")):
+                raw_path = raw_path[2:]
+            candidate = PurePosixPath(raw_path)
+            if candidate.is_absolute() or ".." in candidate.parts or (candidate.parts and candidate.parts[0] == ".git"):
+                raise HTTPException(status_code=400, detail="Patch contains an unsafe path.")
     # git apply rejects paths escaping the worktree unless --unsafe-paths is used.
     check = subprocess.run(
         ["git", "apply", "--check", "--whitespace=nowarn", "-"],
@@ -156,7 +167,7 @@ def _docker_build_command(recipe: str) -> list[str]:
     command = [
         DOCKER_BIN, "run", "--rm",
         "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges",
-        "--pids-limit=256", "--memory=10g", "--cpus=4", "--read-only",
+        "--pids-limit=256", "--memory=8g", "--cpus=4", "--read-only",
         "--tmpfs", "/tmp:rw,nosuid,nodev,size=2g",
         "--env", "CARGO_HOME=/tmp/cargo",
         "--env", "CARGO_NET_OFFLINE=true",

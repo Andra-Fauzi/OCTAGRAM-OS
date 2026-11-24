@@ -133,3 +133,15 @@ This is the first usable foundation, not a fully autonomous software engineer ye
 - A successful host build is not evidence of QEMU or hardware success. Preserve the repository's evidence levels: host-tested, QEMU-tested, hardware-tested.
 
 See `docs/rust-port-guide.md`, `docs/rust-m4-3-backend-plan.md`, `docs/native-self-hosting-roadmap.md`, `docs/building.md`, and `docs/testing.md` for project-specific rules.
+
+### Autonomous task example
+
+Ask the local model to propose a small patch, apply it in the detached worktree, and run the ordered kernel host-test sequence:
+
+```bash
+curl -s http://127.0.0.1:8787/agent/task \
+  -H 'Content-Type: application/json' \
+  -d '{"task":"Inspect the Rust native bootstrap milestone and implement one small, evidence-backed missing test.","build_recipe":"kernel-tests","max_iterations":2}'
+```
+
+The agent stops after a successful build or two attempts. Inspect the returned patches and `GET /workspace/status`; nothing is committed or pushed automatically.

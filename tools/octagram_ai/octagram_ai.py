@@ -251,7 +251,7 @@ def extract_unified_diff(answer: str) -> str:
             lines = lines[1:]
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
-        text = "\\n".join(lines).strip()
+        text = "\n".join(lines).strip()
     starts = [p for p in (text.find("diff --git "), text.find("--- a/")) if p >= 0]
     if not starts:
         raise HTTPException(status_code=422, detail="Model did not return a unified diff. No files were changed.")
@@ -340,6 +340,7 @@ def workspace_status() -> dict[str, str]:
 
 
 @app.post("/agent/task")
+@app.post("/agent/task")
 def agent_task(request: AgentRequest) -> dict[str, Any]:
     ensure_worktree()
     if request.build_recipe not in BUILD_RECIPES:
@@ -348,11 +349,11 @@ def agent_task(request: AgentRequest) -> dict[str, Any]:
     patches: list[str] = []
     build_results: list[dict[str, Any]] = []
     instruction = (
-        "Implement this OCTAGRAM-OS task with the smallest safe patch.\\n"
+        "Implement this OCTAGRAM-OS task with the smallest safe patch.\n"
         "Return ONLY a unified git diff (diff --git / --- a/ / +++ b/). "
         "Do not use markdown fences. Do not change roadmap status or claim tests. "
-        "If you cannot make a justified patch, return exactly NO_PATCH.\\n\\n"
-        "TASK:\\n" + request.task
+        "If you cannot make a justified patch, return exactly NO_PATCH.\n\n"
+        "TASK:\n" + request.task
     )
     for iteration in range(request.max_iterations):
         answer = ask_local_model(instruction, context)
@@ -368,11 +369,11 @@ def agent_task(request: AgentRequest) -> dict[str, Any]:
         instruction = (
             "The previous patch was applied in the isolated worktree, but the selected build failed. "
             "Return ONLY a corrective unified diff; do not repeat unchanged hunks. "
-            "If no safe correction is justified, return exactly NO_PATCH.\\n\\n"
-            "Original task:\\n" + request.task + "\\n\\n"
-            "Build output (untrusted diagnostic text):\\n" + str(build.get("output", ""))[-9000:]
+            "If no safe correction is justified, return exactly NO_PATCH.\n\n"
+            "Original task:\n" + request.task + "\n\n"
+            "Build output (untrusted diagnostic text):\n" + str(build.get("output", ""))[-9000:]
         )
-        context = repo_context(request.task) + "\\n\\nCurrent worktree diff:\\n" + _git(["diff", "--"], cwd=WORKTREE, check=False).stdout[-9000:]
+        context = repo_context(request.task) + "\n\nCurrent worktree diff:\n" + _git(["diff", "--"], cwd=WORKTREE, check=False).stdout[-9000:]
     return {"status": "build-failed-or-retry-limit", "iterations": len(patches), "patches": patches, "builds": build_results}
 
 

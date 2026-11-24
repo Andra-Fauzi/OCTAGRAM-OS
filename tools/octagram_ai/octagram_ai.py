@@ -28,6 +28,8 @@ LLM_MODEL = os.environ.get("OCTAGRAM_LLM_MODEL", "qwen2.5-coder-3b-instruct")
 LLM_API_KEY = os.environ.get("OCTAGRAM_LLM_API_KEY", "local")
 MAX_FILE_BYTES = int(os.environ.get("OCTAGRAM_MAX_FILE_BYTES", "200000"))
 BUILD_TIMEOUT = int(os.environ.get("OCTAGRAM_BUILD_TIMEOUT_SECONDS", "900"))
+DOCKER_BIN = os.environ.get("OCTAGRAM_DOCKER_BIN", "docker")
+DOCKER_IMAGE = os.environ.get("OCTAGRAM_DOCKER_IMAGE", "octagram-ai-build:latest")
 
 # Fixed commands only. No shell=True and no user-provided command arguments.
 BUILD_RECIPES: dict[str, list[str]] = {
@@ -149,10 +151,27 @@ def apply_patch(patch: str) -> str:
     return "Patch applied to isolated worktree. No commit was created."
 
 
+def _docker_build_command(recipe: str) -> list[str]:
+    recipe_command = BUILD_RECIPES[recipe]
+    command = [
+        DOCKER_BIN, "run", "--rm",
+        "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+        "--pids-limit=256", "--memory=10g", "--cpus=4", "--read-only",
+        "--tmpfs", "/tmp:rw,nosuid,nodev,size=2g",
+        "--mount", f"type=bind,src={WORKTREE},dst=/workspace,rw",
+        "--workdir", "/workspace",
+    ]
+    cargo_registry = Path.home() / ".cargo" / "registry"
+    if cargo_registry.is_dir():
+        command += ["--mount", f"type=bind,src={cargo_registry.resolve()},dst=/root/.cargo/registry,readonly"]
+    command += [DOCKER_IMAGE, *recipe_command]
+    return command
+
+
 def run_build(recipe: str) -> dict[str, Any]:
-    command = BUILD_RECIPES.get(recipe)
-    if command is None:
+    if recipe not in BUILD_RECIPES:
         raise HTTPException(status_code=400, detail=f"Unknown recipe. Allowed: {', '.join(BUILD_RECIPES)}")
+    command = _docker_build_command(recipe)
     try:
         result = subprocess.run(
             command, cwd=WORKTREE, text=True, encoding="utf-8", errors="replace",
@@ -162,8 +181,10 @@ def run_build(recipe: str) -> dict[str, Any]:
         return {
             "recipe": recipe, "command": command, "returncode": result.returncode,
             "passed": result.returncode == 0, "output": result.stdout[-30000:],
-            "evidence_level": "host",
+            "evidence_level": "host-build-in-container",
         }
+    except FileNotFoundError:
+        raise HTTPException(status_code=503, detail=f"Docker executable not found: {DOCKER_BIN}")
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout or ""
         if isinstance(output, bytes):
@@ -171,8 +192,33 @@ def run_build(recipe: str) -> dict[str, Any]:
         return {
             "recipe": recipe, "command": command, "returncode": None,
             "passed": False, "timed_out": True, "output": str(output)[-30000:],
-            "evidence_level": "host",
+            "evidence_level": "host-build-in-container",
         }
+
+
+def repo_context(query: str) -> str:
+    import re
+    stop = {"the", "and", "for", "with", "from", "that", "this", "into", "how", "what",
+            "yang", "dan", "untuk", "dari", "dengan", "pada", "buat", "tolong", "bisa"}
+    terms = list(dict.fromkeys(
+        word for word in re.findall(r"[A-Za-z_][A-Za-z0-9_./-]{2,}", query)
+        if word.lower() not in stop
+    ))[:8]
+    excerpts: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        result = repo_search(term)
+        if result == "No matching text found.":
+            continue
+        for line in result.splitlines():
+            if line not in seen:
+                seen.add(line)
+                excerpts.append(line)
+            if len(excerpts) >= 60:
+                break
+        if len(excerpts) >= 60:
+            break
+    return "\\n".join(excerpts)[:12000] or "No matching repository snippets found."
 
 
 def ask_local_model(message: str, context: str) -> str:
@@ -251,5 +297,5 @@ def chat_endpoint(request: ChatRequest) -> dict[str, str]:
     context = ""
     if request.include_context:
         # Search by the user's complete request; results are bounded before prompt insertion.
-        context = repo_search(request.message)[:12000]
+        context = repo_context(request.message)
     return {"model": LLM_MODEL, "answer": ask_local_model(request.message, context)}

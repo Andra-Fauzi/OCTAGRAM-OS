@@ -13,13 +13,16 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 
+load_dotenv()
+
 REPO = Path(os.environ.get("OCTAGRAM_REPO", ".")).expanduser().resolve()
 BASE_REF = os.environ.get("OCTAGRAM_BASE_REF", "feature/native-self-hosting-testing-2")
-WORKTREE = Path(os.environ.get("OCTAGRAM_WORKTREE", str(REPO / ".octagram-ai" / "worktree"))).expanduser().resolve()
+WORKTREE = Path(os.environ.get("OCTAGRAM_WORKTREE", str(REPO.parent / (REPO.name + "-ai-worktree")))).expanduser().resolve()
 LLM_BASE_URL = os.environ.get("OCTAGRAM_LLM_BASE_URL", "http://127.0.0.1:8080/v1").rstrip("/")
 LLM_MODEL = os.environ.get("OCTAGRAM_LLM_MODEL", "qwen2.5-coder-3b-instruct")
 LLM_API_KEY = os.environ.get("OCTAGRAM_LLM_API_KEY", "local")

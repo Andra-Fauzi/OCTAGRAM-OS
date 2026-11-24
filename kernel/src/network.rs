@@ -418,24 +418,39 @@ pub fn receive_udp_socket_length(
     socket: &Arc<Mutex<UdpSocket>>,
     output: &mut [u8],
 ) -> Result<(usize, usize, [u8; 4], u16), &'static str> {
+    receive_udp_socket_length_with_peek(socket, output, false)
+}
+
+/// Receive one UDP datagram, optionally leaving it queued for MSG_PEEK.
+pub fn receive_udp_socket_length_with_peek(
+    socket: &Arc<Mutex<UdpSocket>>,
+    output: &mut [u8],
+    peek: bool,
+) -> Result<(usize, usize, [u8; 4], u16), &'static str> {
     let mut socket = socket.lock();
     let peer = socket.peer;
-    let datagram = loop {
-        let Some(datagram) = socket.received.pop_front() else {
-            return Err("UDP socket would block");
-        };
-        /* Socket terhubung hanya menerima datagram dari peer-nya. */
-        if let Some((address, port)) = peer {
-            if datagram.source_ip != address || datagram.source_port != port {
-                continue;
-            }
-        }
-        break datagram;
+    let matches_peer = |datagram: &ReceivedDatagram| {
+        peer.is_none_or(|(address, port)| {
+            datagram.source_ip == address && datagram.source_port == port
+        })
     };
-    let total = datagram.payload.len();
-    let length = output.len().min(total);
-    output[..length].copy_from_slice(&datagram.payload[..length]);
-    Ok((length, total, datagram.source_ip, datagram.source_port))
+    let index = socket.received.iter().position(matches_peer)
+        .ok_or("UDP socket would block")?;
+    let (total, source_ip, source_port) = if peek {
+        let datagram = socket.received.get(index).ok_or("UDP socket would block")?;
+        let total = datagram.payload.len();
+        let length = output.len().min(total);
+        output[..length].copy_from_slice(&datagram.payload[..length]);
+        (total, datagram.source_ip, datagram.source_port)
+    } else {
+        let datagram = socket.received.remove(index).ok_or("UDP socket would block")?;
+        let total = datagram.payload.len();
+        let length = output.len().min(total);
+        output[..length].copy_from_slice(&datagram.payload[..length]);
+        (total, datagram.source_ip, datagram.source_port)
+    };
+    let copied = output.len().min(total);
+    Ok((copied, total, source_ip, source_port))
 }
 
 pub fn print_status() {

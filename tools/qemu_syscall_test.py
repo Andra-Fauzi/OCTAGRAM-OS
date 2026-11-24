@@ -265,6 +265,7 @@ def main():
         ("RUST-STD-READ-DIR-BYTE-NAME-PASS", "non-UTF-8 directory entry names"),
         ("RUST-STD-FS-DIRECTORY-PASS", "directory rename and file descriptor I/O"),
         ("RUST-STD-READ-DIR-NESTED-PASS", "nested directory iteration"),
+        ("RUST-STD-THREAD-DETACH-PASS", "Rust JoinHandle drop and pthread detach"),
         ("RUST-STD-FS-TRUNCATE-PASS", "file descriptor truncation and data sync"),
         ("RUST-STD-FS-ATOMIC-RENAME-PASS", "atomic artifact replacement"),
         ("RUST-STD-REMOVE-DIR-ALL-RECURSIVE-PASS", "recursive directory removal through fdopendir/readdir"),

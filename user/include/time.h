@@ -5,7 +5,17 @@
 extern "C" {
 #endif
 
+#include <stddef.h>
 #include <sys/types.h>
+
+struct tm;
+
+typedef long clock_t;
+#define CLOCKS_PER_SEC 1000000
+clock_t clock(void);
+double difftime(time_t later, time_t earlier);
+time_t mktime(struct tm *time_value);
+char *asctime(const struct tm *time_value);
 
 #define CLOCK_REALTIME 0
 #define CLOCK_MONOTONIC 1

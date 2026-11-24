@@ -36,6 +36,16 @@ static inline int isprint(int character)
     return character >= 32 && character <= 126;
 }
 
+static inline int isgraph(int character)
+{
+    return character > 32 && character <= 126;
+}
+
+static inline int isblank(int character)
+{
+    return character == ' ' || character == '\t';
+}
+
 static inline int ispunct(int character)
 {
     return character >= '!' && character <= '~' && !isalnum(character);

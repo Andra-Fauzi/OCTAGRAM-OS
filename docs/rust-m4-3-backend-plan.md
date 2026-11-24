@@ -224,6 +224,16 @@ kodenya:
   persis seperti hardware. Uji host memakai perbandingan yang sama; sebuah
   mutasi (mematikan pembulatan) menghasilkan ~600.000 kegagalan, jadi uji ini
   benar-benar menangkap kesalahan pembulatan.
+- libc++ dimulai: header libc++ 18.1.8 di-vendor ke `user/third_party/libcxx`
+  dengan `__config_site` sendiri (ABI `std::__1`, hardening mati, PSTL serial,
+  rune table milik libc++). `user/libcxx_runtime.cpp` menyediakan satu simbol
+  runtime yang dibutuhkan header (`__libcpp_verbose_abort`), dan
+  `build/libcxx_smoke.elf` sudah ter-link memakai `<type_traits>`, `<limits>`,
+  `<new>`, `<cstddef>`, `<cstdint>`, `<cstring>`.`make -C user
+  libcxx-header-check` mencatat ratchet-nya: 6 header wajib lulus, sisanya
+  dilaporkan sebagai pending beserta error pertama. Bagi libc++ yang belum ada:
+  `strftime`, `ldexpl`/`scalblnl`, `struct __mbstate_t` (dipakai `<vector>` dan
+  `<string>`), implementasi wide stdio, dan tabel locale.
 - Kesiapan header C untuk C++: `tools/check_cpp_headers.py` mengompilasi setiap
   header publik sebagai C11 dan C++17 (`make -C user cpp-header-test`, juga
   dipanggil CI). Perbaikan yang muncul: `restrict` bukan keyword C++, `char16_t`

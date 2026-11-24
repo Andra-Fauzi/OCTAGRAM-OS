@@ -1,0 +1,11 @@
+// OCTAGRAM configuration for the vendored libc++ headers.
+//
+// Upstream generates this file with CMake. OCTAGRAM keeps the default ABI
+// (namespace __1, ABI version 1), turns hardening checks off (a hardening
+// failure would abort a freestanding guest program with no way to report it),
+// selects the serial PSTL backend because there is no thread pool yet, and
+// provides its own ctype/rune table because OCTAGRAM does not implement the
+// glibc, musl or newlib locale internals libc++ would otherwise detect.
+#define _LIBCPP_HARDENING_MODE _LIBCPP_HARDENING_MODE_NONE
+#define _LIBCPP_PSTL_CPU_BACKEND_SERIAL 1
+#define _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE

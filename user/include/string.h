@@ -19,6 +19,8 @@ char *strncpy(char *destination, const char *source, size_t count);
 int memcmp(const void *left, const void *right, size_t count);
 size_t strlen(const char *text);
 size_t strspn(const char *text, const char *accept);
+int strcoll(const char *left, const char *right);
+size_t strxfrm(char *destination, const char *source, size_t count);
 size_t strcspn(const char *text, const char *reject);
 int strcmp(const char *left, const char *right);
 int strncmp(const char *left, const char *right, size_t count);

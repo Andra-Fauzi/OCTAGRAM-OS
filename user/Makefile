@@ -65,10 +65,10 @@ DYNAMIC_LIBRARY := build/libdyn_demo.so
 SHARED_LIBC := build/liboctagram.so
 LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 
-.PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test compiler-rt-test cpp-header-test dynamic
+.PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test compiler-rt-test cpp-header-test libcxx-header-check dynamic
 CPP_SMOKE := build/cpp_smoke.elf
 
-all: $(BINARIES) $(CPP_SMOKE) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
+all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
 
@@ -116,6 +116,9 @@ compiler-rt-test: build/compiler_rt_host_test
 cpp-header-test:
 	python3 ../tools/check_cpp_headers.py
 
+libcxx-header-check:
+	python3 ../tools/check_libcxx_headers.py
+
 build/compiler_rt_host_test: tests/compiler_rt_test.c compiler_rt.c | build
 	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -o $@ tests/compiler_rt_test.c \
 		-D__udivmodti4=oct_udivmodti4 -D__divmodti4=oct_divmodti4 \
@@ -159,8 +162,28 @@ build/cpp_smoke.o: examples/cpp_smoke.cpp $(HEADERS) | build
 build/cxx_runtime.o: cxx_runtime.cpp $(HEADERS) | build
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-$(CPP_SMOKE): build/cpp_smoke.o build/cxx_runtime.o build/wctype.o build/compiler_rt.o build/crt0.o build/runtime.o linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/wctype.o build/compiler_rt.o build/cxx_runtime.o build/cpp_smoke.o
+# Vendored libc++ 18 headers (see third_party/libcxx/README.md). The generated
+# configuration lives in the include directory, so only the search path differs
+# from the freestanding C++ build.
+LIBCXX_INCLUDE := third_party/libcxx/include
+# libc++'s own C headers forward to OCTAGRAM's with #include_next, so the
+# libc++ directory must be searched before include/ -- -I would always win over
+# -isystem, hence both are -isystem here.
+LIBCXX_FLAGS := -nostdinc -nostdinc++ -isystem $(LIBCXX_INCLUDE) -isystem include
+LIBCXX_CXXFLAGS := $(filter-out -Iinclude,$(CXXFLAGS)) $(LIBCXX_FLAGS)
+LIBCXX_SMOKE := build/libcxx_smoke.elf
+
+build/libcxx_runtime.o: libcxx_runtime.cpp $(HEADERS) | build
+	$(CXX) $(LIBCXX_CXXFLAGS) -c -o $@ $<
+
+build/libcxx_smoke.o: examples/libcxx_smoke.cpp $(HEADERS) | build
+	$(CXX) $(LIBCXX_CXXFLAGS) -c -o $@ $<
+
+$(LIBCXX_SMOKE): build/libcxx_smoke.o build/libcxx_runtime.o build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o build/math.o build/compiler_rt.o build/crt0.o build/runtime.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/compiler_rt.o build/math.o build/math_wide.o build/wchar.o build/wctype.o build/cxx_runtime.o build/libcxx_runtime.o build/libcxx_smoke.o
+
+$(CPP_SMOKE): build/cpp_smoke.o build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o build/math.o build/compiler_rt.o build/crt0.o build/runtime.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/math.o build/wchar.o build/math_wide.o build/wctype.o build/compiler_rt.o build/cxx_runtime.o build/cpp_smoke.o
 
 build/setjmp.o: setjmp.S | build
 	$(AS) --64 -o $@ $<
@@ -172,6 +195,12 @@ build/wctype.o: wctype.c $(HEADERS) | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 build/compiler_rt.o: compiler_rt.c | build
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+build/wchar.o: wchar.c $(HEADERS) | build
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+build/math_wide.o: math_wide.c $(HEADERS) | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 build/runtime.pic.o: runtime.c $(HEADERS) | build
@@ -284,8 +313,8 @@ $(SHARED_ERRNO_DEMO): build/shared_errno_demo.o build/crt0.pic.o $(SHARED_LIBC)
 		-dynamic-linker /lib/ld-octagram.so -e _start \
 		-o $@ build/crt0.pic.o build/shared_errno_demo.o -Lbuild -loctagram
 
-build/%.elf: build/%.o build/crt0.o build/runtime.o build/compiler_rt.o build/wctype.o linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/compiler_rt.o build/wctype.o $<
+build/%.elf: build/%.o build/crt0.o build/runtime.o build/compiler_rt.o build/math.o build/math_wide.o build/wctype.o build/wchar.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/compiler_rt.o build/math.o build/math_wide.o build/wctype.o build/wchar.o $<
 
 build/scanf_runtime.o: runtime.c $(HEADERS) | build
 	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
@@ -330,8 +359,8 @@ build/ipv6_test: build/scanf_runtime_start.o build/ipv6_test.o build/scanf_runti
 build/tcc_signals.o: tcc_signals.c | build
 	$(CC) $(TCC_CFLAGS) -c -o $@ $<
 
-$(TCC_ELF): $(TCC_OBJECTS) build/tcc_signals.o build/crt0.o build/runtime.o build/compiler_rt.o $(TCC_SETJMP) linker.ld
-	$(LD) $(LDFLAGS) --gc-sections -o $@ build/crt0.o build/runtime.o build/compiler_rt.o $(TCC_SETJMP) $(TCC_OBJECTS) build/tcc_signals.o
+$(TCC_ELF): $(TCC_OBJECTS) build/tcc_signals.o build/crt0.o build/runtime.o build/compiler_rt.o build/wchar.o build/math_wide.o build/math.o $(TCC_SETJMP) linker.ld
+	$(LD) $(LDFLAGS) --gc-sections -o $@ build/crt0.o build/runtime.o build/compiler_rt.o build/wchar.o build/math_wide.o build/math.o $(TCC_SETJMP) $(TCC_OBJECTS) build/tcc_signals.o
 
 $(TCC_LIBTCC1): $(TCC_SUPPORT_OBJECTS)
 	$(AR) rcs $@ $^
@@ -339,7 +368,7 @@ $(TCC_LIBTCC1): $(TCC_SUPPORT_OBJECTS)
 build/math.o: math.c $(HEADERS) | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(TCC_LIBC): build/runtime.o build/math.o build/wctype.o build/compiler_rt.o $(TCC_SETJMP)
+$(TCC_LIBC): build/runtime.o build/math.o build/math_wide.o build/wctype.o build/wchar.o build/compiler_rt.o $(TCC_SETJMP)
 	$(AR) rcs $@ $^
 
 clean:

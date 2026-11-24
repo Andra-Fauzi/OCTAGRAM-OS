@@ -236,4 +236,31 @@ Ikuti urutan ini supaya klaim tetap bisa dipertanggungjawabkan:
 Pisahkan tiga tingkat bukti: **host build/test**, **QEMU guest**, dan
 **hardware**. Jangan menyebut “native” untuk cross-build, jangan menyebut
 “lulus” untuk kompilasi yang belum dijalankan, dan catat kegagalan yang
-diketahui (misalnya `fs::devfs` yang masih mengharapkan 10 entri `/dev`).
+diketahui (misalnya `fs::devfs` yang masih mengharapkan 10 entri `/dev`).## C++ standard library (libc++)
+
+Header libc++ 18.1.8 di-vendor di
+[user/third_party/libcxx](../user/third_party/libcxx/README.md) (hanya `include/`,
+seperti upstream, plus `__config_site` dan `__assertion_handler` buatan kita).
+Program C++ memakainya dengan `-nostdinc`:
+
+```sh
+make -C user build/libcxx_smoke.elf   # contoh yang memakai <type_traits>, <limits>, <new>
+make -C user libcxx-header-check      # ratchet: header mana yang sudah bisa dikompilasi
+```
+
+`libcxx-header-check` mewajibkan enam header (`cstddef`, `cstdint`, `cstring`,
+`limits`, `new`, `type_traits`) tetap lulus; header lain dilaporkan sebagai
+"pending" beserta error pertamanya, jadi kemajuan terlihat tanpa membuat CI merah
+karena pekerjaan yang memang belum selesai.
+
+Blocker yang tersisa (per gelombang ini):
+
+| Header | Yang kurang |
+| --- | --- |
+| `<cmath>`, `<tuple>`, `<utility>`, `<string>` | `scalblnl` (butuh `ldexpl` yang belum diimplementasikan libm) |
+| `<ctime>`, `<mutex>` | `strftime` |
+| `<vector>`, `<string>` | `struct __mbstate_t` bentrok dengan `mbstate_t` kita |
+| `<cwchar>` | implementasi wide stdio (`fgetwc`, `wprintf`, …) |
+| banyak header | tabel locale/facet libc++ |
+
+

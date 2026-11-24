@@ -9,6 +9,17 @@ extern "C" {
 #endif
 
 typedef struct octagram_FILE FILE;
+/* C99 file position; OCTAGRAM tracks offsets as 64-bit values. */
+typedef long fpos_t;
+
+/* OCTAGRAM streams are unbuffered, so setbuf/setvbuf cannot fail. */
+int remove(const char *path);
+#define L_tmpnam 32
+char *tmpnam(char *buffer);
+int fgetpos(FILE *stream, fpos_t *position);
+int fsetpos(FILE *stream, const fpos_t *position);
+void setbuf(FILE *stream, char *buffer);
+int setvbuf(FILE *stream, char *buffer, int mode, size_t size);
 
 #define EOF (-1)
 #define BUFSIZ 4096

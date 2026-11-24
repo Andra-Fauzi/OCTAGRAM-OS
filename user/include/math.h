@@ -19,6 +19,32 @@ extern "C" {
 #ifndef __builtin_nanf
 #define __builtin_nanf(ignored) (0.0F / 0.0F)
 #endif
+/* C99 real-floating types. OCTAGRAM evaluates float expressions in double, so
+ * float_t is double, matching FLT_EVAL_METHOD == 0 on this ABI. */
+typedef double float_t;
+typedef double double_t;
+
+/* C99 classification macros, backed by compiler builtins so they stay
+ * constant-foldable. */
+#define FP_NAN 0
+#define FP_INFINITE 1
+#define FP_ZERO 2
+#define FP_SUBNORMAL 3
+#define FP_NORMAL 4
+
+#define fpclassify(value) __builtin_fpclassify(FP_NAN, FP_INFINITE, FP_NORMAL, FP_SUBNORMAL, FP_ZERO, (value))
+#define isfinite(value) __builtin_isfinite(value)
+#define isinf(value) __builtin_isinf(value)
+#define isnan(value) __builtin_isnan(value)
+#define isnormal(value) __builtin_isnormal(value)
+#define signbit(value) __builtin_signbit(value)
+#define isgreater(left, right) __builtin_isgreater((left), (right))
+#define isgreaterequal(left, right) __builtin_isgreaterequal((left), (right))
+#define isless(left, right) __builtin_isless((left), (right))
+#define islessequal(left, right) __builtin_islessequal((left), (right))
+#define islessgreater(left, right) __builtin_islessgreater((left), (right))
+#define isunordered(left, right) __builtin_isunordered((left), (right))
+
 #ifndef FP_ILOGB0
 #define FP_ILOGB0 (-2147483647 - 1)
 #endif
@@ -161,3 +187,66 @@ float fmaf(float, float, float);
 #endif
 
 #endif
+
+
+
+
+
+/* C99 long double and scalbln variants; see math_wide.c. */
+long double acoshl(long double arg0);
+long double acosl(long double arg0);
+long double asinhl(long double arg0);
+long double asinl(long double arg0);
+long double atan2l(long double arg0, long double arg1);
+long double atanhl(long double arg0);
+long double atanl(long double arg0);
+long double cbrtl(long double arg0);
+long double ceill(long double arg0);
+long double copysignl(long double arg0, long double arg1);
+long double coshl(long double arg0);
+long double cosl(long double arg0);
+long double erfcl(long double arg0);
+long double erfl(long double arg0);
+long double exp2l(long double arg0);
+long double expl(long double arg0);
+long double expm1l(long double arg0);
+long double fabsl(long double arg0);
+long double fdiml(long double arg0, long double arg1);
+long double floorl(long double arg0);
+long double fmal(long double arg0, long double arg1, long double arg2);
+long double fmaxl(long double arg0, long double arg1);
+long double fminl(long double arg0, long double arg1);
+long double fmodl(long double arg0, long double arg1);
+long double frexpl(long double arg0, int * arg1);
+long double hypotl(long double arg0, long double arg1);
+int ilogbl(long double arg0);
+long double lgammal(long double arg0);
+long long llrintl(long double arg0);
+long long llroundl(long double arg0);
+long double log10l(long double arg0);
+long double log1pl(long double arg0);
+long double log2l(long double arg0);
+long double logbl(long double arg0);
+long double logl(long double arg0);
+long lrintl(long double arg0);
+long lroundl(long double arg0);
+long double modfl(long double arg0, long double * arg1);
+long double nanl(const char * arg0);
+long double nearbyintl(long double arg0);
+long double nextafterl(long double arg0, long double arg1);
+long double nexttowardl(long double arg0, long double arg1);
+long double powl(long double arg0, long double arg1);
+long double remainderl(long double arg0, long double arg1);
+long double remquol(long double arg0, long double arg1, int * arg2);
+long double rintl(long double arg0);
+long double roundl(long double arg0);
+double scalbln(double arg0, long arg1);
+float scalblnf(float arg0, long arg1);
+long double scalbnl(long double arg0, int arg1);
+long double sinhl(long double arg0);
+long double sinl(long double arg0);
+long double sqrtl(long double arg0);
+long double tanhl(long double arg0);
+long double tanl(long double arg0);
+long double tgammal(long double arg0);
+long double truncl(long double arg0);

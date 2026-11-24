@@ -156,6 +156,7 @@ jobs:
           make -C user wctype-test
           make -C user compiler-rt-test
           make -C user cpp-header-test
+          make -C user libcxx-header-check
           make -C user math-test
           make -C user math-header-test
           make -C user stdint-test

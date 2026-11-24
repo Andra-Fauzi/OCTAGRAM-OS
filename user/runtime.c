@@ -9697,3 +9697,304 @@ void endgrent(void)
         octagram_group_stream = NULL;
     }
 }
+
+/* C11 <stdlib.h> remainder: integer division results, absolute values, the
+ * pseudo-random generator and binary search. libc++'s <cstdlib> wrapper
+ * requires the C header to declare every one of these. */
+div_t div(int numerator, int denominator)
+{
+    div_t result = {0, 0};
+    if (denominator == 0) {
+        return result;
+    }
+    result.quot = numerator / denominator;
+    result.rem = numerator % denominator;
+    return result;
+}
+
+ldiv_t ldiv(long numerator, long denominator)
+{
+    ldiv_t result = {0, 0};
+    if (denominator == 0) {
+        return result;
+    }
+    result.quot = numerator / denominator;
+    result.rem = numerator % denominator;
+    return result;
+}
+
+lldiv_t lldiv(long long numerator, long long denominator)
+{
+    lldiv_t result = {0, 0};
+    if (denominator == 0) {
+        return result;
+    }
+    result.quot = numerator / denominator;
+    result.rem = numerator % denominator;
+    return result;
+}
+
+long atol(const char *text)
+{
+    return strtol(text, NULL, 10);
+}
+
+long long atoll(const char *text)
+{
+    return strtoll(text, NULL, 10);
+}
+
+long labs(long value)
+{
+    return value < 0 ? -value : value;
+}
+
+long long llabs(long long value)
+{
+    return value < 0 ? -value : value;
+}
+
+/* POSIX rand_r's generator, so a seed gives the same sequence everywhere. */
+static unsigned long oct_rand_state = 1;
+
+void srand(unsigned int seed)
+{
+    oct_rand_state = seed;
+}
+
+int rand(void)
+{
+    oct_rand_state = oct_rand_state * 1103515245ul + 12345ul;
+    return (int)((oct_rand_state / 65536ul) % 32768ul);
+}
+
+void *bsearch(const void *key, const void *base, size_t count, size_t size,
+              int (*compare)(const void *, const void *))
+{
+    const unsigned char *bytes = (const unsigned char *)base;
+    size_t low = 0;
+    size_t high = count;
+    while (low < high) {
+        size_t middle = low + (high - low) / 2;
+        const void *element = bytes + middle * size;
+        int order = compare(key, element);
+        if (order == 0) {
+            return (void *)element;
+        }
+        if (order < 0) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    return NULL;
+}
+
+void _Exit(int status)
+{
+    _exit(status);
+}
+
+/* Multibyte conversions for the ASCII/Latin-1 locale: one byte per character. */
+int mblen(const char *text, size_t count)
+{
+    if (text == NULL) {
+        return 0;
+    }
+    if (count == 0) {
+        return -1;
+    }
+    return text[0] == '\0' ? 0 : 1;
+}
+
+int mbtowc(wchar_t *output, const char *text, size_t count)
+{
+    if (text == NULL) {
+        return 0;
+    }
+    if (count == 0) {
+        return -1;
+    }
+    unsigned char byte = (unsigned char)text[0];
+    if (output != NULL) {
+        *output = (wchar_t)byte;
+    }
+    return byte == 0 ? 0 : 1;
+}
+
+int wctomb(char *output, wchar_t character)
+{
+    if (output == NULL) {
+        return 0;
+    }
+    if (character < 0 || character > 0xff) {
+        return -1;
+    }
+    output[0] = (char)character;
+    return 1;
+}
+
+void *aligned_alloc(size_t alignment, size_t size)
+{
+    void *result = NULL;
+    if (posix_memalign(&result, alignment, size) != 0) {
+        return NULL;
+    }
+    return result;
+}
+
+#define OCT_MAX_QUICK_EXIT_HANDLERS 32
+static void (*oct_quick_exit_handlers[OCT_MAX_QUICK_EXIT_HANDLERS])(void);
+static int oct_quick_exit_count;
+
+int at_quick_exit(void (*function)(void))
+{
+    if (function == NULL || oct_quick_exit_count >= OCT_MAX_QUICK_EXIT_HANDLERS) {
+        return -1;
+    }
+    oct_quick_exit_handlers[oct_quick_exit_count++] = function;
+    return 0;
+}
+
+__attribute__((noreturn)) void quick_exit(int status)
+{
+    while (oct_quick_exit_count > 0) {
+        void (*function)(void) = oct_quick_exit_handlers[--oct_quick_exit_count];
+        if (function != NULL) {
+            function();
+        }
+    }
+    _exit(status);
+}
+
+/* The OCTAGRAM locale is ASCII/Latin-1, so collation is byte order and no
+ * transformation is needed. */
+int strcoll(const char *left, const char *right)
+{
+    return strcmp(left, right);
+}
+
+size_t strxfrm(char *destination, const char *source, size_t count)
+{
+    const size_t length = strlen(source);
+    if (count > 0) {
+        size_t copied = length < count - 1 ? length : count - 1;
+        memcpy(destination, source, copied);
+        destination[copied] = '\0';
+    }
+    return length;
+}
+
+/* Process CPU time in microseconds, as CLOCKS_PER_SEC is 1000000. */
+clock_t clock(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &now) != 0) {
+        return (clock_t)-1;
+    }
+    return (clock_t)now.tv_sec * (clock_t)CLOCKS_PER_SEC + (clock_t)(now.tv_nsec / 1000);
+}
+
+double difftime(time_t later, time_t earlier)
+{
+    return (double)(later - earlier);
+}
+
+int fgetpos(FILE *stream, fpos_t *position)
+{
+    if (position == NULL) {
+        return -1;
+    }
+    const long offset = ftell(stream);
+    if (offset < 0) {
+        return -1;
+    }
+    *position = (fpos_t)offset;
+    return 0;
+}
+
+int fsetpos(FILE *stream, const fpos_t *position)
+{
+    if (position == NULL) {
+        return -1;
+    }
+    return fseek(stream, (long)*position, SEEK_SET);
+}
+
+/* mktime for a UTC-only environment: normalise the calendar fields, reject
+ * obviously invalid ones, and convert to seconds since the epoch. */
+time_t mktime(struct tm *value)
+{
+    if (value == NULL) {
+        return (time_t)-1;
+    }
+    long long year = (long long)value->tm_year + 1900;
+    long long month = value->tm_mon;
+    year += month / 12;
+    month %= 12;
+    if (month < 0) {
+        month += 12;
+        --year;
+    }
+    const int day = value->tm_mday;
+    const int hour = value->tm_hour;
+    const int minute = value->tm_min;
+    const int second = value->tm_sec;
+    if (day < 1 || day > 31 || hour < 0 || hour > 23 || minute < 0 || minute > 59 ||
+        second < 0 || second > 60) {
+        return (time_t)-1;
+    }
+    /* Days since 1970-01-01 for the first of the month. */
+    long long days = 0;
+    if (year >= 1970) {
+        for (long long y = 1970; y < year; ++y) {
+            days += (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
+        }
+    } else {
+        for (long long y = year; y < 1970; ++y) {
+            days -= (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
+        }
+    }
+    static const int month_days[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const int leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 1 : 0;
+    for (long long m = 0; m < month; ++m) {
+        days += month_days[m] + (m == 1 ? leap : 0);
+    }
+    days += day - 1;
+    const time_t result = (time_t)(days * 86400 + hour * 3600 + minute * 60 + second);
+    struct tm normalised;
+    if (gmtime_r(&result, &normalised) != NULL) {
+        *value = normalised;
+    }
+    return result;
+}
+
+/* asctime writes into a static buffer; the caller must consume it immediately,
+ * exactly as the C standard specifies. */
+char *asctime(const struct tm *value)
+{
+    static char buffer[26];
+    if (value == NULL) {
+        return NULL;
+    }
+    static const char *const weekdays[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char *const months[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    const int weekday = (value->tm_wday >= 0 && value->tm_wday < 7) ? value->tm_wday : 0;
+    const int month = (value->tm_mon >= 0 && value->tm_mon < 12) ? value->tm_mon : 0;
+    snprintf(buffer, sizeof buffer, "%s %s %2d %02d:%02d:%02d %d\n", weekdays[weekday],
+             months[month], value->tm_mday, value->tm_hour, value->tm_min, value->tm_sec,
+             value->tm_year + 1900);
+    return buffer;
+}
+
+/* tmpnam only needs to exist for header compatibility; it returns a name that is
+ * unique per call but carries no security guarantee. */
+char *tmpnam(char *buffer)
+{
+    static char fallback[32];
+    static unsigned int counter;
+    char *target = buffer != NULL ? buffer : fallback;
+    snprintf(target, buffer != NULL ? L_tmpnam : sizeof fallback, "/tmp/octagram-%u.tmp", counter++);
+    return target;
+}

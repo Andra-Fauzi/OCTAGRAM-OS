@@ -18,4 +18,11 @@ typedef __WCHAR_TYPE__ wchar_t;
 
 #define offsetof(type, member) __builtin_offsetof(type, member)
 
+/* C11 requires a type whose alignment is at least as strict as any scalar type;
+ * long double gives the 16-byte alignment the x86-64 ABI uses for it. */
+typedef struct {
+    long long __octagram_long_long;
+    long double __octagram_long_double;
+} max_align_t;
+
 #endif

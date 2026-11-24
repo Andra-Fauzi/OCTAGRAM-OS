@@ -31,6 +31,10 @@
 #define __fixdfti oct_fixdfti
 #define __fixunssfti oct_fixunssfti
 #define __fixsfti oct_fixsfti
+#define __floatuntixf oct_floatuntixf
+#define __floattixf oct_floattixf
+#define __fixunsxfti oct_fixunsxfti
+#define __fixxfti oct_fixxfti
 
 unsigned __int128 __udivmodti4(unsigned __int128 dividend, unsigned __int128 divisor,
                                unsigned __int128 *remainder);
@@ -50,6 +54,10 @@ unsigned __int128 __fixunsdfti(double value);
 __int128 __fixdfti(double value);
 unsigned __int128 __fixunssfti(float value);
 __int128 __fixsfti(float value);
+long double __floatuntixf(unsigned __int128 value);
+long double __floattixf(__int128 value);
+unsigned __int128 __fixunsxfti(long double value);
+__int128 __fixxfti(long double value);
 
 static int failures;
 
@@ -113,6 +121,30 @@ static void check_float_conversions(unsigned __int128 value)
             printf("FAIL __fixunssfti for %.9g\n", (double)as_float);
         }
     }
+    /* x87 long double: 64-bit mantissa, so 2^100+1 must round to 2^100. */
+    if (!(oct_floatuntixf(value) == (long double)value)) {
+        ++failures;
+        printf("FAIL __floatuntixf for %llx%016llx\n", (unsigned long long)(value >> 64),
+               (unsigned long long)value);
+    }
+    if (!(oct_floattixf(signed_value) == (long double)signed_value)) {
+        ++failures;
+        printf("FAIL __floattixf for %lld,%lld\n", (long long)(value >> 64), (long long)value);
+    }
+    const long double as_long_double = (long double)value;
+    if (as_long_double >= 0.0L && as_long_double < 0x1p128L) {
+        if (oct_fixunsxfti(as_long_double) != (unsigned __int128)as_long_double) {
+            ++failures;
+            printf("FAIL __fixunsxfti for %.21Lg\n", as_long_double);
+        }
+    }
+    if (as_long_double > 0.0L && as_long_double < 0x1p127L) {
+        if (oct_fixxfti(-as_long_double) != (__int128)(-as_long_double)) {
+            ++failures;
+            printf("FAIL __fixxfti for %.21Lg\n", -as_long_double);
+        }
+    }
+
     if (as_double > 0.0 && as_double < 0x1p127) {
         if (oct_fixdfti(-as_double) != (__int128)(-as_double)) {
             ++failures;

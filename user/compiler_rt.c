@@ -489,3 +489,107 @@ __int128 __fixsfti(float value)
 {
     return __fixdfti((double)value);
 }
+
+/*
+ * x87 80-bit `long double` conversions. The value is stored little-endian as an
+ * 8-byte mantissa with an explicit integer bit at position 63, followed by a
+ * 16-bit word holding the sign (bit 15) and the exponent (bits 0-14, bias
+ * 16383). Only C and C++ can reach these, but gcc emits them for every
+ * `long double` cast involving a 128-bit integer.
+ */
+
+typedef union {
+    long double value;
+    struct {
+        unsigned long long mantissa;
+        unsigned short sign_exponent;
+        unsigned short padding[3];
+    } parts;
+} OctCompileRtX87;
+
+long double __floatuntixf(unsigned __int128 value);
+
+long double __floatuntixf(unsigned __int128 value)
+{
+    OctCompileRtU128 input;
+    input.value = value;
+    OctCompileRtX87 result;
+    __builtin_memset(&result, 0, sizeof result);
+    if (oct_u128_is_zero(input)) {
+        return result.value;
+    }
+    unsigned long long mantissa = 0;
+    int exponent = oct_u128_normalise(input, 64, &mantissa);
+    unsigned short sign_exponent = 0;
+    if (exponent + 16383 >= 0x7fff) {
+        sign_exponent = 0x7fff;
+        mantissa = 1ull << 63;
+    } else {
+        sign_exponent = (unsigned short)(exponent + 16383);
+    }
+    result.parts.mantissa = mantissa;
+    result.parts.sign_exponent = sign_exponent;
+    return result.value;
+}
+
+long double __floattixf(__int128 value);
+
+long double __floattixf(__int128 value)
+{
+    OctCompileRtI128 input;
+    input.value = value;
+    if ((input.words.high >> 63) == 0) {
+        return __floatuntixf(value);
+    }
+    OctCompileRtU128 magnitude;
+    magnitude.value = value;
+    magnitude = oct_u128_negate(magnitude);
+    OctCompileRtX87 result;
+    result.value = __floatuntixf(magnitude.value);
+    result.parts.sign_exponent |= 0x8000;
+    return result.value;
+}
+
+unsigned __int128 __fixunsxfti(long double value);
+
+unsigned __int128 __fixunsxfti(long double value)
+{
+    OctCompileRtX87 input;
+    input.value = value;
+    const int negative = (int)(input.parts.sign_exponent >> 15);
+    const int exponent = input.parts.sign_exponent & 0x7fff;
+    const unsigned long long mantissa = input.parts.mantissa;
+    if (exponent == 0x7fff) {
+        /* Infinity saturates; NaN has no integer value. */
+        return (mantissa & 0x7fffffffffffffffull) != 0 ? (unsigned __int128)0
+                                                       : ~(unsigned __int128)0;
+    }
+    if (negative || exponent == 0) {
+        return 0;
+    }
+    OctCompileRtU128 magnitude;
+    magnitude.words.high = 0;
+    magnitude.words.low = mantissa;
+    const int shift = exponent - 16383 - 63;
+    if (shift >= 0) {
+        if (shift >= 128 || oct_u128_bit_length(magnitude) + shift > 128) {
+            return ~(unsigned __int128)0;
+        }
+        return oct_u128_shift_left(magnitude, shift).value;
+    }
+    return oct_u128_shift_right(magnitude, -shift).value;
+}
+
+__int128 __fixxfti(long double value);
+
+__int128 __fixxfti(long double value)
+{
+    OctCompileRtX87 input;
+    input.value = value;
+    if ((input.parts.sign_exponent >> 15) == 0) {
+        return (__int128)__fixunsxfti(value);
+    }
+    OctCompileRtU128 magnitude;
+    magnitude.value = __fixunsxfti(-value);
+    return (__int128)oct_u128_negate(magnitude).value;
+}

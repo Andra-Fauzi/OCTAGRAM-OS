@@ -175,6 +175,12 @@ int main(int argc, char **argv)
               static_cast<double>(-static_cast<__int128>(wide_power)) == -0x1p100,
           "128-bit and floating point conversion round trip");
 
+    /* x87 long double has a 64-bit mantissa, so 2^100 is still exact. */
+    const long double wide_power_as_long_double = static_cast<long double>(wide_power);
+    check(wide_power_as_long_double == 0x1p100L &&
+              static_cast<unsigned __int128>(wide_power_as_long_double) == wide_power,
+          "128-bit and long double conversion round trip");
+
     Rectangle *heap_rectangle = new Rectangle("heap", 3, 5);
     check(heap_rectangle->area() == 15, "operator new and a heap-allocated object");
     delete heap_rectangle;

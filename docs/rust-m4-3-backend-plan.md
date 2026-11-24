@@ -217,8 +217,13 @@ kodenya:
   `(double)__int128`. Implementasinya menyusun bit IEEE-754 secara manual
   (round-to-nearest, ties-to-even) alih-alih memakai aritmetika floating point,
   dan uji host membandingkannya bit-per-bit dengan hasil compiler untuk 200.000
-  nilai acak. Yang belum ada: varian `long double` (`__fixunsxfti`,
-  `__floatuntixf`), yang hanya dibutuhkan kode C/C++ ber-`long double` 80-bit.
+  nilai acak.
+- `long double` x87 80-bit: `__floatuntixf`, `__floattixf`, `__fixunsxfti`,
+  `__fixxfti`. Formatnya disusun manual (mantissa 64 bit dengan bit integer
+  eksplisit, kata sign+exponent bias 16383) sehingga 2^100+1 dibulatkan ke 2^100
+  persis seperti hardware. Uji host memakai perbandingan yang sama; sebuah
+  mutasi (mematikan pembulatan) menghasilkan ~600.000 kegagalan, jadi uji ini
+  benar-benar menangkap kesalahan pembulatan.
 - Kesiapan header C untuk C++: `tools/check_cpp_headers.py` mengompilasi setiap
   header publik sebagai C11 dan C++17 (`make -C user cpp-header-test`, juga
   dipanggil CI). Perbaikan yang muncul: `restrict` bukan keyword C++, `char16_t`

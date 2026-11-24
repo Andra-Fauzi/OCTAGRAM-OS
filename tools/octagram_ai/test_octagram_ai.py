@@ -10,6 +10,7 @@ class SafetyTests(unittest.TestCase):
         self.assertIn("kernel-tests", ai.BUILD_RECIPES)
         self.assertNotIn("shell", ai.BUILD_RECIPES)
         self.assertNotIn("format-disk", ai.BUILD_RECIPES)
+        self.assertEqual(ai.BUILD_SEQUENCES["kernel-tests"], ["rust-user", "user", "user-dynamic", "kernel-tests"])
 
     def test_repo_path_rejects_parent_traversal(self):
         with patch.object(ai, "WORKTREE", Path("/tmp/octagram-ai-test")):

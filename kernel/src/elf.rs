@@ -180,6 +180,7 @@ const SYSCALL_SETPGRP: u64 = 130;
 const SYSCALL_GETSID: u64 = 131;
 const SYSCALL_SETSID: u64 = 132;
 const SYSCALL_LINKAT: u64 = 148;
+const SYSCALL_THREAD_DETACH: u64 = 149;
 const SYSCALL_SETPRIORITY: u64 = 134;
 const SYSCALL_GETPRIORITY: u64 = 135;
 const SYSCALL_SCHED_SETSCHEDULER: u64 = 136;
@@ -1505,6 +1506,8 @@ struct ScheduledProcess {
     wait_status: Option<u64>,
     parent_pid: Option<u64>,
     is_thread: bool,
+    /// Thread has been detached; its resources are reclaimed automatically on exit.
+    detached: bool,
     tid: u64,
     thread_mapping: Option<(u64, u64)>,
     waiting_for: Option<ProcessWait>,
@@ -2109,6 +2112,7 @@ fn run_loaded_processes(
             wait_status: None,
             parent_pid: None,
             is_thread: false,
+            detached: false,
             tid: index as u64 + 1,
             thread_mapping: None,
             waiting_for: None,
@@ -2543,6 +2547,7 @@ fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         SYSCALL_THREAD_CREATE => syscall_thread_create(frame),
         SYSCALL_THREAD_EXIT => syscall_thread_exit(frame),
         SYSCALL_THREAD_JOIN => syscall_thread_join(frame),
+        SYSCALL_THREAD_DETACH => syscall_thread_detach(frame),
         SYSCALL_FUTEX => syscall_futex(frame),
         SYSCALL_SIGRETURN => syscall_sigreturn(frame),
         SYSCALL_POLL => syscall_poll_frame(frame),
@@ -3208,6 +3213,7 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         wait_status: None,
         parent_pid: None,
         is_thread: true,
+        detached: false,
         tid,
         thread_mapping: Some((mapping_base, mapping_length)),
         waiting_for: None,
@@ -3304,6 +3310,10 @@ fn syscall_thread_join(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         frame.rax = (-(ESRCH as i64)) as u64;
         return frame_pointer;
     };
+    if scheduler.processes[target].detached {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    }
     if let Some(status) = scheduler.processes[target].exit_status {
         if result_pointer != 0
             && let Err(error) = write_user_u64(result_pointer, status)
@@ -3336,6 +3346,51 @@ fn syscall_thread_join(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     }
 }
 
+fn syscall_thread_detach(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let target_tid = frame.rdi;
+    if target_tid == 0 {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    }
+
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    let pid = {
+        let process = USER_PROCESS.lock();
+        if !scheduler.active || !process.active || current >= scheduler.processes.len() {
+            frame.rax = (-(EINTR as i64)) as u64;
+            return frame_pointer;
+        }
+        process.pid
+    };
+    if scheduler.processes[current].tid == target_tid {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    }
+    let Some(target) = scheduler.processes.iter().position(|process| {
+        process.is_thread && process.pid == pid && process.tid == target_tid && !process.reaped
+    }) else {
+        frame.rax = (-(ESRCH as i64)) as u64;
+        return frame_pointer;
+    };
+    if scheduler.processes[target].detached
+        || scheduler.processes.iter().any(|process| {
+            process.waiting_for == Some(ProcessWait::Thread(target_tid))
+        })
+    {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    }
+
+    scheduler.processes[target].detached = true;
+    if scheduler.processes[target].exit_status.is_some() {
+        scheduler.processes[target].reaped = true;
+    }
+    frame.rax = 0;
+    frame_pointer
+}
+
 fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let frame_pointer = frame as *mut InterruptFrame;
     let mut scheduler = USER_SCHEDULER.lock();
@@ -3356,6 +3411,7 @@ fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         crate::println!("thread {tid}: failed to release thread mapping: errno={error}");
     }
     scheduler.processes[current].exit_status = Some(frame.rdi);
+    scheduler.processes[current].reaped = scheduler.processes[current].detached;
     let mut active_process = USER_PROCESS.lock();
     save_task_state(&mut scheduler, &mut active_process);
     scheduler.processes[current].state.active = false;
@@ -3524,6 +3580,7 @@ fn fork_current(frame: &InterruptFrame) -> Result<u64, i32> {
         wait_status: None,
         parent_pid: Some(parent_pid),
         is_thread: false,
+        detached: false,
         tid: child_pid,
         thread_mapping: None,
         waiting_for: None,

@@ -164,8 +164,11 @@ def _docker_build_command(recipe: str) -> list[str]:
         "--workdir", "/workspace",
     ]
     cargo_registry = Path.home() / ".cargo" / "registry"
+    cargo_git = Path.home() / ".cargo" / "git"
     if cargo_registry.is_dir():
-        command += ["--mount", f"type=bind,src={cargo_registry.resolve()},dst=/root/.cargo/registry,readonly"]
+        command += ["--mount", f"type=bind,src={cargo_registry.resolve()},dst=/opt/octagram-cargo-registry,readonly"]
+    if cargo_git.is_dir():
+        command += ["--mount", f"type=bind,src={cargo_git.resolve()},dst=/opt/octagram-cargo-git,readonly"]
     command += [DOCKER_IMAGE, *recipe_command]
     return command
 

@@ -2505,8 +2505,12 @@ dan rustc/Cargo belum native.
 - Probe kini mencetak error `remove_dir_all` dan langkah `fs::copy` yang
   gagal, serta memisahkan kegagalan `Command::spawn` dari `wait`.
 
-**Validasi:** build host dan `cargo check --tests` kernel lulus. Marker guest
-di atas teramati pada run QEMU sebelum perbaikan `FIOCLEX`/`FIONCLEX`;
-perbaikan tersebut dan sisa marker proses belum terverifikasi guest karena
-run berikutnya terputus. `RUST-STD-RUNTIME-PASS` belum diklaim tercapai, dan
-native rustc/Cargo tetap belum ada.
+**Validasi:** build host dan `cargo check --tests` kernel lulus. Pada run QEMU
+setelah perbaikan `FIOCLEX`, probe melewati 43 marker hingga
+`RUST-STD-PROCESS-PASS`: `Command::status` dengan stdin diwariskan dan
+`Command::output` berhasil menjalankan `/bin/sh` serta menangkap stdout.
+Probe kemudian berhenti pada `Command::output` tanpa stdin eksplisit karena
+`std` membuka `/dev/null` untuk `Stdio::Null`, sedangkan image belum
+menyediakan perangkat tersebut; kegagalan dilaporkan sebagai ENOENT dengan
+exit 52. Marker `RUST-STD-RUNTIME-PASS` belum tercapai, dan native
+rustc/Cargo belum ada.

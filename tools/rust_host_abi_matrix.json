@@ -227,7 +227,7 @@
         "docs/syscall-abi.md networking sections and userland network demos"
       ],
       "limitations": [
-        "sendmsg/recvmsg are ENOSYS; no full IPv6 or general socket-option parity; blocking and nonblocking behavior is partial"
+        "sendmsg/recvmsg support a tested subset for AF_UNIX SOCK_STREAM socketpairs and UDP/TCP; ancillary data and SCM_RIGHTS are unsupported; no full IPv6 or general socket-option parity; blocking and nonblocking behavior is partial"
       ],
       "next_gate": [
         "Vendor dependencies and determine whether Stage 0 rustc/Cargo/LLVM need network support at all"

@@ -75,7 +75,6 @@ pub mod storage;
 pub mod task;
 mod terminal;
 pub mod toolchain;
-mod xrustc;
 
 extern crate alloc;
 

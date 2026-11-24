@@ -128,30 +128,6 @@ def main():
         print(serial_text()[-5000:])
         return 1
 
-    # Parse the actual AtomicU128 PoC helper and the exact pointer-based
-    # rewrite shape with TinyCC; this is a bytewise unreachable-path shim,
-    # not an atomic primitive.
-    output_offset = len(serial_text())
-    send_line(
-        "tcc -include /tmp/tcc-atomic128-fix.h "
-        "/tmp/tcc-atomic128-shim.c -o /tmp/tcc-atomic128-shim.elf"
-    )
-    if not wait_for_after("program exited with status 0", output_offset, 90):
-        print("TCC-ATOMIC128-SHIM-COMPILE-FAIL: TinyCC could not compile the shim")
-        print(serial_text()[-5000:])
-        return 1
-
-    output_offset = len(serial_text())
-    send_line("run /tmp/tcc-atomic128-shim.elf")
-    if not wait_for_after("TCC-ATOMIC128-SHIM-PASS", output_offset, 60):
-        print("TCC-ATOMIC128-SHIM-RUN-FAIL: bytewise shim checks failed")
-        print(serial_text()[-5000:])
-        return 1
-    if not wait_for_after("program exited with status 0", output_offset, 15):
-        print("TCC-ATOMIC128-SHIM-RUN-FAIL: helper test did not exit successfully")
-        print(serial_text()[-5000:])
-        return 1
-
     # Compile only: XGETBV can raise #UD when the guest CPU/OS has not
     # enabled OSXSAVE, so never execute this function as part of the smoke test.
     output_offset = len(serial_text())

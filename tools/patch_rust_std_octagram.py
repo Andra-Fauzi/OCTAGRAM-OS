@@ -91,6 +91,38 @@ pub(super) fn set_current(thread: Thread) {
     print("RUST-STD-THREAD-SPAWN-FIX-PASS: preinitialized thread handle is replaced")
 
 
+def enable_std_file_locks(std: Path) -> None:
+    """Route Rust std `File` locking through OCTAGRAM's flock syscall.
+
+    Cargo and rustc serialize access to shared build directories with advisory
+    file locks, so the upstream allowlist must name the OCTAGRAM target in
+    addition to its existing Unix targets.
+    """
+    fs_unix = std / "sys/fs/unix.rs"
+    prefix = (
+        '                target_os = "redox",\n'
+        '                target_vendor = "apple",\n'
+        '            ) => {\n'
+    )
+    patched_prefix = prefix.replace(
+        '                target_os = "redox",\n',
+        '                target_os = "redox",\n                target_os = "octagram",\n',
+        1,
+    )
+    probes = [
+        "                cvt(unsafe { libc::flock(self.as_raw_fd(), libc::LOCK_EX) })?;",
+        "                cvt(unsafe { libc::flock(self.as_raw_fd(), libc::LOCK_SH) })?;",
+        "                let result =\n"
+        "                    cvt(unsafe { libc::flock(self.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) });",
+        "                let result =\n"
+        "                    cvt(unsafe { libc::flock(self.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) });",
+        "                cvt(unsafe { libc::flock(self.as_raw_fd(), libc::LOCK_UN) })?;",
+    ]
+    for probe in probes:
+        replace_once(fs_unix, prefix + probe, patched_prefix + probe)
+    print("RUST-STD-FILE-LOCK-PASS: std File locking dispatches to OCTAGRAM flock")
+
+
 def main() -> int:
     sysroot = Path(subprocess.check_output(
         ["rustc", "+nightly", "--print", "sysroot"], text=True
@@ -101,6 +133,7 @@ def main() -> int:
         raise SystemExit(f"rust-src component not found under {library}")
 
     backport_thread_spawn_handle_fix(std)
+    enable_std_file_locks(std)
 
     os_mod = std / "os/mod.rs"
     replace_once(

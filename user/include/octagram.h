@@ -36,6 +36,10 @@ char *getenv(const char *name);
 #define OCT_MAX_SYSCALL_IO 4096
 #define OCT_WAIT_ANY UINT64_MAX
 #define OCT_WNOHANG 1u
+#define OCT_LOCK_SH 1
+#define OCT_LOCK_EX 2
+#define OCT_LOCK_NB 4
+#define OCT_LOCK_UN 8
 #define OCT_IPV4(a, b, c, d) \
     ((((uint32_t)(a) & 0xffu) << 24) | (((uint32_t)(b) & 0xffu) << 16) | \
      (((uint32_t)(c) & 0xffu) << 8) | ((uint32_t)(d) & 0xffu))
@@ -260,6 +264,12 @@ static inline int64_t oct_dup(int fd)
 static inline int64_t oct_fcntl(int fd, int command, uint64_t argument)
 {
     return oct_syscall3(34, (uint64_t)fd, (uint64_t)command, argument);
+}
+
+static inline int64_t oct_flock(int fd, int operation)
+{
+    return oct_syscall2(150, (uint64_t)(int64_t)fd,
+                        (uint64_t)(unsigned int)operation);
 }
 
 static inline int64_t oct_rmdir(const char *path)

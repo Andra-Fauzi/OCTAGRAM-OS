@@ -146,9 +146,6 @@ jobs:
       - name: Run kernel host tests
         run: cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
 
-      - name: Test mrustc/TinyCC compatibility scaffolding
-        run: bash tools/test_mrustc_compat_host.sh
-
       - name: Run libc host tests
         run: |
           make -C user scanf-test

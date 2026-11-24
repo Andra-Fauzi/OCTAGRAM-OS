@@ -21,6 +21,7 @@ use std::process::{Command, Stdio};
 
 unsafe extern "C" {
     fn fcntl(fd: i32, command: i32, ...) -> i32;
+    fn flock(fd: i32, operation: i32) -> i32;
 }
 
 const F_DUPFD: i32 = 0;
@@ -1525,6 +1526,187 @@ fn main() {
         std::process::exit(67);
     }
     marker("RUST-STD-PROCESS-PATH-LOOKUP-PASS");
+
+    // Cargo serializes target directories and package caches with advisory
+    // file locks. First check the raw flock ABI and its argument validation.
+    let lock_path = std::path::PathBuf::from(format!(
+        "/tmp/octagram-rust-flock-{}.lock",
+        std::process::id()
+    ));
+    const LOCK_EX_CODE: i32 = 2;
+    const LOCK_NB_CODE: i32 = 4;
+    const LOCK_UN_CODE: i32 = 8;
+    const EINVAL_CODE: i32 = 22;
+    const EBADF_CODE: i32 = 9;
+    let flock_flags_result = (|| -> std::io::Result<()> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&lock_path)?;
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
+        let raw_errno = || std::io::Error::last_os_error().raw_os_error();
+        if unsafe { flock(fd, 0) } != -1 || raw_errno() != Some(EINVAL_CODE) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "flock accepted an empty operation",
+            ));
+        }
+        if unsafe { flock(fd, 1 | LOCK_EX_CODE) } != -1 || raw_errno() != Some(EINVAL_CODE) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "flock accepted LOCK_SH | LOCK_EX",
+            ));
+        }
+        if unsafe { flock(-1, LOCK_EX_CODE) } != -1 || raw_errno() != Some(EBADF_CODE) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "flock accepted an invalid descriptor",
+            ));
+        }
+        // Descriptor 0 is the console, not a VFS file.
+        if unsafe { flock(0, LOCK_EX_CODE) } != -1 || raw_errno() != Some(EBADF_CODE) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "flock accepted a non-file descriptor",
+            ));
+        }
+        if unsafe { flock(fd, LOCK_EX_CODE | LOCK_NB_CODE) } != 0
+            || unsafe { flock(fd, LOCK_UN_CODE) } != 0
+            || unsafe { flock(fd, LOCK_UN_CODE | LOCK_NB_CODE) } != 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "flock rejected a valid lock or unlock operation",
+            ));
+        }
+        Ok(())
+    })();
+    if flock_flags_result.is_err() {
+        let _ = std::fs::remove_file(&lock_path);
+        marker("RUST-STD-FS-FLOCK-FLAGS-FAIL");
+        std::process::exit(85);
+    }
+    marker("RUST-STD-FS-FLOCK-FLAGS-PASS");
+
+    // Then exercise the upstream std File locking API that Cargo calls.
+    let flock_result = (|| -> std::io::Result<()> {
+        use std::fs::TryLockError;
+        let first = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&lock_path)?;
+        let second = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        first.lock()?;
+        match second.try_lock() {
+            Err(TryLockError::WouldBlock) => {}
+            other => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("conflicting exclusive try_lock returned {other:?}"),
+                ));
+            }
+        }
+        match second.try_lock_shared() {
+            Err(TryLockError::WouldBlock) => {}
+            other => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("conflicting shared try_lock returned {other:?}"),
+                ));
+            }
+        }
+        first.unlock()?;
+        second.lock()?;
+        second.unlock()?;
+        // Independent shared locks may be held at the same time, and an
+        // exclusive conversion must still see the other shared holder.
+        first.lock_shared()?;
+        second.lock_shared()?;
+        match first.try_lock() {
+            Err(TryLockError::WouldBlock) => {}
+            other => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("shared-to-exclusive conversion returned {other:?}"),
+                ));
+            }
+        }
+        first.unlock()?;
+        second.unlock()?;
+
+        // A thread blocked in File::lock must be released when the holder
+        // unlocks from another thread. Re-opening creates a second open file
+        // description, just like two cargo processes locking one target dir.
+        let holder = std::sync::Arc::new(first);
+        holder.lock()?;
+        let waiter_path = lock_path.clone();
+        let waiter = std::thread::spawn(move || -> std::io::Result<()> {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&waiter_path)?;
+            file.lock()?;
+            let reacquired = file.try_lock().is_ok();
+            file.unlock()?;
+            if !reacquired {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "same description could not convert its exclusive lock",
+                ));
+            }
+            Ok(())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        holder.unlock()?;
+        match waiter.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(error),
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "flock waiter thread panicked",
+                ));
+            }
+        }
+
+        // Closing the last descriptor of a description releases its lock.
+        holder.lock()?;
+        drop(holder);
+        let mut released = false;
+        for _ in 0..10_000 {
+            match second.try_lock() {
+                Ok(()) => {
+                    released = true;
+                    break;
+                }
+                Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+                Err(TryLockError::Error(error)) => return Err(error),
+            }
+        }
+        if !released {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "closing the descriptor did not release its lock",
+            ));
+        }
+        second.unlock()?;
+        drop(second);
+        std::fs::remove_file(&lock_path)?;
+        Ok(())
+    })();
+    if flock_result.is_err() {
+        let _ = std::fs::remove_file(&lock_path);
+        marker("RUST-STD-FS-FLOCK-FAIL");
+        std::process::exit(86);
+    }
+    marker("RUST-STD-FS-FLOCK-PASS");
 
     let mut stdout = std::io::stdout().lock();
     if stdout.write_all(b"RUST-STD-IO-WRITE-PASS\n").is_err() || stdout.flush().is_err() {

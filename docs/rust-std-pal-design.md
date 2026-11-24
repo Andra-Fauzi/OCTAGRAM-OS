@@ -31,8 +31,7 @@ dan [Rust platform support](https://doc.rust-lang.org/stable/rustc/platform-supp
 
 Port dilakukan terhadap checkout upstream Rust yang dipatok ke commit
 tertentu. Patch lokal harus terpisah, dapat di-rebase, dan memiliki test
-compile/test untuk target host OCTAGRAM. Jangan memodifikasi compiler
-menggunakan mrustc atau xrustc.
+compile/test untuk target host OCTAGRAM.
 
 ### Patch upstream pertama
 
@@ -260,3 +259,33 @@ confirms the updated libc module still cross-compiles. C build and QEMU
 execution of the updated demo are tracked by POSIX Core Stage 1 separately.
 Recursive/error-checking mutexes and full thread lifecycle semantics remain
 unsupported; in particular `pthread_detach` still returns `ENOTSUP`.
+
+## Advisory file locking untuk Cargo
+
+Cargo dan rustc menyerialkan akses ke target directory dan cache paket dengan
+advisory file lock, dan Rust `std` mengeksposnya sebagai `File::lock`,
+`File::lock_shared`, `File::try_lock`, `File::try_lock_shared`, dan
+`File::unlock`. Sebelumnya jalur ini tidak tersedia di OCTAGRAM: allowlist
+`library/std/src/sys/fs/unix.rs` tidak menyebut `target_os = "octagram"`,
+crate `libc` tidak mendefinisikan `LOCK_*` untuk target ini, dan kernel tidak
+memiliki syscall lock.
+
+Sekarang rantai tersebut lengkap:
+
+- syscall `flock` (150) menyimpan lock per *open file description* di tabel
+  global, memakai path absolut sebagai identitas file;
+- runtime C menyediakan `flock()` yang dipakai binary `std` saat link;
+- modul `libc` OCTAGRAM mendefinisikan `LOCK_SH`, `LOCK_EX`, `LOCK_NB`, dan
+  `LOCK_UN`, sementara deklarasi `flock` memakai deklarasi Unix upstream;
+- `tools/patch_rust_std_octagram.py` menambahkan target OCTAGRAM ke kelima
+  allowlist `sys/fs/unix.rs`.
+- probe `std` menguji validasi argumen, konflik exclusive/shared, konversi
+  shared ke exclusive, waiter yang diblokir lalu dibangunkan dari thread lain,
+  dan pelepasan lock saat descriptor terakhir ditutup.
+
+Batas yang masih berlaku: identitas lock berbasis path, bukan inode, sehingga
+hard link ke file yang sama tidak saling bentrok; lock tidak diwariskan ke
+proses anak hasil `execve` (hanya bertahan selama description masih terbuka,
+sesuai `dup`/`fork`); dan `lockf`/`fcntl(F_SETLK)` byte-range lock belum
+diimplementasikan. File lock bukan bukti bahwa Cargo native sudah berjalan;
+rustc dan Cargo native tetap milestone terpisah.

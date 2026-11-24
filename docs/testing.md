@@ -76,10 +76,7 @@ Debian/Ubuntu: `lld`).
 - `tools/qemu_tcc_selfhost_test.py` menguji compiler TinyCC native di guest:
   kompilasi dan eksekusi overflow builtins, kompilasi/inspeksi byte XGETBV
   tanpa menjalankan instruksinya, link dan eksekusi bootstrap libm dari
-  `libc.a`, serta bytewise AtomicU128 PoC shim (bukan primitive atomic).
-  Jalur mrustc yang lebih besar dipisah di `tools/mrustc_poc/qemu_test.py`;
-  harness tersebut menjalankan tes kecil terlebih dahulu sebelum kompilasi
-  C hasil transpile `core` yang jauh lebih besar.
+  `libc.a`.
 - `tools/qemu_ext2_persistence_test.py` menguji penyimpanan source di EXT2:
   format disk kedua dengan `mkfs.ext2` native, mount, tulis berkas, pipeline,
   redirection, `mv`, unmount, `system_reset` lewat monitor, lalu mount ulang

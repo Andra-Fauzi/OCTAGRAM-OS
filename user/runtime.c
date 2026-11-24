@@ -28,6 +28,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/select.h>
+#include <sys/file.h>
 #include <sys/time.h>
 #include <sys/utsname.h>
 #include <sys/epoll.h>
@@ -4439,6 +4440,11 @@ int fcntl(int fd, int command, ...)
         va_end(arguments);
     }
     return (int)posix_result(oct_fcntl(fd, command, argument));
+}
+
+int flock(int fd, int operation)
+{
+    return (int)posix_result(oct_flock(fd, operation));
 }
 
 int ftruncate(int fd, off_t length)

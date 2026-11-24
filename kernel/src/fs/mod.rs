@@ -61,8 +61,6 @@ const TCC_SMOKE_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_smoke
 const TCC_OVERFLOW_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_overflow.c");
 const TCC_XGETBV_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_xgetbv.c");
 const TCC_MATH_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_math.c");
-const TCC_ATOMIC128_SHIM_SOURCE: &[u8] = include_bytes!("../../../user/examples/tcc_atomic128_shim.c");
-const TCC_ATOMIC128_FIX_HEADER: &[u8] = include_bytes!("../../../tools/mrustc_poc/fix.h");
 const TCC_SMOKE_MINIMAL_SOURCE: &[u8] =
     include_bytes!("../../../user/examples/tcc_smoke_minimal.c");
 const USER_HEADERS: &[(&str, &[u8])] = &[
@@ -1038,8 +1036,6 @@ pub fn init() {
         seed_file(&mut vfs, "/tmp/tcc-overflow.c", TCC_OVERFLOW_SOURCE, 0o644);
         seed_file(&mut vfs, "/tmp/tcc-xgetbv.c", TCC_XGETBV_SOURCE, 0o644);
         seed_file(&mut vfs, "/tmp/tcc-math.c", TCC_MATH_SOURCE, 0o644);
-        seed_file(&mut vfs, "/tmp/tcc-atomic128-shim.c", TCC_ATOMIC128_SHIM_SOURCE, 0o644);
-        seed_file(&mut vfs, "/tmp/tcc-atomic128-fix.h", TCC_ATOMIC128_FIX_HEADER, 0o644);
         seed_file(
             &mut vfs,
             "/etc/os-release",
@@ -1104,18 +1100,6 @@ pub fn init() {
             &mut vfs,
             "/share/octagram/ld-helper.c",
             include_bytes!("../../../user/examples/selfhost/ld-helper.c"),
-            0o644,
-        );
-        seed_file(
-            &mut vfs,
-            "/share/octagram/xrustc-sum.rs",
-            include_bytes!("../../../user/examples/selfhost/xrustc-sum.rs"),
-            0o644,
-        );
-        seed_file(
-            &mut vfs,
-            "/share/octagram/xrustc-bad.rs",
-            include_bytes!("../../../user/examples/selfhost/xrustc-bad.rs"),
             0o644,
         );
         seed_file(
@@ -1295,16 +1279,6 @@ mod tests {
             let tcc_math_metadata = vfs.metadata("/tmp/tcc-math.c").unwrap();
             assert_eq!(tcc_math_metadata.len, tcc_math_source.len());
 
-            let tcc_atomic128_source =
-                include_bytes!("../../../user/examples/tcc_atomic128_shim.c");
-            let tcc_atomic128_metadata =
-                vfs.metadata("/tmp/tcc-atomic128-shim.c").unwrap();
-            assert_eq!(tcc_atomic128_metadata.len, tcc_atomic128_source.len());
-            let tcc_atomic128_fix =
-                include_bytes!("../../../tools/mrustc_poc/fix.h");
-            let tcc_atomic128_fix_metadata =
-                vfs.metadata("/tmp/tcc-atomic128-fix.h").unwrap();
-            assert_eq!(tcc_atomic128_fix_metadata.len, tcc_atomic128_fix.len());
 
             for (path, expected) in [
                 (
@@ -1318,14 +1292,6 @@ mod tests {
                 (
                     "/share/octagram/message.c",
                     include_bytes!("../../../user/examples/selfhost/message.c").as_slice(),
-                ),
-                (
-                    "/share/octagram/xrustc-sum.rs",
-                    include_bytes!("../../../user/examples/selfhost/xrustc-sum.rs").as_slice(),
-                ),
-                (
-                    "/share/octagram/xrustc-bad.rs",
-                    include_bytes!("../../../user/examples/selfhost/xrustc-bad.rs").as_slice(),
                 ),
             ] {
                 let metadata = vfs.metadata(path).unwrap();

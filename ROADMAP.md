@@ -304,20 +304,9 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
   - [x] Make serial, include, single-stem pattern, `.PHONY`, order-only, incremental mtime rebuild, `-B` (QEMU)
   - [ ] Build manifest native dan full shell recipe semantics
 - [ ] M4: bootstrap `rustc`, Rust `core/alloc`, lalu Cargo native/offline
-  - [x] `xrustc`: frontend Rust-subset native (parse → assembly → `as` → `ld` di
-    dalam OCTAGRAM, `putstr`/`putchar`, rekursi dan loop; 7 host test + QEMU
-    `XRUSTC-SUBSET-PASS`). Bukan port `rustc`; lihat `docs/native-self-hosting-roadmap.md` M4.2
-  - [x] Evaluasi `mrustc` (transpiler Rust→C dalam C++) di host: Rust `core`
-    1.90 di-transpile menjadi 34,5 MB / 587 ribu baris C, dan program PoC
-    `no_std` menjadi 36 KB C. Harness + sumber compat di `tools/mrustc_poc/`
-    (lihat `docs/native-self-hosting-roadmap.md` M4.3)
-  - [x] Harness host menolak perubahan format keluaran `mrustc` jika rewrite kompatibilitas `XGETBV`/`AtomicU128` tidak ditemukan atau masih tersisa setelah patch.
   - [x] Implementasi parser TinyCC untuk `__builtin_add_overflow`,
     `__builtin_sub_overflow`, dan `__builtin_mul_overflow`; runtime helper
     mendukung hasil signed/unsigned 8/16/32/64 bit dan tes host tersedia.
-  - [x] Tambahkan bytewise AtomicU128 PoC shim tanpa sintaks `__int128`;
-    host dan QEMU TinyCC menguji pola panggilan serta compare/mismatch. Ini
-    bukan primitive atomic; dukungan 128-bit yang nyata tetap terbuka.
   - [ ] Dukungan aritmetika integer 128-bit dan builtin overflow `__int128`
     (VT_QLONG TinyCC sekarang hanya representasi ABI, bukan tipe sumber).
   - [x] Tambahkan mnemonic assembler TinyCC `xgetbv` dengan encoding
@@ -330,13 +319,6 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
     aproksimasi dan belum correctly-rounded atau tervalidasi luas.
   - [x] Verifikasi di QEMU tes builtin overflow dan kompilasi inline asm XGETBV
     (`TCC-OVERFLOW-PASS`, `TCC-XGETBV-ASSEMBLE-PASS`, `TCC-XGETBV-RUN-PASS`).
-  - [x] PoC `mrustc` end-to-end: C hasil transpile (34,6 MB / 588.976 baris)
-    dikompilasi `tcc` di guest, ELF hasilnya berjalan dan mencetak
-    `mrustc-c-poc: 108` (`MRUSTC-C-POC-PASS`). Jalur ini juga memperbaiki bug
-    EXT2 pada image `mke2fs` (counter backup superblock nol) dan membuat
-    `log2` eksak untuk pangkat dua. Yang masih terbuka: allocator nyata untuk
-    `__rdl_*`, `alloc`/`std`, `mrustc` di dalam guest, dan atomic 128-bit asli.
-    Lihat `docs/native-self-hosting-roadmap.md` M4.3.
   - [ ] `rustc` native, `core`/`alloc` native, dan Cargo native/offline
 - [ ] M5: build kernel Rust sepenuhnya dari dalam OCTAGRAM
 - [ ] M6: native disk/boot image builder dan installer

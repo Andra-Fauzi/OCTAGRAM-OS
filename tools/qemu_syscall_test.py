@@ -275,6 +275,8 @@ def main():
         ("RUST-STD-FS-COPY-PASS", "upstream std filesystem artifact copy and byte verification"),
         ("RUST-STD-FS-HARD-LINK-PASS", "upstream std hard-link creation and inode lifetime"),
         ("RUST-STD-FS-PERMISSIONS-PASS", "upstream std Unix file permission metadata and updates"),
+        ("RUST-STD-FS-FLOCK-FLAGS-PASS", "flock syscall argument validation and descriptor checks"),
+        ("RUST-STD-FS-FLOCK-PASS", "upstream std File locking, blocking wait and close release"),
         ("RUST-STD-ENV-PASS", "environment"),
         ("RUST-STD-ENV-MUTATION-PASS", "process environment set_var and remove_var"),
         ("RUST-STD-FS-METADATA-PASS", "filesystem metadata"),

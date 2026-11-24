@@ -158,7 +158,6 @@ async fn execute(
         "as" => run_toolchain_command("as", current_dir, arguments),
         "ld" => run_toolchain_command("ld", current_dir, arguments),
         "cc" => run_toolchain_command("cc", current_dir, arguments),
-        "xrustc" => run_xrustc_command(current_dir, arguments),
         "tcc" => run_external_program(
             current_dir,
             "tcc",
@@ -282,7 +281,6 @@ const HELP_ENTRIES: &[&str] = &[
     "as <input.s> -o <out.o> assemble supported x86_64 source",
     "ld <input.o> -o <out.elf> link a native toolchain or ELF64 relocatable object",
     "cc <input.c> -o <out.elf> compile the kernel C subset",
-    "xrustc [-S] <input.rs> -o <out>  compile the native Rust subset",
     "tcc <input.c> [options] compile C with native TinyCC",
     "tcc <input.c> [-o <out.elf>] compile C with TinyCC",
     "echo <text>            print text",
@@ -2719,101 +2717,6 @@ fn run_toolchain_command(command: &str, current_dir: &str, arguments: &str) {
             }
         }
         Err(error) => print_fs_error(command, &output, error),
-    }
-}
-
-/// Compile a Rust-subset source file with the in-kernel `xrustc` frontend,
-/// native assembler and native linker. Nothing leaves the machine.
-fn run_xrustc_command(current_dir: &str, arguments: &str) {
-    const USAGE: &str = "usage: xrustc <input.rs> -o <output> [-S]";
-    let words = arguments.split_whitespace().collect::<Vec<_>>();
-    let mut assembly_only = false;
-    let mut input = None;
-    let mut output = None;
-    let mut index = 0;
-    while index < words.len() {
-        match words[index] {
-            "-S" | "--emit-asm" => assembly_only = true,
-            "-o" => {
-                index += 1;
-                match words.get(index) {
-                    Some(path) => output = Some(*path),
-                    None => {
-                        crate::println!("{USAGE}");
-                        return;
-                    }
-                }
-            }
-            word if word.starts_with('-') => {
-                crate::println!("xrustc: unknown option {word}");
-                crate::println!("{USAGE}");
-                return;
-            }
-            word => {
-                if input.is_some() {
-                    crate::println!("xrustc: only one input file is supported");
-                    crate::println!("{USAGE}");
-                    return;
-                }
-                input = Some(word);
-            }
-        }
-        index += 1;
-    }
-    let (Some(input), Some(output)) = (input, output) else {
-        crate::println!("{USAGE}");
-        return;
-    };
-
-    let Some(input_path) = resolve_path(current_dir, input) else {
-        crate::println!("xrustc: invalid input path: {input}");
-        return;
-    };
-    let Some(output_path) = resolve_path(current_dir, output) else {
-        crate::println!("xrustc: invalid output path");
-        return;
-    };
-    let source = match read_toolchain_file(&input_path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            print_fs_error("xrustc", input, error);
-            return;
-        }
-    };
-    let Ok(source) = core::str::from_utf8(&source) else {
-        crate::println!("xrustc: {input} is not valid UTF-8");
-        return;
-    };
-    let compiled = match crate::xrustc::compile_to_elf(source) {
-        Ok(compiled) => compiled,
-        Err(error) => {
-            crate::println!("xrustc: {input}:{}: {}", error.line, error.message);
-            return;
-        }
-    };
-
-    if assembly_only {
-        match write_toolchain_file(&output_path, compiled.assembly.as_bytes(), false) {
-            Ok(()) => crate::println!(
-                "xrustc: wrote {} bytes of assembly to {output}",
-                compiled.assembly.len()
-            ),
-            Err(error) => print_fs_error("xrustc", output, error),
-        }
-        return;
-    }
-
-    match write_toolchain_file(&output_path, &compiled.executable, true) {
-        Ok(()) => {
-            crate::println!(
-                "xrustc: wrote {} bytes to {output}",
-                compiled.executable.len()
-            );
-            if let Some(entry) = elf_entry_address(&compiled.executable) {
-                crate::println!("xrustc: entry point {entry:#x}");
-            }
-        }
-        Err(error) => print_fs_error("xrustc", output, error),
     }
 }
 

@@ -181,6 +181,7 @@ const SYSCALL_GETSID: u64 = 131;
 const SYSCALL_SETSID: u64 = 132;
 const SYSCALL_LINKAT: u64 = 148;
 const SYSCALL_THREAD_DETACH: u64 = 149;
+const SYSCALL_FLOCK: u64 = 150;
 const SYSCALL_SETPRIORITY: u64 = 134;
 const SYSCALL_GETPRIORITY: u64 = 135;
 const SYSCALL_SCHED_SETSCHEDULER: u64 = 136;
@@ -394,6 +395,22 @@ struct IoVec {
     len:  u64,
 }
 
+/// Linux x86_64 `struct msghdr` layout used by sendmsg/recvmsg. Ancillary data
+/// and the name buffer are validated but otherwise unsupported.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserMsgHdr {
+    name: u64,
+    name_len: u32,
+    name_padding: u32,
+    iov: u64,
+    iov_len: u64,
+    control: u64,
+    control_len: u64,
+    flags: i32,
+    flags_padding: u32,
+}
+
 const O_RDONLY: u64 = 0;
 const O_WRONLY: u64 = 1;
 const O_RDWR: u64 = 2;
@@ -412,6 +429,10 @@ const F_GETFD: u64 = 1;
 const F_SETFD: u64 = 2;
 const F_GETFL: u64 = 3;
 const F_SETFL: u64 = 4;
+const LOCK_SH: u64 = 1;
+const LOCK_EX: u64 = 2;
+const LOCK_NB: u64 = 4;
+const LOCK_UN: u64 = 8;
 
 const EINTR: i32 = 4;
 const EPERM: i32 = 1;
@@ -1215,10 +1236,41 @@ struct UserMemory {
 
 struct OpenFile {
     path: String,
+    /// Identity of this open file description. `dup` and `fork` share the
+    /// description, so advisory locks are keyed by this value instead of by
+    /// descriptor number.
+    description: u64,
     offset: usize,
     readable: bool,
     writable: bool,
     append: bool,
+}
+
+/// One advisory `flock` held by an open file description.
+///
+/// OCTAGRAM keys locks by the absolute path captured when the file was
+/// opened, because the VFS does not expose inode numbers. Two opens of the
+/// same path therefore conflict even though they are different descriptions.
+struct FileLockEntry {
+    path: String,
+    description: u64,
+    exclusive: bool,
+}
+
+static NEXT_FILE_DESCRIPTION: AtomicU64 = AtomicU64::new(1);
+static FILE_LOCKS: Mutex<Vec<FileLockEntry>> = Mutex::new(Vec::new());
+
+impl Drop for OpenFile {
+    fn drop(&mut self) {
+        // Closing the last descriptor of an open file description releases
+        // every advisory lock it still holds.
+        release_file_locks(self.description);
+    }
+}
+
+fn release_file_locks(description: u64) {
+    let mut locks = FILE_LOCKS.lock();
+    locks.retain(|lock| lock.description != description);
 }
 
 #[derive(Clone)]
@@ -1413,6 +1465,7 @@ enum ProcessWait {
     Thread(u64),
     PipeReadable(u64),
     PipeWritable(u64),
+    FileLock,
     Futex { address: u64, bitset: u32 },
     PollWait,
     Sleep,
@@ -2567,6 +2620,7 @@ fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         SYSCALL_THREAD_JOIN => syscall_thread_join(frame),
         SYSCALL_THREAD_DETACH => syscall_thread_detach(frame),
         SYSCALL_FUTEX => syscall_futex(frame),
+        SYSCALL_FLOCK => syscall_flock_frame(frame),
         SYSCALL_SIGRETURN => syscall_sigreturn(frame),
         SYSCALL_POLL => syscall_poll_frame(frame),
         SYSCALL_SELECT => syscall_select_frame(frame),
@@ -2656,6 +2710,9 @@ fn handle_timer_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         return frame_pointer;
     };
     expire_futex_timeouts(&mut scheduler);
+    // Lock holders can release on any thread or by closing a descriptor, so
+    // retry file-lock waiters on every tick as well as on explicit wakeups.
+    wake_file_lock_waiters_in_scheduler(&mut scheduler);
     if !from_user {
         return frame_pointer;
     }
@@ -4559,6 +4616,23 @@ fn wake_pipe_waiters_in_scheduler(
     }
 }
 
+/// Advisory locks change on unlock, conversion, and close. Waiters re-execute
+/// the flock syscall, which re-checks the table, so waking them eagerly only
+/// costs one retry.
+fn wake_file_lock_waiters() {
+    let mut scheduler = USER_SCHEDULER.lock();
+    wake_file_lock_waiters_in_scheduler(&mut scheduler);
+}
+
+fn wake_file_lock_waiters_in_scheduler(scheduler: &mut UserScheduler) {
+    for process in &mut scheduler.processes {
+        if matches!(process.waiting_for, Some(ProcessWait::FileLock)) {
+            process.waiting_for = None;
+            process.wait_deadline = None;
+        }
+    }
+}
+
 fn new_user_process(
     cwd: &str,
     pid: u64,
@@ -6240,6 +6314,7 @@ fn syscall_open_path(mut path: String, flags: u64, mode: u64) -> Result<u64, i32
     let mut process = USER_PROCESS.lock();
     process.descriptors[fd] = Some(UserDescriptor::File(Arc::new(Mutex::new(OpenFile {
         path,
+        description: NEXT_FILE_DESCRIPTION.fetch_add(1, Ordering::Relaxed),
         offset: if flags & O_APPEND != 0 { size } else { 0 },
         readable,
         writable,
@@ -6515,6 +6590,83 @@ fn syscall_close(fd: u64) -> Result<u64, i32> {
         crate::network::close_tcp_socket(&socket);
     }
     Ok(0)
+}
+
+/// Acquire, convert, or release an advisory `flock` for one descriptor.
+///
+/// Returns `Ok(true)` when the lock table changed (waiters may be able to make
+/// progress) and `Err(EAGAIN)` when another open file description of the same
+/// path conflicts with the request.
+fn acquire_flock(fd: u64, operation: u64) -> Result<bool, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    if operation & !(LOCK_SH | LOCK_EX | LOCK_NB | LOCK_UN) != 0 {
+        return Err(EINVAL);
+    }
+    let kind = operation & !LOCK_NB;
+    let (path, description) = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        match process.descriptors.get(fd).and_then(Option::as_ref) {
+            Some(UserDescriptor::File(file)) => {
+                let file = file.lock();
+                (file.path.clone(), file.description)
+            }
+            // Advisory file locks are only defined for regular files opened
+            // through the VFS; pipes, consoles, and sockets reject the call.
+            Some(_) | None => return Err(EBADF),
+        }
+    };
+    let mut locks = FILE_LOCKS.lock();
+    if kind == LOCK_UN {
+        let before = locks.len();
+        locks.retain(|lock| !(lock.description == description && lock.path == path));
+        return Ok(locks.len() != before);
+    }
+    let exclusive = match kind {
+        LOCK_SH => false,
+        LOCK_EX => true,
+        _ => return Err(EINVAL),
+    };
+    let contended = locks.iter().any(|lock| {
+        lock.path == path && lock.description != description && (exclusive || lock.exclusive)
+    });
+    if contended {
+        return Err(EAGAIN);
+    }
+    // Converting between shared and exclusive keeps a single entry per
+    // description and path.
+    locks.retain(|lock| !(lock.description == description && lock.path == path));
+    locks.try_reserve(1).map_err(|_| ENOMEM)?;
+    locks.push(FileLockEntry {
+        path,
+        description,
+        exclusive,
+    });
+    Ok(true)
+}
+
+fn syscall_flock_frame(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    match acquire_flock(frame.rdi, frame.rsi) {
+        Ok(changed) => {
+            frame.rax = 0;
+            if changed {
+                wake_file_lock_waiters();
+            }
+            frame_pointer
+        }
+        // A blocking request parks the task and re-executes `int 0x80` after
+        // a holder releases the lock.
+        Err(EAGAIN) if frame.rsi & LOCK_NB == 0 => {
+            block_current_on_wait(frame, ProcessWait::FileLock)
+        }
+        Err(errno) => {
+            frame.rax = (-(errno as i64)) as u64;
+            frame_pointer
+        }
+    }
 }
 
 fn syscall_lseek(fd: u64, offset: i64, whence: u64) -> Result<u64, i32> {
@@ -11113,14 +11265,21 @@ fn syscall_socketpair(domain: u64, socket_type: u64, protocol: u64, addresses: u
     paging::validate_user_range(addresses, core::mem::size_of::<[i32; 2]>(), true)
         .map_err(|_| EFAULT)?;
     let peer_credentials = {
-        let process = USER_PROCESS.lock();
-        if !process.active {
+        if !USER_PROCESS.lock().active {
             return Err(EINTR);
         }
+        // Credentials live on the scheduled task so every thread of a pid
+        // observes the same values.
+        let scheduler = USER_SCHEDULER.lock();
+        let current = scheduler
+            .processes
+            .get(scheduler.current)
+            .filter(|_| scheduler.active)
+            .ok_or(EINTR)?;
         UserUcred {
-            pid: i32::try_from(process.pid).map_err(|_| EOVERFLOW)?,
-            uid: process.euid,
-            gid: process.egid,
+            pid: i32::try_from(current.pid).map_err(|_| EOVERFLOW)?,
+            uid: current.euid,
+            gid: current.egid,
         }
     };
     let (first_read, first_write) = create_pipe()?;

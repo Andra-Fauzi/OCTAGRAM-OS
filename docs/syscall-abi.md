@@ -151,6 +151,18 @@ menyediakan inline wrappers.
 | 145 | `capset` | `RDI=pid`, `RSI=mask` | 0, `-EPERM` tanpa `CAP_SYS_ADMIN`, `-EINVAL`, `-ESRCH` |
 | 146 | `set_robust_list` | `RDI=head`, `RSI=length` (wajib 24) | 0, `-EINVAL`, `-EFAULT` |
 | 147 | `get_robust_list` | `RDI=tid` (0 = pemanggil), `RSI=head*`, `RDX=length*` | 0, `-EFAULT`, `-ESRCH` |
+| 150 | `flock` | `RDI=fd`, `RSI=operation` (`LOCK_SH`/`LOCK_EX`/`LOCK_UN`, boleh `| LOCK_NB`) | 0; `-EAGAIN` bila `LOCK_NB` dan lock bentrok, `-EINVAL`, `-EBADF` |
+
+`flock` (150) menyediakan advisory record lock untuk file VFS. Lock dimiliki
+oleh *open file description*: `dup`, `fcntl(F_DUPFD)`, dan `fork` berbagi lock
+yang sama, sedangkan dua `open` terpisah pada path yang sama saling bentrok
+(termasuk shared vs shared-free: `LOCK_SH` boleh dipakai beberapa deskripsi
+sekaligus, `LOCK_EX` eksklusif). Identitas lock adalah path absolut yang
+disimpan saat file dibuka karena VFS belum mengekspos nomor inode, sehingga
+hard link ke inode yang sama tidak saling terdeteksi. Operasi tanpa `LOCK_NB`
+yang bentrok memblokir task dan mengulang syscall setelah holder melepas lock;
+penutupan descriptor terakhir otomatis melepas lock. Pipe, console, direktori,
+dan socket mengembalikan `-EBADF`.
 
 Nomor 10, 15, 18, 19, 23, 24, 26, dan 49 sudah dicabut dan tetap
 dicadangkan agar nomor syscall berikutnya tidak bergeser; pemanggilannya

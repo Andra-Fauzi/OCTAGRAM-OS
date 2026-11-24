@@ -3420,12 +3420,15 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                 let symbol = symbols
                     .get(symbol_index)
                     .ok_or(ToolchainError::InvalidElfObject)?;
-                let symbol_value = if symbol.binding == 0 {
-                    symbol.value.ok_or(ToolchainError::UndefinedSymbol)?
-                } else if let Some((value, _, _)) = global_symbols.get(&symbol.name) {
-                    *value
+                let (symbol_value, symbol_size) = if symbol.binding == 0 {
+                    (
+                        symbol.value.ok_or(ToolchainError::UndefinedSymbol)?,
+                        symbol.size,
+                    )
+                } else if let Some((value, _, size)) = global_symbols.get(&symbol.name) {
+                    (*value, *size)
                 } else if symbol.binding == 2 {
-                    0
+                    (0, 0)
                 } else {
                     return Err(ToolchainError::UndefinedSymbol);
                 };
@@ -3522,7 +3525,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                                 symbol_value,
                                 addend,
                                 place,
-                                symbol.size,
+                                symbol_size,
                             )?;
                         }
                     }
@@ -3543,7 +3546,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                                 symbol_value,
                                 addend,
                                 place,
-                                symbol.size,
+                                symbol_size,
                             )?;
                         }
                     }
@@ -3863,6 +3866,26 @@ mod tests {
         put_elf64(&mut object, rela_offset + 8, info);
         put_elf64(&mut object, rela_offset + 16, 0);
         object
+    }
+
+    #[test]
+    fn size_relocation_uses_resolved_external_definition_size() {
+        let mut caller = relocatable_object();
+        rename_fixture_symbol(&mut caller, 2, b"external");
+        caller[0x140 + 2 * 24 + 6..0x140 + 2 * 24 + 8]
+            .copy_from_slice(&0u16.to_le_bytes());
+        set_fixture_relocation_kind(&mut caller, 32);
+
+        let mut provider = relocatable_object();
+        rename_fixture_symbol(&mut provider, 1, b"external");
+        provider[0x140 + 1 * 24 + 16..0x140 + 1 * 24 + 24]
+            .copy_from_slice(&12u64.to_le_bytes());
+
+        let executable = super::link_elf_objects(&[&caller, &provider]).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(executable[0x1001..0x1005].try_into().unwrap()),
+            12
+        );
     }
 
     #[test]

@@ -27,7 +27,7 @@ terminal:
     - "--security-opt=no-new-privileges"
     - "--pids-limit=256"
   container_cpu: 3
-  container_memory: 6144
+  container_memory: 5120
   container_disk: 20480
   container_persistent: true
 

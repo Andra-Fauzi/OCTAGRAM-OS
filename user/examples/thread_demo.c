@@ -6,6 +6,15 @@
 static __thread int tls_value = 41;
 static pthread_mutex_t counter_lock = PTHREAD_MUTEX_INITIALIZER;
 static int shared_counter;
+static volatile int detached_worker_done;
+static volatile int attr_detached_worker_done;
+
+static void *detached_worker(void *opaque)
+{
+    volatile int *done = opaque;
+    *done = 1;
+    return NULL;
+}
 
 typedef struct WorkerArgument {
     int value;
@@ -127,6 +136,39 @@ int main(void)
         return 3;
     }
 
-    puts("preemptive threads, TLS, and SSE context passed");
+    pthread_t detached_thread;
+    if (pthread_create(&detached_thread, NULL, detached_worker,
+                       (void *)&detached_worker_done) != 0
+        || pthread_detach(detached_thread) != 0
+        || pthread_join(detached_thread, NULL) != EINVAL) {
+        return 4;
+    }
+    for (volatile unsigned int spin = 0;
+         spin < 10000000u && !detached_worker_done; ++spin) {
+        __asm__ volatile ("pause");
+    }
+    if (!detached_worker_done) {
+        return 5;
+    }
+
+    pthread_attr_t detached_attributes;
+    pthread_t attr_detached_thread;
+    if (pthread_attr_init(&detached_attributes) != 0
+        || pthread_attr_setdetachstate(&detached_attributes,
+                                       PTHREAD_CREATE_DETACHED) != 0
+        || pthread_create(&attr_detached_thread, &detached_attributes,
+                         detached_worker, (void *)&attr_detached_worker_done) != 0
+        || pthread_attr_destroy(&detached_attributes) != 0) {
+        return 6;
+    }
+    for (volatile unsigned int spin = 0;
+         spin < 10000000u && !attr_detached_worker_done; ++spin) {
+        __asm__ volatile ("pause");
+    }
+    if (!attr_detached_worker_done) {
+        return 7;
+    }
+
+    puts("preemptive threads, TLS, SSE context, and detached pthreads passed");
     return 0;
 }

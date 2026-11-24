@@ -8512,8 +8512,9 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     let mut source = None;
     let received = if let Ok(socket) = udp_socket_for_fd(fd) {
         let (copied, datagram_len, source_ip, source_port) =
-            crate::network::receive_udp_socket_length(&socket, &mut payload)
-                .map_err(errno_from_network)?;
+            crate::network::receive_udp_socket_length_with_peek(
+                &socket, &mut payload, flags & 0x02 != 0,
+            ).map_err(errno_from_network)?;
         if datagram_len > copied { header.flags |= 0x20; } else { header.flags = 0; }
         source = Some((source_ip, source_port));
         if flags & 0x20 != 0 { datagram_len } else { copied }

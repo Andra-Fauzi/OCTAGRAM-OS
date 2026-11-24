@@ -211,8 +211,8 @@ fn main() {
         let read = unsafe { syscall6(107, pair[1] as u64, &mut recv_header as *mut _ as usize as u64, 0, 0, 0, 0) };
         let read_matches = read == 5 && received_bytes == sent_bytes;
         unsafe {
-            syscall3(3, pair[0] as u64, 0, 0);
-            syscall3(3, pair[1] as u64, 0, 0);
+            syscall3(4, pair[0] as u64, 0, 0);
+            syscall3(4, pair[1] as u64, 0, 0);
         }
         sent == 5 && peek_matches && read_matches
     } else {

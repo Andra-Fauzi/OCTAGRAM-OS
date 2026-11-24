@@ -734,6 +734,29 @@ int main(void)
     check(clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &absolute, NULL) == 0,
           "clock_nanosleep absolut");
 
+    int cloexec_source = open("/tmp/fcntl-cloexec-source",
+                               O_CREAT | O_RDWR | O_TRUNC, 0600);
+    check(cloexec_source >= 0, "open source for F_DUPFD_CLOEXEC");
+    if (cloexec_source >= 0) {
+        int duplicate_plain = fcntl(cloexec_source, F_DUPFD, 0);
+        check(duplicate_plain >= 0, "fcntl(F_DUPFD) duplicates descriptor");
+        if (duplicate_plain >= 0) {
+            check((fcntl(duplicate_plain, F_GETFD) & FD_CLOEXEC) == 0,
+                  "F_DUPFD clears FD_CLOEXEC on duplicate");
+            close(duplicate_plain);
+        }
+        int duplicate_cloexec = fcntl(cloexec_source, F_DUPFD_CLOEXEC, 0);
+        check(duplicate_cloexec >= 0,
+              "fcntl(F_DUPFD_CLOEXEC) duplicates descriptor");
+        if (duplicate_cloexec >= 0) {
+            check((fcntl(duplicate_cloexec, F_GETFD) & FD_CLOEXEC) != 0,
+                  "F_DUPFD_CLOEXEC sets FD_CLOEXEC");
+            close(duplicate_cloexec);
+        }
+        close(cloexec_source);
+        unlink("/tmp/fcntl-cloexec-source");
+    }
+
     int nonblock_pipe[2];
     check(pipe(nonblock_pipe) == 0, "pipe untuk O_NONBLOCK");
     int status_flags = fcntl(nonblock_pipe[0], F_GETFL);

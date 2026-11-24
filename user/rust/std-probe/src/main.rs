@@ -224,6 +224,28 @@ fn main() {
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-MSG-PASS");
 
+    // SOCK_CLOEXEC is applied to each newly-created descriptor independently.
+    let mut cloexec_pair = [-1i32; 2];
+    let cloexec_result = unsafe {
+        syscall4(127, 1, 1 | 0x8_0000, 0, cloexec_pair.as_mut_ptr() as usize as u64)
+    };
+    let cloexec_ok = cloexec_result == 0
+        && cloexec_pair[0] >= 0
+        && cloexec_pair[1] >= 0
+        && unsafe { syscall3(34, cloexec_pair[0] as u64, 1, 0) } == 1
+        && unsafe { syscall3(34, cloexec_pair[1] as u64, 1, 0) } == 1;
+    if cloexec_pair[0] >= 0 {
+        unsafe { syscall3(4, cloexec_pair[0] as u64, 0, 0); }
+    }
+    if cloexec_pair[1] >= 0 {
+        unsafe { syscall3(4, cloexec_pair[1] as u64, 0, 0); }
+    }
+    if !cloexec_ok {
+        marker("RUST-STD-UNIX-SOCKETPAIR-CLOEXEC-FAIL");
+        std::process::exit(75);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-CLOEXEC-PASS");
+
     let (tls_value, tls_address) = RUST_TLS_PROBE.with(|value| {
         let initial = value.get();
         let address = value as *const Cell<u64> as usize;

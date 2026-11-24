@@ -7633,7 +7633,18 @@ fn randomized_pie_load_bias() -> u64 {
     }
 }
 
-fn syscall_getrandom(buffer: u64, length: u64, _flags: u64) -> Result<u64, i32> {
+const GRND_NONBLOCK: u64 = 0x0001;
+const GRND_RANDOM: u64 = 0x0002;
+const GRND_INSECURE: u64 = 0x0004;
+const GRND_VALID_FLAGS: u64 = GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE;
+
+fn syscall_getrandom(buffer: u64, length: u64, flags: u64) -> Result<u64, i32> {
+    // OCTAGRAM currently has an immediate, nonblocking pseudo-random source.
+    // Accept Linux getrandom flag values, but reject unknown bits rather than
+    // silently treating malformed calls as successful.
+    if flags & !GRND_VALID_FLAGS != 0 {
+        return Err(EINVAL);
+    }
     let length = usize::try_from(length).map_err(|_| EINVAL)?;
     let count = length.min(GETRANDOM_MAX);
     if count == 0 {

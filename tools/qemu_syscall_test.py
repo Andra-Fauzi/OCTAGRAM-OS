@@ -173,7 +173,7 @@ def main():
     guest_tests = (
         ("/bin/mmap-demo", "mmap POSIX demo: PASS", "M4-ABI-MMAP"),
         ("/bin/tls-demo", "static TLS initialized", "M4-ABI-TLS"),
-        ("/bin/thread-demo", "preemptive threads, TLS, and SSE context passed", "M4-ABI-THREADS"),
+        ("/bin/thread-demo", "preemptive threads, TLS, SSE context, and detached pthreads passed", "M4-ABI-THREADS"),
         (
             "/bin/rust-hello-octagram",
             "Rust custom target x86_64-unknown-octagram runs in OCTAGRAM!",

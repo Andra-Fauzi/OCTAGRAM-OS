@@ -140,6 +140,7 @@ int main(void)
     if (pthread_create(&detached_thread, NULL, detached_worker,
                        (void *)&detached_worker_done) != 0
         || pthread_detach(detached_thread) != 0
+        || pthread_detach(detached_thread) != EINVAL
         || pthread_join(detached_thread, NULL) != EINVAL) {
         return 4;
     }
@@ -153,9 +154,13 @@ int main(void)
 
     pthread_attr_t detached_attributes;
     pthread_t attr_detached_thread;
+    int configured_detach_state = PTHREAD_CREATE_JOINABLE;
     if (pthread_attr_init(&detached_attributes) != 0
         || pthread_attr_setdetachstate(&detached_attributes,
                                        PTHREAD_CREATE_DETACHED) != 0
+        || pthread_attr_getdetachstate(&detached_attributes,
+                                       &configured_detach_state) != 0
+        || configured_detach_state != PTHREAD_CREATE_DETACHED
         || pthread_create(&attr_detached_thread, &detached_attributes,
                          detached_worker, (void *)&attr_detached_worker_done) != 0
         || pthread_attr_destroy(&detached_attributes) != 0) {
@@ -165,7 +170,8 @@ int main(void)
          spin < 10000000u && !attr_detached_worker_done; ++spin) {
         __asm__ volatile ("pause");
     }
-    if (!attr_detached_worker_done) {
+    if (!attr_detached_worker_done
+        || pthread_join(attr_detached_thread, NULL) != EINVAL) {
         return 7;
     }
 

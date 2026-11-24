@@ -224,6 +224,41 @@ fn main() {
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-MSG-PASS");
 
+    // recvmsg() on an unnamed socketpair must not expose a fabricated
+    // IPv4 peer address; msg_namelen is returned as zero.
+    let mut source_pair = [-1i32; 2];
+    let source_pair_result = unsafe {
+        syscall4(127, 1, 1, 0, source_pair.as_mut_ptr() as usize as u64)
+    };
+    let mut source_bytes = [0u8; 5];
+    let mut source_iov = ProbeIoVec { base: source_bytes.as_mut_ptr() as usize as u64, len: 5 };
+    let mut source_addr = [0u8; 16];
+    let mut source_header = ProbeMsgHdr {
+        name: source_addr.as_mut_ptr() as usize as u64, name_len: 16, _name_padding: 0,
+        iov: &mut source_iov as *mut ProbeIoVec as usize as u64, iov_len: 1,
+        control: 0, control_len: 0, flags: 0, _flags_padding: 0,
+    };
+    let source_send_iov = ProbeIoVec { base: sent_bytes.as_ptr() as usize as u64, len: 5 };
+    let mut source_send_header = ProbeMsgHdr {
+        name: 0, name_len: 0, _name_padding: 0,
+        iov: &source_send_iov as *const ProbeIoVec as usize as u64, iov_len: 1,
+        control: 0, control_len: 0, flags: 0, _flags_padding: 0,
+    };
+    let source_send = if source_pair_result == 0 && source_pair[0] >= 0 && source_pair[1] >= 0 {
+        unsafe { syscall6(106, source_pair[0] as u64, &source_send_header as *const _ as usize as u64, 0, 0, 0, 0) }
+    } else { -1 };
+    let source_recv = if source_send == 5 {
+        unsafe { syscall6(107, source_pair[1] as u64, &mut source_header as *mut _ as usize as u64, 0, 0, 0, 0) }
+    } else { -1 };
+    if source_pair[0] >= 0 { unsafe { syscall3(4, source_pair[0] as u64, 0, 0); } }
+    if source_pair[1] >= 0 { unsafe { syscall3(4, source_pair[1] as u64, 0, 0); } }
+    if source_recv != 5 || source_header.name_len != 0 || source_bytes != sent_bytes {
+        marker("RUST-STD-UNIX-SOCKETPAIR-RECV-NAME-FAIL");
+        std::process::exit(82);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-RECV-NAME-PASS");
+
+
     // A connected socketpair cannot be redirected with msg_name. The kernel
     // must return EISCONN rather than treating the AF_UNIX fd as a UDP socket.
     let mut named_pair = [-1i32; 2];

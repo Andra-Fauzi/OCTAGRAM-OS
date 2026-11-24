@@ -21,6 +21,13 @@ class SafetyTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 ai._safe_repo_path("/etc/passwd")
 
+    def test_docker_build_is_network_isolated(self):
+        command = ai._docker_build_command("kernel-tests")
+        self.assertIn("--network=none", command)
+        self.assertIn("--cap-drop=ALL", command)
+        self.assertIn("--read-only", command)
+        self.assertNotIn("sh", command)
+
 
 if __name__ == "__main__":
     unittest.main()

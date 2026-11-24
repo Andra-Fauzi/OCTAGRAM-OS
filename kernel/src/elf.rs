@@ -8496,7 +8496,9 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     if header.iov_len > 1024 { return Err(EINVAL); }
     let count = usize::try_from(header.iov_len).map_err(|_| EINVAL)?;
     let bytes = count.checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
-    paging::validate_user_range(header.iov, bytes, false).map_err(|_| EFAULT)?;
+    if bytes != 0 {
+        paging::validate_user_range(header.iov, bytes, false).map_err(|_| EFAULT)?;
+    }
     let mut vectors = Vec::with_capacity(count);
     let mut total = 0usize;
     for idx in 0..count {
@@ -8540,7 +8542,9 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
         if header.name != 0 {
             let capacity = header.name_len as usize;
             let copy_len = capacity.min(core::mem::size_of::<UserSockAddrIn>());
-            paging::validate_user_range(header.name, copy_len, true).map_err(|_| EFAULT)?;
+            if copy_len != 0 {
+                paging::validate_user_range(header.name, copy_len, true).map_err(|_| EFAULT)?;
+            }
             let address = UserSockAddrIn {
                 family: 2, port: source_port.to_be(),
                 address: u32::from_ne_bytes(source_ip), zero: [0; 8],

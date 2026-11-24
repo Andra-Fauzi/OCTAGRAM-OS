@@ -314,8 +314,8 @@
     {
       "symbol": "pthread_detach",
       "header": "user/include/pthread.h",
-      "status": "unsupported",
-      "notes": "Returns ENOTSUP"
+      "status": "implemented",
+      "notes": "Kernel-backed detach syscall; detached thread resources are reaped automatically after exit"
     },
     {
       "symbol": "pthread_mutexattr_settype",

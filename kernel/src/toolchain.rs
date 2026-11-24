@@ -2848,6 +2848,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
         name: Vec<u8>,
         binding: u8,
         value: Option<u64>,
+        size: u64,
     }
 
     let mut parsed_objects = Vec::with_capacity(objects.len());
@@ -3211,7 +3212,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
     // Pass 2: resolve every defined symbol to its final virtual address and
     // build the global symbol table before applying any relocation.
     let mut object_symbols: Vec<Vec<LocalSymbol>> = Vec::with_capacity(objects.len());
-    let mut global_symbols: BTreeMap<Vec<u8>, (u64, bool)> = BTreeMap::new();
+    let mut global_symbols: BTreeMap<Vec<u8>, (u64, bool, u64)> = BTreeMap::new();
     let mut entry = None;
 
     for (object, parsed) in objects.iter().zip(parsed_objects.iter()) {
@@ -3233,6 +3234,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
             }
             let section_index = elf_u16(object, base + 6)?;
             let symbol_value = elf_u64(object, base + 8)?;
+            let symbol_size = elf_u64(object, base + 16)?;
             let name_start = parsed
                 .strings
                 .offset
@@ -3311,14 +3313,14 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                 let is_weak = binding == 2;
                 match global_symbols.get(&name).copied() {
                     None => {
-                        global_symbols.insert(name.clone(), (value, is_weak));
+                        global_symbols.insert(name.clone(), (value, is_weak, symbol_size));
                     }
-                    Some((_existing, true)) => {
+                    Some((_existing, true, _existing_size)) => {
                         if !is_weak {
-                            global_symbols.insert(name.clone(), (value, false));
+                            global_symbols.insert(name.clone(), (value, false, symbol_size));
                         }
                     }
-                    Some((_existing, false)) => {
+                    Some((_existing, false, _existing_size)) => {
                         if !is_weak {
                             return Err(ToolchainError::DuplicateSymbol);
                         }
@@ -3330,6 +3332,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                 name,
                 binding,
                 value,
+                size: symbol_size,
             });
         }
         object_symbols.push(symbols);
@@ -3341,7 +3344,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
         let symbol = &object_symbols[got.object_index][got.symbol_index];
         let value = if symbol.binding == 0 {
             symbol.value.ok_or(ToolchainError::UndefinedSymbol)?
-        } else if let Some((value, _)) = global_symbols.get(&symbol.name) {
+        } else if let Some((value, _, _)) = global_symbols.get(&symbol.name) {
             *value
         } else if symbol.binding == 2 {
             0
@@ -3419,7 +3422,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                     .ok_or(ToolchainError::InvalidElfObject)?;
                 let symbol_value = if symbol.binding == 0 {
                     symbol.value.ok_or(ToolchainError::UndefinedSymbol)?
-                } else if let Some((value, _)) = global_symbols.get(&symbol.name) {
+                } else if let Some((value, _, _)) = global_symbols.get(&symbol.name) {
                     *value
                 } else if symbol.binding == 2 {
                     0
@@ -3428,8 +3431,8 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                 };
 
                 let relocation_size = match kind {
-                    1 | 18 | 24 => 8,
-                    2 | 4 | 9 | 10 | 11 | 22 | 23 | 26 | 41 | 42 => 4,
+                    1 | 18 | 24 | 33 => 8,
+                    2 | 4 | 9 | 10 | 11 | 22 | 23 | 26 | 32 | 41 | 42 => 4,
                     _ => return Err(ToolchainError::UnsupportedRelocation),
                 };
                 if relocation_offset
@@ -3519,6 +3522,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                                 symbol_value,
                                 addend,
                                 place,
+                                symbol.size,
                             )?;
                         }
                     }
@@ -3539,6 +3543,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                                 symbol_value,
                                 addend,
                                 place,
+                                symbol.size,
                             )?;
                         }
                     }
@@ -3682,6 +3687,7 @@ fn apply_elf_relocation(
     symbol: u64,
     addend: i64,
     place: u64,
+    symbol_size: u64,
 ) -> Result<(), ToolchainError> {
     match kind {
         1 => {
@@ -3698,6 +3704,22 @@ fn apply_elf_relocation(
             let value = i32::try_from(value).map_err(|_| ToolchainError::RelocationOverflow)?;
             let slot = buffer
                 .get_mut(offset..offset + 4)
+                .ok_or(ToolchainError::OutOfBounds)?;
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
+        // R_X86_64_SIZE32/SIZE64: Z + A, where Z is the symbol size.
+        32 => {
+            let value = (symbol_size as i64).wrapping_add(addend);
+            let value = u32::try_from(value).map_err(|_| ToolchainError::RelocationOverflow)?;
+            let slot = buffer
+                .get_mut(offset..offset + 4)
+                .ok_or(ToolchainError::OutOfBounds)?;
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
+        33 => {
+            let value = (symbol_size as i64).wrapping_add(addend) as u64;
+            let slot = buffer
+                .get_mut(offset..offset + 8)
                 .ok_or(ToolchainError::OutOfBounds)?;
             slot.copy_from_slice(&value.to_le_bytes());
         }
@@ -3841,6 +3863,21 @@ mod tests {
         put_elf64(&mut object, rela_offset + 8, info);
         put_elf64(&mut object, rela_offset + 16, 0);
         object
+    }
+
+    #[test]
+    fn applies_size32_and_size64_relocations_from_symbol_metadata() {
+        let mut object = relocatable_object();
+        // The data symbol's ELF st_size is 8 bytes.
+        object[0x140 + 2 * 24 + 16..0x140 + 2 * 24 + 24]
+            .copy_from_slice(&8u64.to_le_bytes());
+        set_fixture_relocation_kind(&mut object, 32);
+        let size32 = link_elf_object(&object).unwrap();
+        assert_eq!(u32::from_le_bytes(size32[0x1001..0x1005].try_into().unwrap()), 8);
+
+        set_fixture_relocation_kind(&mut object, 33);
+        let size64 = link_elf_object(&object).unwrap();
+        assert_eq!(u64::from_le_bytes(size64[0x1001..0x1009].try_into().unwrap()), 8);
     }
 
     #[test]

@@ -53,8 +53,9 @@ Batasan userspace yang harus dihormati port:
   ([syscall-abi.md](syscall-abi.md)); ini **bukan** ABI Linux.
 - TLS hanya local-exec/initial-exec; tidak ada TLS pada shared object
   ([dynamic-linker.md](dynamic-linker.md)).
-- `sendmsg`/`recvmsg` masih `ENOSYS`; Cargo dengan registry jaringannya belum
-  bisa diasumsikan jalan.
+- `sendmsg`/`recvmsg` memiliki subset dukungan untuk `AF_UNIX` socketpair,
+  UDP, dan TCP; ancillary data belum didukung. Cargo dengan registry jaringan
+  tetap belum bisa diasumsikan jalan, jadi bootstrap harus offline/vendor-first.
 - Pencarian program di shell: `/bin`, `/usr/bin`, `/usr/local/bin`,
   `/toolchain/bin` ([shell.md](shell.md)). Toolchain native nantinya ditaruh di
   `/toolchain/bin` supaya bisa dipanggil dengan nama saja.

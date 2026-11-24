@@ -278,14 +278,25 @@ fn main() {
         && shutdown_pair[1] >= 0
     {
         let shut_write = unsafe { syscall3(78, shutdown_pair[0] as u64, 1, 0) };
+        let write_after_shutdown = unsafe {
+            syscall6(106, shutdown_pair[0] as u64, &send_header as *const _ as usize as u64, 0, 0, 0, 0)
+        };
         let eof = unsafe {
             syscall6(107, shutdown_pair[1] as u64, &mut recv_header as *mut _ as usize as u64, 0, 0, 0, 0)
         };
         let shut_read = unsafe { syscall3(78, shutdown_pair[1] as u64, 0, 0) };
+        let read_after_shutdown = unsafe {
+            syscall6(107, shutdown_pair[1] as u64, &mut recv_header as *mut _ as usize as u64, 0, 0, 0, 0)
+        };
         let broken_pipe = unsafe {
             syscall6(106, shutdown_pair[0] as u64, &send_header as *const _ as usize as u64, 0, 0, 0, 0)
         };
-        shut_write == 0 && eof == 0 && shut_read == 0 && broken_pipe == -32
+        shut_write == 0
+            && write_after_shutdown == -32
+            && eof == 0
+            && shut_read == 0
+            && read_after_shutdown == 0
+            && broken_pipe == -32
     } else {
         false
     };

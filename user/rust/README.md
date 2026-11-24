@@ -13,21 +13,6 @@ userspace, dan probe untuk mengukur kesiapan port Rust upstream.
 - Binary `rustc` dan `cargo` native yang berjalan di OCTAGRAM **belum ada**.
 - Karena itu, keberhasilan cross-build tidak boleh disebut native bootstrap.
 
-## Stage 0: audit toolchain host
-
-Jalankan dari root repository:
-
-```sh
-make -C user/rust stage0-inventory
-```
-
-Pemeriksaan ini mencatat versi rustc/LLVM dan Cargo, lokasi sysroot, keberadaan
-source `rust-src`, linker LLD, serta apakah nightly dapat membaca target JSON
-OCTAGRAM. Ini adalah inventaris prasyarat host; **bukan** bukti compiler dapat
-dieksekusi di guest OCTAGRAM. Versi toolchain masih mengikuti channel
-`nightly` pada `rust-toolchain.toml`, sehingga hasil inventaris perlu
-disimpan bersama log CI untuk mengetahui versi yang benar-benar dipakai.
-
 ## Build dari host
 
 Dari root repository:
@@ -62,20 +47,18 @@ POSIX yang belum tersedia tidak boleh diasumsikan bekerja hanya karena
 
 ## Urutan bootstrap resmi
 
-1. **Stage 0 inventory:** pin versi Rust upstream; catat komponen compiler,
-   LLVM/backend, linker, compiler-builtins, sysroot, dan kebutuhan host API.
-2. **Stage 0 execution:** hasilkan toolchain bootstrap yang benar-benar dapat
+1. **Stage 0 execution:** hasilkan toolchain bootstrap yang benar-benar dapat
    dieksekusi oleh loader OCTAGRAM. ELF yang hanya ditautkan untuk target belum
    cukup; jalankan dan uji seluruh dependency-nya di QEMU.
-3. **Stage 1 no_std:** dari terminal OCTAGRAM, kompilasi crate kecil
+2. **Stage 1 no_std:** dari terminal OCTAGRAM, kompilasi crate kecil
    `#![no_std]` menjadi ELF target OCTAGRAM, lalu jalankan.
-4. **Stage 1 core/alloc:** bangun sysroot `core` dan `alloc` secara native
+3. **Stage 1 core/alloc:** bangun sysroot `core` dan `alloc` secara native
    dengan versi compiler yang dipin.
-5. **Cargo offline:** jalankan Cargo native untuk workspace lokal tanpa
+4. **Cargo offline:** jalankan Cargo native untuk workspace lokal tanpa
    mengakses jaringan. Cache/source dependency harus sudah tersedia di disk.
-6. **Stage 2:** gunakan toolchain Stage 1 untuk membangun ulang compiler dan
+5. **Stage 2:** gunakan toolchain Stage 1 untuk membangun ulang compiler dan
    Cargo; bandingkan artefak dan jalankan kembali tes.
-7. **Perluasan bertahap:** baru setelah gate tersebut, kerjakan build-script,
+6. **Perluasan bertahap:** baru setelah gate tersebut, kerjakan build-script,
    proc-macro, networking/crates.io, dan dukungan `std` yang lebih lengkap.
 
 ## Gate penerimaan native

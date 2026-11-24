@@ -1,6 +1,6 @@
 ---
 name: octagram-os-developer
-description: Develop OCTAGRAM-OS kernel, Rust port, Cargo, compiler and userspace safely.
+description: Safely develop OCTAGRAM-OS kernel, Rust, Cargo, and drivers.
 version: 1.0.0
 metadata:
   hermes:

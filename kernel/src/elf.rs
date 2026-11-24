@@ -8538,6 +8538,9 @@ fn syscall_sendmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
             if payload.is_empty() { 0 } else { payload.as_ptr() as u64 }, payload.len() as u64);
     }
     if let Some(endpoint) = socketpair_endpoint_for_fd(fd)? {
+        if !endpoint.write_end.writable {
+            return Err(EPIPE);
+        }
         let mut pipe = endpoint.write_end.pipe.lock();
         let written = pipe.write(&payload)?;
         let pipe_id = pipe.id;
@@ -8581,6 +8584,10 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     payload.resize(total, 0);
     let mut source = None;
     let received = if let Some(endpoint) = socketpair_endpoint_for_fd(fd)? {
+        if !endpoint.read_end.readable {
+            header.flags = 0;
+            0
+        } else {
         let mut pipe = endpoint.read_end.pipe.lock();
         let count = pipe.read_with_peek(&mut payload, flags & 0x02 != 0)?;
         let pipe_id = pipe.id;
@@ -8590,6 +8597,7 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
         }
         header.flags = 0;
         count
+        }
     } else if let Ok(socket) = udp_socket_for_fd(fd) {
         let (copied, datagram_len, source_ip, source_port) =
             crate::network::receive_udp_socket_length_with_peek(

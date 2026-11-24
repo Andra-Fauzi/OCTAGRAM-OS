@@ -92,7 +92,7 @@ Build recipes then run with networking disabled, a read-only container root, dro
 - `POST /workspace/read`: read one repository-relative file.
 - `POST /chat`: ask the local model; matching repository snippets are added as context.
 - `POST /workspace/apply-patch`: validate and apply a unified diff to the isolated worktree.
-- `POST /workspace/build`: run one predefined build/test recipe.
+- `POST /workspace/build`: run one predefined build/test recipe. Kernel test/build recipes first build the embedded Rust and C userspace artifacts.\n- `POST /agent/task`: ask the local model for a unified diff, apply it to the detached worktree, run the selected allowlisted build recipe, and retry at most twice.
 
 Example:
 
@@ -103,7 +103,7 @@ curl -s http://127.0.0.1:8787/workspace/search \
   -d '{"query":"rust_native_probe"}'
 ```
 
-Patch requests must contain a standard unified diff. Inspect the diff and test results before copying changes back or committing.
+The `/agent/task` endpoint can apply a model-generated patch and run the selected build automatically. It never commits or pushes. Inspect `/workspace/status` and the returned patch/build output before copying changes back or committing.
 
 ## 6. Build recipes
 
@@ -113,9 +113,9 @@ The allowlist follows the repository's documented clean-build order:
 2. `user` — `make -C user`
 3. `user-dynamic` — `make -C user dynamic`
 4. `fmt-check` — `cargo +nightly fmt --manifest-path kernel/Cargo.toml --check`
-5. `kernel-tests` — `cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu`
-6. `kernel-build` — `make -C kernel KARCH=x86_64`
-7. `iso-build` — `make all`
+5. `kernel-tests` — prepares `user/rust`, `user`, and `user dynamic`, then runs `cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu`
+6. `kernel-build` — prepares embedded userspace artifacts, then runs `make -C kernel KARCH=x86_64`
+7. `iso-build` — prepares userspace, builds the kernel, then runs `make all`
 
 Run the first three in order before kernel tests/build because the kernel embeds userspace artifacts. QEMU and hardware tests are not currently exposed as autonomous recipes; they need a later explicit, controlled runner.
 

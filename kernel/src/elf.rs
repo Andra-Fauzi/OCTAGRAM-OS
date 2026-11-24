@@ -406,6 +406,8 @@ const O_EXCL: u64 = 1 << 12;
 const O_CLOEXEC: u64 = 1 << 19;
 const FD_CLOEXEC: u32 = 1;
 const F_DUPFD: u64 = 0;
+const F_DUPFD_CLOEXEC: u64 = 5;
+const F_DUPFD_CLOEXEC_LINUX: u64 = 1030;
 const F_GETFD: u64 = 1;
 const F_SETFD: u64 = 2;
 const F_GETFL: u64 = 3;
@@ -6246,7 +6248,7 @@ fn syscall_fcntl(fd: u64, command: u64, argument: u64) -> Result<u64, i32> {
         .and_then(Option::as_ref)
         .ok_or(EBADF)?;
     match command {
-        F_DUPFD => {
+        F_DUPFD | F_DUPFD_CLOEXEC | F_DUPFD_CLOEXEC_LINUX => {
             let minimum = usize::try_from(argument).map_err(|_| EINVAL)?;
             if minimum >= MAX_OPEN_FILES {
                 return Err(EINVAL);
@@ -6266,7 +6268,12 @@ fn syscall_fcntl(fd: u64, command: u64, argument: u64) -> Result<u64, i32> {
             let descriptor_count = process.descriptors.len();
             process.descriptor_flags.resize(descriptor_count, 0);
             process.descriptors[target] = Some(duplicate);
-            process.descriptor_flags[target] = 0;
+            process.descriptor_flags[target] =
+                if command == F_DUPFD_CLOEXEC || command == F_DUPFD_CLOEXEC_LINUX {
+                    FD_CLOEXEC
+                } else {
+                    0
+                };
             Ok(target as u64)
         }
         F_GETFD => Ok(process.descriptor_flags.get(fd).copied().unwrap_or(0) as u64),

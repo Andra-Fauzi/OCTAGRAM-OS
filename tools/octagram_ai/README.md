@@ -193,6 +193,7 @@ Start llama.cpp in another terminal. For a 4 GB RTX 2050, Qwen2.5-Coder-7B-Instr
 
 ```bash
 llama-server -m /models/qwen2.5-coder-7b-instruct-q4_k_m.gguf \
+  --alias qwen2.5-coder-7b-instruct \
   -ngl 8 -c 8192 -b 64 -ub 32 \
   --host 127.0.0.1 --port 8080
 ```

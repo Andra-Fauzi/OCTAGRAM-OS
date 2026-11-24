@@ -71,6 +71,12 @@ unsafe fn syscall4(number: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> i
 }
 
 #[repr(C)]
+struct ProbeIoVec {
+    base: u64,
+    len: u64,
+}
+
+#[repr(C)]
 struct ProbeMsgHdr {
     name: u64,
     name_len: u32,
@@ -170,6 +176,53 @@ fn main() {
         std::process::exit(73);
     }
     marker("RUST-STD-SOCKET-EMPTY-IOV-PASS");
+
+    // Exercise AF_UNIX stream socketpair through sendmsg/recvmsg, including
+    // MSG_PEEK: peeking must return the same bytes without consuming the queue.
+    let mut pair = [-1i32; 2];
+    let pair_result = unsafe {
+        syscall4(127, 1, 1, 0, pair.as_mut_ptr() as usize as u64)
+    };
+    let sent_bytes = *b"unix!";
+    let sent_iov = ProbeIoVec {
+        base: sent_bytes.as_ptr() as usize as u64,
+        len: sent_bytes.len() as u64,
+    };
+    let mut received_bytes = [0u8; 5];
+    let mut received_iov = ProbeIoVec {
+        base: received_bytes.as_mut_ptr() as usize as u64,
+        len: received_bytes.len() as u64,
+    };
+    let mut send_header = ProbeMsgHdr {
+        name: 0, name_len: 0, _name_padding: 0,
+        iov: &sent_iov as *const ProbeIoVec as usize as u64,
+        iov_len: 1, control: 0, control_len: 0, flags: 0, _flags_padding: 0,
+    };
+    let mut recv_header = ProbeMsgHdr {
+        name: 0, name_len: 0, _name_padding: 0,
+        iov: &mut received_iov as *mut ProbeIoVec as usize as u64,
+        iov_len: 1, control: 0, control_len: 0, flags: 0, _flags_padding: 0,
+    };
+    let socket_probe_ok = if pair_result == 0 && pair[0] >= 0 && pair[1] >= 0 {
+        let sent = unsafe { syscall6(106, pair[0] as u64, &send_header as *const _ as usize as u64, 0, 0, 0, 0) };
+        let peeked = unsafe { syscall6(107, pair[1] as u64, &mut recv_header as *mut _ as usize as u64, 0x02, 0, 0, 0) };
+        let peek_matches = peeked == 5 && received_bytes == sent_bytes;
+        received_bytes.fill(0);
+        let read = unsafe { syscall6(107, pair[1] as u64, &mut recv_header as *mut _ as usize as u64, 0, 0, 0, 0) };
+        let read_matches = read == 5 && received_bytes == sent_bytes;
+        unsafe {
+            syscall3(3, pair[0] as u64, 0, 0);
+            syscall3(3, pair[1] as u64, 0, 0);
+        }
+        sent == 5 && peek_matches && read_matches
+    } else {
+        false
+    };
+    if !socket_probe_ok {
+        marker("RUST-STD-UNIX-SOCKETPAIR-MSG-FAIL");
+        std::process::exit(74);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-MSG-PASS");
 
     let (tls_value, tls_address) = RUST_TLS_PROBE.with(|value| {
         let initial = value.get();

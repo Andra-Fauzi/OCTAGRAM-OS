@@ -312,6 +312,52 @@ fn main() {
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-SHUTDOWN-PASS");
 
+    // Exercise the ordinary send()/recv() syscalls on AF_UNIX stream pairs.
+    let mut sendrecv_pair = [-1i32; 2];
+    let pair_result = unsafe {
+        syscall4(127, 1, 1, 0, sendrecv_pair.as_mut_ptr() as usize as u64)
+    };
+    let mut received = [0u8; 6];
+    let payload = *b"stream";
+    let send_result = if pair_result == 0 && sendrecv_pair[0] >= 0 && sendrecv_pair[1] >= 0 {
+        unsafe {
+            syscall4(76, sendrecv_pair[0] as u64, payload.as_ptr() as usize as u64,
+                     payload.len() as u64, 0)
+        }
+    } else {
+        -1
+    };
+    let peek_result = if send_result == payload.len() as i64 {
+        unsafe {
+            syscall4(77, sendrecv_pair[1] as u64, received.as_mut_ptr() as usize as u64,
+                     received.len() as u64, 0x02)
+        }
+    } else {
+        -1
+    };
+    let peek_ok = peek_result == payload.len() as i64 && received == payload;
+    let read_result = if peek_ok {
+        received.fill(0);
+        unsafe {
+            syscall4(77, sendrecv_pair[1] as u64, received.as_mut_ptr() as usize as u64,
+                     received.len() as u64, 0)
+        }
+    } else {
+        -1
+    };
+    let sendrecv_ok = peek_ok && read_result == payload.len() as i64 && received == payload;
+    if sendrecv_pair[0] >= 0 {
+        unsafe { syscall3(4, sendrecv_pair[0] as u64, 0, 0); }
+    }
+    if sendrecv_pair[1] >= 0 {
+        unsafe { syscall3(4, sendrecv_pair[1] as u64, 0, 0); }
+    }
+    if !sendrecv_ok {
+        marker("RUST-STD-UNIX-SOCKETPAIR-SEND-RECV-FAIL");
+        std::process::exit(78);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-SEND-RECV-PASS");
+
     let (tls_value, tls_address) = RUST_TLS_PROBE.with(|value| {
         let initial = value.get();
         let address = value as *const Cell<u64> as usize;

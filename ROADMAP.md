@@ -325,7 +325,10 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
   - [x] `thread_local` C++: `__cxa_thread_atexit`/`__cxa_thread_atexit_impl`
     dengan rantai destruktor per-thread dijalankan saat thread exit dan
     `exit()` (build host; uji guest menunggu)
-  - [ ] Subset libc++/libstdc++ (`<string>`, `<vector>`, `<mutex>`) dan compiler-rt
+  - [x] compiler-rt 128-bit: `__udivmodti4`/`__divmodti4`, varian nama lain,
+    dan shift 128-bit (`user/compiler_rt.c`), diuji host terhadap libgcc
+    (`make -C user compiler-rt-test`) dan dipakai `/bin/cpp-smoke`
+  - [ ] Subset libc++/libstdc++ (`<string>`, `<vector>`, `<mutex>`)
   - [x] Implementasi parser TinyCC untuk `__builtin_add_overflow`,
     `__builtin_sub_overflow`, dan `__builtin_mul_overflow`; runtime helper
     mendukung hasil signed/unsigned 8/16/32/64 bit dan tes host tersedia.

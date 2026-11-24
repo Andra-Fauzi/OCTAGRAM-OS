@@ -201,6 +201,16 @@ kodenya:
   (juga saat `exit()` untuk thread utama). `__cxa_thread_atexit_impl` disediakan
   sebagai alias karena sebagian runtime memakai nama glibc itu. Diuji di
   `/bin/cpp-smoke` dengan thread yang memiliki `thread_local` berdestruktor.
+- compiler-rt 128-bit: gcc/LLVM menurunkan pembagian `__int128`/`u128` menjadi
+  libcall `__udivmodti4` dan `__divmodti4` (bukan `__udivti3`), jadi tanpa
+  helper ini `u128` di Rust dan `__int128` di C/C++ tidak bisa di-link.
+  `user/compiler_rt.c` mengimplementasikan pembagian panjang shift-subtract
+  (hanya aritmetika 64-bit, agar tidak rekursi ke dirinya sendiri), varian
+  signed, varian nama `__udivti3`/`__divti3`/`__umodti3`/`__modti3`, serta
+  `__ashlti3`/`__ashrti3`/`__lshrti3`. Uji host
+  `make -C user compiler-rt-test` memakai libgcc sebagai oracle: implementasi
+  di-rename lewat `-D`, sehingga 200.000 pasangan acak + edge case + shift
+  dibandingkan dengan pembagi asli, bukan dengan dirinya sendiri.
 - Kesiapan header C untuk C++: `tools/check_cpp_headers.py` mengompilasi setiap
   header publik sebagai C11 dan C++17 (`make -C user cpp-header-test`, juga
   dipanggil CI). Perbaikan yang muncul: `restrict` bukan keyword C++, `char16_t`

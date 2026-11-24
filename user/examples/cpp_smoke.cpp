@@ -155,6 +155,17 @@ int main(int argc, char **argv)
     check(thread_started && thread_local_dtors == 1,
           "thread_local destructor ran when its thread exited");
 
+    /* 128-bit division is a libcall (__udivmodti4) on x86-64, so this also
+     * proves the compiler-rt helpers are linked in. */
+    const unsigned __int128 wide_left =
+        (static_cast<unsigned __int128>(0x123456789abcdefull) << 64) | 0xfedcba9876543210ull;
+    const unsigned __int128 wide_right = 0x100000001ull;
+    const unsigned __int128 wide_quotient = wide_left / wide_right;
+    const unsigned __int128 wide_remainder = wide_left % wide_right;
+    check(wide_quotient * wide_right + wide_remainder == wide_left &&
+              wide_remainder < wide_right && wide_quotient != 0,
+          "128-bit integer division and remainder");
+
     Rectangle *heap_rectangle = new Rectangle("heap", 3, 5);
     check(heap_rectangle->area() == 15, "operator new and a heap-allocated object");
     delete heap_rectangle;

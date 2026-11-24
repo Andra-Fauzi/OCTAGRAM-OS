@@ -21,6 +21,7 @@ dipanggil dari shell, bukan cross-build dari host.
 | `pthread_once` (dipakai `std::call_once`) | terbukti di host | `kernel`/`runtime.c`, uji di `/bin/cpp-smoke` |
 | Klasifikasi wide-character (`<wctype.h>`) | terbukti di host | `user/wctype.c` + `make -C user wctype-test` |
 | `thread_local` C++ (destruktor per-thread) | terbukti di host | `__cxa_thread_atexit` di `runtime.c`, uji di `/bin/cpp-smoke` |
+| compiler-rt 128-bit (`__udivmodti4`, shift) | terbukti di host | `user/compiler_rt.c` + `make -C user compiler-rt-test` |
 | Header publik valid untuk C dan C++ | terbukti di host | `python3 tools/check_cpp_headers.py` (57 header) |
 | libc++/libstdc++ subset, compiler-rt | **belum** | — |
 | libLLVM untuk host OCTAGRAM | **belum** | — |
@@ -127,6 +128,7 @@ make -C user/rust all check                  # semua program Rust + readelf chec
 make -C user/rust build/rust_native_probe.o  # object ET_REL untuk uji ld native
 make -C user build/cpp_smoke.elf             # program C++ freestanding
 make -C user wctype-test                     # uji host klasifikasi wide-character
+make -C user compiler-rt-test                # helper 128-bit vs pembagi libgcc
 make -C user cpp-header-test                 # semua header publik sebagai C dan C++
 ```
 
@@ -212,6 +214,7 @@ Ikuti urutan ini supaya klaim tetap bisa dipertanggungjawabkan:
 | `redeclaration of C++ built-in type char16_t` | typedef C1X bentrok dengan keyword C++11 | guard `#ifndef __cplusplus` di `uchar.h` |
 | `_Atomic does not name a type` | `#include_next <stdatomic.h>` milik GCC hanya untuk C | guard C++ di `stdatomic.h` |
 | `uint64_t/size_t has not been declared` | header tidak mandiri | tambahkan include yang hilang; `tools/check_cpp_headers.py` menangkapnya |
+| `undefined reference to __udivmodti4` | kode memakai `__int128`/`u128` dan helper belum ikut di-link | tambahkan `build/compiler_rt.o` ke baris `ld` (sudah default untuk `%.elf`) |
 | `Option 'out-dir' given more than once` | `cargo rustc` sudah memberi `--out-dir` | jangan tambahkan `--out-dir`; ambil `.o` dari `target/.../build/<pkg>/*/out/` |
 
 ## 8. Urutan lanjutan

@@ -1,0 +1,28 @@
+name: OCTAGRAM AI Developer
+
+on:
+  push:
+    branches:
+      - feature/native-self-hosting-testing-2
+    paths:
+      - "tools/octagram_ai/**"
+      - ".github/workflows/octagram-ai.yml"
+  pull_request:
+    paths:
+      - "tools/octagram_ai/**"
+      - ".github/workflows/octagram-ai.yml"
+
+jobs:
+  python-safety-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r tools/octagram_ai/requirements.txt
+      - name: Compile Python module
+        run: python -m py_compile tools/octagram_ai/octagram_ai.py tools/octagram_ai/test_octagram_ai.py
+      - name: Run safety tests
+        run: python -m unittest discover -s tools/octagram_ai -p "test_*.py"

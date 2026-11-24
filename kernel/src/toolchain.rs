@@ -2810,7 +2810,7 @@ fn align_up(value: usize, alignment: usize) -> Result<usize, ToolchainError> {
 /// Link one ELF64 relocatable object (`tcc -c` output) into a static OCTAGRAM
 /// executable with a read-execute text segment and a read-write data segment.
 ///
-/// Supported relocations: `R_X86_64_64`, `PC32`, `PLT32`, `32`, `32S`. Anything
+/// Supported relocations: `R_X86_64_64`, `PC64`, `PC32`, `PLT32`, `32`, `32S`. Anything
 /// else fails loudly instead of producing a silently broken binary.
 
 /// Link one ELF64 relocatable object. Kept as a convenience wrapper around the
@@ -2822,7 +2822,7 @@ pub fn link_elf_object(object: &[u8]) -> Result<Vec<u8>, ToolchainError> {
 /// Link multiple ELF64 x86_64 relocatable objects into one static OCTAGRAM
 /// executable. Global and weak symbols are resolved across object boundaries.
 ///
-/// Supported relocations: R_X86_64_64, PC32, PLT32, 32, 32S, the PC-relative
+/// Supported relocations: R_X86_64_64, PC64, PC32, PLT32, 32, 32S, the PC-relative
 /// GOT forms (GOTPCREL, GOTPCRELX, REX_GOTPCRELX, GOTPC32), the static TLS
 /// local-exec forms (TPOFF64, TPOFF32), and initial-exec TLS (`GOTTPOFF`, where
 /// the GOT slot holds `S - TP`). TLS sections are collected into a
@@ -3428,7 +3428,7 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                 };
 
                 let relocation_size = match kind {
-                    1 | 18 => 8,
+                    1 | 18 | 24 => 8,
                     2 | 4 | 9 | 10 | 11 | 22 | 23 | 26 | 41 | 42 => 4,
                     _ => return Err(ToolchainError::UnsupportedRelocation),
                 };
@@ -3701,6 +3701,16 @@ fn apply_elf_relocation(
                 .ok_or(ToolchainError::OutOfBounds)?;
             slot.copy_from_slice(&value.to_le_bytes());
         }
+        // R_X86_64_PC64: S + A - P, stored as a signed 64-bit displacement.
+        24 => {
+            let value = (symbol as i64)
+                .wrapping_add(addend)
+                .wrapping_sub(place as i64);
+            let slot = buffer
+                .get_mut(offset..offset + 8)
+                .ok_or(ToolchainError::OutOfBounds)?;
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
         10 => {
             let value = (symbol as i64).wrapping_add(addend);
             let value = u32::try_from(value).map_err(|_| ToolchainError::RelocationOverflow)?;
@@ -3831,6 +3841,19 @@ mod tests {
         put_elf64(&mut object, rela_offset + 8, info);
         put_elf64(&mut object, rela_offset + 16, 0);
         object
+    }
+
+    #[test]
+    fn applies_pc64_relocation_as_signed_64_bit_displacement() {
+        let mut object = relocatable_object();
+        // R_X86_64_PC64 writes S + A - P into an eight-byte field.
+        set_fixture_relocation_kind(&mut object, 24);
+        let executable = link_elf_object(&object).unwrap();
+        let data_vaddr = u64::from_le_bytes(executable[64 + 56 + 16..64 + 56 + 24].try_into().unwrap());
+        let place = 0x400001u64;
+        let expected = (data_vaddr as i64).wrapping_sub(place as i64);
+        let actual = i64::from_le_bytes(executable[0x1001..0x1009].try_into().unwrap());
+        assert_eq!(actual, expected);
     }
 
     #[test]

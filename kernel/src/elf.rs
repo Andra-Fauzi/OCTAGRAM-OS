@@ -8654,7 +8654,13 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     let mut payload = Vec::new();
     payload.resize(total, 0);
     let mut source = None;
-    let received = if let Some(endpoint) = socketpair_endpoint_for_fd(fd)? {
+    let socketpair = socketpair_endpoint_for_fd(fd)?;
+    let received = if let Some(endpoint) = socketpair {
+        // Anonymous socketpair endpoints have no peer pathname to report.
+        // Linux therefore returns an empty source address for recvmsg().
+        if header.name != 0 {
+            header.name_len = 0;
+        }
         if !endpoint.read_end.readable {
             header.flags = 0;
             0

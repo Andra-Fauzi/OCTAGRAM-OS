@@ -9,3 +9,7 @@
 /user/rust/std-probe/Cargo.lock
 /build/
 qemu.log/iso_root/
+
+# Local OCTAGRAM AI credentials and Python environment
+.env
+.venv/

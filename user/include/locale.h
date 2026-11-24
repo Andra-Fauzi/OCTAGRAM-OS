@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_LOCALE_H
 #define OCTAGRAM_LOCALE_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct lconv {
     char *decimal_point;
     char *thousands_sep;
@@ -39,4 +43,8 @@ struct lconv {
 char *setlocale(int category, const char *locale);
 struct lconv *localeconv(void);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

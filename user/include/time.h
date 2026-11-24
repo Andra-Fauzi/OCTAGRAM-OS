@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_TIME_H
 #define OCTAGRAM_TIME_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <sys/types.h>
 
 #define CLOCK_REALTIME 0
@@ -49,4 +53,8 @@ int clock_nanosleep(clockid_t clock_id, int flags,
                     const struct timespec *request,
                     struct timespec *remaining);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

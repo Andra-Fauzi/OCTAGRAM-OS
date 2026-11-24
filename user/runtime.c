@@ -2464,6 +2464,31 @@ static uint64_t *oct_pthread_key_generations_current(void)
 #endif
 }
 
+/* One-time initialization used by libc++ (std::call_once) and by guarded
+ * local statics. States: 0 = untouched, 1 = initializer running, 2 = done.
+ * The loser of the race yields instead of blocking, which is enough for the
+ * cooperative/preemptive OCTAGRAM scheduler. */
+int pthread_once(pthread_once_t *once, void (*initializer)(void))
+{
+    if (once == NULL || initializer == NULL) {
+        return EINVAL;
+    }
+    for (;;) {
+        int state = __atomic_load_n(&once->state, __ATOMIC_ACQUIRE);
+        if (state == 2) {
+            return 0;
+        }
+        int expected = 0;
+        if (__atomic_compare_exchange_n(&once->state, &expected, 1, 0,
+                                        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            initializer();
+            __atomic_store_n(&once->state, 2, __ATOMIC_RELEASE);
+            return 0;
+        }
+        sched_yield();
+    }
+}
+
 int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
 {
     if (key == NULL) {

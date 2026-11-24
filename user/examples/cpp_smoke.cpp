@@ -5,7 +5,9 @@
  * runtime, so it depends on no libstdc++/libc++ and no dynamic loader.
  * Run as `/bin/cpp-smoke` from the OCTAGRAM shell.
  */
+#include <pthread.h>
 #include <stdio.h>
+#include <wctype.h>
 
 namespace octagram {
 
@@ -108,6 +110,17 @@ int main(int argc, char **argv)
     check(octagram::constructor_count == 1 && octagram::global_probe.payload == 41,
           "static constructor ran before main via .init_array");
     check(local_static_value() == 1234, "function-local static storage");
+
+    /* libc++ builds std::call_once and guarded statics on pthread_once. */
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    static int once_runs;
+    pthread_once(&once, []() { ++once_runs; });
+    pthread_once(&once, []() { ++once_runs; });
+    check(once_runs == 1, "pthread_once runs the initializer exactly once");
+
+    /* Wide-character classification backs libc++ locale/ctype facets. */
+    check(iswalpha(L'A') && !iswalpha(L'1') && towlower(L'Q') == L'q',
+          "wide-character classification and case mapping");
 
     Rectangle *heap_rectangle = new Rectangle("heap", 3, 5);
     check(heap_rectangle->area() == 15, "operator new and a heap-allocated object");

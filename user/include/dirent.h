@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_DIRENT_H
 #define OCTAGRAM_DIRENT_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 #include <sys/types.h>
 
@@ -29,4 +33,8 @@ struct dirent *readdir(DIR *directory);
 int closedir(DIR *directory);
 int dirfd(DIR *directory);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

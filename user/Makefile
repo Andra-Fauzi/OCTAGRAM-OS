@@ -65,7 +65,7 @@ DYNAMIC_LIBRARY := build/libdyn_demo.so
 SHARED_LIBC := build/liboctagram.so
 LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 
-.PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test dynamic
+.PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test cpp-header-test dynamic
 CPP_SMOKE := build/cpp_smoke.elf
 
 all: $(BINARIES) $(CPP_SMOKE) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
@@ -107,6 +107,16 @@ overflow-test: build/tcc_overflow_runtime_test
 math-test: build/math_runtime_test
 	./build/math_runtime_test
 
+wctype-test: build/wctype_runtime_test
+	./build/wctype_runtime_test
+
+cpp-header-test:
+	python3 ../tools/check_cpp_headers.py
+
+build/wctype_runtime_test: tests/wctype_runtime_test.c wctype.c include/wctype.h | build
+	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
+		-Iinclude -o $@ tests/wctype_runtime_test.c wctype.c
+
 build/math_runtime_test: tests/math_runtime_test.c math.c | build
 	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
 		-Iinclude -o $@ $^
@@ -132,13 +142,16 @@ build/cpp_smoke.o: examples/cpp_smoke.cpp $(HEADERS) | build
 build/cxx_runtime.o: cxx_runtime.cpp $(HEADERS) | build
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-$(CPP_SMOKE): build/cpp_smoke.o build/cxx_runtime.o build/crt0.o build/runtime.o linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/cxx_runtime.o build/cpp_smoke.o
+$(CPP_SMOKE): build/cpp_smoke.o build/cxx_runtime.o build/wctype.o build/crt0.o build/runtime.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/wctype.o build/cxx_runtime.o build/cpp_smoke.o
 
 build/setjmp.o: setjmp.S | build
 	$(AS) --64 -o $@ $<
 
 build/runtime.o: runtime.c $(HEADERS) | build
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+build/wctype.o: wctype.c $(HEADERS) | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 build/runtime.pic.o: runtime.c $(HEADERS) | build
@@ -251,8 +264,8 @@ $(SHARED_ERRNO_DEMO): build/shared_errno_demo.o build/crt0.pic.o $(SHARED_LIBC)
 		-dynamic-linker /lib/ld-octagram.so -e _start \
 		-o $@ build/crt0.pic.o build/shared_errno_demo.o -Lbuild -loctagram
 
-build/%.elf: build/%.o build/crt0.o build/runtime.o linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o $<
+build/%.elf: build/%.o build/crt0.o build/runtime.o build/wctype.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/wctype.o $<
 
 build/scanf_runtime.o: runtime.c $(HEADERS) | build
 	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
@@ -306,7 +319,7 @@ $(TCC_LIBTCC1): $(TCC_SUPPORT_OBJECTS)
 build/math.o: math.c $(HEADERS) | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(TCC_LIBC): build/runtime.o build/math.o $(TCC_SETJMP)
+$(TCC_LIBC): build/runtime.o build/math.o build/wctype.o $(TCC_SETJMP)
 	$(AR) rcs $@ $^
 
 clean:

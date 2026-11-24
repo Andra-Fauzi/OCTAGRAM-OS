@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_SCHED_H
 #define OCTAGRAM_SCHED_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <sys/types.h>
 
 #define SCHED_OTHER 0
@@ -23,4 +27,8 @@ int sched_get_priority_max(int policy);
 int sched_get_priority_min(int policy);
 int sched_yield(void);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

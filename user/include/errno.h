@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_ERRNO_H
 #define OCTAGRAM_ERRNO_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifdef OCTAGRAM_GNU_MAKE_ERRNO_ACCESSOR
 int *__errno_location(void);
 #define errno (*__errno_location())
@@ -77,4 +81,8 @@ extern int errno;
 #define EOWNERDEAD 130
 #define ENOTRECOVERABLE 131
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

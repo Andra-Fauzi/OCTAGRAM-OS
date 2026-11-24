@@ -187,10 +187,25 @@ loop konstruktor sebelum `call main` dan loop destruktor sesudahnya. Program C
 (`hello.elf`, `syscall_compat_demo.elf`) tetap terbangun dengan `.init_array`
 kosong.
 
-Belum terbukti: konstruktor/destruktor benar-benar berjalan di guest (harness
-`CPP-FREESTANDING-PASS` sudah mencakup pemeriksaan ini tetapi belum dijalankan
-pada QEMU). Langkah berikutnya tetap subset libc++ dan compiler-rt, yang
-membutuhkan `strtold`, `wcs*`, dan dukungan locale/ctype yang belum ada.
+Irisan berikutnya dari M4.3.2 menutup prasyarat libc++ yang lebih dekat ke
+kodenya:
+
+- `user/wctype.c` + `user/include/wctype.h`: klasifikasi wide-character
+  (`iswalpha`, `iswspace`, …), `towlower`/`towupper`, `wctype`/`iswctype`, dan
+  `wctrans`/`towctrans` untuk ASCII + Latin-1. Diuji host lewat
+  `make -C user wctype-test`.
+- `pthread_once`: dibutuhkan `std::call_once` dan guarded statics; diuji di
+  `/bin/cpp-smoke` (initializer harus berjalan tepat sekali).
+- Kesiapan header C untuk C++: `tools/check_cpp_headers.py` mengompilasi setiap
+  header publik sebagai C11 dan C++17 (`make -C user cpp-header-test`, juga
+  dipanggil CI). Perbaikan yang muncul: `restrict` bukan keyword C++, `char16_t`
+  adalah keyword C++, `<stdatomic.h>` GCC hanya untuk C, dan beberapa header
+  tidak mandiri (`uint64_t`, `size_t`).
+
+Belum terbukti: konstruktor/destruktor, `pthread_once`, dan wide-character
+benar-benar berjalan di guest (semuanya sudah masuk `/bin/cpp-smoke`, tetapi
+QEMU belum dijalankan di workspace ini). Langkah berikutnya tetap subset libc++
+(`<string>`, `<vector>`, `<mutex>`) dan compiler-rt.
 
 ## 7. Risiko dan mitigasi
 

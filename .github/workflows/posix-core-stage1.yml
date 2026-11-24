@@ -141,6 +141,9 @@ jobs:
         run: bash tools/build_gnu_make_octagram.sh
 
       - name: Build dynamic userland
+        run: make -C user cpp-header-test
+
+      - name: Build dynamic userspace artifacts
         run: make -C user dynamic
 
       - name: Run kernel host tests

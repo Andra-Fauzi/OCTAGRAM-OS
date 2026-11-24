@@ -3,6 +3,13 @@
 
 #include <stddef.h>
 
+/* `restrict` is a C keyword, not C++. Headers below rely on this shim so the
+ * same source stays valid for both front ends. */
+#ifdef __cplusplus
+#define restrict __restrict
+extern "C" {
+#endif
+
 typedef struct {
     int count;
     unsigned char bytes[4];
@@ -31,5 +38,9 @@ wchar_t *wmemchr(const wchar_t *memory, wchar_t character, size_t count);
 long wcstol(const wchar_t *text, wchar_t **end, int base);
 wchar_t *wcstok(wchar_t *text, const wchar_t *delimiter,
                 wchar_t **context);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

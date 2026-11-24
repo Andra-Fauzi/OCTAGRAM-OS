@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_FCNTL_H
 #define OCTAGRAM_FCNTL_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "octagram.h"
 
 #define O_RDONLY OCT_O_RDONLY
@@ -31,4 +35,8 @@ int open(const char *path, int flags, ...);
 int openat(int dirfd, const char *path, int flags, ...);
 int fcntl(int fd, int command, ...);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_SIGNAL_H
 #define OCTAGRAM_SIGNAL_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // The vendored TinyCC compiles tccrun.c with TARGETOS_OCTAGRAM and needs the
 // host <signal.h> and <sys/ucontext.h> pair, so its build keeps the system
 // header. Programs built against the OCTAGRAM runtime get the definitions
@@ -157,4 +161,8 @@ static inline int sigismember(const sigset_t *set, int signal_number)
 
 #endif /* TARGETOS_OCTAGRAM */
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

@@ -18,6 +18,9 @@ dipanggil dari shell, bukan cross-build dari host.
 | C++ freestanding (`operator new`, vtable) | terbukti di host | `build/cpp_smoke.elf`, marker guest `CPP-FREESTANDING-PASS` sudah terpasang |
 | Konstruktor/destruktor statis C++ | terbukti di host | `.init_array`/`.fini_array` di `user/linker.ld` + loop di `user/crt0.S` |
 | Runtime C++ ABI minimal | terbukti di host | `user/cxx_runtime.cpp` |
+| `pthread_once` (dipakai `std::call_once`) | terbukti di host | `kernel`/`runtime.c`, uji di `/bin/cpp-smoke` |
+| Klasifikasi wide-character (`<wctype.h>`) | terbukti di host | `user/wctype.c` + `make -C user wctype-test` |
+| Header publik valid untuk C dan C++ | terbukti di host | `python3 tools/check_cpp_headers.py` (57 header) |
 | libc++/libstdc++ subset, compiler-rt | **belum** | — |
 | libLLVM untuk host OCTAGRAM | **belum** | — |
 | `rustc` native (`rustc --version` di guest) | **belum** | — |
@@ -122,6 +125,8 @@ Target khusus:
 make -C user/rust all check                  # semua program Rust + readelf check
 make -C user/rust build/rust_native_probe.o  # object ET_REL untuk uji ld native
 make -C user build/cpp_smoke.elf             # program C++ freestanding
+make -C user wctype-test                     # uji host klasifikasi wide-character
+make -C user cpp-header-test                 # semua header publik sebagai C dan C++
 ```
 
 Catatan: `make -C user/rust build/rust_native_probe.o` memakai linker no-op
@@ -201,6 +206,11 @@ Ikuti urutan ini supaya klaim tetap bisa dipertanggungjawabkan:
 | konstruktor global tidak jalan | `.init_array` tidak ada / tidak dipanggil | section di `linker.ld` + loop di `crt0.S` |
 | `operator new` undefined | runtime C++ belum ditautkan | tautkan `build/cxx_runtime.o` |
 | `couldn't read user/rust/build/*.elf` | artefak userspace belum dibangun | jalankan `make -C user/rust` lalu `make -C user` |
+| `expected ',' or '...' before 'wide'` | header memakai `restrict`, yang bukan keyword C++ | shim `#define restrict __restrict` di header (`wchar.h`, `spawn.h`) |
+| `char *const argv[restrict]` gagal di C++ | `restrict` di dalam `[]` parameter tidak valid di C++ | tulis `char *const argv[]` (kualifikasi itu redundan) |
+| `redeclaration of C++ built-in type char16_t` | typedef C1X bentrok dengan keyword C++11 | guard `#ifndef __cplusplus` di `uchar.h` |
+| `_Atomic does not name a type` | `#include_next <stdatomic.h>` milik GCC hanya untuk C | guard C++ di `stdatomic.h` |
+| `uint64_t/size_t has not been declared` | header tidak mandiri | tambahkan include yang hilang; `tools/check_cpp_headers.py` menangkapnya |
 | `Option 'out-dir' given more than once` | `cargo rustc` sudah memberi `--out-dir` | jangan tambahkan `--out-dir`; ambil `.o` dari `target/.../build/<pkg>/*/out/` |
 
 ## 8. Urutan lanjutan

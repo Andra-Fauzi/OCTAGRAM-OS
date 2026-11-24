@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include <time.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef uint64_t pthread_t;
 
 /* Tautan daftar robust kernel; harus berada di offset 0 dari mutex. */
@@ -28,12 +32,16 @@ typedef struct {
     int opaque;
 } pthread_condattr_t;
 typedef unsigned int pthread_key_t;
+typedef struct {
+    int state;
+} pthread_once_t;
 
 typedef struct {
     int robustness;
 } pthread_mutexattr_t;
 
 #define PTHREAD_MUTEX_INITIALIZER {{0}, 0, 0}
+#define PTHREAD_ONCE_INIT {0}
 #define PTHREAD_COND_INITIALIZER {0}
 
 #define PTHREAD_MUTEX_STALLED 0
@@ -73,6 +81,7 @@ int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 int pthread_cond_signal(pthread_cond_t *cond);
 int pthread_cond_broadcast(pthread_cond_t *cond);
 
+int pthread_once(pthread_once_t *once, void (*initializer)(void));
 int pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
 int pthread_key_delete(pthread_key_t key);
 void *pthread_getspecific(pthread_key_t key);
@@ -90,5 +99,9 @@ int pthread_attr_getstacksize(const pthread_attr_t *attributes, size_t *stack_si
 #define PTHREAD_CREATE_JOINABLE 0
 #define PTHREAD_CREATE_DETACHED 1
 #define PTHREAD_STACK_MIN 16384
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

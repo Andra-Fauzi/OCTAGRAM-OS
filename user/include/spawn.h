@@ -1,6 +1,13 @@
 #ifndef OCTAGRAM_SPAWN_H
 #define OCTAGRAM_SPAWN_H
 
+#ifdef __cplusplus
+#ifndef restrict
+#define restrict __restrict
+#endif
+extern "C" {
+#endif
+
 #include <sys/types.h>
 #include <signal.h>
 #include <sched.h>
@@ -94,10 +101,14 @@ int posix_spawnattr_getscheduler(const posix_spawnattr_t *attributes,
 int posix_spawn(pid_t *restrict pid, const char *restrict path,
                 const posix_spawn_file_actions_t *restrict file_actions,
                 const posix_spawnattr_t *restrict attributes,
-                char *const argv[restrict], char *const environment[restrict]);
+                char *const argv[], char *const environment[]);
 int posix_spawnp(pid_t *restrict pid, const char *restrict file,
                  const posix_spawn_file_actions_t *restrict file_actions,
                  const posix_spawnattr_t *restrict attributes,
-                 char *const argv[restrict], char *const environment[restrict]);
+                 char *const argv[], char *const environment[]);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

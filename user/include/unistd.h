@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_UNISTD_H
 #define OCTAGRAM_UNISTD_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Advertise the POSIX interfaces declared by this header. */
 #ifndef _POSIX_VERSION
 #define _POSIX_VERSION 200809L
@@ -129,4 +133,8 @@ int lchmod(const char *path, mode_t mode);
 int execv(const char *path, char *const argv[]);
 int sethostname(const char *name, size_t size);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

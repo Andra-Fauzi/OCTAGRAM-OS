@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_STRING_H
 #define OCTAGRAM_STRING_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stddef.h>
 
 void *memcpy(void *destination, const void *source, size_t count);
@@ -31,4 +35,8 @@ int strerror_r(int error, char *buffer, size_t length);
 char *strerror(int error);
 char *strsignal(int signal_number);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

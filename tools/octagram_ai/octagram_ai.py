@@ -110,7 +110,7 @@ def _safe_repo_path(raw: str) -> Path:
 
 def repo_search(query: str) -> str:
     result = _git(
-        ["grep", "--no-index", "--line-number", "--no-heading", "--ignore-case",
+        ["grep", "--line-number", "--no-heading", "--ignore-case",
          "--fixed-strings", "-e", query, "--", "."],
         cwd=WORKTREE, timeout=45, check=False,
     )
@@ -158,6 +158,8 @@ def _docker_build_command(recipe: str) -> list[str]:
         "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges",
         "--pids-limit=256", "--memory=10g", "--cpus=4", "--read-only",
         "--tmpfs", "/tmp:rw,nosuid,nodev,size=2g",
+        "--env", "CARGO_HOME=/tmp/cargo",
+        "--env", "CARGO_NET_OFFLINE=true",
         "--mount", f"type=bind,src={WORKTREE},dst=/workspace,rw",
         "--workdir", "/workspace",
     ]
@@ -218,7 +220,7 @@ def repo_context(query: str) -> str:
                 break
         if len(excerpts) >= 60:
             break
-    return "\\n".join(excerpts)[:12000] or "No matching repository snippets found."
+    return "\n".join(excerpts)[:12000] or "No matching repository snippets found."
 
 
 def ask_local_model(message: str, context: str) -> str:

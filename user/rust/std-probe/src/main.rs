@@ -270,6 +270,49 @@ fn main() {
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-GETSOCKOPT-PASS");
 
+    // Anonymous socketpair endpoints report an AF_UNIX sockaddr of length 2.
+    let mut name_pair = [-1i32; 2];
+    let name_result = unsafe {
+        syscall4(127, 1, 1, 0, name_pair.as_mut_ptr() as usize as u64)
+    };
+    let mut local_name = [0u8; 16];
+    let mut local_name_len = local_name.len() as u32;
+    let getsockname_result = if name_result == 0 && name_pair[0] >= 0 {
+        unsafe {
+            syscall3(79, name_pair[0] as u64,
+                local_name.as_mut_ptr() as usize as u64,
+                &mut local_name_len as *mut u32 as usize as u64)
+        }
+    } else {
+        -1
+    };
+    let mut peer_name = [0u8; 16];
+    let mut peer_name_len = peer_name.len() as u32;
+    let getpeername_result = if name_result == 0 && name_pair[0] >= 0 {
+        unsafe {
+            syscall3(80, name_pair[0] as u64,
+                peer_name.as_mut_ptr() as usize as u64,
+                &mut peer_name_len as *mut u32 as usize as u64)
+        }
+    } else {
+        -1
+    };
+    if name_pair[0] >= 0 {
+        unsafe { syscall3(4, name_pair[0] as u64, 0, 0); }
+    }
+    if name_pair[1] >= 0 {
+        unsafe { syscall3(4, name_pair[1] as u64, 0, 0); }
+    }
+    if getsockname_result != 0 || getpeername_result != 0
+        || local_name_len != 2 || peer_name_len != 2
+        || u16::from_ne_bytes([local_name[0], local_name[1]]) != 1
+        || u16::from_ne_bytes([peer_name[0], peer_name[1]]) != 1
+    {
+        marker("RUST-STD-UNIX-SOCKETPAIR-NAME-FAIL");
+        std::process::exit(79);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-NAME-PASS");
+
     // SOCK_CLOEXEC is applied to each newly-created descriptor independently.
     let mut cloexec_pair = [-1i32; 2];
     let cloexec_result = unsafe {

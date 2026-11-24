@@ -1,0 +1,56 @@
+# Merge these keys into ~/.hermes/config.yaml. Replace absolute paths before use.
+# Keep existing unrelated Hermes settings.
+model:
+  provider: custom
+  default: qwen2.5-coder-7b-instruct
+  base_url: http://127.0.0.1:8080/v1
+  api_key: local
+  context_length: 8192
+
+approvals:
+  mode: smart
+  unattended_mode: deny
+  cron_mode: deny
+  single_query_mode: deny
+
+terminal:
+  backend: docker
+  cwd: /workspace
+  docker_image: octagram-ai-build:latest
+  docker_volumes:
+    - "/ABSOLUTE/PATH/TO/OCTAGRAM-OS-ai-worktree:/workspace:rw"
+  docker_forward_env: []
+  docker_run_as_host_user: true
+  docker_extra_args:
+    - "--network=none"
+    - "--cap-drop=ALL"
+    - "--security-opt=no-new-privileges"
+    - "--pids-limit=256"
+  container_cpu: 3
+  container_memory: 6144
+  container_disk: 20480
+  container_persistent: true
+
+mcp_servers:
+  octagram:
+    command: python3
+    args: ["-m", "hermes_mcp"]
+    cwd: "/ABSOLUTE/PATH/TO/OCTAGRAM-OS"
+    env:
+      PYTHONPATH: "/ABSOLUTE/PATH/TO/OCTAGRAM-OS/tools/octagram_ai"
+      OCTAGRAM_REPO: "/ABSOLUTE/PATH/TO/OCTAGRAM-OS"
+      OCTAGRAM_BASE_REF: "feature/native-self-hosting-testing-2"
+      OCTAGRAM_WORKTREE: "/ABSOLUTE/PATH/TO/OCTAGRAM-OS-ai-worktree"
+      OCTAGRAM_DOCKER_IMAGE: "octagram-ai-build:latest"
+    trust: untrusted
+    sampling:
+      enabled: false
+    elicitation:
+      enabled: false
+    tools:
+      include: [octagram_status, octagram_search, octagram_read_file, octagram_apply_patch, octagram_run_build]
+      prompts: false
+      resources: false
+
+skills:
+  project_discovery: true

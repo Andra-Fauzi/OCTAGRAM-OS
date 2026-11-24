@@ -127,8 +127,8 @@ Run the unit tests with `python -m unittest discover -s tools/octagram_ai -p 'te
 This is the first usable foundation, not a fully autonomous software engineer yet:
 
 - Chat retrieves matching text snippets; it does not yet maintain a persistent semantic embedding index.
-- The assistant does not automatically decide and execute tools from model output. The user/API client invokes each bounded endpoint.
-- Cloud fallback, IDE extension packaging, persistent task memory, and automatic test-fix loops are future increments.
+- The legacy FastAPI /agent/task route remains a separate bounded patch/build loop. Hermes is the recommended agent interface and orchestrates the OCTAGRAM MCP tools directly.
+- A cloud fallback route is not preconfigured; add a provider through Hermes when desired. IDE extension packaging and semantic repository indexing remain future increments.
 - The API's local loopback binding is not an authentication system.
 - A successful host build is not evidence of QEMU or hardware success. Preserve the repository's evidence levels: host-tested, QEMU-tested, hardware-tested.
 

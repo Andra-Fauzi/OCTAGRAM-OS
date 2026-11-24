@@ -30,12 +30,24 @@ class SafetyTests(unittest.TestCase):
         self.assertNotIn("sh", command)
 
     def test_patch_rejects_git_metadata(self):
-        patch = "--- a/.git/config\\n+++ b/.git/config\\n@@ -1 +1 @@\\n"
+        patch = "\n".join([
+            "--- a/.git/config",
+            "+++ b/.git/config",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+        ])
         with self.assertRaises(Exception):
             ai.apply_patch(patch)
 
     def test_patch_rejects_parent_traversal(self):
-        patch = "--- a/../outside\\n+++ b/../outside\\n@@ -1 +1 @@\\n"
+        patch = "\n".join([
+            "--- a/../outside",
+            "+++ b/../outside",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+        ])
         with self.assertRaises(Exception):
             ai.apply_patch(patch)
 

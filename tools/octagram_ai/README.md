@@ -92,7 +92,8 @@ Build recipes then run with networking disabled, a read-only container root, dro
 - `POST /workspace/read`: read one repository-relative file.
 - `POST /chat`: ask the local model; matching repository snippets are added as context.
 - `POST /workspace/apply-patch`: validate and apply a unified diff to the isolated worktree.
-- `POST /workspace/build`: run one predefined build/test recipe. Kernel test/build recipes first build the embedded Rust and C userspace artifacts.\n- `POST /agent/task`: ask the local model for a unified diff, apply it to the detached worktree, run the selected allowlisted build recipe, and retry at most twice.
+- `POST /workspace/build`: run one predefined build/test recipe. Kernel test/build recipes first build the embedded Rust and C userspace artifacts.
+- `POST /agent/task`: ask the local model for a unified diff, apply it to the detached worktree, run the selected allowlisted build recipe, and retry at most twice.
 
 Example:
 

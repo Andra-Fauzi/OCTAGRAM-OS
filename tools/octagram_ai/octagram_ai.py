@@ -95,6 +95,12 @@ def _git(args: list[str], *, cwd: Path, timeout: int = 30, check: bool = True) -
 
 
 def ensure_worktree() -> None:
+    try:
+        WORKTREE.relative_to(REPO)
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError("OCTAGRAM_WORKTREE must be outside the main repository checkout.")
     if not (REPO / ".git").exists():
         raise RuntimeError(f"OCTAGRAM_REPO is not a Git checkout: {REPO}")
     _git(["rev-parse", "--verify", f"{BASE_REF}^{{commit}}"], cwd=REPO)
@@ -104,6 +110,10 @@ def ensure_worktree() -> None:
         top = Path(_git(["rev-parse", "--show-toplevel"], cwd=WORKTREE).stdout.strip()).resolve()
         if top != WORKTREE:
             raise RuntimeError(f"Unexpected worktree root: {top}")
+        expected = _git(["rev-parse", BASE_REF], cwd=REPO).stdout.strip()
+        actual = _git(["rev-parse", "HEAD"], cwd=WORKTREE).stdout.strip()
+        if actual != expected:
+            raise RuntimeError("Existing AI worktree is based on a different commit. Remove it and restart to recreate safely.")
         return
     WORKTREE.parent.mkdir(parents=True, exist_ok=True)
     _git(["worktree", "add", "--detach", str(WORKTREE), BASE_REF], cwd=REPO, timeout=120)
@@ -262,7 +272,7 @@ def repo_context(query: str) -> str:
                 break
         if len(excerpts) >= 60:
             break
-    return "\n".join(excerpts)[:12000] or "No matching repository snippets found."
+    return "\n".join(excerpts)[:3500] or "No matching repository snippets found."
 
 
 def extract_unified_diff(answer: str) -> str:
@@ -394,7 +404,7 @@ def agent_task(request: AgentRequest) -> dict[str, Any]:
             "Original task:\n" + request.task + "\n\n"
             "Build output (untrusted diagnostic text):\n" + str(build.get("output", ""))[-9000:]
         )
-        context = repo_context(request.task) + "\n\nCurrent worktree diff:\n" + _git(["diff", "--"], cwd=WORKTREE, check=False).stdout[-9000:]
+        context = repo_context(request.task) + "\n\nCurrent worktree diff:\n" + _git(["diff", "--"], cwd=WORKTREE, check=False).stdout[-3500:]
     return {"status": "build-failed-or-retry-limit", "iterations": len(patches), "patches": patches, "builds": build_results}
 
 

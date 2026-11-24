@@ -377,6 +377,34 @@ fn main() {
         std::process::exit(79);
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-DOMAIN-PROTOCOL-PASS");
+
+    // SO_PEERCRED returns the credentials captured when socketpair() was
+    // created: pid_t, uid_t, gid_t.
+    let mut cred_pair = [-1i32; 2];
+    let cred_pair_result = unsafe {
+        syscall4(127, 1, 1, 0, cred_pair.as_mut_ptr() as usize as u64)
+    };
+    let mut peer_credentials = [0u32; 3];
+    let mut peer_credentials_len = core::mem::size_of_val(&peer_credentials) as u32;
+    let so_peercred_result = if cred_pair_result == 0 && cred_pair[0] >= 0 {
+        unsafe {
+            syscall6(
+                96, cred_pair[0] as u64, 1, 17,
+                peer_credentials.as_mut_ptr() as usize as u64,
+                &mut peer_credentials_len as *mut u32 as usize as u64, 0,
+            )
+        }
+    } else { -1 };
+    if cred_pair[0] >= 0 { unsafe { syscall3(4, cred_pair[0] as u64, 0, 0); } }
+    if cred_pair[1] >= 0 { unsafe { syscall3(4, cred_pair[1] as u64, 0, 0); } }
+    if so_peercred_result != 0 || peer_credentials_len != 12
+        || (peer_credentials[0] as i32) <= 0
+    {
+        marker("RUST-STD-UNIX-SOCKETPAIR-PEERCRED-FAIL");
+        std::process::exit(83);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-PEERCRED-PASS");
+
     let mut accept_conn = -1i32;
     let mut accept_conn_len = core::mem::size_of::<i32>() as u32;
     let mut accept_pair = [-1i32; 2];

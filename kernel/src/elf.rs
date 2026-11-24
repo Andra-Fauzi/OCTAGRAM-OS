@@ -1321,6 +1321,8 @@ struct PipeEnd {
 struct DuplexEnd {
     read_end: PipeEnd,
     write_end: PipeEnd,
+    /// Credentials captured when the peer socketpair endpoint was created.
+    peer_credentials: UserUcred,
 }
 
 #[derive(Clone, Copy)]
@@ -1603,6 +1605,14 @@ struct UserStat {
     size: u64,
     mode: u32,
     modified_seconds: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserUcred {
+    pid: i32,
+    uid: u32,
+    gid: u32,
 }
 
 #[repr(C)]
@@ -7905,6 +7915,7 @@ const SO_KEEPALIVE: u64 = 9;
 const SO_ACCEPTCONN: u64 = 30;
 const SO_PROTOCOL: u64 = 38;
 const SO_DOMAIN: u64 = 39;
+const SO_PEERCRED: u64 = 17;
 const SOCK_STREAM_TYPE: i32 = 1;
 const SOCK_DGRAM_TYPE: i32 = 2;
 
@@ -8406,6 +8417,19 @@ fn syscall_getsockopt(
     let length_size = core::mem::size_of::<u32>();
     paging::validate_user_range(option_length, length_size, true).map_err(|_| EFAULT)?;
     let capacity = unsafe { (option_length as *const u32).read_unaligned() } as usize;
+    if option_name == SO_PEERCRED {
+        let endpoint = socketpair_endpoint_for_fd(fd)?.ok_or(ENOPROTOOPT)?;
+        let needed = core::mem::size_of::<UserUcred>();
+        if capacity < needed {
+            return Err(EINVAL);
+        }
+        paging::validate_user_range(option_value, needed, true).map_err(|_| EFAULT)?;
+        unsafe {
+            (option_value as *mut UserUcred).write_unaligned(endpoint.peer_credentials);
+            (option_length as *mut u32).write_unaligned(needed as u32);
+        }
+        return Ok(0);
+    }
     let value = match option_name {
         SO_TYPE => socket_type,
         SO_ERROR => 0,
@@ -11088,15 +11112,28 @@ fn syscall_socketpair(domain: u64, socket_type: u64, protocol: u64, addresses: u
     }
     paging::validate_user_range(addresses, core::mem::size_of::<[i32; 2]>(), true)
         .map_err(|_| EFAULT)?;
+    let peer_credentials = {
+        let process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        UserUcred {
+            pid: i32::try_from(process.pid).map_err(|_| EOVERFLOW)?,
+            uid: process.euid,
+            gid: process.egid,
+        }
+    };
     let (first_read, first_write) = create_pipe()?;
     let (second_read, second_write) = create_pipe()?;
     let first = install_descriptor(UserDescriptor::SocketPair(DuplexEnd {
         read_end: first_read,
         write_end: second_write,
+        peer_credentials,
     }))?;
     let second = match install_descriptor(UserDescriptor::SocketPair(DuplexEnd {
         read_end: second_read,
         write_end: first_write,
+        peer_credentials,
     })) {
         Ok(fd) => fd,
         Err(error) => {

@@ -1754,10 +1754,13 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
         return EINVAL;
     }
     size_t stack_size = OCT_PTHREAD_STACK_SIZE;
+    int detached = 0;
     if (attributes != NULL) {
-        if (attributes->opaque != PTHREAD_CREATE_JOINABLE) {
-            return ENOTSUP;
+        if (attributes->opaque != PTHREAD_CREATE_JOINABLE
+            && attributes->opaque != PTHREAD_CREATE_DETACHED) {
+            return EINVAL;
         }
+        detached = attributes->opaque == PTHREAD_CREATE_DETACHED;
         if (attributes->stack_size < PTHREAD_STACK_MIN) {
             return EINVAL;
         }
@@ -1816,6 +1819,14 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attributes,
         return (int)-result;
     }
     *thread = (pthread_t)result;
+    if (detached) {
+        int error = pthread_detach(*thread);
+        if (error != 0) {
+            void *ignored = NULL;
+            (void)pthread_join(*thread, &ignored);
+            return error;
+        }
+    }
     return 0;
 }
 
@@ -2336,8 +2347,11 @@ int pthread_condattr_setclock(pthread_condattr_t *attributes, clockid_t clock)
 
 int pthread_detach(pthread_t thread)
 {
-    (void)thread;
-    return ENOTSUP;
+    if (thread == 0) {
+        return ESRCH;
+    }
+    int64_t status = oct_thread_detach(thread);
+    return status < 0 ? (int)-status : 0;
 }
 
 int pthread_attr_init(pthread_attr_t *attributes)

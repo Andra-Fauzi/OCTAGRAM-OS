@@ -13,7 +13,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --pr
     && rustup target add --toolchain nightly x86_64-unknown-none
 
 RUN mkdir -p /opt/octagram-cargo-registry /opt/octagram-cargo-git /usr/local/bin \
-    && printf '%s\\n' '#!/bin/sh' 'mkdir -p /tmp/cargo' \
+    && printf '%s\n' '#!/bin/sh' 'mkdir -p /tmp/cargo' \
        'ln -sfn /opt/octagram-cargo-registry /tmp/cargo/registry' \
        'ln -sfn /opt/octagram-cargo-git /tmp/cargo/git' \
        'exec "$@"' > /usr/local/bin/octagram-entrypoint \

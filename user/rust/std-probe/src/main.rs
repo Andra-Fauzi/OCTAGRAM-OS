@@ -228,7 +228,7 @@ fn main() {
         let clone_flags = unsafe {
             fcntl(std::os::fd::AsRawFd::as_raw_fd(&cloned), F_GETFD)
         };
-        if clone_flags < 0 || clone_flags & FD_CLOEXEC == 0 {
+        if clone_flags != FD_CLOEXEC {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "cloned descriptor lost FD_CLOEXEC"));
         }
         // Descriptor flags are per descriptor, not shared by the open-file
@@ -236,7 +236,7 @@ fn main() {
         let original_flags = unsafe {
             fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), F_GETFD)
         };
-        if original_flags < 0 || original_flags & FD_CLOEXEC == 0 {
+        if original_flags != FD_CLOEXEC {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "original descriptor lost FD_CLOEXEC"));
         }
         if unsafe { fcntl(std::os::fd::AsRawFd::as_raw_fd(&cloned), F_SETFD, 0) } != 0 {
@@ -250,7 +250,7 @@ fn main() {
         };
         if cleared_clone_flags != 0
             || unchanged_original_flags < 0
-            || unchanged_original_flags & FD_CLOEXEC == 0
+            || unchanged_original_flags != FD_CLOEXEC
         {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "descriptor flags were not independent"));
         }

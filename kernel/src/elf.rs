@@ -3305,7 +3305,10 @@ fn syscall_thread_join(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         return frame_pointer;
     }
     let Some(target) = scheduler.processes.iter().position(|process| {
-        process.is_thread && process.pid == pid && process.tid == target_tid && !process.reaped
+        process.is_thread
+            && process.pid == pid
+            && process.tid == target_tid
+            && (!process.reaped || process.detached)
     }) else {
         frame.rax = (-(ESRCH as i64)) as u64;
         return frame_pointer;
@@ -3369,11 +3372,15 @@ fn syscall_thread_detach(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         return frame_pointer;
     }
     let Some(target) = scheduler.processes.iter().position(|process| {
-        process.is_thread && process.pid == pid && process.tid == target_tid && !process.reaped
+        process.is_thread && process.pid == pid && process.tid == target_tid
     }) else {
         frame.rax = (-(ESRCH as i64)) as u64;
         return frame_pointer;
     };
+    if scheduler.processes[target].reaped && !scheduler.processes[target].detached {
+        frame.rax = (-(ESRCH as i64)) as u64;
+        return frame_pointer;
+    }
     if scheduler.processes[target].detached
         || scheduler.processes.iter().any(|process| {
             process.waiting_for == Some(ProcessWait::Thread(target_tid))

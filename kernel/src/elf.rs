@@ -8489,7 +8489,9 @@ fn syscall_sendmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
 }
 
 fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
-    if flags & !0x42 != 0 { return Err(EINVAL); }
+    // MSG_TRUNC is an input flag on Linux: return the original datagram
+    // length even when the supplied iovecs are too small.
+    if flags & !0x62 != 0 { return Err(EINVAL); }
     paging::validate_user_range(header_addr, core::mem::size_of::<UserMsgHdr>(), true).map_err(|_| EFAULT)?;
     let mut header = unsafe { (header_addr as *const UserMsgHdr).read_unaligned() };
     if header.control != 0 || header.control_len != 0 { return Err(ENOTSUP); }

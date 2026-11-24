@@ -15,6 +15,7 @@ A local-first coding assistant for OCTAGRAM-OS. It runs the LLM through a local 
 
 - Python 3.10+
 - Git
+- Docker Engine (required for sandboxed builds)
 - llama.cpp `llama-server` with CUDA support (optional for API/workspace smoke tests)
 - A GGUF model file
 
@@ -74,7 +75,17 @@ uvicorn octagram_ai:app --app-dir tools/octagram_ai --host 127.0.0.1 --port 8787
 
 OpenAPI docs: http://127.0.0.1:8787/docs
 
-## 4. API workflow
+## 4. Prepare the build sandbox
+
+Build the toolchain image once (this step needs internet to install Ubuntu packages and Rust nightly):
+
+```bash
+docker build -f tools/octagram_ai/Dockerfile -t octagram-ai-build:latest .
+```
+
+Build recipes then run with networking disabled, a read-only container root, dropped Linux capabilities, resource limits, and only the isolated worktree mounted writable. The host Cargo registry cache may be mounted read-only. If dependencies are not cached, populate the cache before invoking the offline build runner. Docker daemon access is powerful; only run this service on a machine whose Docker installation you trust.
+
+## 5. API workflow
 
 - `GET /health`: check configuration and worktree status.
 - `POST /workspace/search`: fixed-string search in tracked repository files.
@@ -94,7 +105,7 @@ curl -s http://127.0.0.1:8787/workspace/search \
 
 Patch requests must contain a standard unified diff. Inspect the diff and test results before copying changes back or committing.
 
-## 5. Build recipes
+## 6. Build recipes
 
 The allowlist follows the repository's documented clean-build order:
 
@@ -108,7 +119,9 @@ The allowlist follows the repository's documented clean-build order:
 
 Run the first three in order before kernel tests/build because the kernel embeds userspace artifacts. QEMU and hardware tests are not currently exposed as autonomous recipes; they need a later explicit, controlled runner.
 
-## 6. Current limitations
+Run the unit tests with `python -m unittest discover -s tools/octagram_ai -p 'test_*.py'`.
+
+## 7. Current limitations
 
 This is the first usable foundation, not a fully autonomous software engineer yet:
 

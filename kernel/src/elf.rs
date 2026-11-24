@@ -5952,6 +5952,53 @@ fn syscall_recv(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i
 }
 
 fn syscall_shutdown(fd: u64, how: u64) -> Result<u64, i32> {
+    const SHUT_RD: u64 = 0;
+    const SHUT_WR: u64 = 1;
+    const SHUT_RDWR: u64 = 2;
+    if how > SHUT_RDWR {
+        return Err(EINVAL);
+    }
+
+    let fd_index = usize::try_from(fd).map_err(|_| EBADF)?;
+    let mut wake_readers = None;
+    let mut wake_writers = None;
+    {
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        match process.descriptors.get_mut(fd_index).and_then(Option::as_mut) {
+            Some(UserDescriptor::SocketPair(endpoint)) => {
+                if how == SHUT_RD || how == SHUT_RDWR {
+                    if endpoint.read_end.readable {
+                        let mut pipe = endpoint.read_end.pipe.lock();
+                        pipe.readers = pipe.readers.saturating_sub(1);
+                        wake_writers = Some(pipe.id);
+                        endpoint.read_end.readable = false;
+                    }
+                }
+                if how == SHUT_WR || how == SHUT_RDWR {
+                    if endpoint.write_end.writable {
+                        let mut pipe = endpoint.write_end.pipe.lock();
+                        pipe.writers = pipe.writers.saturating_sub(1);
+                        wake_readers = Some(pipe.id);
+                        endpoint.write_end.writable = false;
+                    }
+                }
+                drop(process);
+                if let Some(pipe_id) = wake_readers {
+                    wake_pipe_waiters(pipe_id, true, false);
+                }
+                if let Some(pipe_id) = wake_writers {
+                    wake_pipe_waiters(pipe_id, false, true);
+                }
+                return Ok(0);
+            }
+            Some(UserDescriptor::TcpSocket(_)) => {}
+            Some(_) => return Err(ENOTSOCK),
+            None => return Err(EBADF),
+        }
+    }
     crate::network::shutdown_tcp_socket(&tcp_socket_for_fd(fd)?, how)
         .map(|()| 0)
         .map_err(errno_from_network)

@@ -8598,6 +8598,12 @@ fn syscall_sendmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
         }
     }
     if header.name != 0 {
+        // A socketpair endpoint is already connected to its peer. Supplying a
+        // destination address is invalid (Linux reports EISCONN); never route
+        // an AF_UNIX descriptor into the UDP sendto path.
+        if socketpair_endpoint_for_fd(fd)?.is_some() {
+            return Err(EISCONN);
+        }
         let (destination, port) = copy_user_sockaddr(header.name, header.name_len as u64)?;
         return syscall_udp_sendto(fd, u32::from_be_bytes(destination) as u64, port as u64,
             if payload.is_empty() { 0 } else { payload.as_ptr() as u64 }, payload.len() as u64);

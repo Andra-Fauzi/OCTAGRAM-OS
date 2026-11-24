@@ -174,17 +174,29 @@ fn main() {
         std::process::exit(28);
     }
     let descriptor_result = (|| -> std::io::Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&child_path)?;
-        file.write_all(b"descriptor-roundtrip")?;
+        macro_rules! checked {
+            ($operation:literal, $expression:expr) => {
+                $expression.map_err(|error| {
+                    eprintln!("Rust std directory probe `{}` failed: {}", $operation, error);
+                    error
+                })?
+            };
+        }
+
+        let mut file = checked!(
+            "OpenOptions::open",
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&child_path)
+        );
+        checked!("write_all", file.write_all(b"descriptor-roundtrip"));
         let mut found_child = false;
-        for entry in std::fs::read_dir(&original_dir)? {
-            let entry = entry?;
+        for entry in checked!("read_dir", std::fs::read_dir(&original_dir)) {
+            let entry = checked!("DirEntry::next", entry);
             if entry.file_name() == std::ffi::OsStr::new("probe.bin")
-                && entry.metadata()?.is_file()
+                && checked!("DirEntry::metadata", entry.metadata()).is_file()
             {
                 found_child = true;
             }
@@ -192,14 +204,16 @@ fn main() {
         if !found_child {
             return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "nested read_dir entry missing"));
         }
-        file.sync_all()?;
-        let cloned = file.try_clone()?;
-        if !file.metadata()?.is_file() || !cloned.metadata()?.is_file() {
+        checked!("File::sync_all", file.sync_all());
+        let cloned = checked!("File::try_clone", file.try_clone());
+        if !checked!("File::metadata", file.metadata()).is_file()
+            || !checked!("cloned File::metadata", cloned.metadata()).is_file()
+        {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "descriptor metadata mismatch"));
         }
-        file.seek(std::io::SeekFrom::Start(0))?;
+        checked!("File::seek", file.seek(std::io::SeekFrom::Start(0)));
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut file, &mut bytes)?;
+        checked!("Read::read_to_end", std::io::Read::read_to_end(&mut file, &mut bytes));
         if bytes != b"descriptor-roundtrip" {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "file contents mismatch"));
         }

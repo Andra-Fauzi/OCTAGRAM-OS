@@ -7902,6 +7902,8 @@ const SOL_SOCKET: u64 = 1;
 const SO_TYPE: u64 = 3;
 const SO_ERROR: u64 = 4;
 const SO_KEEPALIVE: u64 = 9;
+const SO_PROTOCOL: u64 = 38;
+const SO_DOMAIN: u64 = 39;
 const SOCK_STREAM_TYPE: i32 = 1;
 const SOCK_DGRAM_TYPE: i32 = 2;
 
@@ -8410,6 +8412,11 @@ fn syscall_getsockopt(
             Ok(socket) => crate::network::tcp_keepalive_enabled(&socket) as i32,
             Err(_) => return Err(ENOPROTOOPT),
         },
+        // Anonymous AF_UNIX socketpairs have no pathname and use protocol 0.
+        // Do not report these values for TCP/UDP descriptors.
+        SO_DOMAIN if socketpair_endpoint_for_fd(fd)?.is_some() => 1, // AF_UNIX
+        SO_PROTOCOL if socketpair_endpoint_for_fd(fd)?.is_some() => 0,
+        SO_DOMAIN | SO_PROTOCOL => return Err(ENOPROTOOPT),
         _ => return Err(ENOPROTOOPT),
     };
     let needed = core::mem::size_of::<i32>();

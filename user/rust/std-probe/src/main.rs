@@ -23,7 +23,9 @@ unsafe extern "C" {
     fn fcntl(fd: i32, command: i32, ...) -> i32;
 }
 
+const F_DUPFD: i32 = 0;
 const F_GETFD: i32 = 1;
+const F_SETFD: i32 = 2;
 const FD_CLOEXEC: i32 = 1;
 
 
@@ -237,7 +239,7 @@ fn main() {
         if original_flags < 0 || original_flags & FD_CLOEXEC == 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "original descriptor lost FD_CLOEXEC"));
         }
-        if unsafe { fcntl(std::os::fd::AsRawFd::as_raw_fd(&cloned), 2, 0) } != 0 {
+        if unsafe { fcntl(std::os::fd::AsRawFd::as_raw_fd(&cloned), F_SETFD, 0) } != 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::Other, "F_SETFD could not clear clone flag"));
         }
         let cleared_clone_flags = unsafe {
@@ -253,14 +255,14 @@ fn main() {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "descriptor flags were not independent"));
         }
         if unsafe {
-            fcntl(std::os::fd::AsRawFd::as_raw_fd(&cloned), 2, FD_CLOEXEC)
+            fcntl(std::os::fd::AsRawFd::as_raw_fd(&cloned), F_SETFD, FD_CLOEXEC)
         } != 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::Other, "F_SETFD could not restore clone flag"));
         }
         // Plain F_DUPFD follows dup semantics and must not inherit
         // FD_CLOEXEC from its source descriptor.
         let plain_duplicate = unsafe {
-            fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), 0, 0)
+            fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), F_DUPFD, 0)
         };
         if plain_duplicate < 0 {
             return Err(std::io::Error::last_os_error());

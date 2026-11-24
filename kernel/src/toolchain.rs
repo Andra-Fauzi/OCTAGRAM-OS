@@ -3439,7 +3439,11 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                 let symbol = symbols
                     .get(symbol_index)
                     .ok_or(ToolchainError::InvalidElfObject)?;
-                let (symbol_value, symbol_size) = if symbol.binding == 0 {
+                // R_X86_64_GOTPC32 computes the GOT base (G + A - P);
+                // its symbol index is not used to select a per-symbol slot.
+                let (symbol_value, symbol_size) = if kind == 26 {
+                    (0, 0)
+                } else if symbol.binding == 0 {
                     (
                         symbol.value.ok_or(ToolchainError::UndefinedSymbol)?,
                         symbol.size,
@@ -4175,7 +4179,7 @@ mod tests {
             set_fixture_relocation_kind(&mut object, 9);
             link_elf_object(&object).unwrap()
         };
-        for kind in [26u32, 41, 42] {
+        for kind in [41u32, 42] {
             let mut object = relocatable_object();
             set_fixture_relocation_kind(&mut object, kind);
             assert_eq!(
@@ -4184,6 +4188,23 @@ mod tests {
                 "GOT relocation kind {kind} changed the layout"
             );
         }
+    }
+
+    #[test]
+    fn gotpc32_uses_got_base_and_does_not_resolve_a_symbol_slot() {
+        let mut object = relocatable_object();
+        // R_X86_64_GOTPC32 refers to the GOT base, not symbol 2's GOT entry.
+        object[0x200 + 8..0x200 + 16]
+            .copy_from_slice(&(26u64).to_le_bytes());
+        let executable = link_elf_object(&object).unwrap();
+        let data_vaddr = u64::from_le_bytes(
+            executable[64 + 56 + 16..64 + 56 + 24].try_into().unwrap(),
+        );
+        let displacement = i32::from_le_bytes(
+            executable[0x1001..0x1005].try_into().unwrap(),
+        );
+        assert_eq!(data_vaddr, 0x401000);
+        assert_eq!(displacement, (data_vaddr + 8 - 0x400001) as i32);
     }
 
     #[test]

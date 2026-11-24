@@ -19,6 +19,13 @@ std::thread_local! {
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::process::{Command, Stdio};
 
+unsafe extern "C" {
+    fn fcntl(fd: i32, command: i32, ...) -> i32;
+}
+
+const F_GETFD: i32 = 1;
+const FD_CLOEXEC: i32 = 1;
+
 
 // Minimal direct syscall helpers for testing the kernel's dirfd ABI independently
 // of the upstream libc/std wrappers.
@@ -213,6 +220,14 @@ fn main() {
             || !checked!("cloned File::metadata", cloned.metadata()).is_file()
         {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "descriptor metadata mismatch"));
+        }
+        // Rust std opens and duplicates descriptors with close-on-exec. Check
+        // the descriptor flag through the public libc fcntl ABI, not internals.
+        let clone_flags = unsafe {
+            fcntl(std::os::fd::AsRawFd::as_raw_fd(&cloned), F_GETFD)
+        };
+        if clone_flags < 0 || clone_flags & FD_CLOEXEC == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "cloned descriptor lost FD_CLOEXEC"));
         }
         // dup/F_DUPFD must share the same open-file-description offset. Read
         // through the clone, then ensure the original continues at that offset.

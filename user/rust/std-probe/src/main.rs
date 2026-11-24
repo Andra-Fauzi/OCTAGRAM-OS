@@ -29,6 +29,7 @@ const F_SETFD: i32 = 2;
 const FD_CLOEXEC: i32 = 1;
 const O_CLOEXEC: u64 = 1 << 19;
 const SYSCALL_DUP3: u64 = 99;
+const EINVAL: i64 = 22;
 
 
 // Minimal direct syscall helpers for testing the kernel's dirfd ABI independently
@@ -296,6 +297,25 @@ fn main() {
         };
         if dup3_flags != FD_CLOEXEC {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "dup3 did not set FD_CLOEXEC"));
+        }
+        let dup3_same_fd = unsafe {
+            syscall3(
+                SYSCALL_DUP3,
+                std::os::fd::AsRawFd::as_raw_fd(&file) as u64,
+                std::os::fd::AsRawFd::as_raw_fd(&file) as u64,
+                O_CLOEXEC,
+            )
+        };
+        let dup3_unknown_flags = unsafe {
+            syscall3(
+                SYSCALL_DUP3,
+                std::os::fd::AsRawFd::as_raw_fd(&file) as u64,
+                std::os::fd::AsRawFd::as_raw_fd(&plain_duplicate) as u64,
+                1,
+            )
+        };
+        if dup3_same_fd != -EINVAL || dup3_unknown_flags != -EINVAL {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "dup3 accepted invalid arguments"));
         }
         drop(plain_duplicate);
         // dup/F_DUPFD must share the same open-file-description offset. Read

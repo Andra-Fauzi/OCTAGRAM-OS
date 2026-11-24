@@ -1299,12 +1299,12 @@ impl Pipe {
             };
         }
         let count = output.len().min(self.length);
-        for byte in &mut output[..count] {
-            *byte = self.buffer[self.head];
-            if !peek {
-                self.head = (self.head + 1) % PIPE_CAPACITY;
-                self.length -= 1;
-            }
+        for (offset, byte) in output[..count].iter_mut().enumerate() {
+            *byte = self.buffer[(self.head + offset) % PIPE_CAPACITY];
+        }
+        if !peek {
+            self.head = (self.head + count) % PIPE_CAPACITY;
+            self.length -= count;
         }
         Ok(count)
     }

@@ -1173,11 +1173,61 @@ mod tests {
         LinkDevice, MAX_UDP_QUEUE, NetworkConfig, UdpSocket, bind_udp_socket,
         build_arp_request, build_dhcp_packet, build_udp_frame, checksum, connect_udp_socket,
         create_udp_socket, parse_dhcp, queue_udp_datagram,
-        receive_ethernet, receive_udp_socket, receive_udp_socket_length, register_link,
+        receive_ethernet, receive_udp_socket, receive_udp_socket_length,
+        receive_udp_socket_length_with_peek, register_link,
         send_udp_socket_connected,
         send_udp_socket, unregister_link,
         SavedLease, format_lease, format_ipv4, parse_ipv4, parse_lease,
     };
+
+    #[test]
+    fn udp_msg_peek_preserves_datagram_until_consumed() {
+        let socket = Arc::new(Mutex::new(UdpSocket {
+            local_port: 9000,
+            peer: Some(([192, 0, 2, 10], 7000)),
+            received: VecDeque::from([super::ReceivedDatagram {
+                source_ip: [192, 0, 2, 10],
+                source_port: 7000,
+                payload: b"peek-me".to_vec(),
+            }]),
+        }));
+        let mut output = [0u8; 16];
+        let peeked = receive_udp_socket_length_with_peek(&socket, &mut output, true).unwrap();
+        assert_eq!(peeked, (7, 7, [192, 0, 2, 10], 7000));
+        assert_eq!(&output[..7], b"peek-me");
+        assert_eq!(socket.lock().received.len(), 1);
+
+        output.fill(0);
+        let consumed = receive_udp_socket_length_with_peek(&socket, &mut output, false).unwrap();
+        assert_eq!(consumed, peeked);
+        assert_eq!(&output[..7], b"peek-me");
+        assert!(socket.lock().received.is_empty());
+    }
+
+    #[test]
+    fn udp_peek_skips_datagrams_from_non_connected_peers() {
+        let socket = Arc::new(Mutex::new(UdpSocket {
+            local_port: 9001,
+            peer: Some(([192, 0, 2, 10], 7000)),
+            received: VecDeque::from([
+                super::ReceivedDatagram {
+                    source_ip: [192, 0, 2, 11],
+                    source_port: 7000,
+                    payload: b"wrong".to_vec(),
+                },
+                super::ReceivedDatagram {
+                    source_ip: [192, 0, 2, 10],
+                    source_port: 7000,
+                    payload: b"right".to_vec(),
+                },
+            ]),
+        }));
+        let mut output = [0u8; 8];
+        let result = receive_udp_socket_length_with_peek(&socket, &mut output, true).unwrap();
+        assert_eq!(result, (5, 5, [192, 0, 2, 10], 7000));
+        assert_eq!(&output[..5], b"right");
+        assert_eq!(socket.lock().received.len(), 2);
+    }
 
     #[test]
     fn lease_round_trips_through_text() {

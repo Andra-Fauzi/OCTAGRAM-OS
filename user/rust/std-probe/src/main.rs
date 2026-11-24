@@ -160,7 +160,12 @@ fn main() {
     let empty_recv = unsafe {
         syscall6(107, u64::MAX, message_address, 0, 0, 0, 0)
     };
-    if empty_send != -EBADF || empty_recv != -EBADF {
+    // MSG_TRUNC is a valid recvmsg input flag; with an invalid descriptor,
+    // descriptor lookup must win over any flag-validation error.
+    let recv_trunc = unsafe {
+        syscall6(107, u64::MAX, message_address, 0x20, 0, 0, 0)
+    };
+    if empty_send != -EBADF || empty_recv != -EBADF || recv_trunc != -EBADF {
         marker("RUST-STD-SOCKET-EMPTY-IOV-FAIL");
         std::process::exit(73);
     }

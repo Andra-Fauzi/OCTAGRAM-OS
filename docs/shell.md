@@ -96,8 +96,13 @@ Pencarian membungkus ke awal berkas dan status di baris bawah menampilkan
 
 ## PATH dan program
 
-`PATH` awal menunjuk ke `/bin` dan dapat diubah dengan `export`. Program ELF
-harus statis atau memakai `ld-octagram.so` yang tersedia; lihat
+`PATH` awal adalah `/bin`, `/usr/bin`, `/usr/local/bin`, lalu
+`/toolchain/bin`; nilainya dapat diubah dengan `export` atau diperiksa dengan
+`path`. Direktori terakhir adalah tempat penempatan toolchain native (misalnya
+`rustc`, `cargo`, dan linker) sehingga binary compiler dapat dipanggil dengan
+namanya saja; direktori itu sengaja dicari paling akhir agar tidak menutupi
+program bawaan image. Program ELF harus statis atau memakai `ld-octagram.so`
+yang tersedia; lihat
 [userspace.md](userspace.md) dan [dynamic-linker.md](dynamic-linker.md).
 
 ## Paket aplikasi

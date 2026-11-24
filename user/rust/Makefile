@@ -8,12 +8,19 @@ RUST_TARGET := x86_64-unknown-octagram
 RUST_HELLO := build/rust_hello.elf
 RUST_MAKE := build/make.elf
 RUST_OCTAGRAM_HELLO := build/rust_hello_octagram.elf
+RUST_NATIVE_OBJECT := build/rust_native_probe.o
 RUST_BUILD_FLAGS := +nightly -Z unstable-options -Z build-std=core,alloc -Z json-target-spec
 
-.PHONY: all clean make build-octagram check
-all: $(RUST_HELLO) $(RUST_MAKE)
+# The native-linker probe is emitted as a single relocatable object for the
+# guest's own `ld`. The link step is skipped by pointing rustc at a no-op
+# linker, so this object depends on no crt0, libc, or runtime archive.
+RUST_OBJECT_FLAGS := -C linker=true -C relocation-model=static -C no-redzone=yes \
+	-C target-feature=+sse,+sse2
 
-make: $(RUST_MAKE)
+.PHONY: all clean make build-octagram check
+all: $(RUST_HELLO) $(RUST_MAKE) $(RUST_NATIVE_OBJECT)
+
+make: $(RUST_MAKE) $(RUST_NATIVE_OBJECT)
 
 # All Rust userspace binaries are built for OCTAGRAM's own target. The host
 # runs Cargo/rustc; the resulting ELF is loaded by OCTAGRAM's user ELF loader.
@@ -42,8 +49,16 @@ $(RUST_MAKE): Cargo.toml rust-toolchain.toml .cargo/config.toml \
 $(RUST_OCTAGRAM_HELLO): $(RUST_HELLO)
 	cp $< $@
 
+$(RUST_NATIVE_OBJECT): Cargo.toml rust-toolchain.toml .cargo/config.toml \
+		$(RUST_TARGET_JSON) native-probe/Cargo.toml native-probe/src/main.rs
+	RUSTFLAGS="$(RUST_OBJECT_FLAGS)" $(CARGO) $(RUST_BUILD_FLAGS) rustc \
+		-p octagram-native-probe --release --bin rust_native_probe \
+		--target $(RUST_TARGET_JSON) -- --emit=obj
+	cp "$$(ls -t target/$(RUST_TARGET)/release/build/octagram-native-probe/*/out/rust_native_probe.o | head -n 1)" $@
+
 # Verify that the produced program is a static x86-64 ELF executable.
 check: all
+	$(READELF) -h $(RUST_NATIVE_OBJECT)
 	$(READELF) -h $(RUST_HELLO)
 	$(READELF) -l $(RUST_HELLO)
 	$(READELF) -h $(RUST_MAKE)

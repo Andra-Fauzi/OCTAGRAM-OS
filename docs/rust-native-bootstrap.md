@@ -302,6 +302,10 @@ lookup), serta `File::lock`/`try_lock`/`unlock`. Build memakai
 
 ### M4.3 — Native linker dan compiler backend
 
+Perbandingan opsi backend, keputusan jalur (LLVM statis + linker `ld` native),
+tahapan M4.3.0–M4.3.5, dan risiko ada di
+[rust-m4-3-backend-plan.md](rust-m4-3-backend-plan.md).
+
 - [ ] Tentukan backend awal: LLVM/LLD atau backend alternatif yang realistis.
 - [ ] Audit kebutuhan compiler backend terhadap thread, mmap, filesystem,
       dynamic loader, dan executable format OCTAGRAM.
@@ -454,3 +458,24 @@ This is compile/link evidence only. The std executable has not yet been
 included in the boot image or executed in QEMU. The next gate is guest runtime
 validation of std filesystem, environment, clock, thread, process, and panic
 paths. Native rustc and Cargo remain future milestones.
+
+## 3.9. Jalur pemanggilan toolchain native di shell (2026-11-24)
+
+Shell OCTAGRAM sekarang mencari program di `/bin`, `/usr/bin`,
+`/usr/local/bin`, lalu `/toolchain/bin`, dan `PATH` awal memakai urutan yang
+sama. Direktori `/toolchain/bin` dibuat saat VFS disiapkan sehingga binary
+toolchain native dapat ditaruh di sana dan dipanggil dengan namanya saja:
+
+```sh
+cp /mnt/rustc /toolchain/bin/rustc
+rustc --version
+```
+
+Perubahan ini hanya menyiapkan jalur pencarian dan pemanggilan. Executable
+`rustc` dan `cargo` native **belum ada**, dan tidak dapat dihasilkan dari
+host tanpa lebih dulu menyelesaikan M4.3: `rustc` membutuhkan backend code
+generation (LLVM/LLD) serta `libstd` untuk host `x86_64-unknown-octagram`,
+sedangkan Cargo baru dapat berjalan setelah `rustc` host tersebut ada. Urutan
+kerja yang tersisa: M4.3 (linker/backend native) lalu M4.4 (Stage 0 `rustc`
+dan Cargo). Jangan mencatat milestone M4 selesai hanya karena direktori
+pencarian sudah tersedia.

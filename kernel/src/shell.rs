@@ -21,7 +21,10 @@ const MAX_FILE_OPERATION: usize = 64 * 1024;
 const MAX_TOOLCHAIN_FILE: usize = 4 * 1024 * 1024;
 const MAX_EDITOR_FILE: usize = 256 * 1024;
 const MAX_EDITOR_SEARCH: usize = 64;
-const DEFAULT_PROGRAM_PATH: &[&str] = &["/bin", "/usr/bin", "/usr/local/bin"];
+// `/toolchain/bin` is the staging directory for a native compiler toolchain
+// (rustc, cargo, LLD). It is searched last so a guest-installed toolchain never
+// shadows the programs shipped in the image.
+const DEFAULT_PROGRAM_PATH: &[&str] = &["/bin", "/usr/bin", "/usr/local/bin", "/toolchain/bin"];
 
 // Track mounts created by the shell so mkfs commands cannot format an active volume.
 static MOUNTED_BLOCK_DEVICES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
@@ -34,7 +37,9 @@ pub async fn run(terminal: usize) {
         .iter()
         .map(|path| String::from(*path))
         .collect::<Vec<_>>();
-    let mut environment = alloc::vec![String::from("PATH=/bin:/usr/bin:/usr/local/bin")];
+    let mut environment = alloc::vec![String::from(
+        "PATH=/bin:/usr/bin:/usr/local/bin:/toolchain/bin"
+    )];
     let mut current_user = String::from("octagram");
     print_prompt(&current_user, &current_dir);
     let mut line = String::new();
@@ -3299,9 +3304,30 @@ mod tests {
         split_shell_words, text_counts, update_editor_viewport,
     };
     use super::{
-        elf_entry_address, find_next, has_unquoted_operator, parse_pipeline_line_count,
-        split_output_redirection, split_shell_pipeline,
+        DEFAULT_PROGRAM_PATH, elf_entry_address, find_next, has_unquoted_operator,
+        parse_pipeline_line_count, split_output_redirection, split_shell_pipeline,
     };
+
+    #[test]
+    fn default_program_path_covers_bin_and_native_toolchain_staging() {
+        assert_eq!(
+            DEFAULT_PROGRAM_PATH,
+            &["/bin", "/usr/bin", "/usr/local/bin", "/toolchain/bin"]
+        );
+        let paths = DEFAULT_PROGRAM_PATH
+            .iter()
+            .map(|path| String::from(*path))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            program_candidates("/", "rustc", &paths),
+            Some(vec![
+                "/bin/rustc".into(),
+                "/usr/bin/rustc".into(),
+                "/usr/local/bin/rustc".into(),
+                "/toolchain/bin/rustc".into(),
+            ])
+        );
+    }
 
     #[test]
     fn parses_gpt_partition_device_names_for_mkfs() {

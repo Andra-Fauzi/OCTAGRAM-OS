@@ -308,6 +308,49 @@ def main():
         return 1
     print("RUST-STD-QEMU-PASS")
 
+    # M4.3.1: the first freestanding C++ executable. It is built by the host
+    # g++ without libstdc++/libc++ (no exceptions, no RTTI) and linked against
+    # OCTAGRAM's own crt0 and C runtime.
+    cpp_offset = len(serial_text())
+    send_line("run /bin/cpp-smoke")
+    if not wait_for_after("CPP-FREESTANDING-PASS", cpp_offset, 30):
+        print("CPP-FREESTANDING-FAIL: C++ guest program did not emit its marker")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", cpp_offset, 30):
+        print("CPP-FREESTANDING-FAIL: C++ guest program did not exit with status 0")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("CPP-FREESTANDING-FAIL: shell did not return after the C++ program")
+        print(serial_text()[-6000:])
+        return 1
+    print("CPP-FREESTANDING-PASS")
+
+    # M4.3.0: the object emitted by rustc for x86_64-unknown-octagram is linked
+    # by the guest's own `ld` and the result runs, so the native linker is
+    # proven against real rustc relocation and section-symbol output.
+    native_offset = len(serial_text())
+    send_line("ld /share/octagram/rust_native_probe.o -o /tmp/rust_native_probe.elf")
+    if not wait_for_after("ld: wrote", native_offset, 30):
+        print("RUST-NATIVE-LD-FAIL: native ld did not link the rustc object")
+        print(serial_text()[-6000:])
+        return 1
+    send_line("run /tmp/rust_native_probe.elf")
+    if not wait_for_after("RUST-NATIVE-LD-PASS", native_offset, 30):
+        print("RUST-NATIVE-LD-FAIL: linked executable did not emit its marker")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", native_offset, 30):
+        print("RUST-NATIVE-LD-FAIL: linked executable did not exit with status 0")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("RUST-NATIVE-LD-FAIL: shell did not return after linked executable")
+        print(serial_text()[-6000:])
+        return 1
+    print("RUST-NATIVE-LD-PASS")
+
     # Keep the independent POSIX spawn regression after the Rust std probe so
     # a failure in that demo cannot mask the upstream std/TLS guest result.
     spawn_offset = len(serial_text())

@@ -34,6 +34,8 @@ sebagian API tersedia; lihat [batasan](limitations.md).
 | Paket | [packages.md](packages.md) | Format paket, registry dan app launcher |
 | Userspace Rust | [rust-userspace.md](rust-userspace.md) | Aplikasi Rust no-std dan octagram-runtime |
 | Rust custom target | [rust-no-std.md](rust-no-std.md) | Custom target x86_64 OCTAGRAM, build-std core/alloc, linker, dan kriteria uji |
+| Rust backend M4.3 | [rust-m4-3-backend-plan.md](rust-m4-3-backend-plan.md) | Perbandingan opsi backend `rustc` native, keputusan LLVM + `ld` native, tahapan dan risiko |
+| Panduan port Rust/C++ | [rust-port-guide.md](rust-port-guide.md) | Status port, peta file, cara build/uji host dan QEMU, cara menambah tahap, troubleshooting |
 | Toolchain | [toolchain.md](toolchain.md) | Assembler, linker, compiler dan TinyCC |
 | Build | [building.md](building.md) | Dependencies, target build, ISO dan QEMU |
 | Self-hosting (roadmap utama) | [roadmap-self-hosting.md](roadmap-self-hosting.md) | Milestone, dependency, status, acceptance gates, dan bukti menuju full self-hosting |

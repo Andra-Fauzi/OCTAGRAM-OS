@@ -1,5 +1,6 @@
 CROSS_COMPILE ?=
 CC := $(CROSS_COMPILE)gcc
+CXX := $(CROSS_COMPILE)g++
 AS := $(CROSS_COMPILE)as
 LD := $(CROSS_COMPILE)ld
 AR := $(CROSS_COMPILE)ar
@@ -13,6 +14,13 @@ CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
 	-mno-mmx -msse2 -mfpmath=387 -DOCTAGRAM_TLS_ERRNO \
 	-Iinclude
 LDFLAGS := -m elf_x86_64 -static -nostdlib -T linker.ld
+# Freestanding C++: no libstdc++/libc++ headers or library, no exceptions and
+# no RTTI, so the resulting object only needs OCTAGRAM's C runtime.
+CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
+	-fno-stack-protector -fno-pie -fno-pic -mno-red-zone -mcmodel=small \
+	-march=x86-64 -mtune=generic -mno-avx -mno-avx2 -mno-avx512f \
+	-mno-mmx -msse2 -fno-exceptions -fno-rtti -fno-threadsafe-statics \
+	-nostdinc++ -Iinclude
 PROGRAMS := sh hello file_demo runtime_demo tty_demo argv_demo spawn_demo pipe_demo env_demo posix_demo stdio_demo posix_spawn_demo file_api_demo path_api_demo at_api_demo execve_demo fork_demo time_demo mmap_demo scanf_demo tls_demo thread_demo thread_tsd_demo fb_demo syscall_compat_demo account_demo socket_msg_demo netdb_demo dns_demo cxa_atexit_demo credential_demo robust_mutex_demo
 BINARIES := $(addprefix build/,$(addsuffix .elf,$(PROGRAMS)))
 HEADERS := $(wildcard include/*.h include/sys/*.h include/netinet/*.h)
@@ -58,7 +66,9 @@ SHARED_LIBC := build/liboctagram.so
 LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 
 .PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test dynamic
-all: $(BINARIES) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
+CPP_SMOKE := build/cpp_smoke.elf
+
+all: $(BINARIES) $(CPP_SMOKE) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
 
@@ -115,6 +125,15 @@ build/crt0.o: crt0.S | build
 
 build/crt0.pic.o: crt0.S | build
 	$(AS) --64 -o $@ $<
+
+build/cpp_smoke.o: examples/cpp_smoke.cpp $(HEADERS) | build
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+build/cxx_runtime.o: cxx_runtime.cpp $(HEADERS) | build
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(CPP_SMOKE): build/cpp_smoke.o build/cxx_runtime.o build/crt0.o build/runtime.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/cxx_runtime.o build/cpp_smoke.o
 
 build/setjmp.o: setjmp.S | build
 	$(AS) --64 -o $@ $<

@@ -10,6 +10,10 @@
 #define MB_LEN_MAX 4
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern char **environ;
 
 void *malloc(size_t size);
@@ -31,7 +35,9 @@ double atof(const char *text);
 float strtof(const char *text, char **end);
 long double strtold(const char *text, char **end);
 char *getenv(const char *name);
-int mkstemp(char *template);
+// `template` is a C++ keyword, so the parameter needs a neutral name for
+// C++ translation units that include this header.
+int mkstemp(char *pattern);
 int setenv(const char *name, const char *value, int overwrite);
 int unsetenv(const char *name);
 int putenv(char *entry);
@@ -42,5 +48,9 @@ void qsort(void *base, size_t count, size_t size,
            int (*compare)(const void *, const void *));
 int abs(int value);
 int system(const char *command);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

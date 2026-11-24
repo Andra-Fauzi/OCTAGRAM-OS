@@ -3786,7 +3786,32 @@ fn apply_elf_relocation(
 mod tests {
     use super::{
         ToolchainError, assemble, compile, compile_with_includes, link, link_elf_object,
+        link_elf_objects,
     };
+
+    /// Object file emitted by `rustc --emit=obj` for
+    /// `x86_64-unknown-octagram` (see `user/rust/native-probe`). The guest
+    /// links it with the shell's `ld`; this test links the same bytes on the
+    /// host so a relocation or section-handling regression fails fast without
+    /// booting QEMU.
+    const RUST_OBJECT: &[u8] = include_bytes!("../../user/rust/build/rust_native_probe.o");
+
+    #[test]
+    fn links_a_rustc_emitted_object_into_a_runnable_executable() {
+        let executable = link_elf_objects(&[RUST_OBJECT]).expect("rustc object must link");
+        assert_eq!(executable.get(..4), Some(b"\x7fELF".as_slice()));
+        assert_eq!(executable[4], 2, "ELF64 output expected");
+        let kind = u16::from_le_bytes([executable[16], executable[17]]);
+        assert_eq!(kind, 2, "ET_EXEC output expected");
+        let entry = u64::from_le_bytes(executable[24..32].try_into().unwrap());
+        assert_ne!(entry, 0, "entry point must come from the `_start` symbol");
+        assert!(
+            executable
+                .windows(b"RUST-NATIVE-LD-PASS".len())
+                .any(|window| window == b"RUST-NATIVE-LD-PASS"),
+            "marker string must survive linking"
+        );
+    }
 
     fn put_elf64(bytes: &mut [u8], offset: usize, value: u64) {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());

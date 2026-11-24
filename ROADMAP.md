@@ -304,6 +304,22 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
   - [x] Make serial, include, single-stem pattern, `.PHONY`, order-only, incremental mtime rebuild, `-B` (QEMU)
   - [ ] Build manifest native dan full shell recipe semantics
 - [ ] M4: bootstrap `rustc`, Rust `core/alloc`, lalu Cargo native/offline
+  - [ ] Backend codegen native: rencana, perbandingan opsi, dan keputusan
+    jalur ada di [M4.3 backend plan](docs/rust-m4-3-backend-plan.md);
+    opsi LLVM statis + linker `ld` native dipilih, LLD ditunda.
+    Cara build/uji dan peta file ada di
+    [panduan port Rust/C++](docs/rust-port-guide.md)
+  - [x] Object `ET_REL` hasil `rustc --emit=obj` ditautkan oleh `ld` native
+    (uji host; langkah guest `RUST-NATIVE-LD-PASS` ditambahkan ke harness QEMU)
+  - [x] Executable C++ freestanding pertama (`/bin/cpp-smoke`) dibangun dengan
+    `g++ -fno-exceptions -fno-rtti -nostdinc++` dan runtime C OCTAGRAM,
+    ditambah guard `extern "C"` pada `stdio.h` (build host; langkah guest
+    `CPP-FREESTANDING-PASS` ditambahkan ke harness QEMU)
+  - [x] Irisan pertama runtime C++: `.init_array`/`.fini_array` di linker
+    script dan `crt0`, `operator new/delete`, `__cxa_guard_*`,
+    `__cxa_pure_virtual`, `__dso_handle` di `user/cxx_runtime.cpp`, serta guard
+    `extern "C"` pada `stdlib.h`/`stdio.h` (build host; uji guest menunggu)
+  - [ ] Subset libc++/libstdc++ dan compiler-rt (`strtold`, `wcs*`, locale/ctype)
   - [x] Implementasi parser TinyCC untuk `__builtin_add_overflow`,
     `__builtin_sub_overflow`, dan `__builtin_mul_overflow`; runtime helper
     mendukung hasil signed/unsigned 8/16/32/64 bit dan tes host tersedia.

@@ -4,6 +4,10 @@
 #include <stdarg.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct octagram_FILE FILE;
 
 #define EOF (-1)
@@ -64,5 +68,9 @@ int vsnprintf(char *buffer, size_t size, const char *format, va_list arguments);
 int snprintf(char *buffer, size_t size, const char *format, ...);
 int vsprintf(char *buffer, const char *format, va_list arguments);
 int sprintf(char *buffer, const char *format, ...);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

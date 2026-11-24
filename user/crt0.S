@@ -35,11 +35,45 @@ _start:
 .Lh_errno_ready:
     pop %rsi
     pop %rdi
+    mov %rdi, %r12
+    mov %rsi, %r13
+    /* Run C++ static constructors (.init_array) before main(). A freestanding
+       C program simply has an empty list. */
+    mov $__init_array_start, %rbx
+    mov $__init_array_end, %r14
+.Lconstructors:
+    cmp %r14, %rbx
+    jae .Lconstructors_done
+    mov (%rbx), %rax
+    test %rax, %rax
+    jz .Lconstructors_next
+    call *%rax
+.Lconstructors_next:
+    add $8, %rbx
+    jmp .Lconstructors
+.Lconstructors_done:
+    mov %r12, %rdi
+    mov %r13, %rsi
     /* Runtime initialization may clobber caller-saved RDX. Recompute envp
        from the original initial stack immediately before entering main(). */
     lea 16(%rsp,%rdi,8), %rdx
     call main
-    mov %rax, %rdi
+    mov %rax, %r12
+    /* Run C++ static destructors (.fini_array) before exit(). */
+    mov $__fini_array_start, %rbx
+    mov $__fini_array_end, %r14
+.Ldestructors:
+    cmp %r14, %rbx
+    jae .Ldestructors_done
+    mov (%rbx), %rax
+    test %rax, %rax
+    jz .Ldestructors_next
+    call *%rax
+.Ldestructors_next:
+    add $8, %rbx
+    jmp .Ldestructors
+.Ldestructors_done:
+    mov %r12, %rdi
     mov exit@GOTPCREL(%rip), %rax
     test %rax, %rax
     jz .Ldirect_exit

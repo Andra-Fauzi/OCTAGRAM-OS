@@ -268,6 +268,39 @@ fn main() {
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-NONBLOCK-PASS");
 
+    // SHUT_WR must deliver EOF to the peer; SHUT_RD must reject peer writes.
+    let mut shutdown_pair = [-1i32; 2];
+    let shutdown_result = unsafe {
+        syscall4(127, 1, 1, 0, shutdown_pair.as_mut_ptr() as usize as u64)
+    };
+    let shutdown_probe_ok = if shutdown_result == 0
+        && shutdown_pair[0] >= 0
+        && shutdown_pair[1] >= 0
+    {
+        let shut_write = unsafe { syscall3(78, shutdown_pair[0] as u64, 1, 0) };
+        let eof = unsafe {
+            syscall6(107, shutdown_pair[1] as u64, &mut recv_header as *mut _ as usize as u64, 0, 0, 0, 0)
+        };
+        let shut_read = unsafe { syscall3(78, shutdown_pair[1] as u64, 0, 0) };
+        let broken_pipe = unsafe {
+            syscall6(106, shutdown_pair[0] as u64, &send_header as *const _ as usize as u64, 0, 0, 0, 0)
+        };
+        shut_write == 0 && eof == 0 && shut_read == 0 && broken_pipe == -32
+    } else {
+        false
+    };
+    if shutdown_pair[0] >= 0 {
+        unsafe { syscall3(4, shutdown_pair[0] as u64, 0, 0); }
+    }
+    if shutdown_pair[1] >= 0 {
+        unsafe { syscall3(4, shutdown_pair[1] as u64, 0, 0); }
+    }
+    if !shutdown_probe_ok {
+        marker("RUST-STD-UNIX-SOCKETPAIR-SHUTDOWN-FAIL");
+        std::process::exit(77);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-SHUTDOWN-PASS");
+
     let (tls_value, tls_address) = RUST_TLS_PROBE.with(|value| {
         let initial = value.get();
         let address = value as *const Cell<u64> as usize;

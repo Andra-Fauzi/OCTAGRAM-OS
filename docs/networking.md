@@ -47,6 +47,9 @@ routing statis belum ikut disimpan karena konfigurasi tetap hanya satu gateway.
   berlebih dibuang.
 - `recvfrom`/`recvmsg` melaporkan panjang asli datagram dan mengisi `MSG_TRUNC`
   bila buffer lebih kecil.
+- `sendmsg`/`recvmsg` juga tersedia sebagai syscall untuk iovec pada UDP/TCP dan
+  `AF_UNIX` `SOCK_STREAM` socketpair; ancillary data (`SCM_RIGHTS`) belum didukung
+  (lihat [syscall ABI](syscall-abi.md)).
 - Socket UDP yang sudah `connect` hanya menerima datagram dari peer dan bisa
   memakai `send`/`write` tanpa alamat.
 

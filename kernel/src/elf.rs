@@ -6030,6 +6030,35 @@ fn syscall_shutdown(fd: u64, how: u64) -> Result<u64, i32> {
 }
 
 fn syscall_socket_name(fd: u64, address: u64, length_address: u64, peer: bool) -> Result<u64, i32> {
+    if socketpair_endpoint_for_fd(fd)?.is_some() {
+        if address == 0 {
+            return Ok(0);
+        }
+        if length_address == 0 {
+            return Err(EFAULT);
+        }
+        paging::validate_user_range(length_address, core::mem::size_of::<u32>(), true)
+            .map_err(|_| EFAULT)?;
+        let capacity = unsafe { (length_address as *const u32).read_unaligned() as usize };
+        let copy_length = capacity.min(core::mem::size_of::<u16>());
+        if copy_length != 0 {
+            paging::validate_user_range(address, copy_length, true).map_err(|_| EFAULT)?;
+            let family = AF_UNIX as u16;
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    &family as *const u16 as *const u8,
+                    address as *mut u8,
+                    copy_length,
+                );
+            }
+        }
+        // socketpair endpoints are anonymous AF_UNIX addresses (sockaddr length 2).
+        unsafe {
+            (length_address as *mut u32).write_unaligned(core::mem::size_of::<u16>() as u32);
+        }
+        let _ = peer;
+        return Ok(0);
+    }
     validate_sockaddr_output(address, length_address)?;
     let (socket_address, port) = crate::network::tcp_socket_name(&tcp_socket_for_fd(fd)?, peer)
         .map_err(errno_from_network)?;

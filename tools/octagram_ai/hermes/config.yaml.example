@@ -43,6 +43,7 @@ mcp_servers:
       OCTAGRAM_WORKTREE: "/ABSOLUTE/PATH/TO/OCTAGRAM-OS-ai-worktree"
       OCTAGRAM_DOCKER_IMAGE: "octagram-ai-build:latest"
     trust: untrusted
+    timeout: 1200
     sampling:
       enabled: false
     elicitation:

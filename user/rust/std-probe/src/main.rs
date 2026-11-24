@@ -229,6 +229,34 @@ fn main() {
         if clone_flags < 0 || clone_flags & FD_CLOEXEC == 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "cloned descriptor lost FD_CLOEXEC"));
         }
+        // Descriptor flags are per descriptor, not shared by the open-file
+        // description: clearing the clone must not clear the original flag.
+        let original_flags = unsafe {
+            fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), F_GETFD)
+        };
+        if original_flags < 0 || original_flags & FD_CLOEXEC == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "original descriptor lost FD_CLOEXEC"));
+        }
+        if unsafe { fcntl(std::os::fd::AsRawFd::as_raw_fd(&cloned), 2, 0) } != 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "F_SETFD could not clear clone flag"));
+        }
+        let cleared_clone_flags = unsafe {
+            fcntl(std::os::fd::AsRawFd::as_raw_fd(&cloned), F_GETFD)
+        };
+        let unchanged_original_flags = unsafe {
+            fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), F_GETFD)
+        };
+        if cleared_clone_flags != 0
+            || unchanged_original_flags < 0
+            || unchanged_original_flags & FD_CLOEXEC == 0
+        {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "descriptor flags were not independent"));
+        }
+        if unsafe {
+            fcntl(std::os::fd::AsRawFd::as_raw_fd(&cloned), 2, FD_CLOEXEC)
+        } != 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "F_SETFD could not restore clone flag"));
+        }
         // dup/F_DUPFD must share the same open-file-description offset. Read
         // through the clone, then ensure the original continues at that offset.
         checked!("File::seek", file.seek(std::io::SeekFrom::Start(0)));

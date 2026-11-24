@@ -109,8 +109,8 @@ menyediakan inline wrappers.
 | 103 | `pwrite` | `RDI=fd`, `RSI=buffer`, `RDX=count`, `R10=offset` | Byte ditulis |
 | 104 | `writev` | `RDI=fd`, `RSI=iov*`, `RDX=iovcnt` | Byte ditulis |
 | 105 | `readv` | `RDI=fd`, `RSI=iov*`, `RDX=iovcnt` | Byte dibaca |
-| 106 | `sendmsg` | — | `-ENOSYS`; libc menyusunnya dari `send`/`sendto`/`write` |
-| 107 | `recvmsg` | — | `-ENOSYS`; libc menyusunnya dari `recv`/`recvfrom`/`read` |
+| 106 | `sendmsg` | `RDI=fd`, `RSI=struct msghdr*`, `RDX=flags` | Byte terkirim; mendukung iovec pada socketpair AF_UNIX, UDP terhubung, dan TCP; ancillary data (`msg_control`) mengembalikan `-ENOTSUP` |
+| 107 | `recvmsg` | `RDI=fd`, `RSI=struct msghdr*`, `RDX=flags` | Byte diterima; mendukung iovec pada socketpair AF_UNIX, UDP, dan TCP; `MSG_PEEK`/`MSG_TRUNC` subset; ancillary data belum didukung |
 | 108 | `sysconf` | `RDI=nama _SC_*` | Nilai atau -1 |
 | 109 | `getrlimit` | `RDI=resource`, `RSI=struct rlimit*` | 0; selalu tak terbatas |
 | 110 | `setrlimit` | `RDI=resource`, `RSI=struct rlimit*` | 0; diabaikan |
@@ -264,8 +264,22 @@ ke nol, atau mengembalikan 1 per panggilan bila flag `EFD_SEMAPHORE` dipakai.
 `timerfd_create` menerima `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, dan
 `CLOCK_BOOTTIME`; `timerfd_settime` mendukung `TFD_TIMER_ABSTIME` untuk clock
 monoton, dan `read` mengembalikan jumlah expiration yang sudah lewat sebagai
-`u64`. `socketpair` hanya untuk `AF_UNIX` dengan `SOCK_STREAM`/`SOCK_DGRAM` dan
-dibangun dari dua pipe sehingga dua arah; `shutdown` belum berlaku untuknya.
+`u64`. `socketpair` saat ini hanya menerima `AF_UNIX`, `SOCK_STREAM`, dan protocol 0;
+`SOCK_CLOEXEC` serta `SOCK_NONBLOCK` dapat diminta saat pembuatan. Kedua endpoint
+dibangun dari dua pipe sehingga komunikasi dua arah memakai ujung baca/tulis
+terpisah. `shutdown(SHUT_RD/SHUT_WR/SHUT_RDWR)` menutup sisi endpoint terkait,
+mengirim EOF ke peer, dan membangunkan waiter. `SOCK_DGRAM` belum didukung.
+
+`sendmsg`/`recvmsg` menerima `struct msghdr` x86_64 Linux-compatible dengan
+maksimum 1024 iovec dan batas total mengikuti `MAX_SYSCALL_IO`. Data iovec
+digabung saat mengirim dan dipecah kembali saat menerima. `sendmsg` bekerja
+pada socketpair, UDP terhubung, dan TCP; `recvmsg` juga mendukung ketiganya.
+Untuk UDP, `MSG_TRUNC` dapat mengembalikan panjang datagram asli dan
+`MSG_PEEK` tidak mengonsumsi data. Socketpair anonim mengembalikan
+`msg_namelen=0`; alamat tujuan pada socketpair menghasilkan `-EISCONN`.
+Ancillary data (`msg_control`, termasuk `SCM_RIGHTS`) belum didukung dan
+menghasilkan `-ENOTSUP`. Ini adalah subset ABI, bukan implementasi penuh
+semantik Linux `sendmsg`/`recvmsg`.
 `clock_nanosleep` menerima clock realtime/monoton/boottime dan `TIMER_ABSTIME`,
 dengan sisa waktu selalu diisi nol karena tidur berjalan di kernel dan dibatasi
 60 detik seperti `nanosleep`.

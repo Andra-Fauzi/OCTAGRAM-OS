@@ -42,6 +42,13 @@ BUILD_RECIPES: dict[str, list[str]] = {
     "iso-build": ["make", "all"],
 }
 
+# Build embedded user artifacts before kernel test/build operations.
+BUILD_SEQUENCES: dict[str, list[str]] = {
+    "kernel-tests": ["rust-user", "user", "user-dynamic", "kernel-tests"],
+    "kernel-build": ["rust-user", "user", "user-dynamic", "kernel-build"],
+    "iso-build": ["rust-user", "user", "user-dynamic", "kernel-build", "iso-build"],
+}
+
 SYSTEM_PROMPT = """You are OCTAGRAM AI Developer, a careful systems-programming assistant.
 You work only on the OCTAGRAM-OS repository and must follow its checked-in docs.
 Prioritize existing architecture and minimal patches over rewrites. Never invent
@@ -190,9 +197,7 @@ def _docker_build_command(recipe: str) -> list[str]:
     return command
 
 
-def run_build(recipe: str) -> dict[str, Any]:
-    if recipe not in BUILD_RECIPES:
-        raise HTTPException(status_code=400, detail=f"Unknown recipe. Allowed: {', '.join(BUILD_RECIPES)}")
+def _run_docker_step(recipe: str) -> dict[str, Any]:
     command = _docker_build_command(recipe)
     try:
         result = subprocess.run(
@@ -200,22 +205,39 @@ def run_build(recipe: str) -> dict[str, Any]:
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=BUILD_TIMEOUT, check=False,
         )
-        return {
-            "recipe": recipe, "command": command, "returncode": result.returncode,
-            "passed": result.returncode == 0, "output": result.stdout[-30000:],
-            "evidence_level": "host-build-in-container",
-        }
+        return {"recipe": recipe, "command": command, "returncode": result.returncode,
+                "passed": result.returncode == 0, "output": result.stdout[-18000:]}
     except FileNotFoundError:
         raise HTTPException(status_code=503, detail=f"Docker executable not found: {DOCKER_BIN}")
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout or ""
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="replace")
-        return {
-            "recipe": recipe, "command": command, "returncode": None,
-            "passed": False, "timed_out": True, "output": str(output)[-30000:],
-            "evidence_level": "host-build-in-container",
-        }
+        return {"recipe": recipe, "command": command, "returncode": None,
+                "passed": False, "timed_out": True, "output": str(output)[-18000:]}
+
+
+def run_build(recipe: str) -> dict[str, Any]:
+    if recipe not in BUILD_RECIPES:
+        raise HTTPException(status_code=400, detail=f"Unknown recipe. Allowed: {', '.join(BUILD_RECIPES)}")
+    sequence = BUILD_SEQUENCES.get(recipe, [recipe])
+    steps: list[dict[str, Any]] = []
+    for step in sequence:
+        result = _run_docker_step(step)
+        steps.append(result)
+        if not result.get("passed"):
+            break
+    passed = len(steps) == len(sequence) and all(step.get("passed") for step in steps)
+    output = "\n\n".join(
+        f"===== {step['recipe']} (exit={step.get('returncode')}) =====\n{step.get('output', '')}"
+        for step in steps
+    )
+    return {
+        "recipe": recipe, "sequence": sequence, "steps": steps,
+        "returncode": 0 if passed else (steps[-1].get("returncode") if steps else None),
+        "passed": passed, "output": output[-30000:],
+        "evidence_level": "host-build-in-container",
+    }
 
 
 def repo_context(query: str) -> str:

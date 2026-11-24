@@ -33,7 +33,7 @@ Status per komponen, daftar bukti, batas semantik, dan gate berikutnya ada dalam
 - **Synchronization:** futex `WAIT`/`WAKE`, `WAIT_BITSET`/`WAKE_BITSET`, dan `REQUEUE` sekarang QEMU-tested pada run `44716140003`. Waiter dicari pada PID yang sama; shared futex lintas proses tidak tersedia. `CMP_REQUEUE`, `WAKE_OP`, dan PI operations belum ada.
 - **Time/entropy:** monotonic clock beresolusi sekitar 1 ms; realtime berasal dari RTC beresolusi satu detik; `getrandom` saat ini menggunakan xorshift seeded TSC. Ini belum cukup untuk mengklaim kontrak entropy kriptografis bagi compiler/package manager.
 - **Dynamic linking:** ELF static adalah jalur paling aman untuk Stage 0. Loader PIE/`PT_INTERP` ada tetapi tidak setara Linux; TLS pada shared object dan banyak relocation/runtime edges belum menjadi kontrak umum.
-- **Networking:** vendoring dependency lebih dulu lebih realistis daripada mengandalkan crates.io; `sendmsg`/`recvmsg` masih `ENOSYS` dan socket coverage terbatas.
+- **Networking:** `sendmsg`/`recvmsg` kini memiliki subset syscall untuk `AF_UNIX` `SOCK_STREAM`, UDP, dan TCP; ancillary data/`SCM_RIGHTS` belum didukung, dan socket coverage tetap parsial. Vendoring dependency lebih dulu masih lebih realistis daripada mengandalkan crates.io.
 
 ## 4. Urutan kerja yang direkomendasikan
 

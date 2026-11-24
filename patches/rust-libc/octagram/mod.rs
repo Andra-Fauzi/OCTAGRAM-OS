@@ -490,14 +490,18 @@ pub const SIGSYS: c_int = 31;
 pub const EOWNERDEAD: c_int = 130;
 pub const ENOTRECOVERABLE: c_int = 131;
 
-pub const fn WIFEXITED(_status: c_int) -> bool { true }
-pub const fn WEXITSTATUS(status: c_int) -> c_int { status & 0xff }
-pub const fn WIFSIGNALED(_status: c_int) -> bool { false }
-pub const fn WTERMSIG(_status: c_int) -> c_int { 0 }
-pub const fn WCOREDUMP(_status: c_int) -> bool { false }
-pub const fn WIFSTOPPED(_status: c_int) -> bool { false }
-pub const fn WSTOPSIG(_status: c_int) -> c_int { 0 }
-pub const fn WIFCONTINUED(_status: c_int) -> bool { false }
+// `wait4` memakai encoding POSIX/Linux: exit code di bit 8..15, nomor sinyal
+// di bit 0..6. Kernel OCTAGRAM menyimpan `(code & 0xff) << 8`.
+pub const fn WIFEXITED(status: c_int) -> bool { status & 0x7f == 0 }
+pub const fn WEXITSTATUS(status: c_int) -> c_int { (status >> 8) & 0xff }
+pub const fn WIFSIGNALED(status: c_int) -> bool {
+    ((status & 0x7f) + 1) as i8 >> 1 > 0
+}
+pub const fn WTERMSIG(status: c_int) -> c_int { status & 0x7f }
+pub const fn WCOREDUMP(status: c_int) -> bool { WIFSIGNALED(status) && status & 0x80 != 0 }
+pub const fn WIFSTOPPED(status: c_int) -> bool { status & 0xff == 0x7f }
+pub const fn WSTOPSIG(status: c_int) -> c_int { (status >> 8) & 0xff }
+pub const fn WIFCONTINUED(status: c_int) -> bool { status & 0xffff == 0xffff }
 
 extern "C" {
     pub fn bind(fd: c_int, address: *const sockaddr, address_length: socklen_t) -> c_int;

@@ -2505,12 +2505,36 @@ dan rustc/Cargo belum native.
 - Probe kini mencetak error `remove_dir_all` dan langkah `fs::copy` yang
   gagal, serta memisahkan kegagalan `Command::spawn` dari `wait`.
 
-**Validasi:** build host dan `cargo check --tests` kernel lulus. Pada run QEMU
-setelah perbaikan `FIOCLEX`, probe melewati 43 marker hingga
-`RUST-STD-PROCESS-PASS`: `Command::status` dengan stdin diwariskan dan
-`Command::output` berhasil menjalankan `/bin/sh` serta menangkap stdout.
-Probe kemudian berhenti pada `Command::output` tanpa stdin eksplisit karena
-`std` membuka `/dev/null` untuk `Stdio::Null`, sedangkan image belum
-menyediakan perangkat tersebut; kegagalan dilaporkan sebagai ENOENT dengan
-exit 52. Marker `RUST-STD-RUNTIME-PASS` belum tercapai, dan native
-rustc/Cargo belum ada.
+- Celah lanjutan yang muncul setelah `Command` berjalan, dan perbaikannya:
+  - `/dev/null` belum ada; `Stdio::Null` membuka perangkat itu sehingga
+    `Command::output` gagal ENOENT. `DevFs` sekarang punya perangkat `Null`
+    (tulis dibuang, baca selalu EOF) dan `stat` melaporkannya sebagai
+    karakter device.
+  - Makro wait-status libc untuk target `octagram` salah: `WEXITSTATUS`
+    memakai `status & 0xff` dan `WIFEXITED` selalu `true`, padahal kernel
+    menyimpan `(code & 0xff) << 8`. Patch `patches/rust-libc` sekarang
+    memakai encoding POSIX/Linux, sehingga `ExitStatus::code()` dan
+    `success()` benar.
+  - `sh` belum punya `printf`, positional parameter `$1`/`$2`, `$#`, `$$`,
+    builtin `kill`, atau loop `while`. Semua ditambahkan; `sh -c` kini
+    mengisi `$0`-`$n` sesuai POSIX.
+  - `kill` ke PID lain selalu `ESRCH` karena `syscall_kill` hanya
+    menangani proses pemanggil. Sinyal untuk proses lain sekarang dicatat
+    pada entry scheduler target dan `Child::kill` berhasil.
+  - Thread yang exit tidak menutup tabel descriptor-nya, sehingga salinan
+    `Arc<OpenFile>` (dan advisory `flock`) bocor sampai proses induk
+    selesai. `syscall_thread_exit` sekarang menutup descriptor thread
+    seperti jalur exit proses. Ini yang membuat tes "close melepas flock"
+    deterministic.
+
+**Validasi:** build probe dan `cargo check --tests` kernel lulus. Run QEMU
+terakhir (2 GiB, TCG) melewati **54 marker** dan berakhir dengan
+`RUST-STD-RUNTIME-PASS`, `program exited with status 0`, lalu prompt shell
+kembali. Marker terakhir mencakup `Command` dengan stdin `/dev/null`, argv
++ stderr + exit code 7, status sinyal `SIGTERM`, `try_wait`/`Child::kill`,
+cache status `wait`, `env`/`current_dir`, PATH lookup, serta
+`File::lock`/`try_lock`/`unlock`, konversi shared/exclusive, waiter thread
+yang dibangunkan `unlock`, dan pelepasan lock saat descriptor terakhir
+ditutup. Native `rustc`/Cargo **belum ada**: keduanya masih menunggu gate
+M4.3 (backend compiler dan linker native), jadi belum ada perintah
+`rustc`/`cargo` di shell.

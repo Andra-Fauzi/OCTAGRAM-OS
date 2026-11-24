@@ -9,7 +9,8 @@ mod devfs;
 mod ramfs;
 
 pub(crate) use devfs::{
-    DevFs, device_access, is_fb_path, is_tty_path, poll_tty, pump_console_input, read_tty,
+    DevFs, device_access, is_fb_path, is_null_path, is_tty_path, poll_tty, pump_console_input,
+    read_tty,
     tty_path_readable, tty_path_terminal, tty_readable,
 };
 pub use ramfs::RamFs;
@@ -1390,7 +1391,7 @@ mod tests {
         vfs.mount("/dev", DevFs::new()).unwrap();
 
         assert_eq!(vfs.metadata("/dev/tty").unwrap().node_type, NodeType::File);
-        assert_eq!(vfs.read_dir("/dev").unwrap().len(), 10);
+        assert_eq!(vfs.read_dir("/dev").unwrap().len(), 11);
         assert_eq!(vfs.metadata("/dev/fb0").unwrap().node_type, NodeType::File);
         assert_eq!(vfs.metadata("/dev/tty3").unwrap().node_type, NodeType::File);
     }

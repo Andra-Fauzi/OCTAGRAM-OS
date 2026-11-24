@@ -1418,6 +1418,14 @@ fn main() {
         || !process_io.stderr.windows(b"STDERR-PASS\n".len())
             .any(|bytes| bytes == b"STDERR-PASS\n")
     {
+        eprintln!(
+            "argv/io probe mismatch: status={:?} code={:?} success={} stdout={:?} stderr={:?}",
+            process_io.status,
+            process_io.status.code(),
+            process_io.status.success(),
+            String::from_utf8_lossy(&process_io.stdout),
+            String::from_utf8_lossy(&process_io.stderr),
+        );
         marker("RUST-STD-PROCESS-ARGV-IO-FAIL");
         std::process::exit(53);
     }

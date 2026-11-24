@@ -3517,6 +3517,31 @@ fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let mut active_process = USER_PROCESS.lock();
     save_task_state(&mut scheduler, &mut active_process);
     scheduler.processes[current].state.active = false;
+    // Tabel descriptor thread memegang salinan `OpenFile` (dup/fork). Tutup
+    // semuanya saat thread exit supaya advisory flock dan pipe dilepas,
+    // bukan menunggu entry scheduler di-reap.
+    let mut descriptors = core::mem::take(&mut scheduler.processes[current].state.descriptors);
+    while let Some(descriptor) = descriptors.pop() {
+        let pipe_id = descriptor.as_ref().and_then(|descriptor| match descriptor {
+            UserDescriptor::Pipe(endpoint) => Some(endpoint.pipe.lock().id),
+            _ => None,
+        });
+        let socket_to_close = descriptor.as_ref().and_then(|descriptor| match descriptor {
+            UserDescriptor::TcpSocket(socket)
+                if crate::network::tcp_socket_is_last_descriptor(socket) =>
+            {
+                Some(Arc::clone(socket))
+            }
+            _ => None,
+        });
+        drop(descriptor);
+        if let Some(pipe_id) = pipe_id {
+            wake_pipe_waiters_in_scheduler(&mut scheduler, pipe_id, true, true);
+        }
+        if let Some(socket) = socket_to_close {
+            crate::network::close_tcp_socket(&socket);
+        }
+    }
 
     for waiter in &mut scheduler.processes {
         if waiter.waiting_for != Some(ProcessWait::Thread(tid)) {
@@ -9287,7 +9312,7 @@ fn apply_creation_mode(
 }
 
 fn stat_mode(path: &str, node_type: NodeType, permissions: u16) -> u32 {
-    let node_mode = if fs::is_tty_path(path) {
+    let node_mode = if fs::is_tty_path(path) || fs::is_null_path(path) {
         0o020000
     } else {
         match node_type {
@@ -11589,10 +11614,12 @@ fn syscall_kill(pid: u64, signal: u64) -> Result<u64, i32> {
     let mut scheduler = USER_SCHEDULER.lock();
     let current_index = scheduler.current;
     let mut woke_blocked_thread = false;
+    let mut found_other_process = false;
     for (index, process) in scheduler.processes.iter_mut().enumerate() {
         if process.pid != target_pid || index == current_index {
             continue;
         }
+        found_other_process = true;
         if process.exit_status.is_some() {
             continue;
         }
@@ -11615,7 +11642,9 @@ fn syscall_kill(pid: u64, signal: u64) -> Result<u64, i32> {
         return Err(EINTR);
     }
     if process.pid != target_pid {
-        return Err(ESRCH);
+        // Sinyal untuk proses lain sudah dicatat pada entry scheduler-nya.
+        // Zombie (sudah exit) tetap dianggap berhasil dibunuh, seperti POSIX.
+        return if found_other_process { Ok(0) } else { Err(ESRCH) };
     }
     if !woke_blocked_thread {
         ensure_signal_table(&mut process);

@@ -284,12 +284,21 @@ target. Semua tes tersebut lulus pada QEMU run [44716140003](https://github.com/
 
 ### M4.2 — Runtime dan Rust standard library
 
-- [ ] Lengkapi libc dan syscall wrapper sesuai kebutuhan `std`.
-- [ ] Implementasikan thread/TLS dan synchronization primitive yang diperlukan.
-- [ ] Implementasikan filesystem/process/environment/memory mapping.
-- [ ] Port atau konfigurasi Rust `std` untuk host target OCTAGRAM.
-- [ ] Jalankan test suite bertahap: file I/O, process, thread, mmap, TLS, dan
+- [x] Lengkapi libc dan syscall wrapper sesuai kebutuhan `std`.
+- [x] Implementasikan thread/TLS dan synchronization primitive yang diperlukan.
+- [x] Implementasikan filesystem/process/environment/memory mapping.
+- [x] Port atau konfigurasi Rust `std` untuk host target OCTAGRAM.
+- [x] Jalankan test suite bertahap: file I/O, process, thread, TLS, dan
       panic/unwind policy.
+
+Bukti M4.2: `user/rust/std-probe` dibangun dengan `-Zbuild-std=std` dari
+`rust-src` terpatched dan upstream libc terpatched, lalu dijalankan di guest
+QEMU. Probe melewati 54 marker, termasuk file I/O byte-path, `*at` dirfd,
+symlink/hard link, `fs::copy`, permission, environment, thread
+spawn/join/detach dengan isolasi TLS, `Command` (argv, stdio, `/dev/null`,
+status sinyal, `try_wait`, `kill`, cache `wait`, `env`, `current_dir`, PATH
+lookup), serta `File::lock`/`try_lock`/`unlock`. Build memakai
+`panic=abort`; unwinding dan mmap file-backed belum dicakup probe ini.
 
 ### M4.3 — Native linker dan compiler backend
 

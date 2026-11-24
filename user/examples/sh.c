@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,10 @@
 #define SH_TOKEN_MAX 256
 #define SH_STAGE_MAX 32
 #define SH_ARG_MAX 64
+
+static const char *shell_name = "sh";
+static char *positional_parameters[SH_ARG_MAX];
+static int positional_count;
 
 typedef struct {
     char *argv[SH_ARG_MAX];
@@ -52,6 +57,26 @@ static int expand_variable(const char *line, size_t *position,
 
     if (line[i] == '?') {
         snprintf(status_text, sizeof(status_text), "%d", last_status);
+        *position = i + 1;
+        return append_text(out, used, status_text);
+    }
+    if (line[i] == '$') {
+        char pid_text[16];
+        snprintf(pid_text, sizeof(pid_text), "%d", (int)getpid());
+        *position = i + 1;
+        return append_text(out, used, pid_text);
+    }
+    if (line[i] >= '0' && line[i] <= '9') {
+        int index = line[i] - '0';
+        *position = i + 1;
+        if (index == 0)
+            return append_text(out, used, shell_name);
+        if (index <= positional_count)
+            return append_text(out, used, positional_parameters[index - 1]);
+        return 0;
+    }
+    if (line[i] == '#') {
+        snprintf(status_text, sizeof(status_text), "%d", positional_count);
         *position = i + 1;
         return append_text(out, used, status_text);
     }
@@ -193,6 +218,7 @@ static int is_builtin(const char *name)
 {
     return !strcmp(name, ":") || !strcmp(name, "true") ||
            !strcmp(name, "false") || !strcmp(name, "echo") ||
+           !strcmp(name, "printf") || !strcmp(name, "kill") ||
            !strcmp(name, "pwd") || !strcmp(name, "cat") || !strcmp(name, "cd") ||
            !strcmp(name, "export") || !strcmp(name, "unset") ||
            !strcmp(name, "exit") || !strcmp(name, "exec");
@@ -218,6 +244,145 @@ static int run_builtin(char **argv)
         }
         if (newline)
             putchar('\n');
+        return 0;
+    }
+    if (!strcmp(name, "kill")) {
+        static const struct {
+            const char *name;
+            int number;
+        } signals[] = {
+            {"HUP", SIGHUP}, {"INT", SIGINT}, {"QUIT", SIGQUIT},
+            {"KILL", SIGKILL}, {"TERM", SIGTERM}, {"USR1", 10},
+            {"USR2", 12}, {"PIPE", 13}, {"ALRM", 14}, {"CHLD", 17},
+            {"CONT", SIGCONT}, {"STOP", SIGSTOP}, {"TSTP", 20},
+            {"TTIN", 21}, {"TTOU", 22},
+        };
+        int signal_number = SIGTERM;
+        int first = 1;
+        int failed = 0;
+        if (argv[1] && argv[1][0] == '-') {
+            const char *name_text = argv[1] + 1;
+            if (*name_text >= '0' && *name_text <= '9') {
+                signal_number = atoi(name_text);
+            } else {
+                signal_number = -1;
+                for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); ++i)
+                    if (!strcmp(name_text, signals[i].name)) {
+                        signal_number = signals[i].number;
+                        break;
+                    }
+                if (signal_number < 0) {
+                    fprintf(stderr, "sh: kill: invalid signal: %s\n", argv[1]);
+                    return 2;
+                }
+            }
+            first = 2;
+        }
+        if (!argv[first]) {
+            fputs("sh: kill: usage: kill [-SIGNAL] pid...\n", stderr);
+            return 2;
+        }
+        for (; argv[first]; ++first) {
+            if (kill((pid_t)atoi(argv[first]), signal_number) != 0) {
+                perror("kill");
+                failed = 1;
+            }
+        }
+        return failed;
+    }
+    if (!strcmp(name, "printf")) {
+        if (!argv[1])
+            return 0;
+        const char *format = argv[1];
+        int next = 2;
+        for (const char *cursor = format; *cursor; ++cursor) {
+            if (*cursor == '\\') {
+                char escape = *++cursor;
+                if (!escape)
+                    break;
+                switch (escape) {
+                case 'n': putchar('\n'); break;
+                case 't': putchar('\t'); break;
+                case 'r': putchar('\r'); break;
+                case 'a': putchar('\a'); break;
+                case 'b': putchar('\b'); break;
+                case 'f': putchar('\f'); break;
+                case 'v': putchar('\v'); break;
+                case '\\': putchar('\\'); break;
+                default:
+                    if (escape >= '0' && escape <= '7') {
+                        int value = 0, digits = 0;
+                        while (digits < 3 && *cursor >= '0' && *cursor <= '7') {
+                            value = value * 8 + (*cursor - '0');
+                            ++cursor;
+                            ++digits;
+                        }
+                        --cursor;
+                        putchar(value & 0xff);
+                    } else {
+                        putchar('\\');
+                        putchar(escape);
+                    }
+                }
+                continue;
+            }
+            if (*cursor != '%') {
+                putchar(*cursor);
+                continue;
+            }
+            if (cursor[1] == '%') {
+                putchar('%');
+                ++cursor;
+                continue;
+            }
+            char spec[32];
+            int length = 0;
+            spec[length++] = '%';
+            ++cursor;
+            while (*cursor && strchr("-+ #0", *cursor) && length < 24)
+                spec[length++] = *cursor++;
+            while (*cursor >= '0' && *cursor <= '9' && length < 24)
+                spec[length++] = *cursor++;
+            if (*cursor == '.' && length < 24) {
+                spec[length++] = *cursor++;
+                while (*cursor >= '0' && *cursor <= '9' && length < 24)
+                    spec[length++] = *cursor++;
+            }
+            // Panjang argumen sembarang dinormalkan ke `long long`.
+            while (*cursor && strchr("hljztL", *cursor))
+                ++cursor;
+            char conversion = *cursor;
+            if (!conversion)
+                break;
+            const char *argument = argv[next] ? argv[next] : "";
+            if (conversion == 's') {
+                spec[length++] = 's';
+                spec[length] = '\0';
+                printf(spec, argument);
+            } else if (conversion == 'c') {
+                spec[length++] = 'c';
+                spec[length] = '\0';
+                printf(spec, argument[0]);
+            } else if (conversion == 'd' || conversion == 'i') {
+                spec[length++] = 'l';
+                spec[length++] = 'l';
+                spec[length++] = conversion;
+                spec[length] = '\0';
+                printf(spec, strtoll(argument, NULL, 10));
+            } else if (conversion == 'u' || conversion == 'o' ||
+                       conversion == 'x' || conversion == 'X') {
+                spec[length++] = 'l';
+                spec[length++] = 'l';
+                spec[length++] = conversion;
+                spec[length] = '\0';
+                printf(spec, strtoull(argument, NULL, 0));
+            } else {
+                putchar('%');
+                putchar(conversion);
+            }
+            if (argv[next])
+                ++next;
+        }
         return 0;
     }
     if (!strcmp(name, "pwd")) {
@@ -500,17 +665,8 @@ static int parse_pipeline(char **tokens, int begin, int end)
     return run_pipeline(stages, count);
 }
 
-static int run_command_string(const char *command)
+static int run_token_range(char **tokens, int position, int count)
 {
-    char storage[SH_LINE_MAX];
-    char *tokens[SH_TOKEN_MAX];
-    int count = tokenize(command, storage, tokens, SH_TOKEN_MAX);
-    if (count < 0) {
-        fputs("sh: syntax error or command too long\n", stderr);
-        return 2;
-    }
-
-    int position = 0;
     int status = 0;
     char *connector = ";";
     while (position < count && !exit_requested) {
@@ -528,6 +684,48 @@ static int run_command_string(const char *command)
         connector = tokens[end];
         position = end + 1;
     }
+    return status;
+}
+
+static int run_command_string(const char *command)
+{
+    char storage[SH_LINE_MAX];
+    char *tokens[SH_TOKEN_MAX];
+    int count = tokenize(command, storage, tokens, SH_TOKEN_MAX);
+    if (count < 0) {
+        fputs("sh: syntax error or command too long\n", stderr);
+        return 2;
+    }
+
+    // `while COND; do BODY; done` satu level, cukup untuk skrip build dan
+    // proses latar yang menunggu sampai dibunuh.
+    if (count > 0 && !strcmp(tokens[0], "while")) {
+        int do_index = -1;
+        int done_index = -1;
+        for (int i = 1; i < count; ++i) {
+            if (do_index < 0 && !strcmp(tokens[i], "do"))
+                do_index = i;
+            else if (do_index >= 0 && !strcmp(tokens[i], "done")) {
+                done_index = i;
+                break;
+            }
+        }
+        if (do_index < 0 || done_index < 0) {
+            fputs("sh: syntax error: while needs do ... done\n", stderr);
+            return 2;
+        }
+        for (;;) {
+            if (run_token_range(tokens, 1, do_index) != 0)
+                break;
+            run_token_range(tokens, do_index + 1, done_index);
+            if (exit_requested)
+                break;
+        }
+        last_status = 0;
+        return 0;
+    }
+
+    int status = run_token_range(tokens, 0, count);
     last_status = status;
     return status;
 }
@@ -535,6 +733,12 @@ static int run_command_string(const char *command)
 int main(int argc, char **argv)
 {
     if (argc >= 3 && !strcmp(argv[1], "-c")) {
+        // POSIX: `sh -c command_name [args...]` mengisi $0 lalu $1, $2, ...
+        if (argc > 3)
+            shell_name = argv[3];
+        positional_count = 0;
+        for (int i = 4; i < argc && positional_count < SH_ARG_MAX; ++i)
+            positional_parameters[positional_count++] = argv[i];
         int status = run_command_string(argv[2]);
         return exit_requested ? requested_exit_status : status;
     }

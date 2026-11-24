@@ -11,20 +11,25 @@ intended to become the command processor used by GNU Make.
 - `/bin/sh -c 'command'` and an interactive stdin loop.
 - External command lookup through `PATH`, using `fork`, `execvp`, and
   `waitpid`.
-- Builtins: `cd`, `pwd`, `echo`, `cat`, `export`, `unset`, `exit`,
-  `exec`, `true`, `false`, and `:`.
+- Builtins: `cd`, `pwd`, `echo`, `printf`, `cat`, `export`, `unset`,
+  `kill`, `exit`, `exec`, `true`, `false`, and `:`.
+- `while COND; do BODY; done` (satu level) untuk proses latar dan skrip
+  build sederhana.
 - Command lists with `;`, `&&`, and `||`.
 - Pipelines with `|`.
 - Input redirection with `<`, output redirection with `>` and `>>`, and
   stderr redirection with `2>` / `2>&1`.
-- Basic environment expansion using `$NAME`, `${NAME}`, and `$?`.
+- Basic environment expansion using `$NAME`, `${NAME}`, `$?`, `$0`-`$9`,
+  `$#`, dan `$$`. `sh -c 'command' name arg...` mengisi positional
+  parameter sesuai POSIX.
 
 ## Deliberate limitations
 
 This is a bring-up shell, not a complete POSIX shell. It does not yet implement
-shell functions, loops, conditionals, command substitution, subshells, glob
-expansion, heredocs, job control, signal forwarding, or all POSIX quoting and
-expansion rules. In particular, configure scripts and complex Make recipes may
+shell functions, general loops (only one-level `while ... do ... done` is
+supported), conditionals, command substitution, subshells, glob expansion,
+heredocs, job control, signal forwarding, or all POSIX quoting and expansion
+rules. In particular, configure scripts and complex Make recipes may
 still require a more complete shell such as a port of Dash. Do not mark GNU
 Make recipe compatibility complete until the QEMU tests and real build recipes
 pass.

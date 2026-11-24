@@ -15,6 +15,7 @@ enum Device {
     Stderr,
     Console,
     Fb0,
+    Null,
 }
 
 impl Device {
@@ -30,18 +31,22 @@ impl Device {
             "/stderr" => Some(Self::Stderr),
             "/console" => Some(Self::Console),
             "/fb" | "/fb0" => Some(Self::Fb0),
+            "/null" => Some(Self::Null),
             _ => None,
         }
     }
 
     fn readable(self) -> bool {
-        matches!(self, Self::Tty(_) | Self::Stdin | Self::Console | Self::Fb0)
+        matches!(
+            self,
+            Self::Tty(_) | Self::Stdin | Self::Console | Self::Fb0 | Self::Null
+        )
     }
 
     fn writable(self) -> bool {
         matches!(
             self,
-            Self::Tty(_) | Self::Stdout | Self::Stderr | Self::Console | Self::Fb0
+            Self::Tty(_) | Self::Stdout | Self::Stderr | Self::Console | Self::Fb0 | Self::Null
         )
     }
 
@@ -78,6 +83,11 @@ pub(crate) fn tty_path_terminal(path: &str) -> Option<usize> {
 
 pub(crate) fn is_fb_path(path: &str) -> bool {
     path == "/dev/fb0" || path == "/dev/fb"
+}
+
+/// `/dev/null` adalah perangkat karakter yang membuang tulisan dan selalu EOF.
+pub(crate) fn is_null_path(path: &str) -> bool {
+    path == "/dev/null"
 }
 
 pub(crate) fn device_access(path: &str) -> Option<(bool, bool)> {
@@ -393,6 +403,7 @@ impl FileSystem for DevFs {
                 }
                 Ok(to_read)
             }
+            Device::Null => Ok(0),
             _ => read_tty(device.terminal(), buffer),
         }
     }
@@ -417,6 +428,7 @@ impl FileSystem for DevFs {
                 }
                 Ok(to_write)
             }
+            Device::Null => Ok(bytes.len()),
             _ => {
                 let text = core::str::from_utf8(bytes).map_err(|_| FsError::InvalidData)?;
                 crate::terminal::terminal_print_to(device.terminal(), text);
@@ -459,6 +471,7 @@ impl FileSystem for DevFs {
         Ok(alloc::vec![
             directory_entry("console"),
             directory_entry("fb0"),
+            directory_entry("null"),
             directory_entry("stderr"),
             directory_entry("stdin"),
             directory_entry("stdout"),

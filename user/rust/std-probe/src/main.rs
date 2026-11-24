@@ -316,13 +316,6 @@ fn main() {
     marker("RUST-STD-UNIX-SOCKETPAIR-DOMAIN-PROTOCOL-PASS");
     let mut accept_conn = -1i32;
     let mut accept_conn_len = core::mem::size_of::<i32>() as u32;
-    let so_acceptconn_result = if domain_pair_result == 0 && domain_pair[0] >= 0 {
-        // The descriptor was closed above; this branch is intentionally not
-        // used. The dedicated check below creates a fresh socketpair.
-        -1
-    } else {
-        -1
-    };
     let mut accept_pair = [-1i32; 2];
     let accept_pair_result = unsafe {
         syscall4(127, 1, 1, 0, accept_pair.as_mut_ptr() as usize as u64)

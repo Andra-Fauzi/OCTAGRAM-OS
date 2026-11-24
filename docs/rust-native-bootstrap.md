@@ -77,8 +77,8 @@ blocking behavior, concurrency, dan edge case.
 
 Batas penting yang sudah terdokumentasi:
 
-- syscall `sendmsg` dan `recvmsg` mengembalikan `ENOSYS`; libc menyusun
-  sebagian perilakunya dari syscall lain;
+- syscall `sendmsg`/`recvmsg` menyediakan subset untuk `AF_UNIX` `SOCK_STREAM`,
+  UDP, dan TCP; ancillary data (`SCM_RIGHTS`) belum didukung;
 - dynamic loader OCTAGRAM saat ini memakai interpreter `ET_EXEC` dengan
   alamat tetap;
 - loader belum mendukung TLS umum pada shared object (relokasi
@@ -178,8 +178,9 @@ freestanding yang sekarang dipakai kernel dan aplikasi `no_std`.
 - TLS FS base disimpan/dipulihkan oleh scheduler, tetapi dukungan TLS pada
   shared object/dynamic loader masih belum ada. Static TLS dan TLS dynamic
   loader adalah dua kontrak berbeda.
-- `sendmsg`/`recvmsg` masih `ENOSYS`; Rust/Cargo mungkin memerlukan
-  operasi socket tersebut atau implementasi alternatif di libc.
+- `sendmsg`/`recvmsg` kini memiliki subset dukungan untuk `AF_UNIX` socketpair,
+  UDP, dan TCP; ancillary data belum tersedia. Ini belum setara ABI socket Linux,
+  sehingga dependency bootstrap tetap harus divendor dan diuji secara spesifik.
 - `clock_gettime`, `getrandom`, `pipe`, `dup2`, `fork`, `execve`,
   `waitpid`, `mmap`, `mprotect`, `futex`, dan thread API tercantum di
   syscall ABI, tetapi keberadaan nomor syscall bukan bukti semantic

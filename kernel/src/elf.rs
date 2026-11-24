@@ -1287,6 +1287,10 @@ impl Pipe {
     }
 
     fn read(&mut self, output: &mut [u8]) -> Result<usize, i32> {
+        self.read_with_peek(output, false)
+    }
+
+    fn read_with_peek(&mut self, output: &mut [u8], peek: bool) -> Result<usize, i32> {
         if self.length == 0 {
             return if self.writers == 0 {
                 Ok(0)
@@ -1297,8 +1301,10 @@ impl Pipe {
         let count = output.len().min(self.length);
         for byte in &mut output[..count] {
             *byte = self.buffer[self.head];
-            self.head = (self.head + 1) % PIPE_CAPACITY;
-            self.length -= 1;
+            if !peek {
+                self.head = (self.head + 1) % PIPE_CAPACITY;
+                self.length -= 1;
+            }
         }
         Ok(count)
     }
@@ -8481,6 +8487,14 @@ fn syscall_sendmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
         return syscall_udp_sendto(fd, u32::from_be_bytes(destination) as u64, port as u64,
             if payload.is_empty() { 0 } else { payload.as_ptr() as u64 }, payload.len() as u64);
     }
+    if let Some(endpoint) = socketpair_endpoint_for_fd(fd)? {
+        let mut pipe = endpoint.write_end.pipe.lock();
+        let written = pipe.write(&payload)?;
+        let pipe_id = pipe.id;
+        drop(pipe);
+        wake_pipe_waiters(pipe_id, true, false);
+        return Ok(written as u64);
+    }
     if let Ok(socket) = udp_socket_for_fd(fd) {
         crate::network::send_udp_socket_connected(&socket, &payload)
             .map(|()| payload.len() as u64).map_err(errno_from_network)
@@ -8516,7 +8530,17 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     let mut payload = Vec::new();
     payload.resize(total, 0);
     let mut source = None;
-    let received = if let Ok(socket) = udp_socket_for_fd(fd) {
+    let received = if let Some(endpoint) = socketpair_endpoint_for_fd(fd)? {
+        let mut pipe = endpoint.read_end.pipe.lock();
+        let count = pipe.read_with_peek(&mut payload, flags & 0x02 != 0)?;
+        let pipe_id = pipe.id;
+        drop(pipe);
+        if flags & 0x02 == 0 {
+            wake_pipe_waiters(pipe_id, false, true);
+        }
+        header.flags = 0;
+        count
+    } else if let Ok(socket) = udp_socket_for_fd(fd) {
         let (copied, datagram_len, source_ip, source_port) =
             crate::network::receive_udp_socket_length_with_peek(
                 &socket, &mut payload, flags & 0x02 != 0,
@@ -10588,6 +10612,19 @@ fn install_descriptor(descriptor: UserDescriptor) -> Result<u64, i32> {
     process.descriptor_flags.resize(descriptor_count, 0);
     process.descriptors[fd] = Some(descriptor);
     Ok(fd as u64)
+}
+
+fn socketpair_endpoint_for_fd(fd: u64) -> Result<Option<DuplexEnd>, i32> {
+    let fd = usize::try_from(fd).map_err(|_| EBADF)?;
+    let process = USER_PROCESS.lock();
+    if !process.active {
+        return Err(EINTR);
+    }
+    match process.descriptors.get(fd).and_then(Option::as_ref) {
+        Some(UserDescriptor::SocketPair(endpoint)) => Ok(Some(endpoint.clone())),
+        Some(_) => Ok(None),
+        None => Err(EBADF),
+    }
 }
 
 fn timespec_to_milliseconds(ts: &UserTimespec) -> Result<u64, i32> {

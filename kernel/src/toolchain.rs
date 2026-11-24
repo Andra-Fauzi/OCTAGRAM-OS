@@ -3035,6 +3035,8 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
         tpoff: bool,
     }
     let mut got_entries: Vec<GotEntry> = Vec::new();
+    let mut got_base_offset: Option<usize> = None;
+    let mut has_got_base_relocation = false;
     let mut got_by_name: BTreeMap<(Vec<u8>, bool), usize> = BTreeMap::new();
     let mut got_by_local: BTreeMap<(usize, usize, bool), usize> = BTreeMap::new();
     for (object_index, (object, parsed)) in objects.iter().zip(parsed_objects.iter()).enumerate() {
@@ -3058,7 +3060,11 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                     .ok_or(ToolchainError::OutOfBounds)?;
                 let info = elf_u64(object, base + 8)?;
                 let kind = info as u32;
-                if !matches!(kind, 9 | 22 | 26 | 41 | 42) {
+                if kind == 26 {
+                    has_got_base_relocation = true;
+                    continue;
+                }
+                if !matches!(kind, 9 | 22 | 41 | 42) {
                     continue;
                 }
                 let tpoff = kind == 22;
@@ -3127,10 +3133,18 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
             }
         }
     }
-    if !got_entries.is_empty() {
+    if !got_entries.is_empty() || has_got_base_relocation {
         let data_len_before = data.len();
         let got_start = align_up(data_len_before, 8)?;
+        got_base_offset = Some(got_start);
         data.resize(got_start, 0);
+        // Even a GOT-base-only object needs a materialized GOT anchor.
+        let got_storage_size = got_entries.len().max(1).checked_mul(8)
+            .ok_or(ToolchainError::OutOfBounds)?;
+        data.resize(
+            got_start.checked_add(got_storage_size).ok_or(ToolchainError::OutOfBounds)?,
+            0,
+        );
         for (index, entry) in got_entries.iter_mut().enumerate() {
             entry.data_offset = got_start
                 .checked_add(index.checked_mul(8).ok_or(ToolchainError::OutOfBounds)?)
@@ -3139,7 +3153,9 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                 .data_offset
                 .checked_add(8)
                 .ok_or(ToolchainError::OutOfBounds)?;
-            data.resize(slot_end, 0);
+            if slot_end > data.len() {
+                data.resize(slot_end, 0);
+            }
         }
         // BSS offsets are relative to the data base, so growing the file-backed
         // data image shifts every BSS placement by the same amount.
@@ -3203,6 +3219,9 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
     let tls_vaddr = data_vaddr
         .checked_add(tls_offset_in_data as u64)
         .ok_or(ToolchainError::OutOfBounds)?;
+    let got_base_address = got_base_offset
+        .map(|offset| data_vaddr.checked_add(offset as u64).ok_or(ToolchainError::OutOfBounds))
+        .transpose()?;
     let data_memory_size = data
         .len()
         .checked_add(bss_size)
@@ -3492,7 +3511,9 @@ pub fn link_elf_objects(objects: &[&[u8]]) -> Result<Vec<u8>, ToolchainError> {
                     continue;
                 }
 
-                let got_address = if matches!(kind, 9 | 22 | 26 | 41 | 42) {
+                let got_address = if kind == 26 {
+                    Some(got_base_address.ok_or(ToolchainError::InvalidElfObject)?)
+                } else if matches!(kind, 9 | 22 | 41 | 42) {
                     let tpoff = kind == 22;
                     let index = if symbol.binding == 0 {
                         got_by_local

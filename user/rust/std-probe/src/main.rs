@@ -208,17 +208,24 @@ fn main() {
             return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "nested read_dir entry missing"));
         }
         checked!("File::sync_all", file.sync_all());
-        let cloned = checked!("File::try_clone", file.try_clone());
+        let mut cloned = checked!("File::try_clone", file.try_clone());
         if !checked!("File::metadata", file.metadata()).is_file()
             || !checked!("cloned File::metadata", cloned.metadata()).is_file()
         {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "descriptor metadata mismatch"));
         }
+        // dup/F_DUPFD must share the same open-file-description offset. Read
+        // through the clone, then ensure the original continues at that offset.
         checked!("File::seek", file.seek(std::io::SeekFrom::Start(0)));
+        let mut prefix = [0u8; 4];
+        let prefix_len = checked!("cloned File::read", std::io::Read::read(&mut cloned, &mut prefix));
+        if &prefix[..prefix_len] != b"desc" {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "cloned descriptor prefix mismatch"));
+        }
         let mut bytes = Vec::new();
         checked!("Read::read_to_end", std::io::Read::read_to_end(&mut file, &mut bytes));
-        if bytes != b"descriptor-roundtrip" {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "file contents mismatch"));
+        if bytes != b"riptor-roundtrip" {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "duplicated descriptor offset was not shared"));
         }
         Ok(())
     })();

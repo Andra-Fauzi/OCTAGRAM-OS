@@ -6188,6 +6188,11 @@ fn syscall_dup2(source_fd: u64, target_fd: u64) -> Result<u64, i32> {
             .and_then(Option::as_ref)
             .ok_or(EBADF)?
             .clone();
+        let source_status_flags = process
+            .descriptor_flags
+            .get(source_fd)
+            .copied()
+            .unwrap_or(0) & O_NONBLOCK as u32;
         let replaced_pipe_id = process
             .descriptors
             .get(target_fd)
@@ -6206,7 +6211,7 @@ fn syscall_dup2(source_fd: u64, target_fd: u64) -> Result<u64, i32> {
         }
         let descriptor_count = process.descriptors.len();
         process.descriptor_flags.resize(descriptor_count, 0);
-        process.descriptor_flags[target_fd] = 0;
+        process.descriptor_flags[target_fd] = source_status_flags;
         process.descriptors[target_fd] = Some(duplicate);
         replaced_pipe_id
     };
@@ -6228,11 +6233,16 @@ fn syscall_dup(source_fd: u64) -> Result<u64, i32> {
         .and_then(Option::as_ref)
         .ok_or(EBADF)?
         .clone();
+    let source_status_flags = process
+        .descriptor_flags
+        .get(source_fd)
+        .copied()
+        .unwrap_or(0) & O_NONBLOCK as u32;
     let target_fd = reserve_descriptor_slot(&mut process.descriptors)?;
     let descriptor_count = process.descriptors.len();
     process.descriptor_flags.resize(descriptor_count, 0);
     process.descriptors[target_fd] = Some(duplicate);
-    process.descriptor_flags[target_fd] = 0;
+    process.descriptor_flags[target_fd] = source_status_flags;
     Ok(target_fd as u64)
 }
 
@@ -6254,6 +6264,11 @@ fn syscall_fcntl(fd: u64, command: u64, argument: u64) -> Result<u64, i32> {
                 return Err(EINVAL);
             }
             let duplicate = descriptor.clone();
+            let source_status_flags = process
+                .descriptor_flags
+                .get(fd)
+                .copied()
+                .unwrap_or(0) & O_NONBLOCK as u32;
             let target = (minimum..MAX_OPEN_FILES)
                 .find(|index| process.descriptors.get(*index).is_none_or(Option::is_none))
                 .ok_or(EMFILE)?;
@@ -6268,15 +6283,16 @@ fn syscall_fcntl(fd: u64, command: u64, argument: u64) -> Result<u64, i32> {
             let descriptor_count = process.descriptors.len();
             process.descriptor_flags.resize(descriptor_count, 0);
             process.descriptors[target] = Some(duplicate);
-            process.descriptor_flags[target] =
-                if command == F_DUPFD_CLOEXEC || command == F_DUPFD_CLOEXEC_LINUX {
+            process.descriptor_flags[target] = source_status_flags
+                | if command == F_DUPFD_CLOEXEC || command == F_DUPFD_CLOEXEC_LINUX {
                     FD_CLOEXEC
                 } else {
                     0
                 };
             Ok(target as u64)
         }
-        F_GETFD => Ok(process.descriptor_flags.get(fd).copied().unwrap_or(0) as u64),
+        F_GETFD => Ok((process.descriptor_flags.get(fd).copied().unwrap_or(0)
+            & FD_CLOEXEC) as u64),
         F_SETFD => {
             let flags = u32::try_from(argument).map_err(|_| EINVAL)?;
             if flags & !FD_CLOEXEC != 0 {
@@ -6286,7 +6302,8 @@ fn syscall_fcntl(fd: u64, command: u64, argument: u64) -> Result<u64, i32> {
                 let descriptor_count = process.descriptors.len();
                 process.descriptor_flags.resize(descriptor_count, 0);
             }
-            process.descriptor_flags[fd] = flags;
+            let status_flags = process.descriptor_flags[fd] & O_NONBLOCK as u32;
+            process.descriptor_flags[fd] = status_flags | flags;
             Ok(0)
         }
         F_GETFL => {
@@ -8311,9 +8328,21 @@ fn syscall_pipe2(pipefd: u64, flags: u64) -> Result<u64, i32> {
     Ok(0)
 }
 
-fn syscall_dup3(oldfd: u64, newfd: u64, _flags: u64) -> Result<u64, i32> {
-    // Gunakan dup2 yang sudah ada
-    dispatch_syscall(SYSCALL_DUP2, oldfd, newfd, 0, 0, 0, 0)
+fn syscall_dup3(oldfd: u64, newfd: u64, flags: u64) -> Result<u64, i32> {
+    if flags & !O_CLOEXEC != 0 || oldfd == newfd {
+        return Err(EINVAL);
+    }
+    let target = syscall_dup2(oldfd, newfd)?;
+    if flags & O_CLOEXEC != 0 {
+        let fd = usize::try_from(target).map_err(|_| EBADF)?;
+        let mut process = USER_PROCESS.lock();
+        if !process.active {
+            return Err(EINTR);
+        }
+        let descriptor_flags = process.descriptor_flags.get_mut(fd).ok_or(EBADF)?;
+        *descriptor_flags |= FD_CLOEXEC;
+    }
+    Ok(target)
 }
 
 fn syscall_pread(fd: u64, buf: u64, count: u64, offset: u64) -> Result<u64, i32> {

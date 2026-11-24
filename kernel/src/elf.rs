@@ -10936,15 +10936,20 @@ fn syscall_epoll_wait(epfd: u64, events: u64, maxevents: u64, timeout_ms: u64) -
 }
 
 fn syscall_socketpair(domain: u64, socket_type: u64, protocol: u64, addresses: u64) -> Result<u64, i32> {
+    const SOCK_NONBLOCK: u64 = 0x800;
+    const SOCK_CLOEXEC: u64 = 0x80000;
     if domain != AF_UNIX {
         return Err(EAFNOSUPPORT);
     }
     if protocol != 0 {
         return Err(EPROTONOSUPPORT);
     }
-    match socket_type & SOCK_TYPE_MASK {
-        SOCK_STREAM | 2 => {}
-        _ => return Err(EPROTOTYPE),
+    let type_flags = socket_type & !SOCK_TYPE_MASK;
+    if type_flags & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+        return Err(EINVAL);
+    }
+    if socket_type & SOCK_TYPE_MASK != SOCK_STREAM {
+        return Err(EPROTOTYPE);
     }
     paging::validate_user_range(addresses, core::mem::size_of::<[i32; 2]>(), true)
         .map_err(|_| EFAULT)?;
@@ -10967,6 +10972,16 @@ fn syscall_socketpair(domain: u64, socket_type: u64, protocol: u64, addresses: u
             return Err(error);
         }
     };
+    {
+        let mut process = USER_PROCESS.lock();
+        let flags = if type_flags & SOCK_CLOEXEC != 0 { FD_CLOEXEC } else { 0 };
+        let status = if type_flags & SOCK_NONBLOCK != 0 { O_NONBLOCK as u32 } else { 0 };
+        for fd in [first as usize, second as usize] {
+            if let Some(slot) = process.descriptor_flags.get_mut(fd) {
+                *slot = flags | status;
+            }
+        }
+    }
     unsafe {
         (addresses as *mut [i32; 2]).write_unaligned([first as i32, second as i32]);
     }

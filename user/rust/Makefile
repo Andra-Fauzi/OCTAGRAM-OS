@@ -17,7 +17,7 @@ RUST_BUILD_FLAGS := +nightly -Z unstable-options -Z build-std=core,alloc -Z json
 RUST_OBJECT_FLAGS := -C linker=true -C relocation-model=static -C no-redzone=yes \
 	-C target-feature=+sse,+sse2
 
-.PHONY: all clean make build-octagram check
+.PHONY: all clean make build-octagram check stage0-inventory
 all: $(RUST_HELLO) $(RUST_MAKE) $(RUST_NATIVE_OBJECT)
 
 make: $(RUST_MAKE) $(RUST_NATIVE_OBJECT)
@@ -63,6 +63,10 @@ check: all
 	$(READELF) -l $(RUST_HELLO)
 	$(READELF) -h $(RUST_MAKE)
 	$(READELF) -l $(RUST_MAKE)
+
+stage0-inventory:
+	mkdir -p build
+	python3 ../../tools/rust_stage0_inventory.py --output build/stage0-inventory.json
 
 clean:
 	rm -rf build target

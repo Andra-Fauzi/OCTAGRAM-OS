@@ -140,7 +140,9 @@ subset for simple programs; these are not GNU toolchain ports. See
 
 
 
-For AI-assisted development, see [OCTAGRAM AI Developer](tools/octagram_ai/README.md), a local-first coding agent that uses an isolated worktree and a restricted build container.The [docs/](docs/README.md) directory contains guides to kernel architecture,
+For AI-assisted development, see [OCTAGRAM AI Developer](tools/octagram_ai/README.md), a local-first coding agent that uses an isolated worktree and a restricted build container.
+
+The [docs/](docs/README.md) directory contains guides to kernel architecture,
 boot, memory, filesystem, networking, userspace, syscall ABI, storage, and
 porting applications. Untuk mulai mengembangkan kernel, baca
 [development guide](docs/development-guide.md), lalu ikuti

@@ -8449,7 +8449,7 @@ fn syscall_sendmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     if flags & !0x4040 != 0 { return Err(EINVAL); }
     paging::validate_user_range(header_addr, core::mem::size_of::<UserMsgHdr>(), false).map_err(|_| EFAULT)?;
     let header = unsafe { (header_addr as *const UserMsgHdr).read_unaligned() };
-    if header.name != 0 || header.control != 0 || header.control_len != 0 { return Err(ENOTSUP); }
+    if header.control != 0 || header.control_len != 0 { return Err(ENOTSUP); }
     if header.iov_len > 1024 { return Err(EINVAL); }
     let count = usize::try_from(header.iov_len).map_err(|_| EINVAL)?;
     let bytes = count.checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
@@ -8471,6 +8471,11 @@ fn syscall_sendmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
             payload.extend_from_slice(part);
         }
     }
+    if header.name != 0 {
+        let (destination, port) = copy_user_sockaddr(header.name, header.name_len as u64)?;
+        return syscall_udp_sendto(fd, u32::from_be_bytes(destination) as u64, port as u64,
+            if payload.is_empty() { 0 } else { payload.as_ptr() as u64 }, payload.len() as u64);
+    }
     let ptr = if payload.is_empty() { 0 } else { payload.as_ptr() as u64 };
     syscall_send(fd, ptr, payload.len() as u64, flags)
 }
@@ -8479,7 +8484,7 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     if flags & !0x42 != 0 { return Err(EINVAL); }
     paging::validate_user_range(header_addr, core::mem::size_of::<UserMsgHdr>(), true).map_err(|_| EFAULT)?;
     let mut header = unsafe { (header_addr as *const UserMsgHdr).read_unaligned() };
-    if header.name != 0 || header.control != 0 || header.control_len != 0 { return Err(ENOTSUP); }
+    if header.control != 0 || header.control_len != 0 { return Err(ENOTSUP); }
     if header.iov_len > 1024 { return Err(EINVAL); }
     let count = usize::try_from(header.iov_len).map_err(|_| EINVAL)?;
     let bytes = count.checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
@@ -8496,8 +8501,19 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     }
     let mut payload = Vec::new();
     payload.resize(total, 0);
-    let ptr = if payload.is_empty() { 0 } else { payload.as_mut_ptr() as u64 };
-    let received = syscall_recv(fd, ptr, total as u64, flags)? as usize;
+    let mut source = None;
+    let received = if let Ok(socket) = udp_socket_for_fd(fd) {
+        let (copied, datagram_len, source_ip, source_port) =
+            crate::network::receive_udp_socket_length(&socket, &mut payload)
+                .map_err(errno_from_network)?;
+        if datagram_len > copied { header.flags |= 0x20; } else { header.flags = 0; }
+        source = Some((source_ip, source_port));
+        if flags & 0x20 != 0 { datagram_len } else { copied }
+    } else {
+        let ptr = if payload.is_empty() { 0 } else { payload.as_mut_ptr() as u64 };
+        header.flags = 0;
+        syscall_recv(fd, ptr, total as u64, flags)? as usize
+    };
     let mut offset = 0usize;
     for (base, len) in vectors {
         if offset >= received { break; }
@@ -8507,7 +8523,21 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
             offset += copied;
         }
     }
-    header.flags = 0;
+    if let Some((source_ip, source_port)) = source {
+        if header.name != 0 {
+            let capacity = header.name_len as usize;
+            let copy_len = capacity.min(core::mem::size_of::<UserSockAddrIn>());
+            paging::validate_user_range(header.name, copy_len, true).map_err(|_| EFAULT)?;
+            let address = UserSockAddrIn {
+                family: 2, port: source_port.to_be(),
+                address: u32::from_ne_bytes(source_ip), zero: [0; 8],
+            };
+            if copy_len != 0 {
+                unsafe { core::ptr::copy_nonoverlapping(&address as *const UserSockAddrIn as *const u8, header.name as *mut u8, copy_len); }
+            }
+            header.name_len = core::mem::size_of::<UserSockAddrIn>() as u32;
+        }
+    }
     unsafe { (header_addr as *mut UserMsgHdr).write_unaligned(header); }
     Ok(received as u64)
 }

@@ -224,6 +224,52 @@ fn main() {
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-MSG-PASS");
 
+    // SO_TYPE and SO_ERROR are available on anonymous UNIX stream sockets.
+    let mut type_pair = [-1i32; 2];
+    let type_result = unsafe {
+        syscall4(127, 1, 1, 0, type_pair.as_mut_ptr() as usize as u64)
+    };
+    let mut socket_option = -1i32;
+    let mut socket_option_len = core::mem::size_of::<i32>() as u32;
+    let so_type_result = if type_result == 0 && type_pair[0] >= 0 {
+        unsafe {
+            syscall6(
+                96, type_pair[0] as u64, 1, 3,
+                &mut socket_option as *mut i32 as usize as u64,
+                &mut socket_option_len as *mut u32 as usize as u64, 0,
+            )
+        }
+    } else {
+        -1
+    };
+    let mut socket_error = -1i32;
+    let mut socket_error_len = core::mem::size_of::<i32>() as u32;
+    let so_error_result = if type_result == 0 && type_pair[0] >= 0 {
+        unsafe {
+            syscall6(
+                96, type_pair[0] as u64, 1, 4,
+                &mut socket_error as *mut i32 as usize as u64,
+                &mut socket_error_len as *mut u32 as usize as u64, 0,
+            )
+        }
+    } else {
+        -1
+    };
+    if type_pair[0] >= 0 {
+        unsafe { syscall3(4, type_pair[0] as u64, 0, 0); }
+    }
+    if type_pair[1] >= 0 {
+        unsafe { syscall3(4, type_pair[1] as u64, 0, 0); }
+    }
+    if so_type_result != 0 || socket_option != 1
+        || socket_option_len != 4 || so_error_result != 0
+        || socket_error != 0 || socket_error_len != 4
+    {
+        marker("RUST-STD-UNIX-SOCKETPAIR-GETSOCKOPT-FAIL");
+        std::process::exit(78);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-GETSOCKOPT-PASS");
+
     // SOCK_CLOEXEC is applied to each newly-created descriptor independently.
     let mut cloexec_pair = [-1i32; 2];
     let cloexec_result = unsafe {

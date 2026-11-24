@@ -27,6 +27,8 @@ const F_DUPFD: i32 = 0;
 const F_GETFD: i32 = 1;
 const F_SETFD: i32 = 2;
 const FD_CLOEXEC: i32 = 1;
+const O_CLOEXEC: u64 = 1 << 19;
+const SYSCALL_DUP3: u64 = 99;
 
 
 // Minimal direct syscall helpers for testing the kernel's dirfd ABI independently
@@ -275,6 +277,25 @@ fn main() {
         };
         if plain_duplicate_flags != 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "F_DUPFD unexpectedly inherited FD_CLOEXEC"));
+        }
+        // dup3 must honor O_CLOEXEC and reject neither the source nor the
+        // target descriptor when replacing an already-open target.
+        let dup3_result = unsafe {
+            syscall3(
+                SYSCALL_DUP3,
+                std::os::fd::AsRawFd::as_raw_fd(&file) as u64,
+                std::os::fd::AsRawFd::as_raw_fd(&plain_duplicate) as u64,
+                O_CLOEXEC,
+            )
+        };
+        if dup3_result != std::os::fd::AsRawFd::as_raw_fd(&plain_duplicate) as i64 {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "dup3(O_CLOEXEC) failed"));
+        }
+        let dup3_flags = unsafe {
+            fcntl(std::os::fd::AsRawFd::as_raw_fd(&plain_duplicate), F_GETFD)
+        };
+        if dup3_flags != FD_CLOEXEC {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "dup3 did not set FD_CLOEXEC"));
         }
         drop(plain_duplicate);
         // dup/F_DUPFD must share the same open-file-description offset. Read

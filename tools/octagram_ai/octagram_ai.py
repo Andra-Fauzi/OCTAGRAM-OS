@@ -136,7 +136,7 @@ def apply_patch(patch: str) -> str:
     # Reject traversal and Git metadata paths before invoking git.
     for line in patch.splitlines():
         if line.startswith(("+++ ", "--- ")):
-            raw_path = line[4:].split("\\t", 1)[0]
+            raw_path = line[4:].split("\t", 1)[0]
             if raw_path == "/dev/null":
                 continue
             if raw_path.startswith(("a/", "b/")):

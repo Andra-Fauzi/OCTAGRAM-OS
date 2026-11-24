@@ -74,6 +74,29 @@ fn marker(message: &str) {
 }
 
 fn main() {
+    // Linux-compatible getrandom flags accepted by OCTAGRAM's syscall ABI.
+    let mut random_bytes = [0u8; 32];
+    for flags in [0u64, 1, 2, 4] {
+        let result = unsafe {
+            syscall3(121, random_bytes.as_mut_ptr() as usize as u64,
+                     random_bytes.len() as u64, flags)
+        };
+        if result != random_bytes.len() as i64 {
+            marker("RUST-STD-GETRANDOM-FLAGS-FAIL");
+            std::process::exit(69);
+        }
+    }
+    let zero_length = unsafe { syscall3(121, 0, 0, 0) };
+    let invalid_flags = unsafe {
+        syscall3(121, random_bytes.as_mut_ptr() as usize as u64,
+                 random_bytes.len() as u64, 0x8000_0000)
+    };
+    if zero_length != 0 || invalid_flags != -EINVAL {
+        marker("RUST-STD-GETRANDOM-VALIDATION-FAIL");
+        std::process::exit(70);
+    }
+    marker("RUST-STD-GETRANDOM-FLAGS-PASS");
+
     let (tls_value, tls_address) = RUST_TLS_PROBE.with(|value| {
         let initial = value.get();
         let address = value as *const Cell<u64> as usize;

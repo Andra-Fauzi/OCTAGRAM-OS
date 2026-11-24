@@ -379,6 +379,11 @@ static inline int64_t oct_thread_join(uint64_t thread_id, void **result)
     return oct_syscall2(63, thread_id, (uint64_t)(uintptr_t)result);
 }
 
+static inline int64_t oct_thread_detach(uint64_t thread_id)
+{
+    return oct_syscall1(149, thread_id);
+}
+
 static inline int64_t oct_thread_self(void)
 {
     return oct_syscall0(64);

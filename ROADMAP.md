@@ -328,6 +328,10 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
   - [x] compiler-rt 128-bit: `__udivmodti4`/`__divmodti4`, varian nama lain,
     dan shift 128-bit (`user/compiler_rt.c`), diuji host terhadap libgcc
     (`make -C user compiler-rt-test`) dan dipakai `/bin/cpp-smoke`
+  - [x] compiler-rt float↔128-bit: `__floatuntidf`/`__floattidf`,
+    `__floatuntisf`/`__floattisf`, `__fixunsdfti`/`__fixdfti` dan varian
+    `float`, dengan pembulatan IEEE manual dan uji host bit-per-bit
+  - [ ] Varian `long double` (`__fixunsxfti`, `__floatuntixf`)
   - [ ] Subset libc++/libstdc++ (`<string>`, `<vector>`, `<mutex>`)
   - [x] Implementasi parser TinyCC untuk `__builtin_add_overflow`,
     `__builtin_sub_overflow`, dan `__builtin_mul_overflow`; runtime helper

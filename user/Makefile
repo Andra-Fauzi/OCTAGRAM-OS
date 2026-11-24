@@ -122,7 +122,11 @@ build/compiler_rt_host_test: tests/compiler_rt_test.c compiler_rt.c | build
 		-D__udivti3=oct_udivti3 -D__umodti3=oct_umodti3 \
 		-D__divti3=oct_divti3 -D__modti3=oct_modti3 \
 		-D__ashlti3=oct_ashlti3 -D__ashrti3=oct_ashrti3 \
-		-D__lshrti3=oct_lshrti3 compiler_rt.c
+		-D__lshrti3=oct_lshrti3 \
+		-D__floatuntidf=oct_floatuntidf -D__floattidf=oct_floattidf \
+		-D__floatuntisf=oct_floatuntisf -D__floattisf=oct_floattisf \
+		-D__fixunsdfti=oct_fixunsdfti -D__fixdfti=oct_fixdfti \
+		-D__fixunssfti=oct_fixunssfti -D__fixsfti=oct_fixsfti compiler_rt.c
 
 build/wctype_runtime_test: tests/wctype_runtime_test.c wctype.c include/wctype.h | build
 	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \

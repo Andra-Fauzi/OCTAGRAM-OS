@@ -166,6 +166,15 @@ int main(int argc, char **argv)
               wide_remainder < wide_right && wide_quotient != 0,
           "128-bit integer division and remainder");
 
+    /* Conversions use the __floatuntidf/__fixunsdfti libcalls; 2^100 is exact
+     * in a double, so the round trip must be bit-exact. */
+    const unsigned __int128 wide_power = static_cast<unsigned __int128>(1) << 100;
+    const double wide_power_as_double = static_cast<double>(wide_power);
+    check(wide_power_as_double == 0x1p100 &&
+              static_cast<unsigned __int128>(wide_power_as_double) == wide_power &&
+              static_cast<double>(-static_cast<__int128>(wide_power)) == -0x1p100,
+          "128-bit and floating point conversion round trip");
+
     Rectangle *heap_rectangle = new Rectangle("heap", 3, 5);
     check(heap_rectangle->area() == 15, "operator new and a heap-allocated object");
     delete heap_rectangle;

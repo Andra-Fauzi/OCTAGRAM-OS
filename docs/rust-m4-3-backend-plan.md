@@ -211,6 +211,14 @@ kodenya:
   `make -C user compiler-rt-test` memakai libgcc sebagai oracle: implementasi
   di-rename lewat `-D`, sehingga 200.000 pasangan acak + edge case + shift
   dibandingkan dengan pembagi asli, bukan dengan dirinya sendiri.
+- compiler-rt konversi floating point 128-bit: `__floatuntidf`/`__floattidf`,
+  `__floatuntisf`/`__floattisf`, `__fixunsdfti`/`__fixdfti`, dan varian
+  `float`-nya. Inilah libcall untuk `u128 as f64`, `f64 as u128`, dan
+  `(double)__int128`. Implementasinya menyusun bit IEEE-754 secara manual
+  (round-to-nearest, ties-to-even) alih-alih memakai aritmetika floating point,
+  dan uji host membandingkannya bit-per-bit dengan hasil compiler untuk 200.000
+  nilai acak. Yang belum ada: varian `long double` (`__fixunsxfti`,
+  `__floatuntixf`), yang hanya dibutuhkan kode C/C++ ber-`long double` 80-bit.
 - Kesiapan header C untuk C++: `tools/check_cpp_headers.py` mengompilasi setiap
   header publik sebagai C11 dan C++17 (`make -C user cpp-header-test`, juga
   dipanggil CI). Perbaikan yang muncul: `restrict` bukan keyword C++, `char16_t`

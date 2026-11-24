@@ -23,6 +23,14 @@
 #define __ashlti3 oct_ashlti3
 #define __ashrti3 oct_ashrti3
 #define __lshrti3 oct_lshrti3
+#define __floatuntidf oct_floatuntidf
+#define __floattidf oct_floattidf
+#define __floatuntisf oct_floatuntisf
+#define __floattisf oct_floattisf
+#define __fixunsdfti oct_fixunsdfti
+#define __fixdfti oct_fixdfti
+#define __fixunssfti oct_fixunssfti
+#define __fixsfti oct_fixsfti
 
 unsigned __int128 __udivmodti4(unsigned __int128 dividend, unsigned __int128 divisor,
                                unsigned __int128 *remainder);
@@ -34,8 +42,88 @@ __int128 __modti3(__int128 dividend, __int128 divisor);
 unsigned __int128 __ashlti3(unsigned __int128 value, int count);
 __int128 __ashrti3(__int128 value, int count);
 unsigned __int128 __lshrti3(unsigned __int128 value, int count);
+double __floatuntidf(unsigned __int128 value);
+double __floattidf(__int128 value);
+float __floatuntisf(unsigned __int128 value);
+float __floattisf(__int128 value);
+unsigned __int128 __fixunsdfti(double value);
+__int128 __fixdfti(double value);
+unsigned __int128 __fixunssfti(float value);
+__int128 __fixsfti(float value);
 
 static int failures;
+
+static uint64_t double_bits(double value)
+{
+    union {
+        double number;
+        uint64_t bits;
+    } view;
+    view.number = value;
+    return view.bits;
+}
+
+static uint32_t float_bits(float value)
+{
+    union {
+        float number;
+        uint32_t bits;
+    } view;
+    view.number = value;
+    return view.bits;
+}
+
+/* The expected values come from libgcc's own helpers, because this build
+ * renamed the implementation under test. */
+static void check_float_conversions(unsigned __int128 value)
+{
+    const __int128 signed_value = (__int128)value;
+    if (double_bits(oct_floatuntidf(value)) != double_bits((double)value)) {
+        ++failures;
+        printf("FAIL __floatuntidf for %llx%016llx\n", (unsigned long long)(value >> 64),
+               (unsigned long long)value);
+    }
+    if (float_bits(oct_floatuntisf(value)) != float_bits((float)value)) {
+        ++failures;
+        printf("FAIL __floatuntisf for %llx%016llx\n", (unsigned long long)(value >> 64),
+               (unsigned long long)value);
+    }
+    if (double_bits(oct_floattidf(signed_value)) != double_bits((double)signed_value)) {
+        ++failures;
+        printf("FAIL __floattidf for %lld,%lld\n", (long long)(value >> 64), (long long)value);
+    }
+    if (float_bits(oct_floattisf(signed_value)) != float_bits((float)signed_value)) {
+        ++failures;
+        printf("FAIL __floattisf for %lld,%lld\n", (long long)(value >> 64), (long long)value);
+    }
+
+    /* And back: only in-range, non-negative doubles have a defined result. */
+    const double as_double = (double)value;
+    if (as_double >= 0.0 && as_double < 0x1p128) {
+        if (oct_fixunsdfti(as_double) != (unsigned __int128)as_double) {
+            ++failures;
+            printf("FAIL __fixunsdfti for %.17g\n", as_double);
+        }
+    }
+    const float as_float = (float)value;
+    /* A float cannot reach 2^128, so 2^127 bounds the in-range region. */
+    if (as_float >= 0.0f && as_float < 0x1p127f) {
+        if (oct_fixunssfti(as_float) != (unsigned __int128)as_float) {
+            ++failures;
+            printf("FAIL __fixunssfti for %.9g\n", (double)as_float);
+        }
+    }
+    if (as_double > 0.0 && as_double < 0x1p127) {
+        if (oct_fixdfti(-as_double) != (__int128)(-as_double)) {
+            ++failures;
+            printf("FAIL __fixdfti for %.17g\n", -as_double);
+        }
+        if (oct_fixsfti(-as_float) != (__int128)(-as_float)) {
+            ++failures;
+            printf("FAIL __fixsfti for %.9g\n", -(double)as_float);
+        }
+    }
+}
 
 static void check_u128(const char *what, unsigned __int128 got, unsigned __int128 want,
                        unsigned __int128 left, unsigned __int128 right)
@@ -137,6 +225,7 @@ int main(void)
         }
         check_pair(left, right);
         check_signed_pair((__int128)left, (__int128)right);
+        check_float_conversions(left);
     }
 
     const __int128 signed_edges[] = {0, 1, -1, 2, -2, (__int128)0xffffffffffffffffull,

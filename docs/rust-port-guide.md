@@ -22,6 +22,7 @@ dipanggil dari shell, bukan cross-build dari host.
 | Klasifikasi wide-character (`<wctype.h>`) | terbukti di host | `user/wctype.c` + `make -C user wctype-test` |
 | `thread_local` C++ (destruktor per-thread) | terbukti di host | `__cxa_thread_atexit` di `runtime.c`, uji di `/bin/cpp-smoke` |
 | compiler-rt 128-bit (`__udivmodti4`, shift) | terbukti di host | `user/compiler_rt.c` + `make -C user compiler-rt-test` |
+| compiler-rt float↔128-bit (`__floatuntidf`, `__fixunsdfti`) | terbukti di host | `user/compiler_rt.c`, uji di `/bin/cpp-smoke` |
 | Header publik valid untuk C dan C++ | terbukti di host | `python3 tools/check_cpp_headers.py` (57 header) |
 | libc++/libstdc++ subset, compiler-rt | **belum** | — |
 | libLLVM untuk host OCTAGRAM | **belum** | — |
@@ -215,6 +216,8 @@ Ikuti urutan ini supaya klaim tetap bisa dipertanggungjawabkan:
 | `_Atomic does not name a type` | `#include_next <stdatomic.h>` milik GCC hanya untuk C | guard C++ di `stdatomic.h` |
 | `uint64_t/size_t has not been declared` | header tidak mandiri | tambahkan include yang hilang; `tools/check_cpp_headers.py` menangkapnya |
 | `undefined reference to __udivmodti4` | kode memakai `__int128`/`u128` dan helper belum ikut di-link | tambahkan `build/compiler_rt.o` ke baris `ld` (sudah default untuk `%.elf`) |
+| `undefined reference to __floatuntidf` | cast `u128`/`__int128` ↔ `double`/`float` | helper ada di `compiler_rt.c`; pastikan object itu ikut di-link |
+| Varian `long double` (`__fixunsxfti`) belum ada | hanya kode C/C++ dengan `long double` 80-bit | hindari `long double` ↔ 128-bit, atau port helper-nya |
 | `Option 'out-dir' given more than once` | `cargo rustc` sudah memberi `--out-dir` | jangan tambahkan `--out-dir`; ambil `.o` dari `target/.../build/<pkg>/*/out/` |
 
 ## 8. Urutan lanjutan

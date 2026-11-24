@@ -250,3 +250,242 @@ unsigned __int128 __lshrti3(unsigned __int128 value, int count)
     }
     return result.value;
 }
+
+/*
+ * Floating point conversions for 128-bit integers.
+ *
+ * gcc and LLVM emit these for `u128 as f64`, `f64 as u128` (Rust) and
+ * `(double)__int128` (C/C++). They are implemented with integer bit assembly
+ * rather than floating point arithmetic so the rounding is round-to-nearest,
+ * ties-to-even, which is what the hardware and the C++ standard require.
+ */
+
+static int oct_u128_bit_length(OctCompileRtU128 value)
+{
+    if (value.words.high != 0) {
+        return 64 + (64 - __builtin_clzll(value.words.high));
+    }
+    if (value.words.low != 0) {
+        return 64 - __builtin_clzll(value.words.low);
+    }
+    return 0;
+}
+
+static OctCompileRtU128 oct_u128_shift_right(OctCompileRtU128 value, int count)
+{
+    OctCompileRtU128 result;
+    if (count >= 128) {
+        result.value = 0;
+        return result;
+    }
+    if (count >= 64) {
+        result.words.low = value.words.high >> (count - 64);
+        result.words.high = 0;
+        return result;
+    }
+    if (count == 0) {
+        return value;
+    }
+    result.words.low = (value.words.low >> count) | (value.words.high << (64 - count));
+    result.words.high = value.words.high >> count;
+    return result;
+}
+
+static OctCompileRtU128 oct_u128_shift_left(OctCompileRtU128 value, int count)
+{
+    OctCompileRtU128 result;
+    if (count >= 128) {
+        result.value = 0;
+        return result;
+    }
+    if (count >= 64) {
+        result.words.high = value.words.low << (count - 64);
+        result.words.low = 0;
+        return result;
+    }
+    if (count == 0) {
+        return value;
+    }
+    result.words.high = (value.words.high << count) | (value.words.low >> (64 - count));
+    result.words.low = value.words.low << count;
+    return result;
+}
+
+static int oct_u128_bit(OctCompileRtU128 value, int index)
+{
+    unsigned long long word =
+        index >= 64 ? value.words.high : value.words.low;
+    return (int)((word >> (index & 63)) & 1ull);
+}
+
+/* True when any bit below `count` is set. */
+static int oct_u128_any_below(OctCompileRtU128 value, int count)
+{
+    if (count <= 0) {
+        return 0;
+    }
+    if (count >= 128) {
+        return !oct_u128_is_zero(value);
+    }
+    OctCompileRtU128 masked = oct_u128_shift_right(oct_u128_shift_left(value, 128 - count), 128 - count);
+    return !oct_u128_is_zero(masked);
+}
+
+/* Reduce `value` (non-zero) to `keep_bits` significant bits, rounding halfway
+ * cases to even, and report the exponent of its leading bit. */
+static int oct_u128_normalise(OctCompileRtU128 value, int keep_bits, unsigned long long *mantissa)
+{
+    int length = oct_u128_bit_length(value);
+    if (length <= keep_bits) {
+        *mantissa = oct_u128_shift_left(value, keep_bits - length).words.low;
+        return length - 1;
+    }
+    const int dropped = length - keep_bits;
+    unsigned long long kept = oct_u128_shift_right(value, dropped).words.low;
+    const int guard = oct_u128_bit(value, dropped - 1);
+    const int sticky = oct_u128_any_below(value, dropped - 1);
+    if (guard && (sticky || (kept & 1ull) != 0)) {
+        ++kept;
+        if (kept == (1ull << keep_bits)) {
+            kept >>= 1;
+            ++length;
+        }
+    }
+    *mantissa = kept;
+    return length - 1;
+}
+
+double __floatuntidf(unsigned __int128 value);
+
+double __floatuntidf(unsigned __int128 value)
+{
+    OctCompileRtU128 input;
+    input.value = value;
+    if (oct_u128_is_zero(input)) {
+        return 0.0;
+    }
+    unsigned long long mantissa = 0;
+    const int exponent = oct_u128_normalise(input, 53, &mantissa);
+    union {
+        unsigned long long bits;
+        double number;
+    } result;
+    result.bits = ((unsigned long long)(exponent + 1023) << 52) | (mantissa & ((1ull << 52) - 1));
+    return result.number;
+}
+
+float __floatuntisf(unsigned __int128 value);
+
+float __floatuntisf(unsigned __int128 value)
+{
+    OctCompileRtU128 input;
+    input.value = value;
+    if (oct_u128_is_zero(input)) {
+        return 0.0f;
+    }
+    unsigned long long mantissa = 0;
+    int exponent = oct_u128_normalise(input, 24, &mantissa);
+    union {
+        unsigned int bits;
+        float number;
+    } result;
+    if (exponent + 127 >= 0xff) {
+        result.bits = 0x7f800000u;
+        return result.number;
+    }
+    result.bits = (unsigned int)(exponent + 127) << 23 | (unsigned int)(mantissa & ((1u << 23) - 1));
+    return result.number;
+}
+
+double __floattidf(__int128 value);
+
+double __floattidf(__int128 value)
+{
+    OctCompileRtI128 input;
+    input.value = value;
+    if ((input.words.high >> 63) == 0) {
+        return __floatuntidf(value);
+    }
+    OctCompileRtU128 magnitude;
+    magnitude.value = value;
+    magnitude = oct_u128_negate(magnitude);
+    return -__floatuntidf(magnitude.value);
+}
+
+float __floattisf(__int128 value);
+
+float __floattisf(__int128 value)
+{
+    OctCompileRtI128 input;
+    input.value = value;
+    if ((input.words.high >> 63) == 0) {
+        return __floatuntisf(value);
+    }
+    OctCompileRtU128 magnitude;
+    magnitude.value = value;
+    magnitude = oct_u128_negate(magnitude);
+    return -__floatuntisf(magnitude.value);
+}
+
+unsigned __int128 __fixunsdfti(double value);
+
+unsigned __int128 __fixunsdfti(double value)
+{
+    union {
+        double number;
+        unsigned long long bits;
+    } input;
+    input.number = value;
+    const int negative = (int)(input.bits >> 63);
+    const int exponent = (int)((input.bits >> 52) & 0x7ff);
+    const unsigned long long fraction = input.bits & ((1ull << 52) - 1);
+    if (exponent == 0x7ff) {
+        /* NaN has no integer value; infinity saturates like compiler-rt. */
+        return fraction != 0 ? (unsigned __int128)0 : ~(unsigned __int128)0;
+    }
+    if (negative || exponent == 0) {
+        return 0;
+    }
+    OctCompileRtU128 mantissa;
+    mantissa.words.high = 0;
+    mantissa.words.low = fraction | (1ull << 52);
+    const int shift = exponent - 1075;
+    if (shift >= 0) {
+        if (shift >= 128 || oct_u128_bit_length(mantissa) + shift > 128) {
+            return ~(unsigned __int128)0;
+        }
+        return oct_u128_shift_left(mantissa, shift).value;
+    }
+    return oct_u128_shift_right(mantissa, -shift).value;
+}
+
+unsigned __int128 __fixunssfti(float value);
+
+unsigned __int128 __fixunssfti(float value)
+{
+    return __fixunsdfti((double)value);
+}
+
+__int128 __fixdfti(double value);
+
+__int128 __fixdfti(double value)
+{
+    union {
+        double number;
+        unsigned long long bits;
+    } input;
+    input.number = value;
+    if ((input.bits >> 63) == 0) {
+        return (__int128)__fixunsdfti(value);
+    }
+    OctCompileRtU128 magnitude;
+    magnitude.value = __fixunsdfti(-value);
+    return (__int128)oct_u128_negate(magnitude).value;
+}
+
+__int128 __fixsfti(float value);
+
+__int128 __fixsfti(float value)
+{
+    return __fixdfti((double)value);
+}

@@ -121,7 +121,7 @@ def ensure_worktree() -> None:
 
 def _safe_repo_path(raw: str) -> Path:
     rel = PurePosixPath(raw)
-    if rel.is_absolute() or not rel.parts or any(part in ("..", "") for part in rel.parts):
+    if rel.is_absolute() or not rel.parts or rel.parts[0] == ".git" or any(part in ("..", "") for part in rel.parts):
         raise HTTPException(status_code=400, detail="Path must be repository-relative and cannot contain '..'.")
     target = (WORKTREE / Path(*rel.parts)).resolve()
     try:

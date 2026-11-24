@@ -145,3 +145,86 @@ curl -s http://127.0.0.1:8787/agent/task \
 ```
 
 The agent stops after a successful build or two attempts. Inspect the returned patches and `GET /workspace/status`; nothing is committed or pushed automatically.
+
+## 8. Hermes Agent integration
+
+Hermes is the orchestration layer; llama.cpp remains the local inference server. Hermes connects to the local OpenAI-compatible endpoint and discovers the five bounded OCTAGRAM tools over MCP. The repository skill is project-local at `.hermes/skills/octagram-os-developer/SKILL.md`.
+
+### Install Hermes and Python MCP dependency
+
+Official Hermes installation for WSL2/Linux:
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+Install the OCTAGRAM MCP dependency in the Python environment used by Hermes' MCP subprocess:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r tools/octagram_ai/requirements.txt
+```
+
+Build the restricted build image:
+
+```bash
+docker build -f tools/octagram_ai/Dockerfile -t octagram-ai-build:latest .
+```
+
+### Configure Hermes
+
+Copy `tools/octagram_ai/hermes/config.yaml.example` and merge its sections into `~/.hermes/config.yaml`. Replace every `/ABSOLUTE/PATH/TO/OCTAGRAM-OS` placeholder with the real Linux/WSL path. Do not overwrite unrelated existing Hermes configuration.
+
+The configuration:
+- Points Hermes to the local llama.cpp endpoint (default 7B Q4 model, 8K context).
+- Starts the OCTAGRAM MCP server over stdio and exposes only status, search, read, patch, and allowlisted build tools.
+- Marks the MCP server untrusted so write/build tool calls require the normal approval flow.
+- Uses Hermes' Docker terminal backend with networking disabled, no extra capabilities, resource limits, and only the detached AI worktree mounted writable.
+- Keeps unattended, cron, and one-shot dangerous-command approval set to deny.
+
+Before first use, trust this repository's project skill:
+
+```bash
+hermes skills trust /absolute/path/to/OCTAGRAM-OS-ai-worktree
+```
+
+Start llama.cpp in another terminal. For a 4 GB RTX 2050, Qwen2.5-Coder-7B-Instruct Q4_K_M must use CPU/RAM offload; begin conservatively:
+
+```bash
+llama-server -m /models/qwen2.5-coder-7b-instruct-q4_k_m.gguf \
+  -ngl 8 -c 8192 -b 64 -ub 32 \
+  --host 127.0.0.1 --port 8080
+```
+
+If VRAM is exhausted, lower `-ngl` (for example 4); if host RAM becomes tight or generation is too slow, use Qwen2.5-Coder-3B Q4 instead. Keep the local model server and Hermes on loopback. Never expose the unauthenticated local inference endpoint to a public interface.
+
+Launch Hermes inside the isolated worktree:
+
+```bash
+bash tools/octagram_ai/hermes/run_hermes.sh
+```
+
+The launcher prepares the detached worktree if it does not exist. Example task:
+
+> Inspect the current Rust native self-hosting milestone. Read the port guide and roadmap, identify the next smallest missing implementation step, implement it, run the narrowest relevant build, and report evidence and remaining blockers. Do not change roadmap status.
+
+### MCP tool surface
+
+| Tool | Capability |
+|---|---|
+| `octagram_status` | Worktree base, changed files, diff summary |
+| `octagram_search` | Fixed-string search of tracked files |
+| `octagram_read_file` | Bounded repository-relative UTF-8 read |
+| `octagram_apply_patch` | Validated unified diff into detached worktree |
+| `octagram_run_build` | Allowlisted network-isolated Docker build/test |
+
+Hermes' own skills, planning, and memory provide orchestration. The MCP server is the only supported OCTAGRAM-specific write/build interface. The Docker terminal backend is separately confined to the same detached worktree. No automatic commit, push, disk operation, firmware flash, or physical-hardware action is provided.
+
+### Important limitations
+
+- This integration does not make a 7B model equivalent to a frontier coding model. Expect slower CPU-offloaded inference and review larger changes carefully.
+- Qwen2.5-Coder-7B tool-call quality may vary by GGUF chat template. Verify tool discovery with a small read-only task before allowing patch/build operations.
+- Hermes' local model endpoint is offline-capable after the model and software dependencies have been downloaded. Optional web tools and cloud model providers require internet and separate provider credentials.
+- A host build passing is not evidence of QEMU or physical-hardware success.
+- The MCP server and Hermes Docker terminal configuration must be tested on the user's WSL/Docker installation; this repository change does not prove runtime compatibility.

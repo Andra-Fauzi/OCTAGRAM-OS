@@ -3039,7 +3039,7 @@ fn dispatch_syscall(
         SYSCALL_PWRITE => syscall_pwrite(arg1, arg2, arg3, arg4),
         SYSCALL_WRITEV => syscall_writev(arg1, arg2, arg3),
         SYSCALL_READV => syscall_readv(arg1, arg2, arg3),
-        SYSCALL_SENDMSG | SYSCALL_RECVMSG => Err(ENOSYS),
+        SYSCALL_SENDMSG => syscall_sendmsg(arg1, arg2, arg3),\n        SYSCALL_RECVMSG => syscall_recvmsg(arg1, arg2, arg3),
         SYSCALL_SYSCONF => syscall_sysconf(arg1),
         SYSCALL_GETRLIMIT | SYSCALL_SETRLIMIT => syscall_rlimit(number, arg1, arg2),
         SYSCALL_GETRUSAGE => syscall_getrusage(arg1, arg2),
@@ -8441,6 +8441,50 @@ fn syscall_pwrite(fd: u64, buf: u64, count: u64, offset: u64) -> Result<u64, i32
         update_shared_mapping_pages(&file.path, offset, &input[..written]);
     }
     Ok(written as u64)
+}
+
+
+// Basic sendmsg/recvmsg support for connected sockets, without ancillary data.
+fn syscall_sendmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
+    if flags & !0x4040 != 0 { return Err(EINVAL); }
+    paging::validate_user_range(header_addr, core::mem::size_of::<UserMsgHdr>(), false).map_err(|_| EFAULT)?;
+    let header = unsafe { (header_addr as *const UserMsgHdr).read_unaligned() };
+    if header.name != 0 || header.control != 0 || header.control_len != 0 { return Err(ENOTSUP); }
+    if header.iov_len > 1024 { return Err(EINVAL); }
+    let size = usize::try_from(header.iov_len).map_err(|_| EINVAL)?
+        .checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
+    paging::validate_user_range(header.iov, size, false).map_err(|_| EFAULT)?;
+    let mut total = 0u64;
+    for idx in 0..header.iov_len as usize {
+        let vec = unsafe { ((header.iov as usize + idx * core::mem::size_of::<IoVec>()) as *const IoVec).read_unaligned() };
+        if vec.len == 0 { continue; }
+        let n = syscall_send(fd, vec.base, vec.len, flags)?;
+        total = total.saturating_add(n);
+        if n < vec.len { break; }
+    }
+    Ok(total)
+}
+
+fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
+    if flags & !0x42 != 0 { return Err(EINVAL); }
+    paging::validate_user_range(header_addr, core::mem::size_of::<UserMsgHdr>(), true).map_err(|_| EFAULT)?;
+    let mut header = unsafe { (header_addr as *const UserMsgHdr).read_unaligned() };
+    if header.name != 0 || header.control != 0 || header.control_len != 0 { return Err(ENOTSUP); }
+    if header.iov_len > 1024 { return Err(EINVAL); }
+    let size = usize::try_from(header.iov_len).map_err(|_| EINVAL)?
+        .checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
+    paging::validate_user_range(header.iov, size, false).map_err(|_| EFAULT)?;
+    let mut total = 0u64;
+    for idx in 0..header.iov_len as usize {
+        let vec = unsafe { ((header.iov as usize + idx * core::mem::size_of::<IoVec>()) as *const IoVec).read_unaligned() };
+        if vec.len == 0 { continue; }
+        let n = syscall_recv(fd, vec.base, vec.len, flags)?;
+        total = total.saturating_add(n);
+        if n < vec.len { break; }
+    }
+    header.flags = 0;
+    unsafe { (header_addr as *mut UserMsgHdr).write_unaligned(header); }
+    Ok(total)
 }
 
 fn syscall_writev(fd: u64, iov_addr: u64, iovcnt: u64) -> Result<u64, i32> {

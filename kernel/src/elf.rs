@@ -8451,18 +8451,28 @@ fn syscall_sendmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     let header = unsafe { (header_addr as *const UserMsgHdr).read_unaligned() };
     if header.name != 0 || header.control != 0 || header.control_len != 0 { return Err(ENOTSUP); }
     if header.iov_len > 1024 { return Err(EINVAL); }
-    let size = usize::try_from(header.iov_len).map_err(|_| EINVAL)?
-        .checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
-    paging::validate_user_range(header.iov, size, false).map_err(|_| EFAULT)?;
-    let mut total = 0u64;
-    for idx in 0..header.iov_len as usize {
+    let count = usize::try_from(header.iov_len).map_err(|_| EINVAL)?;
+    let bytes = count.checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
+    paging::validate_user_range(header.iov, bytes, false).map_err(|_| EFAULT)?;
+    let mut vectors = Vec::with_capacity(count);
+    let mut total = 0usize;
+    for idx in 0..count {
         let vec = unsafe { ((header.iov as usize + idx * core::mem::size_of::<IoVec>()) as *const IoVec).read_unaligned() };
-        if vec.len == 0 { continue; }
-        let n = syscall_send(fd, vec.base, vec.len, flags)?;
-        total = total.saturating_add(n);
-        if n < vec.len { break; }
+        let len = usize::try_from(vec.len).map_err(|_| EINVAL)?;
+        total = total.checked_add(len).ok_or(EINVAL)?;
+        if total > MAX_SYSCALL_IO { return Err(EMSGSIZE); }
+        if len != 0 { paging::validate_user_range(vec.base, len, false).map_err(|_| EFAULT)?; }
+        vectors.push((vec.base, len));
     }
-    Ok(total)
+    let mut payload = Vec::with_capacity(total);
+    for (base, len) in vectors {
+        if len != 0 {
+            let part = unsafe { core::slice::from_raw_parts(base as *const u8, len) };
+            payload.extend_from_slice(part);
+        }
+    }
+    let ptr = if payload.is_empty() { 0 } else { payload.as_ptr() as u64 };
+    syscall_send(fd, ptr, payload.len() as u64, flags)
 }
 
 fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
@@ -8471,20 +8481,35 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     let mut header = unsafe { (header_addr as *const UserMsgHdr).read_unaligned() };
     if header.name != 0 || header.control != 0 || header.control_len != 0 { return Err(ENOTSUP); }
     if header.iov_len > 1024 { return Err(EINVAL); }
-    let size = usize::try_from(header.iov_len).map_err(|_| EINVAL)?
-        .checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
-    paging::validate_user_range(header.iov, size, false).map_err(|_| EFAULT)?;
-    let mut total = 0u64;
-    for idx in 0..header.iov_len as usize {
+    let count = usize::try_from(header.iov_len).map_err(|_| EINVAL)?;
+    let bytes = count.checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
+    paging::validate_user_range(header.iov, bytes, false).map_err(|_| EFAULT)?;
+    let mut vectors = Vec::with_capacity(count);
+    let mut total = 0usize;
+    for idx in 0..count {
         let vec = unsafe { ((header.iov as usize + idx * core::mem::size_of::<IoVec>()) as *const IoVec).read_unaligned() };
-        if vec.len == 0 { continue; }
-        let n = syscall_recv(fd, vec.base, vec.len, flags)?;
-        total = total.saturating_add(n);
-        if n < vec.len { break; }
+        let len = usize::try_from(vec.len).map_err(|_| EINVAL)?;
+        total = total.checked_add(len).ok_or(EINVAL)?;
+        if total > MAX_SYSCALL_IO { return Err(EMSGSIZE); }
+        if len != 0 { paging::validate_user_range(vec.base, len, true).map_err(|_| EFAULT)?; }
+        vectors.push((vec.base, len));
+    }
+    let mut payload = Vec::new();
+    payload.resize(total, 0);
+    let ptr = if payload.is_empty() { 0 } else { payload.as_mut_ptr() as u64 };
+    let received = syscall_recv(fd, ptr, total as u64, flags)? as usize;
+    let mut offset = 0usize;
+    for (base, len) in vectors {
+        if offset >= received { break; }
+        let copied = len.min(received - offset);
+        if copied != 0 {
+            unsafe { core::ptr::copy_nonoverlapping(payload.as_ptr().add(offset), base as *mut u8, copied); }
+            offset += copied;
+        }
     }
     header.flags = 0;
     unsafe { (header_addr as *mut UserMsgHdr).write_unaligned(header); }
-    Ok(total)
+    Ok(received as u64)
 }
 
 fn syscall_writev(fd: u64, iov_addr: u64, iovcnt: u64) -> Result<u64, i32> {

@@ -257,6 +257,24 @@ fn main() {
         } != 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::Other, "F_SETFD could not restore clone flag"));
         }
+        // Plain F_DUPFD follows dup semantics and must not inherit
+        // FD_CLOEXEC from its source descriptor.
+        let plain_duplicate = unsafe {
+            fcntl(std::os::fd::AsRawFd::as_raw_fd(&file), 0, 0)
+        };
+        if plain_duplicate < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let plain_duplicate = unsafe {
+            <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(plain_duplicate)
+        };
+        let plain_duplicate_flags = unsafe {
+            fcntl(std::os::fd::AsRawFd::as_raw_fd(&plain_duplicate), F_GETFD)
+        };
+        if plain_duplicate_flags != 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "F_DUPFD unexpectedly inherited FD_CLOEXEC"));
+        }
+        drop(plain_duplicate);
         // dup/F_DUPFD must share the same open-file-description offset. Read
         // through the clone, then ensure the original continues at that offset.
         checked!("File::seek", file.seek(std::io::SeekFrom::Start(0)));

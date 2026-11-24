@@ -30,6 +30,7 @@ const FD_CLOEXEC: i32 = 1;
 const O_CLOEXEC: u64 = 1 << 19;
 const SYSCALL_DUP3: u64 = 99;
 const EINVAL: i64 = 22;
+const EBADF: i64 = 9;
 
 
 // Minimal direct syscall helpers for testing the kernel's dirfd ABI independently
@@ -69,6 +70,47 @@ unsafe fn syscall4(number: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64) -> i
     result
 }
 
+#[repr(C)]
+struct ProbeMsgHdr {
+    name: u64,
+    name_len: u32,
+    _name_padding: u32,
+    iov: u64,
+    iov_len: u64,
+    control: u64,
+    control_len: u64,
+    flags: i32,
+    _flags_padding: u32,
+}
+
+unsafe fn syscall6(
+    number: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
+) -> i64 {
+    let result: i64;
+    unsafe {
+        std::arch::asm!(
+            "int 0x80",
+            inlateout("rax") number as i64 => result,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            in("r8") arg5,
+            in("r9") arg6,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+    result
+}
+
 fn marker(message: &str) {
     println!("{message}");
 }
@@ -96,6 +138,33 @@ fn main() {
         std::process::exit(70);
     }
     marker("RUST-STD-GETRANDOM-FLAGS-PASS");
+
+    // Linux x86_64 recvmsg/sendmsg ABI: zero iovecs are valid even when
+    // msg_iov is null. An invalid descriptor should therefore reach EBADF,
+    // not fail pointer validation with EFAULT.
+    let empty_message = ProbeMsgHdr {
+        name: 0,
+        name_len: 0,
+        _name_padding: 0,
+        iov: 0,
+        iov_len: 0,
+        control: 0,
+        control_len: 0,
+        flags: 0,
+        _flags_padding: 0,
+    };
+    let message_address = &empty_message as *const ProbeMsgHdr as usize as u64;
+    let empty_send = unsafe {
+        syscall6(106, u64::MAX, message_address, 0, 0, 0, 0)
+    };
+    let empty_recv = unsafe {
+        syscall6(107, u64::MAX, message_address, 0, 0, 0, 0)
+    };
+    if empty_send != -EBADF || empty_recv != -EBADF {
+        marker("RUST-STD-SOCKET-EMPTY-IOV-FAIL");
+        std::process::exit(73);
+    }
+    marker("RUST-STD-SOCKET-EMPTY-IOV-PASS");
 
     let (tls_value, tls_address) = RUST_TLS_PROBE.with(|value| {
         let initial = value.get();

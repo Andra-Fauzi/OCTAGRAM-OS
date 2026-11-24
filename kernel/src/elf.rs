@@ -5934,8 +5934,10 @@ fn syscall_recv(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i
     };
     if let Ok(socket) = udp_socket_for_fd(fd) {
         let (copied, _total, _source_ip, _source_port) =
-            crate::network::receive_udp_socket_length(&socket, output)
-                .map_err(errno_from_network)?;
+            crate::network::receive_udp_socket_length_with_peek(
+                &socket, output, flags & 0x02 != 0,
+            )
+            .map_err(errno_from_network)?;
         return Ok(copied as u64);
     }
     crate::network::receive_tcp_socket(&tcp_socket_for_fd(fd)?, output, flags & 0x02 != 0)

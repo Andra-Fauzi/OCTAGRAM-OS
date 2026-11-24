@@ -101,8 +101,6 @@ def main() -> int:
     cargo_version = run(("cargo", "+nightly", "--version", "--verbose"))
     sysroot = run(("rustc", "+nightly", "--print", "sysroot"))
     installed_components = run(("rustup", "component", "list", "--installed", "--toolchain", "nightly"))
-    component_names = {line.split("-", 1)[0] if line.startswith("rust-src-") else line.split("-", 1)[0]
-                       for line in installed_components.splitlines()}
     if not any(line == "rust-src" or line.startswith("rust-src-") for line in installed_components.splitlines()):
         fail("nightly rust-src component is required for -Z build-std")
     if not any(line == "rustfmt" or line.startswith("rustfmt-") for line in installed_components.splitlines()):
@@ -130,7 +128,7 @@ def main() -> int:
             "cargo": cargo_version.splitlines()[0],
             "sysroot": sysroot,
             "installed_components": sorted(
-                line.split("-", 1)[0] for line in installed_components.splitlines()
+                line.split("-x86_64-", 1)[0] for line in installed_components.splitlines()
             ),
             "native_octagram_executable": False,
         },

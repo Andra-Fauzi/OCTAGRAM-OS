@@ -8312,7 +8312,9 @@ fn socket_descriptor_type(fd: u64) -> Result<i32, i32> {
     }
     match process.descriptors.get(fd).and_then(Option::as_ref) {
         Some(UserDescriptor::UdpSocket(_)) => Ok(SOCK_DGRAM_TYPE),
-        Some(UserDescriptor::TcpSocket(_)) => Ok(SOCK_STREAM_TYPE),
+        Some(UserDescriptor::TcpSocket(_)) | Some(UserDescriptor::SocketPair(_)) => {
+            Ok(SOCK_STREAM_TYPE)
+        }
         Some(_) => Err(ENOTSOCK),
         None => Err(EBADF),
     }

@@ -26,7 +26,18 @@ class SafetyTests(unittest.TestCase):
         self.assertIn("--network=none", command)
         self.assertIn("--cap-drop=ALL", command)
         self.assertIn("--read-only", command)
+        self.assertIn("CARGO_NET_OFFLINE=true", command)
         self.assertNotIn("sh", command)
+
+    def test_patch_rejects_git_metadata(self):
+        patch = "--- a/.git/config\\n+++ b/.git/config\\n@@ -1 +1 @@\\n"
+        with self.assertRaises(Exception):
+            ai.apply_patch(patch)
+
+    def test_patch_rejects_parent_traversal(self):
+        patch = "--- a/../outside\\n+++ b/../outside\\n@@ -1 +1 @@\\n"
+        with self.assertRaises(Exception):
+            ai.apply_patch(patch)
 
 
 if __name__ == "__main__":

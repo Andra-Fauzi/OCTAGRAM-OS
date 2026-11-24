@@ -6,10 +6,13 @@
 
 use std::cell::Cell;
 use std::io::{Seek, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // Force a real non-empty PT_TLS image in the executable. This checks that
 // Rust's local-exec TLS relocations and OCTAGRAM's startup TLS initializer
 // agree on the target ABI instead of merely emitting an empty TLS header.
+static RUST_STD_DETACHED_THREAD_DONE: AtomicBool = AtomicBool::new(false);
+
 std::thread_local! {
     static RUST_TLS_PROBE: Cell<u64> = const { Cell::new(0x4f43_5441_4752_414d) };
 }
@@ -671,6 +674,25 @@ fn main() {
     marker("RUST-STD-THREAD-TLS-ISOLATION-PASS");
     let _elapsed = started.elapsed();
     marker("RUST-STD-THREAD-CLOCK-PASS");
+
+    // Dropping a Rust JoinHandle detaches its pthread. Verify that the worker
+    // continues independently and that the libc detach path is usable.
+    RUST_STD_DETACHED_THREAD_DONE.store(false, Ordering::SeqCst);
+    let detached = std::thread::spawn(|| {
+        RUST_STD_DETACHED_THREAD_DONE.store(true, Ordering::SeqCst);
+    });
+    drop(detached);
+    for _ in 0..10_000_000 {
+        if RUST_STD_DETACHED_THREAD_DONE.load(Ordering::SeqCst) {
+            break;
+        }
+        std::hint::spin_loop();
+    }
+    if !RUST_STD_DETACHED_THREAD_DONE.load(Ordering::SeqCst) {
+        marker("RUST-STD-THREAD-DETACH-FAIL");
+        std::process::exit(72);
+    }
+    marker("RUST-STD-THREAD-DETACH-PASS");
 
     // Separate the basic spawn/wait path from the stdio-pipe capture path.
     // If this passes but output() fails, the remaining fault is in pipe setup,

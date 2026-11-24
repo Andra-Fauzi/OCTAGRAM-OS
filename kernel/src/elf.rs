@@ -8454,7 +8454,9 @@ fn syscall_sendmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
     if header.iov_len > 1024 { return Err(EINVAL); }
     let count = usize::try_from(header.iov_len).map_err(|_| EINVAL)?;
     let bytes = count.checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
-    paging::validate_user_range(header.iov, bytes, false).map_err(|_| EFAULT)?;
+    if bytes != 0 {
+        paging::validate_user_range(header.iov, bytes, false).map_err(|_| EFAULT)?;
+    }
     let mut vectors = Vec::with_capacity(count);
     let mut total = 0usize;
     for idx in 0..count {
@@ -8520,10 +8522,14 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
         crate::network::receive_tcp_socket(&tcp_socket_for_fd(fd)?, &mut payload, flags & 0x02 != 0)
             .map_err(errno_from_network)?
     };
+    // MSG_TRUNC may make the syscall return the original UDP datagram
+    // length, which can exceed the temporary receive buffer. Only scatter
+    // bytes that were actually copied into payload; never read past it.
+    let scatter_len = received.min(payload.len());
     let mut offset = 0usize;
     for (base, len) in vectors {
-        if offset >= received { break; }
-        let copied = len.min(received - offset);
+        if offset >= scatter_len { break; }
+        let copied = len.min(scatter_len - offset);
         if copied != 0 {
             unsafe { core::ptr::copy_nonoverlapping(payload.as_ptr().add(offset), base as *mut u8, copied); }
             offset += copied;

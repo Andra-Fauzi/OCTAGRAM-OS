@@ -11,6 +11,7 @@ on:
   pull_request:
     paths:
       - "tools/octagram_ai/**"
+      - ".hermes/skills/octagram-os-developer/**"
       - ".github/workflows/octagram-ai.yml"
 
 jobs:
@@ -24,6 +25,6 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r tools/octagram_ai/requirements.txt
       - name: Compile Python module
-        run: python -m py_compile tools/octagram_ai/octagram_ai.py tools/octagram_ai/hermes_mcp.py tools/octagram_ai/test_octagram_ai.py
+        run: python -m py_compile tools/octagram_ai/octagram_ai.py tools/octagram_ai/hermes_mcp.py tools/octagram_ai/test_octagram_ai.py tools/octagram_ai/test_hermes_mcp.py
       - name: Run safety tests
         run: python -m unittest discover -s tools/octagram_ai -p "test_*.py"

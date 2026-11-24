@@ -20,6 +20,7 @@ dipanggil dari shell, bukan cross-build dari host.
 | Runtime C++ ABI minimal | terbukti di host | `user/cxx_runtime.cpp` |
 | `pthread_once` (dipakai `std::call_once`) | terbukti di host | `kernel`/`runtime.c`, uji di `/bin/cpp-smoke` |
 | Klasifikasi wide-character (`<wctype.h>`) | terbukti di host | `user/wctype.c` + `make -C user wctype-test` |
+| `thread_local` C++ (destruktor per-thread) | terbukti di host | `__cxa_thread_atexit` di `runtime.c`, uji di `/bin/cpp-smoke` |
 | Header publik valid untuk C dan C++ | terbukti di host | `python3 tools/check_cpp_headers.py` (57 header) |
 | libc++/libstdc++ subset, compiler-rt | **belum** | — |
 | libLLVM untuk host OCTAGRAM | **belum** | — |

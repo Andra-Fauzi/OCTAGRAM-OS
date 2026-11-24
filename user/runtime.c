@@ -1723,6 +1723,7 @@ typedef struct ThreadStart {
 } ThreadStart;
 
 static void oct_pthread_run_key_destructors(void);
+static void oct_thread_run_tls_destructors(void);
 
 #define OCT_PTHREAD_STACK_SIZE (64u * 1024u)
 
@@ -1740,6 +1741,9 @@ static void oct_pthread_start(void *opaque)
     ThreadStart start = *(ThreadStart *)opaque;
     void *result = start.function(start.argument);
     free(opaque);
+    /* C++ thread_local destructors run before the POSIX key destructors,
+       matching glibc's thread exit order. */
+    oct_thread_run_tls_destructors();
     /* errno/h_errno accessors initialize their per-TID state lazily. */
     oct_pthread_run_key_destructors();
     oct_thread_exit(result);
@@ -1845,6 +1849,7 @@ pthread_t pthread_self(void)
 
 void pthread_exit(void *result)
 {
+    oct_thread_run_tls_destructors();
     oct_pthread_run_key_destructors();
     oct_thread_exit(result);
     for (;;) {
@@ -2569,6 +2574,55 @@ int pthread_setspecific(pthread_key_t key, const void *value)
     oct_pthread_key_lock_release();
     return 0;
 }
+/* C++ thread_local objects with non-trivial destructors are registered here by
+ * the compiler (`__cxa_thread_atexit`) and unwound at thread exit. The chain is
+ * per thread because the nodes live in thread-local storage. */
+typedef struct OctThreadExitNode {
+    struct OctThreadExitNode *next;
+    void (*destructor)(void *);
+    void *object;
+} OctThreadExitNode;
+
+static __thread OctThreadExitNode *oct_thread_exit_chain;
+
+int __cxa_thread_atexit(void (*destructor)(void *), void *object, void *dso)
+{
+    (void)dso;
+    if (destructor == NULL) {
+        return -1;
+    }
+    OctThreadExitNode *node = malloc(sizeof(*node));
+    if (node == NULL) {
+        return -1;
+    }
+    node->destructor = destructor;
+    node->object = object;
+    node->next = oct_thread_exit_chain;
+    oct_thread_exit_chain = node;
+    return 0;
+}
+
+/* glibc's internal spelling; some C++ runtimes call this one directly. */
+int __cxa_thread_atexit_impl(void (*destructor)(void *), void *object, void *dso)
+{
+    return __cxa_thread_atexit(destructor, object, dso);
+}
+
+static void oct_thread_run_tls_destructors(void)
+{
+    /* A destructor may register another one, so drain until the chain is empty. */
+    while (oct_thread_exit_chain != NULL) {
+        OctThreadExitNode *node = oct_thread_exit_chain;
+        oct_thread_exit_chain = node->next;
+        void (*destructor)(void *) = node->destructor;
+        void *object = node->object;
+        free(node);
+        if (destructor != NULL) {
+            destructor(object);
+        }
+    }
+}
+
 static void oct_pthread_run_key_destructors(void)
 {
     void **values = oct_pthread_key_values_current();
@@ -7458,6 +7512,8 @@ int atexit(void (*function)(void))
 
 __attribute__((noreturn)) void exit(int status)
 {
+    /* Destruktor thread_local milik thread utama berjalan saat exit(). */
+    oct_thread_run_tls_destructors();
     /* Handler dijalankan terbalik; exit() dari dalam handler tidak mengulang. */
     if (!oct_atexit_running) {
         oct_atexit_running = 1;

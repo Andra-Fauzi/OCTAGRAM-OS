@@ -99,6 +99,28 @@ static int local_static_value()
     return value;
 }
 
+/* thread_local objects with a non-trivial destructor are registered through
+ * __cxa_thread_atexit and unwound when the owning thread exits. */
+static int thread_local_dtors;
+
+struct ThreadLocalProbe {
+    int value;
+
+    ThreadLocalProbe() : value(7) {}
+    ~ThreadLocalProbe()
+    {
+        ++thread_local_dtors;
+    }
+};
+
+static thread_local ThreadLocalProbe thread_local_probe;
+
+static void *thread_local_entry(void *)
+{
+    thread_local_probe.value = 11;
+    return nullptr;
+}
+
 int main(int argc, char **argv)
 {
     (void)argv;
@@ -121,6 +143,17 @@ int main(int argc, char **argv)
     /* Wide-character classification backs libc++ locale/ctype facets. */
     check(iswalpha(L'A') && !iswalpha(L'1') && towlower(L'Q') == L'q',
           "wide-character classification and case mapping");
+
+    pthread_attr_t thread_attributes;
+    pthread_attr_init(&thread_attributes);
+    pthread_t thread_local_thread = 0;
+    const bool thread_started =
+        pthread_create(&thread_local_thread, &thread_attributes, thread_local_entry, nullptr) == 0;
+    if (thread_started) {
+        pthread_join(thread_local_thread, nullptr);
+    }
+    check(thread_started && thread_local_dtors == 1,
+          "thread_local destructor ran when its thread exited");
 
     Rectangle *heap_rectangle = new Rectangle("heap", 3, 5);
     check(heap_rectangle->area() == 15, "operator new and a heap-allocated object");

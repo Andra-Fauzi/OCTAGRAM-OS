@@ -196,6 +196,11 @@ kodenya:
   `make -C user wctype-test`.
 - `pthread_once`: dibutuhkan `std::call_once` dan guarded statics; diuji di
   `/bin/cpp-smoke` (initializer harus berjalan tepat sekali).
+- `thread_local` C++: compiler memanggil `__cxa_thread_atexit`, jadi runtime
+  menyediakan rantai destruktor per-thread yang dijalankan saat thread keluar
+  (juga saat `exit()` untuk thread utama). `__cxa_thread_atexit_impl` disediakan
+  sebagai alias karena sebagian runtime memakai nama glibc itu. Diuji di
+  `/bin/cpp-smoke` dengan thread yang memiliki `thread_local` berdestruktor.
 - Kesiapan header C untuk C++: `tools/check_cpp_headers.py` mengompilasi setiap
   header publik sebagai C11 dan C++17 (`make -C user cpp-header-test`, juga
   dipanggil CI). Perbaikan yang muncul: `restrict` bukan keyword C++, `char16_t`

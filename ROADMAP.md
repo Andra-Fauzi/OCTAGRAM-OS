@@ -322,6 +322,9 @@ Milestone M0–M7 pada dokumen tersebut adalah sumber status dan acceptance gate
   - [x] Prasyarat libc++: `wctype`/`iswctype`/`towctrans` + klasifikasi
     wide-character (`user/wctype.c`, uji host `wctype-test`), `pthread_once`,
     dan pemeriksa header C-untuk-C++ (`tools/check_cpp_headers.py`, 57 header)
+  - [x] `thread_local` C++: `__cxa_thread_atexit`/`__cxa_thread_atexit_impl`
+    dengan rantai destruktor per-thread dijalankan saat thread exit dan
+    `exit()` (build host; uji guest menunggu)
   - [ ] Subset libc++/libstdc++ (`<string>`, `<vector>`, `<mutex>`) dan compiler-rt
   - [x] Implementasi parser TinyCC untuk `__builtin_add_overflow`,
     `__builtin_sub_overflow`, dan `__builtin_mul_overflow`; runtime helper

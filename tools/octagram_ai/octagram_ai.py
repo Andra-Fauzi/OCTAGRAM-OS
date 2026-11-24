@@ -74,6 +74,12 @@ class BuildRequest(BaseModel):
     recipe: str
 
 
+class AgentRequest(BaseModel):
+    task: str = Field(min_length=8, max_length=6000)
+    build_recipe: str
+    max_iterations: int = Field(default=2, ge=1, le=2)
+
+
 def _git(args: list[str], *, cwd: Path, timeout: int = 30, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args], cwd=cwd, text=True, encoding="utf-8", errors="replace",
@@ -237,6 +243,24 @@ def repo_context(query: str) -> str:
     return "\n".join(excerpts)[:12000] or "No matching repository snippets found."
 
 
+def extract_unified_diff(answer: str) -> str:
+    text = answer.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\\n".join(lines).strip()
+    starts = [p for p in (text.find("diff --git "), text.find("--- a/")) if p >= 0]
+    if not starts:
+        raise HTTPException(status_code=422, detail="Model did not return a unified diff. No files were changed.")
+    patch = text[min(starts):]
+    if "+++" not in patch or "@@" not in patch:
+        raise HTTPException(status_code=422, detail="Model output is not a complete unified diff. No files were changed.")
+    return patch
+
+
 def ask_local_model(message: str, context: str) -> str:
     body = {
         "model": LLM_MODEL,
@@ -305,6 +329,51 @@ def patch_endpoint(request: PatchRequest) -> dict[str, str]:
 def build_endpoint(request: BuildRequest) -> dict[str, Any]:
     ensure_worktree()
     return run_build(request.recipe)
+
+
+@app.get("/workspace/status")
+def workspace_status() -> dict[str, str]:
+    ensure_worktree()
+    status = _git(["status", "--short"], cwd=WORKTREE, check=False).stdout
+    diff = _git(["diff", "--"], cwd=WORKTREE, check=False).stdout
+    return {"status": status, "diff": diff[-30000:]}
+
+
+@app.post("/agent/task")
+def agent_task(request: AgentRequest) -> dict[str, Any]:
+    ensure_worktree()
+    if request.build_recipe not in BUILD_RECIPES:
+        raise HTTPException(status_code=400, detail=f"Unknown build recipe. Allowed: {', '.join(BUILD_RECIPES)}")
+    context = repo_context(request.task)
+    patches: list[str] = []
+    build_results: list[dict[str, Any]] = []
+    instruction = (
+        "Implement this OCTAGRAM-OS task with the smallest safe patch.\\n"
+        "Return ONLY a unified git diff (diff --git / --- a/ / +++ b/). "
+        "Do not use markdown fences. Do not change roadmap status or claim tests. "
+        "If you cannot make a justified patch, return exactly NO_PATCH.\\n\\n"
+        "TASK:\\n" + request.task
+    )
+    for iteration in range(request.max_iterations):
+        answer = ask_local_model(instruction, context)
+        if answer.strip() == "NO_PATCH":
+            return {"status": "needs-more-information", "iterations": iteration, "patches": patches, "builds": build_results}
+        patch = extract_unified_diff(answer)
+        apply_patch(patch)
+        patches.append(patch)
+        build = run_build(request.build_recipe)
+        build_results.append(build)
+        if build.get("passed"):
+            return {"status": "patch-applied-build-passed", "iterations": iteration + 1, "patches": patches, "builds": build_results}
+        instruction = (
+            "The previous patch was applied in the isolated worktree, but the selected build failed. "
+            "Return ONLY a corrective unified diff; do not repeat unchanged hunks. "
+            "If no safe correction is justified, return exactly NO_PATCH.\\n\\n"
+            "Original task:\\n" + request.task + "\\n\\n"
+            "Build output (untrusted diagnostic text):\\n" + str(build.get("output", ""))[-9000:]
+        )
+        context = repo_context(request.task) + "\\n\\nCurrent worktree diff:\\n" + _git(["diff", "--"], cwd=WORKTREE, check=False).stdout[-9000:]
+    return {"status": "build-failed-or-retry-limit", "iterations": len(patches), "patches": patches, "builds": build_results}
 
 
 @app.post("/chat")

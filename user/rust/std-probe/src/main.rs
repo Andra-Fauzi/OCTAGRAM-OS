@@ -270,6 +270,51 @@ fn main() {
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-GETSOCKOPT-PASS");
 
+    // SO_DOMAIN and SO_PROTOCOL identify anonymous UNIX stream sockets.
+    let mut domain_pair = [-1i32; 2];
+    let domain_pair_result = unsafe {
+        syscall4(127, 1, 1, 0, domain_pair.as_mut_ptr() as usize as u64)
+    };
+    let mut socket_domain = -1i32;
+    let mut socket_domain_len = core::mem::size_of::<i32>() as u32;
+    let so_domain_result = if domain_pair_result == 0 && domain_pair[0] >= 0 {
+        unsafe {
+            syscall6(
+                96, domain_pair[0] as u64, 1, 39,
+                &mut socket_domain as *mut i32 as usize as u64,
+                &mut socket_domain_len as *mut u32 as usize as u64, 0,
+            )
+        }
+    } else {
+        -1
+    };
+    let mut socket_protocol = -1i32;
+    let mut socket_protocol_len = core::mem::size_of::<i32>() as u32;
+    let so_protocol_result = if domain_pair_result == 0 && domain_pair[0] >= 0 {
+        unsafe {
+            syscall6(
+                96, domain_pair[0] as u64, 1, 38,
+                &mut socket_protocol as *mut i32 as usize as u64,
+                &mut socket_protocol_len as *mut u32 as usize as u64, 0,
+            )
+        }
+    } else {
+        -1
+    };
+    if domain_pair[0] >= 0 {
+        unsafe { syscall3(4, domain_pair[0] as u64, 0, 0); }
+    }
+    if domain_pair[1] >= 0 {
+        unsafe { syscall3(4, domain_pair[1] as u64, 0, 0); }
+    }
+    if so_domain_result != 0 || socket_domain != 1 || socket_domain_len != 4
+        || so_protocol_result != 0 || socket_protocol != 0 || socket_protocol_len != 4
+    {
+        marker("RUST-STD-UNIX-SOCKETPAIR-DOMAIN-PROTOCOL-FAIL");
+        std::process::exit(79);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-DOMAIN-PROTOCOL-PASS");
+
     // Anonymous socketpair endpoints report an AF_UNIX sockaddr of length 2.
     let mut name_pair = [-1i32; 2];
     let name_result = unsafe {

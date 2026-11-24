@@ -5912,6 +5912,17 @@ fn syscall_send(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i
         paging::validate_user_range(address, length, false).map_err(|_| EFAULT)?;
         unsafe { core::slice::from_raw_parts(address as *const u8, length) }
     };
+    if let Some(endpoint) = socketpair_endpoint_for_fd(fd)? {
+        if !endpoint.write_end.writable {
+            return Err(EPIPE);
+        }
+        let mut pipe = endpoint.write_end.pipe.lock();
+        let written = pipe.write(payload)?;
+        let pipe_id = pipe.id;
+        drop(pipe);
+        wake_pipe_waiters(pipe_id, true, false);
+        return Ok(written as u64);
+    }
     if let Ok(socket) = udp_socket_for_fd(fd) {
         return crate::network::send_udp_socket_connected(&socket, payload)
             .map(|()| length as u64)
@@ -5939,6 +5950,19 @@ fn syscall_recv(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i
     } else {
         unsafe { core::slice::from_raw_parts_mut(address as *mut u8, length) }
     };
+    if let Some(endpoint) = socketpair_endpoint_for_fd(fd)? {
+        if !endpoint.read_end.readable {
+            return Ok(0);
+        }
+        let mut pipe = endpoint.read_end.pipe.lock();
+        let count = pipe.read_with_peek(output, flags & 0x02 != 0)?;
+        let pipe_id = pipe.id;
+        drop(pipe);
+        if flags & 0x02 == 0 {
+            wake_pipe_waiters(pipe_id, false, true);
+        }
+        return Ok(count as u64);
+    }
     if let Ok(socket) = udp_socket_for_fd(fd) {
         let (copied, _total, _source_ip, _source_port) =
             crate::network::receive_udp_socket_length_with_peek(

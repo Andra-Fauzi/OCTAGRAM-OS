@@ -6340,6 +6340,9 @@ fn syscall_fcntl(fd: u64, command: u64, argument: u64) -> Result<u64, i32> {
                     let access = if endpoint.writable { O_WRONLY } else { O_RDONLY };
                     (access, descriptor_status & O_NONBLOCK)
                 }
+                UserDescriptor::SocketPair(_) => {
+                    (O_RDWR, descriptor_status & O_NONBLOCK)
+                }
                 _ => (O_RDONLY, 0),
             };
             Ok(access | status)

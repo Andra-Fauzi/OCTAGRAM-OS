@@ -224,6 +224,34 @@ fn main() {
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-MSG-PASS");
 
+    // A connected socketpair cannot be redirected with msg_name. The kernel
+    // must return EISCONN rather than treating the AF_UNIX fd as a UDP socket.
+    let mut named_pair = [-1i32; 2];
+    let named_pair_result = unsafe {
+        syscall4(127, 1, 1, 0, named_pair.as_mut_ptr() as usize as u64)
+    };
+    let mut invalid_destination = [0u8; 16];
+    invalid_destination[0] = 2; // AF_INET, deliberately wrong for AF_UNIX.
+    let named_iov = ProbeIoVec { base: sent_bytes.as_ptr() as usize as u64, len: sent_bytes.len() as u64 };
+    let mut named_header = ProbeMsgHdr {
+        name: invalid_destination.as_ptr() as usize as u64,
+        name_len: invalid_destination.len() as u32,
+        _name_padding: 0,
+        iov: &named_iov as *const ProbeIoVec as usize as u64,
+        iov_len: 1, control: 0, control_len: 0, flags: 0, _flags_padding: 0,
+    };
+    let named_send = if named_pair_result == 0 && named_pair[0] >= 0 {
+        unsafe { syscall6(106, named_pair[0] as u64, &mut named_header as *mut _ as usize as u64, 0, 0, 0, 0) }
+    } else { -1 };
+    if named_pair[0] >= 0 { unsafe { syscall3(4, named_pair[0] as u64, 0, 0); } }
+    if named_pair[1] >= 0 { unsafe { syscall3(4, named_pair[1] as u64, 0, 0); } }
+    if named_send != -106 {
+        marker("RUST-STD-UNIX-SOCKETPAIR-MSG-NAME-FAIL");
+        std::process::exit(81);
+    }
+    marker("RUST-STD-UNIX-SOCKETPAIR-MSG-NAME-PASS");
+
+
     // SO_TYPE and SO_ERROR are available on anonymous UNIX stream sockets.
     let mut type_pair = [-1i32; 2];
     let type_result = unsafe {

@@ -19,7 +19,7 @@ A local-first coding assistant for OCTAGRAM-OS. It runs the LLM through a local 
 - llama.cpp `llama-server` with CUDA support (optional for API/workspace smoke tests)
 - A GGUF model file
 
-Recommended first model for 4 GB VRAM: Qwen2.5-Coder-3B-Instruct GGUF Q4_K_M. Its Q4_K_M file is about 2.1 GB; actual runtime memory also includes CUDA buffers and KV cache. Start with a 4K context and reduce GPU layers if VRAM is exhausted.
+For the lightweight FastAPI assistant, use Qwen2.5-Coder-3B-Instruct GGUF Q4_K_M (about 2.1 GB) with a 4K context. The Hermes profile below instead defaults to Qwen2.5-Coder-7B-Instruct Q4_K_M with partial CPU/RAM offload for stronger coding quality; use 3B if the 7B model leaves too little system memory or is too slow.
 
 Model: https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF
 

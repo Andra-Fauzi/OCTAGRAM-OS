@@ -9121,12 +9121,12 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
         if flags & 0x02 == 0 {
             wake_pipe_waiters(pipe_id, false, true);
         }
-        header.flags = if endpoint.socket_type != SOCK_STREAM && record_length > copied {
+        header.flags = if endpoint.socket_type != SOCK_STREAM as i32 && record_length > copied {
             0x20
         } else {
             0
         };
-        if flags & 0x20 != 0 && endpoint.socket_type != SOCK_STREAM {
+        if flags & 0x20 != 0 && endpoint.socket_type != SOCK_STREAM as i32 {
             record_length
         } else {
             copied

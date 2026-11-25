@@ -3,6 +3,10 @@
 
 #include <sys/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define LOCK_SH 1
 #define LOCK_EX 2
 #define LOCK_NB 4
@@ -11,4 +15,8 @@
 int flock(int fd, int operation);
 int lockf(int fd, int operation, off_t length);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

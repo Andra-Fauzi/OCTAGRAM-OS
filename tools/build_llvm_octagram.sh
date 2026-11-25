@@ -80,6 +80,15 @@ if [ ! -f "$sysroot/usr/lib/libc++.a" ]; then
     exit 1
 fi
 
+# A missing libc/libc++ entry point is much cheaper to find now than an hour
+# into the LLVM build, so link the runtime probes first.
+echo "checking OCTAGRAM runtime link probes before the LLVM build"
+if ! "$repo_root/tools/check_octagram_runtime_probes.sh"; then
+    echo "build_llvm_octagram: error: the runtime probes did not link" >&2
+    echo "build_llvm_octagram: fix the reported libc/libc++ gap first" >&2
+    exit 1
+fi
+
 toolchain_file=$repo_root/user/toolchain/octagram-toolchain.cmake
 if [ ! -f "$toolchain_file" ]; then
     echo "build_llvm_octagram: error: missing $toolchain_file" >&2

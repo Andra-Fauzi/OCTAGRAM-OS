@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Metadata kemampuan proses OCTAGRAM. Bit-bit ini belum ditegakkan di jalur
  * akses; kernel hanya menyimpannya dan membagikannya ke semua thread satu pid. */
 #define CAP_VFS_WRITE (1ULL << 0)
@@ -17,4 +21,8 @@
 int capget(pid_t pid, uint64_t *mask);
 int capset(pid_t pid, uint64_t mask);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

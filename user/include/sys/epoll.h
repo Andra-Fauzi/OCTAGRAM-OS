@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define EPOLLIN 0x0001u
 #define EPOLLOUT 0x0004u
 #define EPOLLERR 0x0008u
@@ -27,4 +31,8 @@ int epoll_ctl(int epfd, int operation, int fd, struct epoll_event *event);
 int epoll_wait(int epfd, struct epoll_event *events, int maxevents,
                int timeout);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

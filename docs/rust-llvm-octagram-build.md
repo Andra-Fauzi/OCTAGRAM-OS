@@ -58,6 +58,34 @@ Untuk build reproducible, set juga hash tarball:
 export LLVM_SHA256=<sha256 llvm-project-<versi>.src.tar.xz>
 ```
 
+## 2b. Preflight: probe link runtime
+
+Sebelum CMake dijalankan, `tools/build_llvm_octagram.sh` memanggil
+`tools/check_octagram_runtime_probes.sh`. Skrip itu hanya *menautkan* empat
+program kecil dari `tools/toolchain-probes/`, jadi selesai dalam hitungan detik
+dan tidak butuh QEMU:
+
+| probe | kebutuhan libLLVM/rustc yang diwakili |
+|---|---|
+| `sync_primitives.cpp` | `std::mutex`, `std::condition_variable`, `std::call_once` (thread pool, cache, diagnostics) |
+| `thread_local_state.cpp` | `thread_local` dengan destruktor (`__cxa_thread_atexit`) |
+| `mmap_file_io.cpp` | `open`/`fstat`/`mmap`/`mprotect`/`munmap` seperti `MemoryBuffer` |
+| `large_allocation.cpp` | `new[]`, `malloc`, dan `std::vector` puluhan MiB |
+
+Setiap probe harus menghasilkan ELF64 `ET_EXEC`. Jika satu gagal, pesan linker
+menyebut simbol yang kurang dan build LLVM dibatalkan sebelum waktu terbuang.
+Menjalankannya manual:
+
+```sh
+make -C user sysroot
+tools/check_octagram_runtime_probes.sh
+```
+
+Kegagalan pertama suite ini sudah menemukan dua hal nyata: operator
+`new`/`delete` over-aligned dan nothrow tidak ada, dan `sys/mman.h` (serta
+belasan header syscall lain) mendeklarasikan fungsinya tanpa `extern "C"`
+sehingga kode C++ menautkan ke nama termangle.
+
 ## 3. Build
 
 ```sh

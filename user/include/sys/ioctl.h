@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define FBIOGET_VSCREENINFO 0x4600
 #define FBIOPUT_VSCREENINFO 0x4601
 #define FBIOGET_FSCREENINFO 0x4602
@@ -76,4 +80,8 @@ struct winsize {
 
 int ioctl(int fd, unsigned long request, ...);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

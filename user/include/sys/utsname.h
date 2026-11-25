@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_SYS_UTSNAME_H
 #define OCTAGRAM_SYS_UTSNAME_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct utsname {
     char sysname[65];
     char nodename[65];
@@ -12,4 +16,8 @@ struct utsname {
 
 int uname(struct utsname *name);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

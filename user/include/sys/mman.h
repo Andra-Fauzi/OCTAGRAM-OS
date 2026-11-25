@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <sys/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define PROT_NONE  0x0
 #define PROT_READ  0x1
 #define PROT_WRITE 0x2
@@ -47,4 +51,8 @@ int posix_madvise(void *address, size_t length, int advice);
 int madvise(void *address, size_t length, int advice);
 void *mremap(void *old_address, size_t old_size, size_t new_size, int flags, ...);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

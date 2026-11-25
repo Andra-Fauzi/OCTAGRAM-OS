@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <sys/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct passwd {
     char *pw_name;
     char *pw_passwd;
@@ -25,4 +29,8 @@ int getpwnam_r(const char *name, struct passwd *entry, char *buffer,
 int getpwuid_r(uid_t uid, struct passwd *entry, char *buffer, size_t size,
                struct passwd **result);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

@@ -5,6 +5,10 @@
 #include <sys/time.h>
 #include <sys/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define FD_SETSIZE 1024
 
 typedef struct {
@@ -22,4 +26,8 @@ typedef struct {
 int select(int nfds, fd_set *readfds, fd_set *writefds,
            fd_set *exceptfds, struct timeval *timeout);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

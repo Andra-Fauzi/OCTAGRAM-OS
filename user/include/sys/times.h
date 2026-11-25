@@ -3,6 +3,10 @@
 
 #include <sys/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct tms {
     clock_t tms_utime;
     clock_t tms_stime;
@@ -12,4 +16,8 @@ struct tms {
 
 clock_t times(struct tms *process_times);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

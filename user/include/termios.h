@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_TERMIOS_H
 #define OCTAGRAM_TERMIOS_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef unsigned int tcflag_t;
 typedef unsigned char cc_t;
 typedef unsigned int speed_t;
@@ -85,4 +89,8 @@ speed_t cfgetospeed(const struct termios *termios_state);
 int cfsetispeed(struct termios *termios_state, speed_t speed);
 int cfsetospeed(struct termios *termios_state, speed_t speed);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

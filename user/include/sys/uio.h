@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <sys/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct iovec {
     void *iov_base;
     size_t iov_len;
@@ -20,4 +24,8 @@ ssize_t preadv2(int fd, const struct iovec *vectors, int vector_count,
 ssize_t pwritev2(int fd, const struct iovec *vectors, int vector_count,
                  off_t offset, int flags);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

@@ -1,6 +1,10 @@
 #ifndef OCTAGRAM_DLFCN_H
 #define OCTAGRAM_DLFCN_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define RTLD_LAZY 0x0001
 #define RTLD_NOW 0x0002
 #define RTLD_LOCAL 0
@@ -30,4 +34,8 @@ char *dlerror(void);
  * cannot attribute. */
 int dladdr(const void *address, Dl_info *info);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

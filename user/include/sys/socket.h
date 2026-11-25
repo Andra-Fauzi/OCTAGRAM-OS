@@ -6,6 +6,10 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef uint32_t socklen_t;
 typedef uint16_t sa_family_t;
 
@@ -121,4 +125,8 @@ ssize_t recvmsg(int socket_fd, struct msghdr *message, int flags);
 
 int socketpair(int domain, int socket_type, int protocol, int sv[2]);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

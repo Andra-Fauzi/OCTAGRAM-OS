@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <sys/types.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct group {
     char *gr_name;
     char *gr_passwd;
@@ -22,4 +26,8 @@ int getgrnam_r(const char *name, struct group *entry, char *buffer,
 int getgrgid_r(gid_t gid, struct group *entry, char *buffer, size_t size,
                struct group **result);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

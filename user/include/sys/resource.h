@@ -5,6 +5,10 @@
 #include <sys/types.h>
 #include <sys/time.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define RLIMIT_CPU 0
 #define RLIMIT_FSIZE 1
 #define RLIMIT_DATA 2
@@ -52,4 +56,8 @@ int getrusage(int who, struct rusage *usage);
 int getpriority(int which, id_t who);
 int setpriority(int which, id_t who, int priority);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

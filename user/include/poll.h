@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef unsigned long nfds_t;
 
 struct pollfd {
@@ -20,4 +24,8 @@ struct pollfd {
 
 int poll(struct pollfd *fds, nfds_t nfds, int timeout);
 
+
+#ifdef __cplusplus
+}
+#endif
 #endif

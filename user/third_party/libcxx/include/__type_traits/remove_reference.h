@@ -18,7 +18,7 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-#if __has_builtin(__remove_reference_t)
+#if __has_builtin(__remove_reference_t) && defined(__clang__)
 template <class _Tp>
 struct remove_reference {
   using type _LIBCPP_NODEBUG = __remove_reference_t(_Tp);

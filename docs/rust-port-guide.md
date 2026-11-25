@@ -48,6 +48,7 @@ dipanggil dari shell, bukan cross-build dari host.
 | POSIX `stat` timespec, `S_ISBLK/FIFO/SOCK`, `_PC_*`, `sendfile` | terbukti di host | `include/sys/stat.h`, `include/unistd.h`, `runtime.c` |
 | Sysroot toolchain target | dibangun di host | `make -C user sysroot` → `user/build/sysroot-octagram/sysroot.json` |
 | Driver compiler `x86_64-octagram-gcc`/`g++`/`ld` | tersedia | `user/toolchain/bin/octagram-cc`, [user/toolchain/README.md](../user/toolchain/README.md) |
+| Host target `x86_64-unknown-octagram` di dalam rustc | tersedia, belum dikompilasi | `patches/rust/octagram/`, `tools/apply_rust_octagram_host_target.py` |
 | libLLVM statis untuk host OCTAGRAM | **scaffolding, belum dijalankan** | `tools/build_llvm_octagram.sh`, [rust-llvm-octagram-build.md](rust-llvm-octagram-build.md) |
 | Bootstrap `rustc` host OCTAGRAM | **scaffolding, belum dijalankan** | `tools/bootstrap_rustc_octagram.sh`, [rustc-native-bootstrap-runbook.md](rustc-native-bootstrap-runbook.md) |
 | `cargo` sebagai perintah shell | driver C++ offline ada di image | `/bin/cargo`, marker `OCTAGRAM-CARGO-PASS` |

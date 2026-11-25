@@ -31,15 +31,16 @@ biasa, karena `std` untuk host baru harus dibangun lebih dulu.
    (`ccc2ff4aaab962f7fde7b8edda7379c045b1ca12`) untuk
    `tools/apply_rust_libc_octagram.py`.
 
-## 3. Host target definition (prasyarat yang belum ada)
+## 3. Host target definition
 
-Bootstrap menolak host triple yang hanya ada sebagai JSON. Tambahkan definisi
-target ke dalam rustc sendiri, diturunkan dari target freestanding yang sudah
-ada:
+Bootstrap menolak host triple yang hanya ada sebagai JSON, jadi target harus
+dikenal `rustc_target` sendiri. Itu dikerjakan
+`tools/apply_rust_octagram_host_target.py`, yang menerapkan tiga perubahan pada
+checkout Rust yang dipin:
 
 ```
-compiler/rustc_target/src/spec/targets/x86_64_unknown_octagram.rs
-compiler/rustc_target/src/spec/mod.rs        (registrasi di daftar target)
+compiler/rustc_target/src/spec/targets/x86_64_unknown_octagram.rs  (file baru)
+compiler/rustc_target/src/spec/mod.rs   Os::Octagram + supported_targets!
 ```
 
 Isinya mengikuti `user/rust/targets/x86_64-unknown-octagram.json`:
@@ -56,9 +57,15 @@ Isinya mengikuti `user/rust/targets/x86_64-unknown-octagram.json`:
   `eh_frame_header: false`.
 
 JSON spec yang sekarang dipakai `-Z build-std=core,alloc` tetap dipertahankan
-untuk build target dari host; keduanya harus dijaga sinkron. Skrip bootstrap
-memeriksa keberadaan file di atas dan berhenti dengan pesan yang sama bila
-belum ada, alih-alih menghasilkan error bootstrap yang membingungkan.
+untuk build target dari host; keduanya harus dijaga sinkron. Aplikator
+memverifikasi revisi upstream (`342d744…`), memakai anchor unik untuk setiap
+sisipan, dan idempoten, sehingga aman dijalankan ulang setelah kegagalan
+sebagian. Skrip bootstrap memanggilnya otomatis pada langkah 3.
+
+`python3 tools/check_octagram_rust_target_sync.py` membandingkan kedua spec
+secara statis (tanpa rustc): ia menurunkan nilai ABI dari JSON lalu memastikan
+definisi builtin memakai `TargetOptions` yang sama. Jalankan setiap kali salah
+satu file berubah.
 
 ## 4. Menjalankan bootstrap
 

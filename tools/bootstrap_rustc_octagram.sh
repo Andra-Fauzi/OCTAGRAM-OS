@@ -6,20 +6,19 @@
 #   1. verifies (or clones) the pinned Rust checkout;
 #   2. applies the OCTAGRAM patches: patches/rust/0001, the pinned libc target
 #      module, and (with --libc-checkout) tools/apply_rust_libc_octagram.py;
-#   3. refuses to continue unless rustc's own target list knows the host triple
-#      (see "Known prerequisite" below);
+#   3. registers the host triple as a builtin rustc target (target definition,
+#      Os::Octagram enum variant, supported_targets! entry);
 #   4. writes a bootstrap config.toml using the static libLLVM from
 #      tools/build_llvm_octagram.sh and the OCTAGRAM linker driver;
 #   5. optionally runs `x.py build` and stages rustc/cargo into a toolchain
 #      directory.
 #
-# Known prerequisite (not yet in the repo): bootstrap needs the host triple to
-# exist inside rustc itself, not only as a JSON target spec. That means a
-# compiler/rustc_target/src/spec/targets/x86_64_unknown_octagram.rs (base
-# x86_64_unknown_none plus the Unix family, linker and static crt fields from
-# user/rust/targets/x86_64-unknown-octagram.json) and its registration in
-# compiler/rustc_target/src/spec/mod.rs. This script checks for that file and
-# stops with this message instead of producing a confusing bootstrap error.
+# Why step 3 exists: bootstrap cannot cross-compile a compiler for a triple
+# that exists only as a JSON spec. The host triple must be known to rustc_target
+# itself, so tools/apply_rust_octagram_host_target.py adds the target definition,
+# the Os enum variant and the supported_targets! registration to the checkout.
+# Keep compiler/rustc_target/src/spec/targets/x86_64_unknown_octagram.rs and
+# user/rust/targets/x86_64-unknown-octagram.json in sync.
 #
 # Usage:
 #   tools/bootstrap_rustc_octagram.sh [options]
@@ -136,19 +135,11 @@ else
 fi
 
 # 3. Host triple must exist inside rustc itself ----------------------------
+echo "registering $HOST as a builtin rustc target"
+python3 "$repo_root/tools/apply_rust_octagram_host_target.py" "$rust_checkout"
 host_target_source=$rust_checkout/compiler/rustc_target/src/spec/targets/x86_64_unknown_octagram.rs
 if [ ! -f "$host_target_source" ]; then
-    cat >&2 <<EOF
-bootstrap_rustc_octagram: error: the host triple $HOST is not defined in
-rustc itself. Bootstrap cannot cross-compile a compiler for a triple that only
-exists as a JSON spec.
-
-Add compiler/rustc_target/src/spec/targets/x86_64_unknown_octagram.rs (base
-x86_64_unknown_none + unix family + linker + crt-static fields from
-user/rust/targets/x86_64-unknown-octagram.json), register it in
-compiler/rustc_target/src/spec/mod.rs, and rerun. See
-docs/rustc-native-bootstrap-runbook.md section "Host target definition".
-EOF
+    echo "bootstrap_rustc_octagram: error: $host_target_source was not installed" >&2
     exit 1
 fi
 

@@ -35,6 +35,33 @@ reports missing symbols/modules without weakening unrelated targets.
 Do not mark `rust_std`, `rustc_host`, or `cargo_host` as implemented from
 this patch alone.
 
+## OCTAGRAM host target (applied by tool, not by diff)
+
+`octagram/x86_64_unknown_octagram.rs` is the built-in target definition for the
+compiler host triple `x86_64-unknown-octagram`. Bootstrap cannot build a
+compiler for a triple that only exists as a JSON spec, so the triple has to be
+known to `rustc_target` itself.
+
+`tools/apply_rust_octagram_host_target.py` installs the file and makes the two
+registrations in `compiler/rustc_target/src/spec/mod.rs`:
+
+- `Octagram = "octagram"` in the `Os` enum (so `target_os = "octagram"` and
+the std build gate agree), and
+- `("x86_64-unknown-octagram", x86_64_unknown_octagram)` in the
+`supported_targets!` list.
+
+A plain `.patch` is not used: the three edits are small, and the applicator can
+assert exact anchors, verify the pinned commit, and stay idempotent. Keep the
+definition in sync with `user/rust/targets/x86_64-unknown-octagram.json`
+(the JSON spec used for cross builds from Linux).
+
+`tools/check_octagram_rust_target_sync.py` memverifikasi kedua spec tetap
+konsisten (tanpa rustc); jalankan setiap kali salah satu berubah.
+
+This is a target definition only. It does not provide libc symbols, std PAL
+implementations, a linker, or a working `rustc` binary; see
+[docs/rustc-native-bootstrap-runbook.md](../../docs/rustc-native-bootstrap-runbook.md).
+
 ## Automated patch validation
 
 The `Rust upstream patch validation` GitHub Actions workflow checks this patch

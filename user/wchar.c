@@ -708,3 +708,68 @@ int swprintf(wchar_t *buffer, size_t count, const wchar_t *format, ...)
     va_end(arguments);
     return result;
 }
+
+/* C-locale wide string collation and transformation: byte/wide ordering is the
+ * collation order, so these are the plain comparison/copy operations that
+ * libc++'s collate<wchar_t> facet expects. */
+int wcscoll_l(const wchar_t *left, const wchar_t *right, locale_t locale)
+{
+    (void)locale;
+    return wcscmp(left, right);
+}
+
+size_t wcsxfrm_l(wchar_t *destination, const wchar_t *source, size_t count,
+                 locale_t locale)
+{
+    (void)locale;
+    return wcsxfrm(destination, source, count);
+}
+
+/*
+ * Wide character stream I/O. OCTAGRAM's locale is ASCII/Latin-1, so a wide
+ * character maps to exactly one byte and these can forward to the narrow stdio
+ * entry points. libc++'s iostream wide stream buffers (__stdinbuf<wchar_t> and
+ * __stdoutbuf<wchar_t>) call getwc/ungetwc/fputwc, so the iostream chain only
+ * links once these exist.
+ */
+wint_t fgetwc(FILE *stream)
+{
+    int character = fgetc(stream);
+    return character == EOF ? WEOF : (wint_t)(unsigned char)character;
+}
+
+wint_t getwc(FILE *stream)
+{
+    return fgetwc(stream);
+}
+
+wint_t getwchar(void)
+{
+    return fgetwc(stdin);
+}
+
+wint_t fputwc(wchar_t character, FILE *stream)
+{
+    return fputc((int)character, stream) == EOF ? WEOF : (wint_t)character;
+}
+
+wint_t putwc(wchar_t character, FILE *stream)
+{
+    return fputwc(character, stream);
+}
+
+wint_t putwchar(wchar_t character)
+{
+    return fputwc(character, stdout);
+}
+
+wint_t ungetwc(wint_t character, FILE *stream)
+{
+    if (character == WEOF) {
+        return WEOF;
+    }
+    if (ungetc((int)character, stream) == EOF) {
+        return WEOF;
+    }
+    return character;
+}

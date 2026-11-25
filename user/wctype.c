@@ -233,3 +233,49 @@ wint_t towctrans(wint_t character, wctrans_t mapping)
     }
     return character;
 }
+
+/*
+ * POSIX locale-aware wide-character classes. Only the C locale exists, so the
+ * locale argument is unused and every entry point forwards to its plain form.
+ * libc++'s ctype<wchar_t>/codecvt facets call these through
+ * _LIBCPP_GET_C_LOCALE in src/locale.cpp.
+ */
+#define OCT_DEFINE_WIDE_CLASS(name)                    \
+    int name##_l(wint_t character, locale_t locale)    \
+    {                                                  \
+        (void)locale;                                  \
+        return name(character);                        \
+    }
+
+OCT_DEFINE_WIDE_CLASS(iswalnum)
+OCT_DEFINE_WIDE_CLASS(iswalpha)
+OCT_DEFINE_WIDE_CLASS(iswblank)
+OCT_DEFINE_WIDE_CLASS(iswcntrl)
+OCT_DEFINE_WIDE_CLASS(iswdigit)
+OCT_DEFINE_WIDE_CLASS(iswgraph)
+OCT_DEFINE_WIDE_CLASS(iswlower)
+OCT_DEFINE_WIDE_CLASS(iswprint)
+OCT_DEFINE_WIDE_CLASS(iswpunct)
+OCT_DEFINE_WIDE_CLASS(iswspace)
+OCT_DEFINE_WIDE_CLASS(iswupper)
+OCT_DEFINE_WIDE_CLASS(iswxdigit)
+
+#undef OCT_DEFINE_WIDE_CLASS
+
+int iswctype_l(wint_t character, wctype_t description, locale_t locale)
+{
+    (void)locale;
+    return iswctype(character, description);
+}
+
+wint_t towlower_l(wint_t character, locale_t locale)
+{
+    (void)locale;
+    return towlower(character);
+}
+
+wint_t towupper_l(wint_t character, locale_t locale)
+{
+    (void)locale;
+    return towupper(character);
+}

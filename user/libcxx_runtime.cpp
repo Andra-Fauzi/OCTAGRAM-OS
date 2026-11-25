@@ -41,6 +41,8 @@ void __libcpp_verbose_abort(const char* format, ...)
 // unwinding the only correct action is to stop the process.
 void terminate() _NOEXCEPT { abort(); }
 
+
+
 // src/condition_variable.cpp pulls in src/thread.cpp (std::__thread_struct),
 // promise/future support, and the libc++ support shim layer, none of which the
 // OCTAGRAM port has yet. The class is a thin wrapper over pthread condition
@@ -72,5 +74,14 @@ namespace std {
 exception::~exception() _NOEXCEPT {}
 
 const char* exception::what() const _NOEXCEPT { return "std::exception"; }
+
+// std::uncaught_exception was removed in C++20 but libc++ 18's iostream
+// sentry still calls it. Nothing can be in flight in a -fno-exceptions port.
+bool uncaught_exception() _NOEXCEPT { return false; }
+
+// libc++ routes allocation failure through std::__throw_bad_alloc; without
+// exceptions it has to abort. It lives directly in std, not in the inline
+// namespace.
+_LIBCPP_NORETURN void __throw_bad_alloc() { abort(); }
 
 } // namespace std

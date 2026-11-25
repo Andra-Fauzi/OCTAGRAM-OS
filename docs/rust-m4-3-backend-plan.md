@@ -251,7 +251,7 @@ Sampai revisi ini, program C++ hanya memakai **header** libc++ 18.1.8; isi
 library (`libcxx/src`) belum dikompilasi, sehingga `std::string`,
 `std::sort`, dan `std::mutex` masih gagal di link. Source `src/` kini
 di-vendor di `user/third_party/libcxx/src` dan `user/Makefile` membangun
-`build/libc++.a` dari dua belas translation unit:
+`build/libc++.a` dari sembilan belas translation unit:
 
 | Objek | Alasan |
 | --- | --- |
@@ -263,6 +263,9 @@ di-vendor di `user/third_party/libcxx/src` dan `user/Makefile` membangun
 | `error_category.cpp`, `system_error.cpp` | kategori error generik yang dipakai `std::error_code` |
 | `charconv.cpp` | `std::to_chars`/`std::from_chars` integer dan `to_chars` floating point |
 | `ryu/d2fixed.cpp`, `ryu/d2s.cpp`, `ryu/f2s.cpp` | algoritma ryu yang dipanggil `charconv.cpp` untuk double/float |
+| `locale.cpp` | facet `numpunct`/`ctype`/`collate`/`time_put`/`codecvt`/`moneypunct` dari locale C |
+| `ios.cpp`, `ios.instantiations.cpp`, `iostream.cpp`, `ostream.cpp` | `std::cout`, `stringstream`, buffer stdout/stdin |
+| `call_once.cpp`, `memory.cpp` | `__call_once` dan `__shared_count` yang dipakai facet locale |
 
 Keputusan build:
 
@@ -308,8 +311,30 @@ adalah integer `to_chars`/`from_chars` dan floating `to_chars`. Probe guest
 menguji `to_chars` integer, `from_chars` integer 64-bit, `to_chars` double,
 `std::to_string`, `std::stoi`, `std::to_wstring`, dan `swprintf`.
 
-Belum termasuk: `ios`/`ostream`/`locale`/`fstream` (iostream), `thread.cpp`,
-`filesystem/*`, dan `random`.
+Rantai iostream ikut serta. Itu membutuhkan tiga kelompok libc yang belum ada:
+
+- **`<langinfo.h>`** (`user/include/langinfo.h` + `nl_langinfo` di
+  `runtime.c`). libc++ `locale.cpp` membacanya untuk CODESET, format waktu,
+  nama hari/bulan, `RADIXCHAR`/`THOUSEP`, `YESEXPR`/`NOEXPR`, `CRNCYSTR`.
+  Item-nya bernomor lokal dan berurutan (bukan nomor glibc yang saling
+  alias), supaya `nl_langinfo` bisa berupa tabel `item - CODESET`.
+- **Kelas `_l` wide** (`wctype.c`, `wchar.c`, `wctype.h`, `wchar.h`):
+  `isw*_l`, `iswctype_l`, `towlower_l`/`towupper_l`, `wcscoll_l`,
+  `wcsxfrm_l` — semuanya meneruskan ke bentuk non-`_l` karena hanya ada
+  locale C.
+- **Wide stdio** (`wchar.c`): `fgetwc`/`getwc`/`getwchar`, `fputwc`/`putwc`/
+  `putwchar`, `ungetwc`, dipakai buffer `__stdinbuf<wchar_t>` dan
+  `__stdoutbuf<wchar_t>` di `iostream.cpp`.
+
+Shim tambahan di `user/libcxx_runtime.cpp`: `std::uncaught_exception()`
+(dihapus di C++20 tetapi masih dipanggil sentry iostream libc++ 18) dan
+`std::__throw_bad_alloc()` (panic-abort).
+
+Probe `user/examples/libcxx_iostream_smoke.cpp` dijalankan sebagai
+`/bin/libcxx-iostream-smoke`: `ostringstream` dengan `std::hex`/`setw`/
+`setfill`, `istringstream`, facet `numpunct`/`ctype`, dan `std::cout`.
+
+Belum termasuk: `fstream`, `thread.cpp`, `filesystem/*`, dan `random`.
 
 ## 7. Risiko dan mitigasi
 

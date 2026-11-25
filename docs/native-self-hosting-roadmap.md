@@ -2548,10 +2548,20 @@ membangun `user/build/libc++.a`:
 
 - `user/third_party/libcxx/src/` berisi source libc++ dari tag yang sama
   (`llvmorg-18.1.8`), tanpa modifikasi.
-- `user/Makefile` menambahkan target `build/libc++.a` yang mengompilasi dua
-  belas translation unit: `string`, `vector`, `algorithm`, `stdexcept`,
-  `mutex`, `mutex_destructor`, `error_category`, `system_error`,
-  `charconv`, serta `ryu/d2fixed`, `ryu/d2s`, dan `ryu/f2s`.
+- `user/Makefile` menambahkan target `build/libc++.a` yang mengompilasi
+  sembilan belas translation unit: `string`, `vector`, `algorithm`,
+  `stdexcept`, `mutex`, `mutex_destructor`, `error_category`, `system_error`,
+  `charconv`, tiga implementasi ryu, rantai iostream (`locale`, `ios`,
+  `ios.instantiations`, `iostream`, `ostream`), serta `call_once` dan
+  `memory`.
+- Untuk rantai iostream ditambahkan `<langinfo.h>` dan `nl_langinfo`
+  (C locale), kelas `_l` wide (`isw*_l`, `tow*_l`, `wcscoll_l`,
+  `wcsxfrm_l`), serta wide stdio (`fgetwc`, `getwc`, `fputwc`, `putwc`,
+  `getwchar`, `putwchar`, `ungetwc`).
+- Probe kedua `build/libcxx_iostream_smoke.elf` di-seed sebagai
+  `/bin/libcxx-iostream-smoke` dan menguji `std::cout`,
+  `ostringstream`/`istringstream`, serta facet `numpunct`/`ctype`; marker
+  `LIBCXX-IOSTREAM-PASS` diperiksa harness QEMU.
 - `user/include/float.h` ditambahkan karena `charconv.cpp` membutuhkan
   `FLT_MANT_DIG`/`DBL_MANT_DIG`/`LDBL_*`/`DECIMAL_DIG` dan sysroot OCTAGRAM
   belum punya header itu. Nilainya x86_64: binary32, binary64, x87 80-bit
@@ -2575,7 +2585,7 @@ membangun `user/build/libc++.a`:
   workspace ini, statusnya tetap **terbukti di host**, bukan guest-tested.
 
 Batas yang masih berlaku: `std::iostream` (locale/ios/fstream), `std::thread`,
-`std::filesystem`, `random`, `std::thread`, dan iostream belum masuk arsip.
+`std::filesystem`, `random`, `fstream`, dan `std::thread` belum masuk arsip.
 Untuk `<charconv>`, hanya integer `to_chars`/`from_chars` dan floating
 `to_chars` yang tersedia: libc++ 18 tidak punya floating-point
 `std::from_chars`. Native `rustc` dan Cargo tetap belum ada, dan M4.3/M4.4

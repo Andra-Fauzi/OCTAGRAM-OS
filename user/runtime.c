@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <inttypes.h>
+#include <langinfo.h>
 #include <limits.h>
 #include <nl_types.h>
 #include <pwd.h>
@@ -10687,4 +10688,142 @@ char *tmpnam(char *buffer)
     char *target = buffer != NULL ? buffer : fallback;
     snprintf(target, buffer != NULL ? L_tmpnam : sizeof fallback, "/tmp/octagram-%u.tmp", counter++);
     return target;
+}
+
+/*
+ * nl_langinfo in the C locale.
+ *
+ * libc++'s locale implementation asks for these strings to build its facets
+ * (codecvt from CODESET, time_put from the D_/T_ formats, numpunct from
+ * RADIXCHAR/THOUSEP, messages from YESEXPR/NOEXPR, moneypunct from CRNCYSTR).
+ * OCTAGRAM has exactly one locale and it is ASCII/Latin-1, so every item has a
+ * fixed C-locale value; items that glibc fills from locale archives (ERA,
+ * ALT_DIGITS) are empty, which is the correct C-locale answer.
+ *
+ * The langinfo.h item values are sequential, so the table is indexed by
+ * (item - CODESET). Keep it in the same order as enum in include/langinfo.h.
+ */
+char *nl_langinfo(nl_item item)
+{
+    static char codeset[] = "ANSI_X3.4-1968";
+    static char date_time_format[] = "%a %b %e %H:%M:%S %Y";
+    static char date_format[] = "%m/%d/%y";
+    static char time_format[] = "%H:%M:%S";
+    static char time_format_ampm[] = "%I:%M:%S %p";
+    static char am_string[] = "AM";
+    static char pm_string[] = "PM";
+    static char sunday[] = "Sunday";
+    static char monday[] = "Monday";
+    static char tuesday[] = "Tuesday";
+    static char wednesday[] = "Wednesday";
+    static char thursday[] = "Thursday";
+    static char friday[] = "Friday";
+    static char saturday[] = "Saturday";
+    static char sun[] = "Sun";
+    static char mon[] = "Mon";
+    static char tue[] = "Tue";
+    static char wed[] = "Wed";
+    static char thu[] = "Thu";
+    static char fri[] = "Fri";
+    static char sat[] = "Sat";
+    static char january[] = "January";
+    static char february[] = "February";
+    static char march[] = "March";
+    static char april[] = "April";
+    static char may[] = "May";
+    static char june[] = "June";
+    static char july[] = "July";
+    static char august[] = "August";
+    static char september[] = "September";
+    static char october[] = "October";
+    static char november[] = "November";
+    static char december[] = "December";
+    static char jan[] = "Jan";
+    static char feb[] = "Feb";
+    static char mar[] = "Mar";
+    static char apr[] = "Apr";
+    static char may_short[] = "May";
+    static char jun[] = "Jun";
+    static char jul[] = "Jul";
+    static char aug[] = "Aug";
+    static char sep[] = "Sep";
+    static char oct[] = "Oct";
+    static char nov[] = "Nov";
+    static char dec[] = "Dec";
+    static char radix_char[] = ".";
+    static char thousands_sep[] = "";
+    static char currency_symbol[] = "";
+    static char yes_expression[] = "^[yY]";
+    static char no_expression[] = "^[nN]";
+    static char era[] = "";
+    static char era_date_format[] = "";
+    static char era_date_time_format[] = "";
+    static char era_time_format[] = "";
+    static char alternate_digits[] = "";
+    /* Unknown items answer an empty string rather than NULL, as POSIX allows
+     * for an item the implementation does not define. */
+    static char unknown[] = "";
+
+    static char *const items[] = {
+        codeset,
+        date_time_format,
+        date_format,
+        time_format,
+        time_format_ampm,
+        am_string,
+        pm_string,
+        sunday,
+        monday,
+        tuesday,
+        wednesday,
+        thursday,
+        friday,
+        saturday,
+        sun,
+        mon,
+        tue,
+        wed,
+        thu,
+        fri,
+        sat,
+        january,
+        february,
+        march,
+        april,
+        may,
+        june,
+        july,
+        august,
+        september,
+        october,
+        november,
+        december,
+        jan,
+        feb,
+        mar,
+        apr,
+        may_short,
+        jun,
+        jul,
+        aug,
+        sep,
+        oct,
+        nov,
+        dec,
+        radix_char,
+        thousands_sep,
+        currency_symbol,
+        yes_expression,
+        no_expression,
+        era,
+        era_date_format,
+        era_date_time_format,
+        era_time_format,
+        alternate_digits,
+    };
+
+    if (item < CODESET || item >= CODESET + (nl_item)(sizeof items / sizeof items[0])) {
+        return unknown;
+    }
+    return items[item - CODESET];
 }

@@ -41,6 +41,8 @@ const RUST_NATIVE_PROBE_OBJECT: &[u8] =
 const CPP_SMOKE_ELF: &[u8] = include_bytes!("../../../user/build/cpp_smoke.elf");
 const LIBCXX_STRING_SMOKE_ELF: &[u8] =
     include_bytes!("../../../user/build/libcxx_string_smoke.elf");
+const LIBCXX_IOSTREAM_SMOKE_ELF: &[u8] =
+    include_bytes!("../../../user/build/libcxx_iostream_smoke.elf");
 const SH_ELF: &[u8] = include_bytes!("../../../user/build/sh.elf");
 const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
 const FILE_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/file_api_demo.elf");
@@ -1017,6 +1019,12 @@ pub fn init() {
             &mut vfs,
             "/bin/libcxx-string-smoke",
             LIBCXX_STRING_SMOKE_ELF,
+            0o755,
+        );
+        seed_file(
+            &mut vfs,
+            "/bin/libcxx-iostream-smoke",
+            LIBCXX_IOSTREAM_SMOKE_ELF,
             0o755,
         );
         seed_file(&mut vfs, "/bin/tcc", TCC_ELF, 0o755);

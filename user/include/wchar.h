@@ -58,6 +58,9 @@ unsigned long long wcstoull_l(const wchar_t *text, wchar_t **end, int base,
 double wcstod_l(const wchar_t *text, wchar_t **end, locale_t locale);
 float wcstof_l(const wchar_t *text, wchar_t **end, locale_t locale);
 long double wcstold_l(const wchar_t *text, wchar_t **end, locale_t locale);
+int wcscoll_l(const wchar_t *left, const wchar_t *right, locale_t locale);
+size_t wcsxfrm_l(wchar_t *destination, const wchar_t *source, size_t count,
+                 locale_t locale);
 wchar_t *wcstok(wchar_t *text, const wchar_t *delimiter,
                 wchar_t **context);
 wchar_t *wcscat(wchar_t *destination, const wchar_t *source);

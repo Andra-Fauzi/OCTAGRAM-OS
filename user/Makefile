@@ -68,7 +68,7 @@ LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 .PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test compiler-rt-test cpp-header-test libcxx-header-check dynamic
 CPP_SMOKE := build/cpp_smoke.elf
 
-all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
+all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(LIBCXX_IOSTREAM_SMOKE) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
 
@@ -176,7 +176,8 @@ LIBCXX_INCLUDE := third_party/libcxx/include
 # same declaration as user/runtime.c, otherwise ld rejects the non-TLS
 # reference to the TLS definition of errno.
 LIBCXX_FLAGS := -DOCTAGRAM_TLS_ERRNO -nostdinc -nostdinc++ \
-	-isystem $(LIBCXX_INCLUDE) -isystem include -isystem third_party/libcxx/src
+	-isystem $(LIBCXX_INCLUDE) -isystem include -isystem third_party/libcxx/src \
+	-Wno-error
 LIBCXX_CXXFLAGS := $(filter-out -Iinclude,$(CXXFLAGS)) $(LIBCXX_FLAGS)
 LIBCXX_SMOKE := build/libcxx_smoke.elf
 
@@ -201,8 +202,16 @@ LIBCXX_OBJECTS := \
 	build/libcxx/charconv.o \
 	build/libcxx/ryu/d2fixed.o \
 	build/libcxx/ryu/d2s.o \
-	build/libcxx/ryu/f2s.o
+	build/libcxx/ryu/f2s.o \
+	build/libcxx/locale.o \
+	build/libcxx/ios.o \
+	build/libcxx/ios.instantiations.o \
+	build/libcxx/iostream.o \
+	build/libcxx/ostream.o \
+	build/libcxx/call_once.o \
+	build/libcxx/memory.o
 LIBCXX_STRING_SMOKE := build/libcxx_string_smoke.elf
+LIBCXX_IOSTREAM_SMOKE := build/libcxx_iostream_smoke.elf
 
 # Only the translation units that back the features exercised by the guest
 # probe are compiled so far. std::iostream (locale/ios/fstream), std::thread,
@@ -231,6 +240,18 @@ $(LIBCXX_STRING_SMOKE): build/libcxx_string_smoke.o build/libcxx_runtime.o \
 	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/compiler_rt.o \
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/cxx_runtime.o build/libcxx_runtime.o build/libcxx_string_smoke.o \
+		$(LIBCXX_ARCHIVE)
+
+build/libcxx_iostream_smoke.o: examples/libcxx_iostream_smoke.cpp $(HEADERS) | build
+	$(CXX) $(LIBCXX_CXXFLAGS) -std=$(LIBCXX_STD) -c -o $@ $<
+
+$(LIBCXX_IOSTREAM_SMOKE): build/libcxx_iostream_smoke.o build/libcxx_runtime.o \
+		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o \
+		$(LIBCXX_ARCHIVE) linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/compiler_rt.o \
+		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
+		build/cxx_runtime.o build/libcxx_runtime.o build/libcxx_iostream_smoke.o \
 		$(LIBCXX_ARCHIVE)
 
 build/libcxx_runtime.o: libcxx_runtime.cpp $(HEADERS) | build

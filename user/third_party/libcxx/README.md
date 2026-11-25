@@ -19,12 +19,18 @@ traits available to the guest.
 - `src/` — libc++'s compiled-library sources from the same tag, unmodified.
   They are built into `user/build/libc++.a` by `make -C user`.
 
-Only the subset needed by the current guest probe is compiled so far
-(`string`, `vector`, `algorithm`, `stdexcept`, `mutex`, `mutex_destructor`,
-`error_category`, `system_error`, `charconv`, and `ryu/{d2fixed,d2s,f2s}`).
+What is compiled so far: `string`, `vector`, `algorithm`, `stdexcept`,
+`mutex`, `mutex_destructor`, `error_category`, `system_error`, `charconv`,
+`ryu/{d2fixed,d2s,f2s}`, the iostream chain (`locale`, `ios`,
+`ios.instantiations`, `iostream`, `ostream`), and `call_once`/`memory`.
 The rest of `src/` is vendored so later stages can widen the archive without
-another download: `iostream`/locale, `thread`, `filesystem`, and `random`
-still depend on libc facilities OCTAGRAM does not provide yet.
+another download: `fstream`, `thread`, `filesystem`, and `random` still depend
+on libc facilities OCTAGRAM does not provide yet.
+
+The iostream chain additionally needed `<langinfo.h>` + `nl_langinfo` (C
+locale strings for the locale facets), the POSIX wide `_l` classes
+(`isw*_l`, `tow*_l`, `wcscoll_l`, `wcsxfrm_l`), and wide stdio
+(`fgetwc`/`fputwc`/`ungetwc`), all implemented directly in `user/`.
 
 `charconv.cpp` needs the C floating-point limits, so `user/include/float.h`
 provides `FLT_*`, `DBL_*`, `LDBL_*`, `*_DECIMAL_DIG`, and `DECIMAL_DIG` for

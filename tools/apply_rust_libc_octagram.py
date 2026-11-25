@@ -105,7 +105,7 @@ def main() -> int:
         "    preadv, pwritev, getauxval, P_PIDFD, PIDFD_SIGNAL_PROCESS_GROUP, PIDFD_GET_INFO,\n"
         "    PIDFD_INFO_EXIT, pidfd_info, waitid, accept4, pthread_attr_getstack,\n"
         "    pthread_attr_getguardsize, pthread_getattr_np, clock_nanosleep, SO_PEERCRED,\n"
-        "    ucred,\n"
+        "    ucred, __xpg_strerror_r,\n"
         "    FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP,\n"
         "    FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET, FUTEX_PRIVATE_FLAG, FUTEX_CLOCK_REALTIME,\n"
         "    FUTEX_WAIT_PRIVATE, FUTEX_WAKE_PRIVATE, FUTEX_REQUEUE_PRIVATE,\n"

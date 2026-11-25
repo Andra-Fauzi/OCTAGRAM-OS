@@ -407,3 +407,47 @@ Kesimpulan: target "rustc/cargo bisa dipanggil di shell" masih terhalang, tetapi
 sekarang bukan lagi di libc atau di gerbang cfg std — tersisa 90 rujukan yang
 harus diselesaikan satu per satu sesuai tiga kategori di atas, dimulai dari
 `struct stat.st_rdev` (kategori 3) karena itu satu-satunya yang menyentuh ABI.
+
+### Pembaruan kedua: `std` sudah dibangun dan di-link untuk OCTAGRAM
+
+Kesimpulan "masih terhalang" di atas sudah tidak berlaku. Sekarang:
+
+```
+tools/build_octagram_std_probe.sh            # build + link
+tools/build_octagram_std_probe.sh --check-only
+```
+
+menghasilkan, dari keadaan bersih:
+
+```
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.94s
+user/rust/std-probe/target/x86_64-unknown-octagram/debug/octagram-std-probe:
+  ELF 64-bit LSB executable, x86-64, statically linked
+```
+
+Skrip itu merangkum seluruh resep yang tadinya tersebar: `rust-lld` dari
+toolchain (bukan `ld.lld`), `CARGO_ENCODED_RUSTFLAGS` agar flag konfigurasi
+diganti (bukan ditambah) dengan path absolut ke `user/linker.ld` dan
+`user/build/crt0.o`, serta alias `libm`/`librt`/`libpthread` ke `libc.a` guest.
+
+Sisa pekerjaan yang ditutup pada langkah ini:
+
+| Hal | Penyelesaian |
+| --- | --- |
+| `struct stat` tidak punya `st_rdev` | field ditambahkan di `user/include/sys/stat.h`; `runtime.c` sudah men-`memset` jadi nilainya 0 |
+| Susunan field `stat` Rust ≠ C | `patches/rust-libc/octagram/mod.rs` sekarang mengikuti urutan header (112 → 120 byte) |
+| `restricted_std` | OCTAGRAM masuk allowlist `std/build.rs` |
+| `__xpg_strerror_r` tidak ada | diimplementasikan di modul libc (`#[unsafe(no_mangle)]`, meneruskan `strerror`) |
+| `waitid` tidak ada | diimplementasikan di atas `waitpid` |
+| `accept4`, `pthread_getattr_np`, `pthread_attr_get*` | implementasi Rust di modul libc |
+| Konstanta Linux (pidfd, `SO_MARK`, `TCP_*`, `CLD_*`, `MSG_*`, ...) | didefinisikan dengan nilai Linux; fitur yang tidak ada di guest akan gagal saat dipanggil |
+
+Batas yang masih berlaku dan harus disebut apa adanya:
+
+- Belum ada uji runtime: sandbox tidak punya `qemu-system-x86_64`, jadi
+  `octagram-std-probe` belum pernah dijalankan di guest.
+- `rustc`/`cargo` native belum dibangun; yang terbukti sekarang adalah
+  prasyarat utamanya — `std` untuk target OCTAGRAM bisa dikompilasi dan
+  di-link bersama `libc.a` guest.
+- `pthread_getattr_np` sengaja mengembalikan `ENOTSUP` (guest belum
+  mengekspos batas stack thread), dan `waitid` hanya mendukung bentuk `P_PID`.

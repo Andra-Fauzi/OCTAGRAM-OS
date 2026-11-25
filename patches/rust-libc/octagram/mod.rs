@@ -742,6 +742,7 @@ s! {
         pub si_code: c_int,
         pub si_pid: pid_t,
         pub si_uid: uid_t,
+        status_code: c_int,
     }
 
     pub struct cpu_set_t {
@@ -749,7 +750,7 @@ s! {
     }
 }
 
-const _: [(); 20] = [(); core::mem::size_of::<siginfo_t>()];
+const _: [(); 24] = [(); core::mem::size_of::<siginfo_t>()];
 const _: [(); 16] = [(); core::mem::size_of::<cpu_set_t>()];
 
 pub fn CPU_ZERO(set: &mut cpu_set_t) {
@@ -813,8 +814,7 @@ impl siginfo_t {
     }
 
     pub unsafe fn si_status(&self) -> c_int {
-        // `si_code` is the only status information the short form carries.
-        self.si_code
+        self.status_code
     }
 }
 
@@ -855,6 +855,7 @@ impl siginfo_t {
 // `accept4` and `waitid` are not exported by the guest yet; the constants and
 // signatures are Linux-compatible so std compiles and the call fails cleanly.
 
+pub const P_PID: c_int = 1;
 pub const P_PIDFD: c_int = 3;
 pub const PIDFD_SIGNAL_PROCESS_GROUP: c_uint = 1;
 pub const PIDFD_GET_INFO: c_ulong = 0xb0ff;
@@ -930,7 +931,6 @@ pub unsafe fn accept4(
 }
 
 extern "C" {
-    pub fn waitid(idtype: c_int, id: id_t, info: *mut siginfo_t, options: c_int) -> c_int;
     pub fn clock_nanosleep(
         clock_id: clockid_t,
         flags: c_int,
@@ -952,3 +952,62 @@ s! {
 }
 
 const _: [(); 12] = [(); core::mem::size_of::<ucred>()];
+
+// ---------------------------------------------------------------------------
+// Two entry points std expects that the guest libc does not export yet.
+//
+// `__xpg_strerror_r` is the POSIX flavour of `strerror_r` that the gnu target
+// env selects, and `waitid` is emulated on top of `waitpid`.
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __xpg_strerror_r(
+    errnum: c_int,
+    buf: *mut c_char,
+    buflen: size_t,
+) -> c_int {
+    let message = crate::strerror(errnum);
+    if message.is_null() {
+        return crate::EINVAL;
+    }
+    let length = crate::strlen(message);
+    if length >= buflen {
+        if buflen > 0 {
+            core::ptr::copy_nonoverlapping(message, buf, buflen - 1);
+            *buf.add(buflen - 1) = 0;
+        }
+        return crate::ERANGE;
+    }
+    core::ptr::copy_nonoverlapping(message, buf, length + 1);
+    0
+}
+
+pub unsafe extern "C" fn waitid(
+    idtype: c_int,
+    id: id_t,
+    info: *mut siginfo_t,
+    options: c_int,
+) -> c_int {
+    if info.is_null() {
+        return -1;
+    }
+    let pid = match idtype {
+        P_PID => id as pid_t,
+        _ => return -1,
+    };
+    let mut status: c_int = 0;
+    let waited = crate::waitpid(pid, &mut status, options & crate::WNOHANG);
+    if waited < 0 {
+        return -1;
+    }
+    if waited == 0 {
+        return 0;
+    }
+    (*info).si_signo = crate::SIGCHLD;
+    (*info).si_errno = 0;
+    (*info).si_pid = waited;
+    (*info).si_uid = 0;
+    let exited = status & 0x7f == 0;
+    (*info).si_code = if exited { CLD_EXITED } else { CLD_KILLED };
+    (*info).status_code = if exited { (status >> 8) & 0xff } else { status & 0x7f };
+    0
+}

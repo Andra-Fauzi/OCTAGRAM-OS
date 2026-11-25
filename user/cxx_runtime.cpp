@@ -62,18 +62,24 @@ namespace std {
 enum class align_val_t : size_t;
 }
 
-static void *allocate_over_aligned(size_t size, size_t alignment)
+static void *try_allocate_over_aligned(size_t size, size_t alignment) noexcept
 {
     if (size == 0) {
         size = 1;
     }
     if (alignment <= sizeof(void *)) {
-        return ::operator new(size);
+        return malloc(size);
     }
     void *memory = nullptr;
     if (posix_memalign(&memory, alignment, size) != 0) {
-        memory = nullptr;
+        return nullptr;
     }
+    return memory;
+}
+
+static void *allocate_over_aligned(size_t size, size_t alignment)
+{
+    void *memory = try_allocate_over_aligned(size, alignment);
     if (memory == nullptr) {
         abort();
     }
@@ -106,6 +112,61 @@ void operator delete(void *memory, size_t, std::align_val_t) noexcept
 }
 
 void operator delete[](void *memory, size_t, std::align_val_t) noexcept
+{
+    free(memory);
+}
+
+/* `new (std::nothrow)` overloads. libc++ normally defines these in
+ * src/new.cpp, which is not part of the userspace archive; LLVM and libc++
+ * itself use nothrow allocation, so without them linking fails on
+ * `_ZnwmRKSt9nothrow_t`. The type and object are declared here because <new> is
+ * not on the freestanding include path used for this file; the mangled names
+ * match the real ones. */
+namespace std {
+struct nothrow_t {
+    explicit nothrow_t() = default;
+};
+// The object itself is already defined by libc++.a's new_helpers.o; only the
+// operators below are missing there.
+extern const nothrow_t nothrow;
+}
+
+void *operator new(size_t size, const std::nothrow_t &) noexcept
+{
+    return malloc(size == 0 ? 1 : size);
+}
+
+void *operator new[](size_t size, const std::nothrow_t &) noexcept
+{
+    return malloc(size == 0 ? 1 : size);
+}
+
+void *operator new(size_t size, std::align_val_t alignment, const std::nothrow_t &) noexcept
+{
+    return try_allocate_over_aligned(size, static_cast<size_t>(alignment));
+}
+
+void *operator new[](size_t size, std::align_val_t alignment, const std::nothrow_t &) noexcept
+{
+    return try_allocate_over_aligned(size, static_cast<size_t>(alignment));
+}
+
+void operator delete(void *memory, const std::nothrow_t &) noexcept
+{
+    free(memory);
+}
+
+void operator delete[](void *memory, const std::nothrow_t &) noexcept
+{
+    free(memory);
+}
+
+void operator delete(void *memory, std::align_val_t, const std::nothrow_t &) noexcept
+{
+    free(memory);
+}
+
+void operator delete[](void *memory, std::align_val_t, const std::nothrow_t &) noexcept
 {
     free(memory);
 }

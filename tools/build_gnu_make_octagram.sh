@@ -15,7 +15,7 @@ fail() {
 
 [[ -d "$SRC/.git" || -f "$SRC/.git" ]] || fail "upstream submodule missing; checkout recursively"
 [[ -f "$USER/build/crt0.o" && -f "$USER/build/runtime.o" ]] || \
-    make -C "$USER" build/crt0.o build/runtime.o
+    make -C "$USER" build/crt0.o build/runtime.o build/posix_extra.o
 
 # GNU Make tracks generated Autotools files outside Git. Bootstrap the pinned
 # upstream checkout and its pinned gnulib revision before configuring it.
@@ -98,7 +98,7 @@ CFLAGS_PARTS=(
 printf -v CFLAGS '%s ' "${CFLAGS_PARTS[@]}"
 export CFLAGS
 export LDFLAGS="-nostdlib -static -Wl,--gc-sections -Wl,-T,$USER/linker.ld"
-export LIBS="$USER/build/crt0.o $USER/build/runtime.o"
+export LIBS="$USER/build/crt0.o $USER/build/runtime.o $USER/build/posix_extra.o"
 
 echo "GNU-MAKE-OCTAGRAM: configure target=$TARGET build=$BUILD_TRIPLET"
 # Keep the cross result deterministic. unistd.h advertises POSIX so GNU Make

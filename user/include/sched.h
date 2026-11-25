@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <stddef.h>
 #include <sys/types.h>
 
 #define SCHED_OTHER 0

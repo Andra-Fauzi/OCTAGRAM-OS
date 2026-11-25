@@ -245,6 +245,8 @@ const MAP_SHARED: u64 = 1;
 const MAP_PRIVATE: u64 = 2;
 const MAP_FIXED: u64 = 0x10;
 const MAP_ANONYMOUS: u64 = 0x20;
+// Linux accepts MAP_STACK as a hint; current Linux kernels treat it as a no-op.
+const MAP_STACK: u64 = 0x20000;
 const MS_ASYNC: u64 = 1;
 const MS_INVALIDATE: u64 = 2;
 const MS_SYNC: u64 = 4;
@@ -7180,7 +7182,7 @@ fn syscall_mmap(
 ) -> Result<u64, i32> {
     let (mapped_size, page_count) = mapping_size(length)?;
     let page_flags = mapping_flags(protection)?;
-    let supported_flags = MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS;
+    let supported_flags = MAP_SHARED | MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS | MAP_STACK;
     let map_type = map_flags & (MAP_SHARED | MAP_PRIVATE);
     if map_flags & !supported_flags != 0
         || (map_type != MAP_SHARED && map_type != MAP_PRIVATE)
@@ -10507,6 +10509,24 @@ mod tests {
         );
         assert_eq!(
             dispatch_syscall(SYSCALL_MUNMAP, MMAP_START, 4096, 0, 0, 0, 0),
+            Err(EINTR)
+        );
+    }
+
+    #[test]
+    fn mmap_accepts_linux_map_stack_flag() {
+        // The flag must pass validation even though this test has no active
+        // process; the syscall should reach the normal EINTR process check.
+        assert_eq!(
+            dispatch_syscall(
+                SYSCALL_MMAP,
+                0,
+                4096,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK,
+                u64::MAX,
+                0,
+            ),
             Err(EINTR)
         );
     }

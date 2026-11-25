@@ -25,7 +25,7 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-#if __has_builtin(__make_unsigned)
+#if __has_builtin(__make_unsigned) && defined(__clang__)
 
 template <class _Tp>
 using __make_unsigned_t = __make_unsigned(_Tp);

@@ -15,7 +15,36 @@ fail() {
 
 [[ -d "$SRC/.git" || -f "$SRC/.git" ]] || fail "upstream submodule missing; checkout recursively"
 [[ -f "$USER/build/crt0.o" && -f "$USER/build/runtime.o" ]] || \
-    make -C "$USER" build/crt0.o build/runtime.o build/posix_extra.o
+    make -C "$USER" build/crt0.o build/runtime.o
+
+# GNU Make already compiles its own getopt/error implementations and pulls
+# fnmatch/glob from gnulib. Linking the complete posix_extra.o here causes
+# duplicate global definitions. The configure/link probe only needs the
+# missing BSD strnlen helper, so provide a deliberately narrow compatibility
+# object instead of dragging unrelated libc symbols into upstream Make.
+mkdir -p "$BUILD"
+cat > "$BUILD/octagram_gnu_make_compat.c" <<'EOF'
+#include <stddef.h>
+
+size_t strnlen(const char *text, size_t maximum)
+{
+    size_t length = 0;
+    if (text == NULL) {
+        return 0;
+    }
+    while (length < maximum && text[length] != '\\0') {
+        length++;
+    }
+    return length;
+}
+EOF
+CC="${CC:-gcc}"
+GCC_INTERNAL="$("$CC" -print-file-name=include)"
+"$CC" -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \\
+    -fno-pie -fno-pic -mno-red-zone -mcmodel=small -march=x86-64 \\
+    -mno-avx -mno-avx2 -mno-avx512f -mno-mmx -msse2 -mfpmath=387 \\
+    -nostdinc -isystem "$GCC_INTERNAL" -c \\
+    -o "$BUILD/octagram_gnu_make_compat.o" "$BUILD/octagram_gnu_make_compat.c"
 
 # GNU Make tracks generated Autotools files outside Git. Bootstrap the pinned
 # upstream checkout and its pinned gnulib revision before configuring it.
@@ -98,7 +127,7 @@ CFLAGS_PARTS=(
 printf -v CFLAGS '%s ' "${CFLAGS_PARTS[@]}"
 export CFLAGS
 export LDFLAGS="-nostdlib -static -Wl,--gc-sections -Wl,-T,$USER/linker.ld"
-export LIBS="$USER/build/crt0.o $USER/build/runtime.o $USER/build/posix_extra.o"
+export LIBS="$USER/build/crt0.o $USER/build/runtime.o $BUILD/octagram_gnu_make_compat.o"
 
 echo "GNU-MAKE-OCTAGRAM: configure target=$TARGET build=$BUILD_TRIPLET"
 # Keep the cross result deterministic. unistd.h advertises POSIX so GNU Make

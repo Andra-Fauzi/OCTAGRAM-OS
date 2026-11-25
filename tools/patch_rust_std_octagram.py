@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+TOOLCHAIN = os.environ.get("OCTAGRAM_RUST_TOOLCHAIN", "nightly")
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
@@ -172,7 +174,7 @@ def widen_linux_cfg_gates(std: Path) -> None:
 
 def main() -> int:
     sysroot = Path(subprocess.check_output(
-        ["rustc", "+nightly", "--print", "sysroot"], text=True
+        ["rustc", f"+{TOOLCHAIN}", "--print", "sysroot"], text=True
     ).strip())
     library = sysroot / "lib/rustlib/src/rust/library"
     std = library / "std/src"

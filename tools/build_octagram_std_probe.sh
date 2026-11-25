@@ -23,7 +23,8 @@ fi
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-sysroot=$(rustc +nightly --print sysroot)
+toolchain="${OCTAGRAM_RUST_TOOLCHAIN:-nightly}"
+sysroot=$(rustc "+$toolchain" --print sysroot)
 rust_src="$sysroot/lib/rustlib/src/rust"
 target_json="$repo_root/user/rust/targets/x86_64-unknown-octagram.json"
 toolchain_bin="$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin"
@@ -63,6 +64,7 @@ encoded+="${sep}-C${sep}target-feature=+sse,+sse2"
 encoded+="${sep}-C${sep}link-arg=-T$repo_root/user/linker.ld"
 encoded+="${sep}-C${sep}link-arg=$repo_root/user/build/crt0.o"
 encoded+="${sep}-C${sep}link-arg=-L$libdir"
+encoded+="${sep}-C${sep}link-arg=-u${sep}-C${sep}link-arg=__oct_tls_initialize"
 
 export CARGO_TARGET_X86_64_UNKNOWN_OCTAGRAM_LINKER=rust-lld
 export CARGO_ENCODED_RUSTFLAGS="$encoded"
@@ -71,13 +73,13 @@ export PATH="$toolchain_bin:$PATH"
 cd "$repo_root/user/rust"
 
 if [[ $check_only -eq 1 ]]; then
-    cargo +nightly -Z unstable-options -Z build-std=std -Z json-target-spec check \
+    cargo "+$toolchain" -Z unstable-options -Z build-std=std -Z json-target-spec check \
         --manifest-path std-probe/Cargo.toml --target "$target_json"
     echo "build_octagram_std_probe: std type-checks for x86_64-unknown-octagram"
     exit 0
 fi
 
-cargo +nightly -Z unstable-options -Z build-std=std -Z json-target-spec build \
+cargo "+$toolchain" -Z unstable-options -Z build-std=std -Z json-target-spec build \
     --manifest-path std-probe/Cargo.toml --target "$target_json"
 
 probe="$repo_root/user/rust/std-probe/target/x86_64-unknown-octagram/debug/octagram-std-probe"

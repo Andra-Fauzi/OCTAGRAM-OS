@@ -426,6 +426,8 @@ build/math_wide.o: math_wide.c $(HEADERS) | build
 
 build/runtime.pic.o: runtime.c $(HEADERS) | build
 	$(CC) $(RUNTIME_PIC_CFLAGS) -c -o $@ $<
+	@echo "Undefined symbols in shared runtime object:"
+	@nm -u $@ || true
 
 $(TCC_CONFIG): $(TCC_CONFIG_TEMPLATE)
 	cp $< $@

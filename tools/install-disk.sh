@@ -110,6 +110,7 @@ printf '%s\n' 'OCTAGRAM-OS persistent root v1' > "$WORK/root/etc/octagram-root"
 printf '%s\n' 'OCTAGRAM_OS_NAME="OCTAGRAM-OS"' 'OCTAGRAM_OS_ID=octagram' 'OCTAGRAM_OS_VERSION=1.0' > "$WORK/root/etc/os-release"
 printf '%s\n' 'octagram:x:0:0:OCTAGRAM User:/home/octagram:/bin/sh' > "$WORK/root/etc/passwd"
 printf '%s\n' 'export PATH=/bin:/usr/bin:/usr/local/bin:/toolchain/bin' > "$WORK/root/home/octagram/.profile"
+printf '%s' 'OCTAGRAM Rust toolchain\n========================\n\n/toolchain/bin/rustc and /toolchain/bin/cargo are on PATH when the image was\nbuilt with tools/build_octagram_toolchain.sh and installed with\ntools/install-disk.sh --toolchain DIR.\n\n  rustc --version\n  cargo new hello && cd hello && cargo run\n\n/toolchain/toolchain.json records the Rust commit, LLVM version, and\nlibraries that were installed.\n\nx86_64-unknown-octagram builds hosted programs; freestanding code uses\n--target x86_64-unknown-none.\n\nIf rustc reports a missing linker, point OCTAGRAM_RUST_LINKER at a linker on\nPATH (for example /toolchain/bin/ld), or install one at /toolchain/bin/ld.\n' > "$WORK/root/home/octagram/RUST.md"
 printf '%s\n' '# OCTAGRAM native application registry' > "$WORK/root/apps/apps.txt"
 : > "$WORK/root/var/lib/octagram/packages/registry.txt"
 sync

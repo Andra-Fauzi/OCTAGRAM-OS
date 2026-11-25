@@ -300,11 +300,12 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
     crate::terminal::terminal_show_task_progress("Write boot config", 1, 1);
     crate::println!("");
 
-    let root_files: [(&str, &[u8], &str); 6] = [
+    let root_files: [(&str, &[u8], &str); 7] = [
         ("/etc/octagram-root", b"OCTAGRAM-OS persistent root v1\nfilesystem=ext2\n", "root marker"),
         ("/etc/os-release", b"OCTAGRAM_OS_NAME=\"OCTAGRAM-OS\"\nOCTAGRAM_OS_ID=octagram\nOCTAGRAM_OS_VERSION=1.0\n", "os-release"),
         ("/etc/passwd", b"octagram:x:0:0:OCTAGRAM User:/home/octagram:/bin/sh\n", "passwd"),
         ("/home/octagram/.profile", b"export PATH=/bin:/usr/bin:/usr/local/bin:/toolchain/bin\n", "user profile"),
+        ("/home/octagram/RUST.md", b"OCTAGRAM Rust toolchain\n========================\n\n/toolchain/bin/rustc and /toolchain/bin/cargo are on PATH when the image was\nbuilt with tools/build_octagram_toolchain.sh and installed with\ntools/install-disk.sh --toolchain DIR.\n\n  rustc --version\n  cargo new hello && cd hello && cargo run\n\n/toolchain/toolchain.json records the Rust commit, LLVM version, and\nlibraries that were installed.\n\nx86_64-unknown-octagram builds hosted programs; freestanding code uses\n--target x86_64-unknown-none.\n\nIf rustc reports a missing linker, point OCTAGRAM_RUST_LINKER at a linker on\nPATH (for example /toolchain/bin/ld), or install one at /toolchain/bin/ld.\n", "rust toolchain note"),
         ("/apps/apps.txt", b"# OCTAGRAM native application registry\n", "app registry"),
         ("/var/lib/octagram/packages/registry.txt", b"", "package registry"),
     ];

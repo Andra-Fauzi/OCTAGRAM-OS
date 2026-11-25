@@ -127,11 +127,13 @@ def enable_std_file_locks(std: Path) -> None:
 OCTAGRAM_LINUX = 'any(target_os = "linux", target_os = "octagram")'
 
 OCTAGRAM_ARM_FILES = {
-    "os/unix/net/ancillary.rs",
-    "os/unix/net/ucred.rs",
+    # `os/unix/mod.rs` already re-exports the OCTAGRAM platform module; widening
+    # it as well would glob in the Linux module too, which makes names like `fs`
+    # and `raw` ambiguous.
+    "os/unix/mod.rs",
     "sys/args/unix.rs",
-    "sys/io/kernel_copy/mod.rs",
     "sys/fs/unix.rs",
+    "sys/io/kernel_copy/mod.rs",
     "sys/paths/unix.rs",
     "sys/random/mod.rs",
     "sys/thread/unix.rs",
@@ -264,6 +266,14 @@ def main() -> int:
         'pub(in crate::sys) use cfm::CachedFileMetadata;',
         '#[cfg(any(target_os = "linux", target_os = "android", target_os = "octagram"))]\n'
         'pub(in crate::sys) use cfm::CachedFileMetadata;',
+    )
+
+    # std/build.rs keeps the list of targets whose std is not "restricted"; without
+    # this entry every user of std needs `#![feature(restricted_std)]`.
+    replace_once(
+        std.parent / "build.rs",
+        '        || target_os == "vexos"\n',
+        '        || target_os == "vexos"\n        || target_os == "octagram"\n',
     )
 
     target = std / "os/octagram"

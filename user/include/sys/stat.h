@@ -39,6 +39,11 @@ struct stat {
     nlink_t st_nlink;
     uid_t st_uid;
     gid_t st_gid;
+    /*
+     * No device nodes exist yet, so libc reports 0. The field is part of the
+     * public layout because Rust's std (and any `st_rdev` user) addresses it.
+     */
+    dev_t st_rdev;
     blksize_t st_blksize;
     blkcnt_t st_blocks;
     /* POSIX timespec members. The st_atime/st_mtime/st_ctime and

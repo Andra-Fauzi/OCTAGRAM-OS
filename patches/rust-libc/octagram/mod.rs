@@ -19,11 +19,6 @@ pub type size_t = usize;
 pub type ssize_t = isize;
 pub type uintptr_t = usize;
 
-/// Opaque directory stream handle, matching `DIR *` in the OCTAGRAM headers.
-#[repr(C)]
-pub struct DIR {
-    _private: [u8; 0],
-}
 
 pub type wchar_t = i32;
 pub type blkcnt_t = i64;
@@ -56,6 +51,9 @@ pub type gid_t = u32;
 
 s! {
     /// Public C stat structure. This is not the 16-byte kernel oct_stat record.
+    // Field order mirrors `struct stat` in user/include/sys/stat.h exactly; the
+    // `st_atime`/`st_*time_nsec` names line up with the C macros that alias the
+    // `st_atim`/`st_atim.tv_nsec` members.
     pub struct stat {
         pub st_size: off_t,
         pub st_mode: mode_t,
@@ -64,13 +62,14 @@ s! {
         pub st_nlink: nlink_t,
         pub st_uid: uid_t,
         pub st_gid: gid_t,
-        pub st_atime: time_t,
-        pub st_mtime: time_t,
-        pub st_ctime: time_t,
+        pub st_rdev: dev_t,
         pub st_blksize: blksize_t,
         pub st_blocks: blkcnt_t,
+        pub st_atime: time_t,
         pub st_atime_nsec: time_t,
+        pub st_mtime: time_t,
         pub st_mtime_nsec: time_t,
+        pub st_ctime: time_t,
         pub st_ctime_nsec: time_t,
     }
 
@@ -236,7 +235,7 @@ s! {
     }
 }
 
-const _: [(); 112] = [(); core::mem::size_of::<stat>()];
+const _: [(); 120] = [(); core::mem::size_of::<stat>()];
 const _: [(); 8] = [(); core::mem::align_of::<stat>()];
 const _: [(); 110] = [(); core::mem::size_of::<sockaddr_un>()];
 const _: [(); 2] = [(); core::mem::align_of::<sockaddr_un>()];
@@ -458,6 +457,7 @@ pub const EXIT_FAILURE: c_int = 1;
 pub const EAI_SYSTEM: c_int = -11;
 pub const F_DUPFD_CLOEXEC: c_int = 5;
 pub const F_GETFD: c_int = 1;
+pub const F_SETFD: c_int = 2;
 pub const F_GETFL: c_int = 3;
 pub const F_SETFL: c_int = 4;
 pub const LOCK_SH: c_int = 1;
@@ -529,7 +529,7 @@ extern "C" {
     pub fn readv(fd: c_int, vectors: *const iovec, count: c_int) -> ssize_t;
     pub fn writev(fd: c_int, vectors: *const iovec, count: c_int) -> ssize_t;
     pub fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
-    pub fn dirfd(directory: *mut DIR) -> c_int;
+    pub fn dirfd(directory: *mut crate::DIR) -> c_int;
     pub fn futimens(fd: c_int, times: *const crate::timespec) -> c_int;
     pub fn utimensat(dirfd: c_int, path: *const c_char, times: *const crate::timespec, flags: c_int) -> c_int;
     pub fn setgroups(size: size_t, groups: *const gid_t) -> c_int;
@@ -653,13 +653,14 @@ extern "C" {
     #[link_name = "pwrite"]
     pub fn pwrite64(fd: c_int, buf: *const c_void, count: size_t, offset: off64_t) -> ssize_t;
     #[link_name = "readdir"]
-    pub fn readdir64(dirp: *mut DIR) -> *mut dirent64;
+    pub fn readdir64(dirp: *mut crate::DIR) -> *mut dirent64;
 }
 
 // Ancillary data. The OCTAGRAM guest rejects SCM_RIGHTS at runtime, but std and
 // its users still name these symbols while building, so the ABI-matching
 // definitions live here.
 pub const SCM_RIGHTS: c_int = 1;
+pub const SCM_CREDENTIALS: c_int = 2;
 
 s! {
     pub struct cmsghdr {
@@ -671,12 +672,9 @@ s! {
 
 const _: [(); 16] = [(); core::mem::size_of::<cmsghdr>()];
 
-s! {
-    pub struct iovec {
-        pub iov_base: *mut c_void,
-        pub iov_len: size_t,
-    }
+pub use crate::iovec;
 
+s! {
     pub struct msghdr {
         pub msg_name: *mut c_void,
         pub msg_namelen: socklen_t,
@@ -721,3 +719,236 @@ pub unsafe fn CMSG_NXTHDR(mhdr: *const msghdr, cmsg: *const cmsghdr) -> *mut cms
         next as *mut cmsghdr
     }
 }
+
+// ---------------------------------------------------------------------------
+// POSIX surface the OCTAGRAM headers already provide.
+
+pub const SOCK_CLOEXEC: c_int = 0o2000000;
+pub const MSG_CTRUNC: c_int = 0x08;
+pub const MSG_TRUNC: c_int = 0x20;
+
+pub const WEXITED: c_int = 4;
+pub const WUNTRACED: c_int = 2;
+pub const WCONTINUED: c_int = 8;
+
+pub const GRND_NONBLOCK: c_int = 0x0001;
+
+pub const CPU_SETSIZE: c_int = 128;
+
+s! {
+    pub struct siginfo_t {
+        pub si_signo: c_int,
+        pub si_errno: c_int,
+        pub si_code: c_int,
+        pub si_pid: pid_t,
+        pub si_uid: uid_t,
+    }
+
+    pub struct cpu_set_t {
+        pub bits: [c_ulong; 2],
+    }
+}
+
+const _: [(); 20] = [(); core::mem::size_of::<siginfo_t>()];
+const _: [(); 16] = [(); core::mem::size_of::<cpu_set_t>()];
+
+pub fn CPU_ZERO(set: &mut cpu_set_t) {
+    set.bits = [0; 2];
+}
+
+pub fn CPU_SET(cpu: usize, set: &mut cpu_set_t) {
+    if cpu < CPU_SETSIZE as usize {
+        set.bits[cpu / 64] |= 1 << (cpu % 64);
+    }
+}
+
+pub fn CPU_CLR(cpu: usize, set: &mut cpu_set_t) {
+    if cpu < CPU_SETSIZE as usize {
+        set.bits[cpu / 64] &= !(1 << (cpu % 64));
+    }
+}
+
+pub fn CPU_ISSET(cpu: usize, set: &cpu_set_t) -> bool {
+    cpu < CPU_SETSIZE as usize && set.bits[cpu / 64] & (1 << (cpu % 64)) != 0
+}
+
+extern "C" {
+    pub fn sendmsg(fd: c_int, msg: *const msghdr, flags: c_int) -> ssize_t;
+    pub fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t;
+}
+
+// ---------------------------------------------------------------------------
+// Linux ABI names used by std's Unix PAL.
+//
+// OCTAGRAM accepts the Linux syscall numbers and socket flags below. Where the
+// guest has no implementation (pidfd, credential passing, TCP tuning) the value
+// is still the Linux one: std only needs the name while building, and the
+// corresponding call fails with ENOSYS/EINVAL at runtime instead of silently
+// doing something else.
+
+pub const SOCK_SEQPACKET: c_int = 5;
+pub const SO_MARK: c_int = 36;
+pub const SO_PASSCRED: c_int = 16;
+pub const MSG_CMSG_CLOEXEC: c_int = 0x4000_0000;
+pub const TCP_DEFER_ACCEPT: c_int = 9;
+pub const TCP_QUICKACK: c_int = 12;
+pub const GRND_INSECURE: c_int = 0x0004;
+pub const UIO_MAXIOV: c_int = 1024;
+pub const SYS_pidfd_open: c_long = 434;
+pub const SYS_pidfd_send_signal: c_long = 424;
+
+pub const CLD_EXITED: c_int = 1;
+pub const CLD_KILLED: c_int = 2;
+pub const CLD_DUMPED: c_int = 3;
+pub const CLD_TRAPPED: c_int = 4;
+pub const CLD_STOPPED: c_int = 5;
+pub const CLD_CONTINUED: c_int = 6;
+
+impl siginfo_t {
+    /// The address that faulted, for the signals that carry one.
+    pub unsafe fn si_addr(&self) -> *mut c_void {
+        // The OCTAGRAM `siginfo_t` is the short POSIX form and does not carry
+        // a fault address; report "no address" rather than reading past it.
+        core::ptr::null_mut()
+    }
+
+    pub unsafe fn si_status(&self) -> c_int {
+        // `si_code` is the only status information the short form carries.
+        self.si_code
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Remaining POSIX names the OCTAGRAM headers export.
+
+pub const SOCK_NONBLOCK: c_int = 0o4000;
+pub const SIGSTKSZ: size_t = 8192;
+pub const MINSIGSTKSZ: size_t = 2048;
+
+// Linux flag values, used by std's Unix PAL. OCTAGRAM ignores MAP_STACK (the
+// kernel has no separate stack mappings) and has no O_PATH.
+pub const MAP_STACK: c_int = 0x20000;
+pub const O_PATH: c_int = 0o10000000;
+pub const MSG_EOR: c_int = 0x80;
+
+pub const AT_MINSIGSTKSZ: c_ulong = 51;
+
+extern "C" {
+    pub fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
+    pub fn preadv(fd: c_int, iov: *const iovec, iovcnt: c_int, offset: off_t) -> ssize_t;
+    pub fn pwritev(fd: c_int, iov: *const iovec, iovcnt: c_int, offset: off_t) -> ssize_t;
+    pub fn getauxval(kind: c_ulong) -> c_ulong;
+}
+
+impl siginfo_t {
+    /// Sending process, for the signals that carry one.
+    pub unsafe fn si_pid(&self) -> pid_t {
+        self.si_pid
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Thread attributes and process-info surface.
+//
+// `pthread_attr_getstack`/`getguardsize` only read the attribute block std
+// filled in, so they are implemented here instead of in the guest libc.
+// `accept4` and `waitid` are not exported by the guest yet; the constants and
+// signatures are Linux-compatible so std compiles and the call fails cleanly.
+
+pub const P_PIDFD: c_int = 3;
+pub const PIDFD_SIGNAL_PROCESS_GROUP: c_uint = 1;
+pub const PIDFD_GET_INFO: c_ulong = 0xb0ff;
+pub const PIDFD_INFO_EXIT: u64 = 1 << 0;
+
+s! {
+    pub struct pidfd_info {
+        pub mask: u64,
+        pub cgroupid: u64,
+        pub pid: u32,
+        pub tgid: u32,
+        pub exit_code: i32,
+    }
+}
+
+pub unsafe fn pthread_attr_getstack(
+    attr: *const pthread_attr_t,
+    stackaddr: *mut *mut c_void,
+    stacksize: *mut size_t,
+) -> c_int {
+    if attr.is_null() || stackaddr.is_null() || stacksize.is_null() {
+        return crate::EINVAL;
+    }
+    // The guest attribute block does not track the base address; the size is
+    // what std needs to derive the guard page.
+    *stackaddr = core::ptr::null_mut();
+    *stacksize = (*attr).stack_size;
+    0
+}
+
+pub unsafe fn pthread_attr_getguardsize(attr: *const pthread_attr_t, guardsize: *mut size_t) -> c_int {
+    if attr.is_null() || guardsize.is_null() {
+        return crate::EINVAL;
+    }
+    *guardsize = 0;
+    0
+}
+
+pub unsafe fn pthread_getattr_np(thread: pthread_t, attr: *mut pthread_attr_t) -> c_int {
+    let _ = thread;
+    if attr.is_null() {
+        return crate::EINVAL;
+    }
+    // The guest does not expose a running thread's stack bounds; report failure
+    // so std falls back to "stack bounds unknown" instead of a wrong range.
+    crate::ENOTSUP
+}
+
+pub unsafe fn accept4(
+    fd: c_int,
+    addr: *mut crate::sockaddr,
+    len: *mut socklen_t,
+    flags: c_int,
+) -> c_int {
+    let fd = crate::accept(fd, addr, len);
+    if fd < 0 {
+        return fd;
+    }
+    if flags & SOCK_NONBLOCK != 0 {
+        let current = crate::fcntl(fd, crate::F_GETFL);
+        if current < 0 || crate::fcntl(fd, crate::F_SETFL, current | crate::O_NONBLOCK) < 0 {
+            crate::close(fd);
+            return -1;
+        }
+    }
+    if flags & SOCK_CLOEXEC != 0 {
+        if crate::fcntl(fd, F_SETFD, crate::FD_CLOEXEC) < 0 {
+            crate::close(fd);
+            return -1;
+        }
+    }
+    fd
+}
+
+extern "C" {
+    pub fn waitid(idtype: c_int, id: id_t, info: *mut siginfo_t, options: c_int) -> c_int;
+    pub fn clock_nanosleep(
+        clock_id: clockid_t,
+        flags: c_int,
+        request: *const crate::timespec,
+        remain: *mut crate::timespec,
+    ) -> c_int;
+}
+
+// Peer credentials over SCM_CREDENTIALS/SO_PEERCRED. The guest does not fill
+// them in yet, but std's Unix credential type needs the ABI shape.
+pub const SO_PEERCRED: c_int = 17;
+
+s! {
+    pub struct ucred {
+        pub pid: pid_t,
+        pub uid: uid_t,
+        pub gid: gid_t,
+    }
+}
+
+const _: [(); 12] = [(); core::mem::size_of::<ucred>()];

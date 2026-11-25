@@ -39,6 +39,9 @@ const RUST_STD_PROBE_ELF: &[u8] =
 const RUST_NATIVE_PROBE_OBJECT: &[u8] =
     include_bytes!("../../../user/rust/build/rust_native_probe.o");
 const CPP_SMOKE_ELF: &[u8] = include_bytes!("../../../user/build/cpp_smoke.elf");
+const MEMSTREAM_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/memstream_demo.elf");
+const POSIX_SEARCH_DEMO_ELF: &[u8] =
+    include_bytes!("../../../user/build/posix_search_demo.elf");
 const LIBCXX_STRING_SMOKE_ELF: &[u8] =
     include_bytes!("../../../user/build/libcxx_string_smoke.elf");
 const LIBCXX_IOSTREAM_SMOKE_ELF: &[u8] =
@@ -1065,6 +1068,18 @@ pub fn init() {
             &mut vfs,
             "/bin/libcxx-format-smoke",
             LIBCXX_FORMAT_SMOKE_ELF,
+            0o755,
+        );
+        seed_file(
+            &mut vfs,
+            "/bin/memstream-demo",
+            MEMSTREAM_DEMO_ELF,
+            0o755,
+        );
+        seed_file(
+            &mut vfs,
+            "/bin/posix-search-demo",
+            POSIX_SEARCH_DEMO_ELF,
             0o755,
         );
         seed_file(&mut vfs, "/bin/octagram-cargo", OCTAGRAM_CARGO_ELF, 0o755);

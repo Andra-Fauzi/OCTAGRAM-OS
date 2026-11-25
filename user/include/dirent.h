@@ -33,6 +33,17 @@ struct dirent *readdir(DIR *directory);
 int closedir(DIR *directory);
 int dirfd(DIR *directory);
 
+/* Collect a directory into a NULL-terminated, caller-freed array of copies.
+ * The comparison takes slots, matching alphasort/versionsort. */
+int scandir(const char *path, struct dirent ***namelist,
+            int (*filter)(const struct dirent *),
+            int (*compar)(const struct dirent **, const struct dirent **));
+int scandirat(int dirfd, const char *path, struct dirent ***namelist,
+              int (*filter)(const struct dirent *),
+              int (*compar)(const struct dirent **, const struct dirent **));
+int alphasort(const struct dirent **left, const struct dirent **right);
+int versionsort(const struct dirent **left, const struct dirent **right);
+
 
 #ifdef __cplusplus
 }

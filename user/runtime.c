@@ -54,6 +54,16 @@ struct octagram_FILE {
     int fd;
     unsigned int flags;
     int pushed_character;
+    /* Memory-backed streams (open_memstream/fmemopen) keep their bytes here
+     * instead of behind a descriptor. `memory_result`/`memory_result_size`
+     * are the caller's out-parameters, refreshed on every flush. */
+    unsigned char *memory_buffer;
+    size_t memory_capacity;
+    size_t memory_length;
+    size_t memory_position;
+    char **memory_result;
+    size_t *memory_result_size;
+    int memory_owns_buffer;
 };
 
 struct octagram_DIR {
@@ -74,12 +84,13 @@ enum {
     STREAM_EOF = 1u << 2,
     STREAM_ERROR = 1u << 3,
     STREAM_PUSHBACK = 1u << 4,
-    STREAM_CLOSED = 1u << 5
+    STREAM_CLOSED = 1u << 5,
+    STREAM_MEMORY = 1u << 6
 };
 
-static FILE standard_input = {0, STREAM_READABLE, 0};
-static FILE standard_output = {1, STREAM_WRITABLE, 0};
-static FILE standard_error = {2, STREAM_WRITABLE, 0};
+static FILE standard_input = {.fd = 0, .flags = STREAM_READABLE, .pushed_character = 0};
+static FILE standard_output = {.fd = 1, .flags = STREAM_WRITABLE, .pushed_character = 0};
+static FILE standard_error = {.fd = 2, .flags = STREAM_WRITABLE, .pushed_character = 0};
 
 FILE *stdin = &standard_input;
 FILE *stdout = &standard_output;
@@ -5407,6 +5418,97 @@ static int stream_failure(FILE *stream, int error)
     return EOF;
 }
 
+/* ---- Memory-backed streams --------------------------------------------- */
+
+static int stream_is_memory(FILE *stream)
+{
+    return stream != NULL && (stream->flags & STREAM_MEMORY) != 0;
+}
+
+/* open_memstream reports the buffer through caller pointers. The published
+ * buffer is always NUL terminated so it can be handed to C string APIs, and
+ * the published length excludes that terminator, as POSIX requires. */
+static void memory_stream_publish(FILE *stream)
+{
+    if (stream->memory_result == NULL || stream->memory_result_size == NULL) {
+        return;
+    }
+    if (stream->memory_buffer != NULL &&
+        stream->memory_capacity > stream->memory_length) {
+        stream->memory_buffer[stream->memory_length] = '\0';
+    }
+    *stream->memory_result = (char *)stream->memory_buffer;
+    *stream->memory_result_size = stream->memory_length;
+}
+
+/* Grow the owned buffer so that `needed` bytes (including the terminator) fit.
+ * fmemopen streams never own their buffer, so a request past its end fails. */
+static int memory_stream_reserve(FILE *stream, size_t needed)
+{
+    if (needed <= stream->memory_capacity) {
+        return 0;
+    }
+    if (!stream->memory_owns_buffer) {
+        errno = ENOSPC;
+        return -1;
+    }
+    size_t capacity = stream->memory_capacity != 0 ? stream->memory_capacity : 64;
+    while (capacity < needed) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    unsigned char *grown = realloc(stream->memory_buffer, capacity);
+    if (grown == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+    stream->memory_buffer = grown;
+    stream->memory_capacity = capacity;
+    return 0;
+}
+
+static int memory_stream_seek(FILE *stream, off_t offset, int whence)
+{
+    off_t base;
+    if (whence == SEEK_SET) {
+        base = 0;
+    } else if (whence == SEEK_CUR) {
+        base = (off_t)stream->memory_position;
+        if ((stream->flags & STREAM_PUSHBACK) != 0) {
+            --base;
+        }
+    } else if (whence == SEEK_END) {
+        base = (off_t)stream->memory_length;
+    } else {
+        return stream_failure(stream, EINVAL);
+    }
+
+    const off_t target = base + offset;
+    if (target < 0 || (unsigned long long)target > (unsigned long long)SIZE_MAX) {
+        return stream_failure(stream, EINVAL);
+    }
+    const size_t position = (size_t)target;
+    if (position > stream->memory_capacity &&
+        memory_stream_reserve(stream, position) < 0) {
+        stream->flags |= STREAM_ERROR;
+        return -1;
+    }
+    /* Seeking past the end of a memstream zero-fills the hole, matching glibc
+     * and POSIX (a later read must see those bytes, not stale heap contents). */
+    if (position > stream->memory_length && stream->memory_buffer != NULL) {
+        memset(stream->memory_buffer + stream->memory_length, 0,
+               position - stream->memory_length);
+        stream->memory_length = position;
+        memory_stream_publish(stream);
+    }
+    stream->memory_position = position;
+    stream->flags &= ~(STREAM_EOF | STREAM_PUSHBACK);
+    return 0;
+}
+
 static int parse_file_mode(const char *mode, int *open_flags,
                            unsigned int *stream_flags)
 {
@@ -5469,6 +5571,7 @@ FILE *fdopen(int fd, const char *mode)
         errno = ENOMEM;
         return NULL;
     }
+    memset(stream, 0, sizeof(*stream));
     stream->fd = fd;
     stream->flags = stream_flags;
     stream->pushed_character = 0;
@@ -5500,12 +5603,89 @@ FILE *fopen(const char *path, const char *mode)
     return stream;
 }
 
+/* open_memstream: the stream owns a growing buffer that is published through
+ * `buffer`/`size` on every flush and once more on close. */
+FILE *open_memstream(char **buffer, size_t *size)
+{
+    if (buffer == NULL || size == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    FILE *stream = calloc(1, sizeof(*stream));
+    if (stream == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    stream->fd = -1;
+    stream->flags = STREAM_WRITABLE | STREAM_MEMORY;
+    stream->memory_result = buffer;
+    stream->memory_result_size = size;
+    stream->memory_owns_buffer = 1;
+    *buffer = NULL;
+    *size = 0;
+    return stream;
+}
+
+/* fmemopen: a stream over a caller-supplied fixed buffer. Read mode treats the
+ * whole buffer as data, write mode starts empty, and append mode starts at the
+ * first NUL (or at the end of the buffer). */
+FILE *fmemopen(void *buffer, size_t size, const char *mode)
+{
+    if (buffer == NULL || mode == NULL || mode[0] == '\0') {
+        errno = EINVAL;
+        return NULL;
+    }
+    int open_flags;
+    unsigned int stream_flags;
+    if (parse_file_mode(mode, &open_flags, &stream_flags) < 0) {
+        return NULL;
+    }
+    (void)open_flags;
+    FILE *stream = calloc(1, sizeof(*stream));
+    if (stream == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    stream->fd = -1;
+    stream->flags = stream_flags | STREAM_MEMORY;
+    stream->memory_buffer = buffer;
+    stream->memory_capacity = size;
+    if (mode[0] == 'a') {
+        const size_t used = strnlen((const char *)buffer, size);
+        stream->memory_length = used;
+        stream->memory_position = used;
+    } else if (mode[0] == 'w') {
+        stream->memory_length = 0;
+        stream->memory_position = 0;
+        if (size != 0) {
+            ((unsigned char *)buffer)[0] = '\0';
+        }
+    } else {
+        stream->memory_length = size;
+        stream->memory_position = 0;
+    }
+    return stream;
+}
+
 int fclose(FILE *stream)
 {
     if (!stream_is_open(stream)) {
         return stream_failure(stream, EBADF);
     }
-    int result = close(stream->fd);
+    int result;
+    if (stream_is_memory(stream)) {
+        memory_stream_publish(stream);
+        if (stream->memory_owns_buffer) {
+            free(stream->memory_buffer);
+        }
+        stream->memory_buffer = NULL;
+        stream->memory_capacity = 0;
+        stream->memory_length = 0;
+        stream->memory_position = 0;
+        result = 0;
+    } else {
+        result = close(stream->fd);
+    }
     stream->flags |= STREAM_CLOSED;
     stream->fd = -1;
     return result;
@@ -5516,7 +5696,13 @@ int fflush(FILE *stream)
     if (stream == NULL) {
         return 0;
     }
-    return stream_is_open(stream) ? 0 : stream_failure(stream, EBADF);
+    if (!stream_is_open(stream)) {
+        return stream_failure(stream, EBADF);
+    }
+    if (stream_is_memory(stream)) {
+        memory_stream_publish(stream);
+    }
+    return 0;
 }
 
 int setvbuf(FILE *stream, char *buffer, int mode, size_t size)
@@ -5571,6 +5757,18 @@ size_t fread(void *buffer, size_t size, size_t count, FILE *stream)
     }
 
     size_t requested = size * count;
+    if (stream_is_memory(stream)) {
+        const size_t available = stream->memory_length - stream->memory_position;
+        const size_t chunk = requested < available ? requested : available;
+        if (chunk != 0) {
+            memcpy(buffer, stream->memory_buffer + stream->memory_position, chunk);
+            stream->memory_position += chunk;
+        }
+        if (chunk < requested) {
+            stream->flags |= STREAM_EOF;
+        }
+        return chunk / size;
+    }
     size_t completed = 0;
     unsigned char *output = buffer;
     while (completed < requested) {
@@ -5612,6 +5810,26 @@ size_t fwrite(const void *buffer, size_t size, size_t count, FILE *stream)
     }
 
     size_t requested = size * count;
+    if (stream_is_memory(stream)) {
+        const size_t room = stream->memory_owns_buffer
+                                ? SIZE_MAX
+                                : stream->memory_capacity - stream->memory_position;
+        const size_t chunk = requested < room ? requested : room;
+        if (chunk != 0) {
+            if (memory_stream_reserve(stream,
+                                      stream->memory_position + chunk + 1) < 0) {
+                stream->flags |= STREAM_ERROR;
+                return 0;
+            }
+            memcpy(stream->memory_buffer + stream->memory_position, buffer, chunk);
+            stream->memory_position += chunk;
+            if (stream->memory_position > stream->memory_length) {
+                stream->memory_length = stream->memory_position;
+            }
+            memory_stream_publish(stream);
+        }
+        return chunk / size;
+    }
     size_t completed = 0;
     const unsigned char *input = buffer;
     while (completed < requested) {
@@ -5732,6 +5950,9 @@ int fseek(FILE *stream, long offset, int whence)
     if ((long)wide_offset != offset) {
         return stream_failure(stream, EOVERFLOW);
     }
+    if (stream_is_memory(stream)) {
+        return memory_stream_seek(stream, wide_offset, whence);
+    }
     if (lseek(stream->fd, wide_offset, whence) < 0) {
         stream->flags |= STREAM_ERROR;
         return -1;
@@ -5745,6 +5966,18 @@ long ftell(FILE *stream)
     if (!stream_is_open(stream)) {
         stream_failure(stream, EBADF);
         return -1;
+    }
+    if (stream_is_memory(stream)) {
+        off_t memory_position = (off_t)stream->memory_position;
+        if ((stream->flags & STREAM_PUSHBACK) != 0) {
+            --memory_position;
+        }
+        if ((size_t)memory_position != stream->memory_position ||
+            memory_position < 0 || (off_t)(long)memory_position != memory_position) {
+            stream_failure(stream, EOVERFLOW);
+            return -1;
+        }
+        return (long)memory_position;
     }
     off_t position = lseek(stream->fd, 0, SEEK_CUR);
     if (position < 0) {
@@ -5768,6 +6001,9 @@ int fseeko(FILE *stream, off_t offset, int whence)
     if (!stream_is_open(stream)) {
         return stream_failure(stream, EBADF);
     }
+    if (stream_is_memory(stream)) {
+        return memory_stream_seek(stream, offset, whence);
+    }
     if (lseek(stream->fd, offset, whence) < 0) {
         stream->flags |= STREAM_ERROR;
         return -1;
@@ -5781,6 +6017,17 @@ off_t ftello(FILE *stream)
     if (!stream_is_open(stream)) {
         stream_failure(stream, EBADF);
         return (off_t)-1;
+    }
+    if (stream_is_memory(stream)) {
+        off_t memory_position = (off_t)stream->memory_position;
+        if ((stream->flags & STREAM_PUSHBACK) != 0) {
+            --memory_position;
+        }
+        if ((size_t)memory_position != stream->memory_position || memory_position < 0) {
+            stream_failure(stream, EOVERFLOW);
+            return (off_t)-1;
+        }
+        return memory_position;
     }
     off_t position = lseek(stream->fd, 0, SEEK_CUR);
     if (position < 0) {
@@ -5820,6 +6067,12 @@ void clearerr(FILE *stream)
 int fileno(FILE *stream)
 {
     if (!stream_is_open(stream)) {
+        stream_failure(stream, EBADF);
+        return -1;
+    }
+    /* Memory streams have no descriptor; POSIX leaves the value undefined, so
+     * report the failure instead of handing out the sentinel -1. */
+    if (stream_is_memory(stream)) {
         stream_failure(stream, EBADF);
         return -1;
     }
@@ -6916,6 +7169,70 @@ int asprintf(char **result, const char *format, ...)
     const int written = vasprintf(result, format, arguments);
     va_end(arguments);
     return written;
+}
+
+/* dprintf formats straight to a descriptor. The formatted text is rendered
+ * once into a heap buffer (or the stack for short output) and then written
+ * with the same retry-on-short-write loop as fwrite. */
+int vdprintf(int fd, const char *format, va_list arguments)
+{
+    if (format == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    va_list measure;
+    va_copy(measure, arguments);
+    const int length = vsnprintf(NULL, 0, format, measure);
+    va_end(measure);
+    if (length < 0) {
+        return -1;
+    }
+
+    char stack_buffer[256];
+    char *buffer = stack_buffer;
+    if ((size_t)length + 1 > sizeof(stack_buffer)) {
+        buffer = malloc((size_t)length + 1);
+        if (buffer == NULL) {
+            errno = ENOMEM;
+            return -1;
+        }
+    }
+    va_list render;
+    va_copy(render, arguments);
+    const int written = vsnprintf(buffer, (size_t)length + 1, format, render);
+    va_end(render);
+
+    int result = -1;
+    if (written == length) {
+        result = length;
+        size_t completed = 0;
+        while (completed < (size_t)length) {
+            ssize_t chunk = write(fd, buffer + completed, (size_t)length - completed);
+            if (chunk < 0) {
+                result = -1;
+                break;
+            }
+            if (chunk == 0) {
+                errno = EIO;
+                result = -1;
+                break;
+            }
+            completed += (size_t)chunk;
+        }
+    }
+    if (buffer != stack_buffer) {
+        free(buffer);
+    }
+    return result;
+}
+
+int dprintf(int fd, const char *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    const int result = vdprintf(fd, format, arguments);
+    va_end(arguments);
+    return result;
 }
 
 int vsprintf(char *buffer, const char *format, va_list arguments)

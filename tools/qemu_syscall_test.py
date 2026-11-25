@@ -450,6 +450,37 @@ def main():
         return 1
     print("LIBCXX-FORMAT-PASS")
 
+    # Memory-backed stdio: open_memstream/fmemopen/dprintf, the API a compiler
+    # front end uses to assemble a diagnostic string without a filesystem
+    # round trip, plus the append/short-write/zero-filled-hole semantics.
+    memstream_offset = len(serial_text())
+    send_line("/bin/memstream-demo")
+    if not wait_for_after("MEMSTREAM-PASS", memstream_offset, 60):
+        print("MEMSTREAM-FAIL: guest probe did not pass")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("MEMSTREAM-FAIL: shell did not return")
+        print(serial_text()[-6000:])
+        return 1
+    print("MEMSTREAM-PASS")
+
+    # Search, traversal and word expansion: tsearch/twalk, scandir/alphasort,
+    # wordexp/wordfree (quoting, $VAR, glob, error codes), nftw/ftw and the two
+    # basename forms. These are what a ported build tool uses instead of a
+    # shell to expand a command line and walk a source tree.
+    search_offset = len(serial_text())
+    send_line("/bin/posix-search-demo")
+    if not wait_for_after("POSIX-SEARCH-PASS", search_offset, 60):
+        print("POSIX-SEARCH-FAIL: guest probe did not pass")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("POSIX-SEARCH-FAIL: shell did not return")
+        print(serial_text()[-6000:])
+        return 1
+    print("POSIX-SEARCH-PASS")
+
     # M4.4 groundwork: the Cargo-side driver parses Cargo.toml/Cargo.lock
     # offline, resolves path dependencies into a build order, and reports
     # metadata. It does not claim to be upstream Cargo, and it is not asked to

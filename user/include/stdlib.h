@@ -107,6 +107,10 @@ char *mkdtemp(char *path_template);
 size_t malloc_usable_size(void *pointer);
 int system(const char *command);
 
+/* Splits a comma-separated option string against a NULL-terminated token list.
+ * Returns the token index, or -1 for an unknown option. */
+int getsubopt(char **option_pointer, char *const *tokens, char **value_pointer);
+
 #ifdef __cplusplus
 }
 #endif

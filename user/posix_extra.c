@@ -10,14 +10,18 @@
  * directories, affinity queries, and the BSD string helpers.
  */
 
+#include <ctype.h>
 #include <dirent.h>
 #include <err.h>
 #include <errno.h>
 #include <error.h>
 #include <fnmatch.h>
 #include <getopt.h>
+#include <fcntl.h>
+#include <ftw.h>
 #include <glob.h>
 #include <sched.h>
+#include <search.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -30,6 +34,7 @@
 #include <sys/sysinfo.h>
 #include <time.h>
 #include <unistd.h>
+#include <wordexp.h>
 
 /* ---- String helpers ----------------------------------------------------- */
 
@@ -1222,4 +1227,1162 @@ void *mremap(void *old_address, size_t old_size, size_t new_size, int flags, ...
     (void)flags;
     errno = ENOSYS;
     return MAP_FAILED;
+}
+
+/* ---- String search helpers ---------------------------------------------- */
+
+/* GNU strchrnul: like strchr but returns the terminator when the character is
+ * absent, which lets callers avoid a second strlen. */
+char *strchrnul(const char *text, int character)
+{
+    const unsigned char wanted = (unsigned char)character;
+    const unsigned char *cursor = (const unsigned char *)text;
+    while (*cursor != '\0' && *cursor != wanted) {
+        ++cursor;
+    }
+    return (char *)cursor;
+}
+
+char *strcasestr(const char *haystack, const char *needle)
+{
+    if (haystack == NULL || needle == NULL) {
+        return NULL;
+    }
+    if (needle[0] == '\0') {
+        return (char *)haystack;
+    }
+    const size_t length = strlen(needle);
+    for (const char *cursor = haystack; cursor[0] != '\0'; ++cursor) {
+        size_t matched = 0;
+        while (matched < length && cursor[matched] != '\0' &&
+               tolower((unsigned char)cursor[matched]) ==
+                   tolower((unsigned char)needle[matched])) {
+            ++matched;
+        }
+        if (matched == length) {
+            return (char *)cursor;
+        }
+    }
+    return NULL;
+}
+
+/* ---- getsubopt ---------------------------------------------------------- */
+
+/* Splits `name=value,name=value` option arguments against a token list. The
+ * returned index is the matching token, or -1 when the option is unknown; the
+ * value (if any) is NUL terminated in place and *option_pointer advances. */
+int getsubopt(char **option_pointer, char *const *tokens, char **value_pointer)
+{
+    if (option_pointer == NULL || tokens == NULL || value_pointer == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    char *option = *option_pointer;
+    *value_pointer = NULL;
+    if (option == NULL || option[0] == '\0') {
+        *option_pointer = NULL;
+        return -1;
+    }
+
+    char *separator = strchr(option, ',');
+    const size_t option_length =
+        separator != NULL ? (size_t)(separator - option) : strlen(option);
+    char *equals = memchr(option, '=', option_length);
+    const size_t name_length =
+        equals != NULL ? (size_t)(equals - option) : option_length;
+
+    int index = 0;
+    for (; tokens[index] != NULL; ++index) {
+        if (strlen(tokens[index]) == name_length &&
+            memcmp(tokens[index], option, name_length) == 0) {
+            break;
+        }
+    }
+    if (equals != NULL) {
+        if (separator != NULL) {
+            separator[0] = '\0';
+        }
+        *value_pointer = equals + 1;
+    }
+    *option_pointer = separator != NULL ? separator + 1 : NULL;
+    return tokens[index] != NULL ? index : -1;
+}
+
+/* ---- scandir ------------------------------------------------------------ */
+
+static size_t dirent_storage_size(const struct dirent *entry)
+{
+    return offsetof(struct dirent, d_name) + strlen(entry->d_name) + 1;
+}
+
+static struct dirent *copy_dirent(const struct dirent *entry)
+{
+    const size_t size = dirent_storage_size(entry);
+    struct dirent *copy = malloc(size);
+    if (copy == NULL) {
+        return NULL;
+    }
+    memcpy(copy, entry, size);
+    copy->d_reclen = (uint16_t)size;
+    return copy;
+}
+
+/* The caller's comparison takes slots, but an insertion sort here keeps the
+ * sort reentrant (a qsort trampoline would need a global function pointer). */
+static int compare_dirent_slots(const struct dirent *left,
+                                const struct dirent *right,
+                                int (*compar)(const struct dirent **,
+                                              const struct dirent **))
+{
+    return compar(&left, &right);
+}
+
+static void sort_dirent_slots(struct dirent **entries, size_t count,
+                              int (*compar)(const struct dirent **,
+                                            const struct dirent **))
+{
+    for (size_t index = 1; index < count; ++index) {
+        struct dirent *current = entries[index];
+        size_t position = index;
+        while (position > 0 &&
+               compare_dirent_slots(entries[position - 1], current, compar) > 0) {
+            entries[position] = entries[position - 1];
+            --position;
+        }
+        entries[position] = current;
+    }
+}
+
+static int collect_directory(DIR *directory, struct dirent ***namelist,
+                             int (*filter)(const struct dirent *),
+                             int (*compar)(const struct dirent **,
+                                           const struct dirent **))
+{
+    size_t count = 0;
+    size_t capacity = 16;
+    struct dirent **entries = malloc(capacity * sizeof(*entries));
+    if (entries == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (entry == NULL) {
+            if (errno != 0) {
+                const int error = errno;
+                for (size_t index = 0; index < count; ++index) {
+                    free(entries[index]);
+                }
+                free(entries);
+                errno = error;
+                return -1;
+            }
+            break;
+        }
+        if (filter != NULL && filter(entry) == 0) {
+            continue;
+        }
+        if (count == capacity) {
+            const size_t grown_capacity = capacity * 2;
+            struct dirent **grown =
+                realloc(entries, grown_capacity * sizeof(*entries));
+            if (grown == NULL) {
+                for (size_t index = 0; index < count; ++index) {
+                    free(entries[index]);
+                }
+                free(entries);
+                errno = ENOMEM;
+                return -1;
+            }
+            entries = grown;
+            capacity = grown_capacity;
+        }
+        struct dirent *copy = copy_dirent(entry);
+        if (copy == NULL) {
+            for (size_t index = 0; index < count; ++index) {
+                free(entries[index]);
+            }
+            free(entries);
+            errno = ENOMEM;
+            return -1;
+        }
+        entries[count++] = copy;
+    }
+
+    if (compar != NULL) {
+        sort_dirent_slots(entries, count, compar);
+    }
+    entries[count] = NULL;
+    *namelist = entries;
+    return (int)count;
+}
+
+int scandir(const char *path, struct dirent ***namelist,
+            int (*filter)(const struct dirent *),
+            int (*compar)(const struct dirent **, const struct dirent **))
+{
+    if (path == NULL || namelist == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    DIR *directory = opendir(path);
+    if (directory == NULL) {
+        return -1;
+    }
+    const int count = collect_directory(directory, namelist, filter, compar);
+    const int saved = errno;
+    closedir(directory);
+    errno = saved;
+    return count;
+}
+
+int scandirat(int dirfd, const char *path, struct dirent ***namelist,
+              int (*filter)(const struct dirent *),
+              int (*compar)(const struct dirent **, const struct dirent **))
+{
+    if (path == NULL || namelist == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (dirfd == AT_FDCWD || path[0] == '/') {
+        return scandir(path, namelist, filter, compar);
+    }
+    const int descriptor = openat(dirfd, path, O_RDONLY | O_DIRECTORY, 0);
+    if (descriptor < 0) {
+        return -1;
+    }
+    DIR *directory = fdopendir(descriptor);
+    if (directory == NULL) {
+        const int error = errno;
+        close(descriptor);
+        errno = error;
+        return -1;
+    }
+    const int count = collect_directory(directory, namelist, filter, compar);
+    const int saved = errno;
+    closedir(directory);
+    errno = saved;
+    return count;
+}
+
+int alphasort(const struct dirent **left, const struct dirent **right)
+{
+    if (left == NULL || right == NULL || *left == NULL || *right == NULL) {
+        return 0;
+    }
+    return strcoll((*left)->d_name, (*right)->d_name);
+}
+
+int versionsort(const struct dirent **left, const struct dirent **right)
+{
+    if (left == NULL || right == NULL || *left == NULL || *right == NULL) {
+        return 0;
+    }
+    return strverscmp((*left)->d_name, (*right)->d_name);
+}
+
+/* ---- tsearch: balanced binary search tree -------------------------------- */
+
+/* POSIX only promises a binary search tree; the nodes here are kept AVL
+ * balanced so lookups stay logarithmic when keys arrive in sorted order
+ * (which is exactly how a compiler inserts source locations). */
+struct search_node {
+    const void *key;
+    struct search_node *left;
+    struct search_node *right;
+    int height;
+};
+
+static int search_height(const struct search_node *node)
+{
+    return node == NULL ? 0 : node->height;
+}
+
+static void search_update_height(struct search_node *node)
+{
+    const int left = search_height(node->left);
+    const int right = search_height(node->right);
+    node->height = (left > right ? left : right) + 1;
+}
+
+static struct search_node *search_rotate_left(struct search_node *node)
+{
+    struct search_node *pivot = node->right;
+    node->right = pivot->left;
+    pivot->left = node;
+    search_update_height(node);
+    search_update_height(pivot);
+    return pivot;
+}
+
+static struct search_node *search_rotate_right(struct search_node *node)
+{
+    struct search_node *pivot = node->left;
+    node->left = pivot->right;
+    pivot->right = node;
+    search_update_height(node);
+    search_update_height(pivot);
+    return pivot;
+}
+
+static struct search_node *search_rebalance(struct search_node *node)
+{
+    search_update_height(node);
+    const int balance = search_height(node->left) - search_height(node->right);
+    if (balance > 1) {
+        if (search_height(node->left->left) < search_height(node->left->right)) {
+            node->left = search_rotate_left(node->left);
+        }
+        return search_rotate_right(node);
+    }
+    if (balance < -1) {
+        if (search_height(node->right->right) < search_height(node->right->left)) {
+            node->right = search_rotate_right(node->right);
+        }
+        return search_rotate_left(node);
+    }
+    return node;
+}
+
+void *tsearch(const void *key, void **root_pointer,
+              int (*compar)(const void *, const void *))
+{
+    if (root_pointer == NULL || compar == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    struct search_node *node = *root_pointer;
+    if (node == NULL) {
+        struct search_node *created = malloc(sizeof(*created));
+        if (created == NULL) {
+            errno = ENOMEM;
+            return NULL;
+        }
+        created->key = key;
+        created->left = NULL;
+        created->right = NULL;
+        created->height = 1;
+        *root_pointer = created;
+        return created;
+    }
+    const int direction = compar(key, node->key);
+    if (direction == 0) {
+        return node;
+    }
+    void *found;
+    if (direction < 0) {
+        found = tsearch(key, (void **)&node->left, compar);
+    } else {
+        found = tsearch(key, (void **)&node->right, compar);
+    }
+    if (found == NULL) {
+        return NULL;
+    }
+    *root_pointer = search_rebalance(node);
+    return found;
+}
+
+void *tfind(const void *key, void *const *root_pointer,
+            int (*compar)(const void *, const void *))
+{
+    if (root_pointer == NULL || compar == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    struct search_node *node = *root_pointer;
+    while (node != NULL) {
+        const int direction = compar(key, node->key);
+        if (direction == 0) {
+            return node;
+        }
+        node = direction < 0 ? node->left : node->right;
+    }
+    return NULL;
+}
+
+static struct search_node *search_remove(struct search_node *node,
+                                         const void *key,
+                                         int (*compar)(const void *, const void *),
+                                         struct search_node **removed)
+{
+    if (node == NULL) {
+        return NULL;
+    }
+    const int direction = compar(key, node->key);
+    if (direction < 0) {
+        node->left = search_remove(node->left, key, compar, removed);
+    } else if (direction > 0) {
+        node->right = search_remove(node->right, key, compar, removed);
+    } else if (node->left == NULL || node->right == NULL) {
+        struct search_node *child = node->left != NULL ? node->left : node->right;
+        *removed = node;
+        return child;
+    } else {
+        /* Two children: pull the successor key up and delete that node, which
+         * has no left child, so the rotation path stays simple. */
+        struct search_node *successor = node->right;
+        while (successor->left != NULL) {
+            successor = successor->left;
+        }
+        node->key = successor->key;
+        node->right = search_remove(node->right, successor->key, compar, removed);
+    }
+    return search_rebalance(node);
+}
+
+void *tdelete(const void *key, void **root_pointer,
+              int (*compar)(const void *, const void *))
+{
+    if (root_pointer == NULL || compar == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    struct search_node *node = *root_pointer;
+    struct search_node *parent = NULL;
+    while (node != NULL) {
+        const int direction = compar(key, node->key);
+        if (direction == 0) {
+            break;
+        }
+        parent = node;
+        node = direction < 0 ? node->left : node->right;
+    }
+    if (node == NULL) {
+        return NULL;
+    }
+    struct search_node *removed = NULL;
+    *root_pointer = search_remove(*root_pointer, key, compar, &removed);
+    if (removed == NULL) {
+        return NULL;
+    }
+    free(removed);
+    return parent;
+}
+
+static void search_walk(const struct search_node *node,
+                        void (*action)(const void *, VISIT, int), int depth)
+{
+    if (node == NULL) {
+        return;
+    }
+    if (node->left == NULL && node->right == NULL) {
+        action(node, leaf, depth);
+        return;
+    }
+    action(node, preorder, depth);
+    search_walk(node->left, action, depth + 1);
+    action(node, postorder, depth);
+    search_walk(node->right, action, depth + 1);
+    action(node, endorder, depth);
+}
+
+void twalk(const void *root, void (*action)(const void *, VISIT, int))
+{
+    if (root == NULL || action == NULL) {
+        return;
+    }
+    search_walk(root, action, 0);
+}
+
+void tdestroy(void *root, void (*free_function)(void *))
+{
+    struct search_node *node = root;
+    if (node == NULL) {
+        return;
+    }
+    tdestroy(node->left, free_function);
+    tdestroy(node->right, free_function);
+    if (free_function != NULL) {
+        free_function((void *)node->key);
+    }
+    free(node);
+}
+
+/* ---- insque/remque ------------------------------------------------------ */
+
+/* The POSIX intrusive list stores its links in the first two words of the
+ * element, so a shadow struct is enough to walk it without knowing the rest. */
+struct octagram_qelem {
+    struct octagram_qelem *q_forw;
+    struct octagram_qelem *q_back;
+};
+
+void insque(void *element, void *predecessor)
+{
+    if (element == NULL) {
+        return;
+    }
+    struct octagram_qelem *node = element;
+    struct octagram_qelem *pred = predecessor;
+    if (pred == NULL) {
+        node->q_forw = NULL;
+        node->q_back = NULL;
+        return;
+    }
+    node->q_forw = pred->q_forw;
+    node->q_back = pred;
+    if (pred->q_forw != NULL) {
+        pred->q_forw->q_back = node;
+    }
+    pred->q_forw = node;
+}
+
+void remque(void *element)
+{
+    if (element == NULL) {
+        return;
+    }
+    struct octagram_qelem *node = element;
+    if (node->q_forw != NULL) {
+        node->q_forw->q_back = node->q_back;
+    }
+    if (node->q_back != NULL) {
+        node->q_back->q_forw = node->q_forw;
+    }
+}
+
+/* ---- basename/dirname --------------------------------------------------- */
+
+/* Two functions share the basename name. The one declared by <string.h> is the
+ * GNU form: it never modifies its argument and simply returns the part after
+ * the last slash. <libgen.h> renames basename to __xpg_basename, which is the
+ * POSIX form that may rewrite the buffer. */
+char *basename(const char *path)
+{
+    if (path == NULL) {
+        return NULL;
+    }
+    char *slash = strrchr(path, '/');
+    return slash != NULL ? slash + 1 : (char *)path;
+}
+
+char *__xpg_basename(char *path)
+{
+    if (path == NULL || path[0] == '\0') {
+        static char dot[] = ".";
+        return dot;
+    }
+    size_t length = strlen(path);
+    while (length > 1 && path[length - 1] == '/') {
+        path[--length] = '\0';
+    }
+    if (length == 1 && path[0] == '/') {
+        return path;
+    }
+    char *slash = strrchr(path, '/');
+    if (slash == NULL) {
+        return path;
+    }
+    return slash + 1;
+}
+
+char *dirname(char *path)
+{
+    static char dot[] = ".";
+    static char root[] = "/";
+    if (path == NULL || path[0] == '\0') {
+        return dot;
+    }
+    size_t length = strlen(path);
+    while (length > 1 && path[length - 1] == '/') {
+        path[--length] = '\0';
+    }
+    char *slash = strrchr(path, '/');
+    if (slash == NULL) {
+        return dot;
+    }
+    if (slash == path) {
+        return root;
+    }
+    while (slash > path && slash[-1] == '/') {
+        --slash;
+    }
+    slash[0] = '\0';
+    return path;
+}
+
+/* ---- wordexp ------------------------------------------------------------ */
+
+/* Field builder for the final we_wordv array. Every string is owned. */
+struct wordexp_fields {
+    char **items;
+    size_t count;
+    size_t capacity;
+};
+
+/* One field being assembled. `quoted` remembers that the field was quoted, so
+ * an empty result from "" is kept while an empty unquoted expansion is dropped,
+ * and `glob` records an unquoted wildcard for later pathname expansion. */
+struct wordexp_word {
+    char *text;
+    size_t length;
+    size_t capacity;
+    int quoted;
+    int glob;
+};
+
+static int wordexp_fields_push(struct wordexp_fields *fields, char *item)
+{
+    if (fields->count == fields->capacity) {
+        const size_t capacity = fields->capacity != 0 ? fields->capacity * 2 : 8;
+        char **grown = realloc(fields->items, capacity * sizeof(*grown));
+        if (grown == NULL) {
+            return -1;
+        }
+        fields->items = grown;
+        fields->capacity = capacity;
+    }
+    fields->items[fields->count++] = item;
+    return 0;
+}
+
+static void wordexp_fields_release(struct wordexp_fields *fields)
+{
+    for (size_t index = 0; index < fields->count; ++index) {
+        free(fields->items[index]);
+    }
+    free(fields->items);
+    fields->items = NULL;
+    fields->count = 0;
+    fields->capacity = 0;
+}
+
+static int wordexp_word_append(struct wordexp_word *word, const char *text,
+                               size_t count)
+{
+    if (word->length + count + 1 > word->capacity) {
+        size_t capacity = word->capacity != 0 ? word->capacity : 32;
+        while (capacity < word->length + count + 1) {
+            capacity *= 2;
+        }
+        char *grown = realloc(word->text, capacity);
+        if (grown == NULL) {
+            return -1;
+        }
+        word->text = grown;
+        word->capacity = capacity;
+    }
+    if (count != 0) {
+        memcpy(word->text + word->length, text, count);
+        word->length += count;
+    }
+    word->text[word->length] = '\0';
+    return 0;
+}
+
+static int wordexp_word_append_char(struct wordexp_word *word, char character)
+{
+    return wordexp_word_append(word, &character, 1);
+}
+
+static void wordexp_word_release(struct wordexp_word *word)
+{
+    free(word->text);
+    word->text = NULL;
+    word->length = 0;
+    word->capacity = 0;
+    word->quoted = 0;
+    word->glob = 0;
+}
+
+/* Expands $NAME or ${NAME} at *cursor. A lone '$' stays literal. */
+static int wordexp_expand_variable(const char **cursor, struct wordexp_word *word,
+                                   int flags, int *error)
+{
+    const char *text = *cursor;
+    const char *name_start;
+    size_t name_length;
+    const char *after;
+
+    if (text[1] == '{') {
+        name_start = text + 2;
+        const char *closing = strchr(name_start, '}');
+        if (closing == NULL) {
+            *error = WRDE_SYNTAX;
+            return -1;
+        }
+        name_length = (size_t)(closing - name_start);
+        after = closing + 1;
+    } else {
+        name_start = text + 1;
+        name_length = 0;
+        while (isalnum((unsigned char)name_start[name_length]) ||
+               name_start[name_length] == '_') {
+            ++name_length;
+        }
+        after = name_start + name_length;
+    }
+
+    if (name_length == 0) {
+        *cursor = text + 1;
+        if (wordexp_word_append_char(word, '$') < 0) {
+            *error = WRDE_NOSPACE;
+            return -1;
+        }
+        return 0;
+    }
+
+    char name[256];
+    if (name_length >= sizeof(name)) {
+        *error = WRDE_BADVAL;
+        return -1;
+    }
+    memcpy(name, name_start, name_length);
+    name[name_length] = '\0';
+
+    const char *value = getenv(name);
+    if (value == NULL) {
+        if ((flags & WRDE_UNDEF) != 0) {
+            *error = WRDE_BADVAL;
+            return -1;
+        }
+        value = "";
+    }
+    if (wordexp_word_append(word, value, strlen(value)) < 0) {
+        *error = WRDE_NOSPACE;
+        return -1;
+    }
+    *cursor = after;
+    return 0;
+}
+
+/* Publishes the finished field: pathname expansion for unquoted wildcards, a
+ * plain copy otherwise. Unquoted empty fields disappear. */
+static int wordexp_word_finish(struct wordexp_fields *fields,
+                               struct wordexp_word *word, int *error)
+{
+    if (word->length == 0 && word->quoted == 0) {
+        wordexp_word_release(word);
+        return 0;
+    }
+    if (word->text == NULL) {
+        wordexp_word_release(word);
+        return 0;
+    }
+
+    if (word->glob != 0) {
+        glob_t matches;
+        memset(&matches, 0, sizeof(matches));
+        if (glob(word->text, GLOB_NOCHECK, NULL, &matches) != 0) {
+            wordexp_word_release(word);
+            *error = WRDE_NOSPACE;
+            return -1;
+        }
+        for (size_t index = 0; index < matches.gl_pathc; ++index) {
+            char *copy = strdup(matches.gl_pathv[index]);
+            if (copy == NULL || wordexp_fields_push(fields, copy) < 0) {
+                free(copy);
+                globfree(&matches);
+                wordexp_word_release(word);
+                *error = WRDE_NOSPACE;
+                return -1;
+            }
+        }
+        globfree(&matches);
+        wordexp_word_release(word);
+        return 0;
+    }
+
+    if (wordexp_fields_push(fields, word->text) < 0) {
+        wordexp_word_release(word);
+        *error = WRDE_NOSPACE;
+        return -1;
+    }
+    /* Ownership moved into the field array. */
+    word->text = NULL;
+    wordexp_word_release(word);
+    return 0;
+}
+
+static int wordexp_parse(const char *words, struct wordexp_fields *fields,
+                         int flags, int *error)
+{
+    const char *cursor = words;
+    struct wordexp_word word;
+    memset(&word, 0, sizeof(word));
+    int in_word = 0;
+
+    while (*cursor != '\0') {
+        const char character = *cursor;
+
+        if (in_word == 0 && isspace((unsigned char)character)) {
+            ++cursor;
+            continue;
+        }
+
+        switch (character) {
+        case ' ':
+        case '\t':
+        case '\n':
+            if (wordexp_word_finish(fields, &word, error) < 0) {
+                return -1;
+            }
+            in_word = 0;
+            ++cursor;
+            continue;
+        case '\'':
+            word.quoted = 1;
+            in_word = 1;
+            ++cursor;
+            while (*cursor != '\0' && *cursor != '\'') {
+                if (wordexp_word_append_char(&word, *cursor++) < 0) {
+                    *error = WRDE_NOSPACE;
+                    return -1;
+                }
+            }
+            if (*cursor == '\0') {
+                *error = WRDE_SYNTAX;
+                return -1;
+            }
+            ++cursor;
+            continue;
+        case '"':
+            word.quoted = 1;
+            in_word = 1;
+            ++cursor;
+            while (*cursor != '\0' && *cursor != '"') {
+                if (*cursor == '\\' && cursor[1] != '\0') {
+                    const char escaped = cursor[1];
+                    if (escaped == '$' || escaped == '"' || escaped == '\\') {
+                        if (wordexp_word_append_char(&word, escaped) < 0) {
+                            *error = WRDE_NOSPACE;
+                            return -1;
+                        }
+                        cursor += 2;
+                        continue;
+                    }
+                }
+                if (*cursor == '$') {
+                    if (wordexp_expand_variable(&cursor, &word, flags, error) < 0) {
+                        return -1;
+                    }
+                    continue;
+                }
+                if (*cursor == '`' || (*cursor == '$' && cursor[1] == '(')) {
+                    *error = WRDE_CMDSUB;
+                    return -1;
+                }
+                if (wordexp_word_append_char(&word, *cursor++) < 0) {
+                    *error = WRDE_NOSPACE;
+                    return -1;
+                }
+            }
+            if (*cursor == '\0') {
+                *error = WRDE_SYNTAX;
+                return -1;
+            }
+            ++cursor;
+            continue;
+        case '\\':
+            if (cursor[1] == '\0') {
+                *error = WRDE_SYNTAX;
+                return -1;
+            }
+            word.quoted = 1;
+            in_word = 1;
+            if (wordexp_word_append_char(&word, cursor[1]) < 0) {
+                *error = WRDE_NOSPACE;
+                return -1;
+            }
+            cursor += 2;
+            continue;
+        case '$':
+            in_word = 1;
+            if (cursor[1] == '(') {
+                *error = WRDE_CMDSUB;
+                return -1;
+            }
+            if (wordexp_expand_variable(&cursor, &word, flags, error) < 0) {
+                return -1;
+            }
+            continue;
+        case '`':
+            *error = WRDE_CMDSUB;
+            return -1;
+        case '~':
+            in_word = 1;
+            if (word.length == 0 && (cursor[1] == '\0' || cursor[1] == '/')) {
+                const char *home = getenv("HOME");
+                if (home == NULL) {
+                    if ((flags & WRDE_UNDEF) != 0) {
+                        *error = WRDE_BADVAL;
+                        return -1;
+                    }
+                    home = "";
+                }
+                if (wordexp_word_append(&word, home, strlen(home)) < 0) {
+                    *error = WRDE_NOSPACE;
+                    return -1;
+                }
+                ++cursor;
+                continue;
+            }
+            if (wordexp_word_append_char(&word, character) < 0) {
+                *error = WRDE_NOSPACE;
+                return -1;
+            }
+            ++cursor;
+            continue;
+        case '|':
+        case '&':
+        case ';':
+        case '<':
+        case '>':
+        case '(':
+        case ')':
+        case '{':
+        case '}':
+            *error = WRDE_BADCHAR;
+            return -1;
+        case '*':
+        case '?':
+        case '[':
+            word.glob = 1;
+            in_word = 1;
+            if (wordexp_word_append_char(&word, character) < 0) {
+                *error = WRDE_NOSPACE;
+                return -1;
+            }
+            ++cursor;
+            continue;
+        default:
+            in_word = 1;
+            if (wordexp_word_append_char(&word, character) < 0) {
+                *error = WRDE_NOSPACE;
+                return -1;
+            }
+            ++cursor;
+            continue;
+        }
+    }
+
+    if (wordexp_word_finish(fields, &word, error) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int wordexp(const char *words, wordexp_t *result, int flags)
+{
+    if (words == NULL || result == NULL) {
+        return WRDE_SYNTAX;
+    }
+    if ((flags & WRDE_REUSE) != 0) {
+        wordfree(result);
+    }
+
+    struct wordexp_fields fields;
+    memset(&fields, 0, sizeof(fields));
+    int error = 0;
+    if (wordexp_parse(words, &fields, flags, &error) < 0) {
+        wordexp_fields_release(&fields);
+        return error != 0 ? error : WRDE_SYNTAX;
+    }
+
+    const size_t offset = (flags & WRDE_DOOFFS) != 0 ? result->we_offs : 0;
+    size_t existing = 0;
+    size_t existing_offset = 0;
+    char **previous = NULL;
+    if ((flags & WRDE_APPEND) != 0 && result->we_wordv != NULL) {
+        previous = result->we_wordv;
+        existing = result->we_wordc;
+        existing_offset = offset;
+    }
+
+    const size_t total = existing + fields.count;
+    char **array = malloc((total + offset + 1) * sizeof(*array));
+    if (array == NULL) {
+        wordexp_fields_release(&fields);
+        return WRDE_NOSPACE;
+    }
+
+    size_t slot = 0;
+    for (; slot < offset; ++slot) {
+        array[slot] = NULL;
+    }
+    if (previous != NULL) {
+        /* APPEND keeps the earlier words in front of the new ones. */
+        for (size_t index = 0; index < existing; ++index) {
+            array[existing_offset + index] = previous[existing_offset + index];
+        }
+        free(previous);
+        slot = existing_offset + existing;
+    } else {
+        slot = offset;
+    }
+    for (size_t index = 0; index < fields.count; ++index) {
+        array[slot++] = fields.items[index];
+    }
+    array[slot] = NULL;
+
+    result->we_wordv = array;
+    result->we_wordc = total;
+    result->we_offs = offset;
+    free(fields.items);
+    return 0;
+}
+
+void wordfree(wordexp_t *result)
+{
+    if (result == NULL || result->we_wordv == NULL) {
+        return;
+    }
+    const size_t offset = result->we_offs;
+    for (size_t index = 0; index < result->we_wordc; ++index) {
+        free(result->we_wordv[offset + index]);
+    }
+    free(result->we_wordv);
+    result->we_wordv = NULL;
+    result->we_wordc = 0;
+}
+
+/* ---- nftw --------------------------------------------------------------- */
+
+static int nftw_walk(const char *path, size_t path_length,
+                     int (*function)(const char *, const struct stat *, int,
+                                     struct FTW *),
+                     int flags, int depth, dev_t device)
+{
+    struct stat metadata;
+    int status = (flags & FTW_PHYS) != 0 ? lstat(path, &metadata)
+                                       : stat(path, &metadata);
+    struct FTW info;
+    info.level = depth;
+    info.base = (int)(path_length - strlen(basename(path)));
+
+    if (status < 0) {
+        return function(path, &metadata, FTW_NS, &info);
+    }
+
+    if (S_ISLNK(metadata.st_mode)) {
+        if ((flags & FTW_PHYS) != 0) {
+            return function(path, &metadata, FTW_SL, &info);
+        }
+        /* A dangling symlink reports FTW_SLN instead of vanishing. */
+        struct stat target;
+        if (stat(path, &target) < 0) {
+            return function(path, &metadata, FTW_SLN, &info);
+        }
+        return function(path, &target, FTW_F, &info);
+    }
+
+    if (!S_ISDIR(metadata.st_mode)) {
+        return function(path, &metadata, FTW_F, &info);
+    }
+
+    if ((flags & FTW_DEPTH) == 0) {
+        const int result = function(path, &metadata, FTW_D, &info);
+        if (result != 0) {
+            return result;
+        }
+    }
+
+    if ((flags & FTW_MOUNT) != 0 && metadata.st_dev != device) {
+        return 0;
+    }
+
+    DIR *directory = opendir(path);
+    if (directory == NULL) {
+        const int result = function(path, &metadata, FTW_DNR, &info);
+        return result != 0 ? result : 0;
+    }
+
+    int walk_status = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        if (entry == NULL) {
+            break;
+        }
+        const char *name = entry->d_name;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+            continue;
+        }
+        const size_t name_length = strlen(name);
+        const size_t child_length = path_length + 1 + name_length;
+        char *child = malloc(child_length + 1);
+        if (child == NULL) {
+            walk_status = -1;
+            break;
+        }
+        memcpy(child, path, path_length);
+        size_t position = path_length;
+        if (position == 0 || child[position - 1] != '/') {
+            child[position++] = '/';
+        }
+        memcpy(child + position, name, name_length + 1);
+        walk_status = nftw_walk(child, position + name_length, function, flags,
+                               depth + 1, device);
+        free(child);
+        if (walk_status != 0) {
+            break;
+        }
+    }
+    closedir(directory);
+
+    if (walk_status != 0) {
+        return walk_status;
+    }
+    if ((flags & FTW_DEPTH) != 0) {
+        const int result = function(path, &metadata, FTW_DP, &info);
+        if (result != 0) {
+            return result;
+        }
+    }
+    return 0;
+}
+
+int nftw(const char *path,
+         int (*function)(const char *, const struct stat *, int, struct FTW *),
+         int descriptors, int flags)
+{
+    if (path == NULL || function == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    /* `descriptors` is a hint for pre-opening directories; one opaque DIR at a
+     * time is enough here, so it is accepted and ignored. */
+    (void)descriptors;
+
+    struct stat metadata;
+    dev_t device = 0;
+    if (stat(path, &metadata) == 0) {
+        device = metadata.st_dev;
+    }
+    return nftw_walk(path, strlen(path), function, flags, 0, device);
+}
+
+/* nftw has no user pointer, so ftw parks its callback in a file-scope slot the
+ * way glibc does. ftw is therefore not reentrant; nftw is the entry point for
+ * callers that need nesting. The legacy callback has no type argument for
+ * FTW_DP/FTW_SLN, so those collapse to the pre-order and file types. */
+static int (*ftw_function)(const char *, const struct stat *, int);
+
+static int ftw_bridge(const char *path, const struct stat *metadata, int type,
+                      struct FTW *info)
+{
+    (void)info;
+    int reported = type;
+    if (type == FTW_DP) {
+        reported = FTW_D;
+    } else if (type == FTW_SLN) {
+        reported = FTW_F;
+    }
+    return ftw_function(path, metadata, reported);
+}
+
+int ftw(const char *path, int (*function)(const char *, const struct stat *, int),
+        int descriptors)
+{
+    if (path == NULL || function == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    ftw_function = function;
+    const int result =
+        nftw(path, ftw_bridge, descriptors, FTW_DEPTH | FTW_PHYS);
+    ftw_function = NULL;
+    return result;
 }

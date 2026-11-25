@@ -2814,3 +2814,118 @@ palsu), dengan deklarasi di `<string.h>` dan `<sys/mman.h>`.
 `libcxx_container`, `libcxx_thread`, `libcxx_fs`, `cpp_smoke`) dibangun ulang
 dan ditautkan tanpa error/undefined symbol (`exit=0`). Belum dijalankan di
 QEMU.
+
+## 101. Stream memori dan `dprintf` (25 November 2026)
+
+Compiler front end menyusun sebagian besar diagnostiknya tanpa menyentuh
+filesystem: `std::string` di C++, tetapi kode C dan kode portabel memakai
+`open_memstream`/`fmemopen` untuk tujuan yang sama. Sebelumnya OCTAGRAM hanya
+punya `FILE` yang selalu dibacking deskriptor, sehingga fungsi-fungsi itu tidak
+bisa diimplementasikan tanpa mengubah lapisan stream.
+
+**Perubahan pada `user/runtime.c`:**
+
+- `struct octagram_FILE` mendapat field memori (`memory_buffer`,
+  `memory_capacity`, `memory_length`, `memory_position`, pointer hasil
+  `open_memstream`, pemilik buffer) dan flag baru `STREAM_MEMORY`. Inisialisasi
+  tiga stream standar memakai designated initializer agar `-Werror` senang.
+- `fread`/`fwrite` memilih jalur memori lebih dulu: salinan `memcpy` untuk baca,
+  `memory_stream_reserve` (dobel kapasitas, mulai 64 byte) untuk tulis.
+- `fseek`/`fseeko`/`ftell`/`ftello` memakai `memory_stream_seek`: offset
+  `SEEK_SET`/`SEEK_CUR`/`SEEK_END`, penolakan target negatif, dan **zero-fill**
+  saat seek melewati akhir (celah harus nol, bukan sisa heap).
+- `fflush`/`fclose` mempublikasikan buffer: `*buffer` dan `*size` diisi, byte
+  penutup NUL selalu tersedia, dan panjang yang dilaporkan tidak termasuk NUL
+  (sesuai POSIX). `fclose` membebaskan buffer milik `open_memstream`.
+- `fileno` pada stream memori mengembalikan `-1`/`EBADF` alih-alih menyodorkan
+  sentinel `-1` sebagai deskriptor valid.
+
+**`open_memstream(char **buffer, size_t *size)`:** buffer tumbuh, isi
+dipublikasikan pada setiap flush/tulis, dan `*size` mengikuti panjang sebenarnya.
+
+**`fmemopen(void *buffer, size_t size, const char *mode)`:** buffer tetap milik
+pemanggil. Mode `r` memperlakukan seluruh buffer sebagai data, `w` mulai kosong
+(dan menulis NUL di awal), `a` mulai dari NUL pertama (`strnlen`). Penulisan
+melewati kapasitas menghasilkan short write, bukan korupsi memori.
+
+**`dprintf`/`vdprintf`:** format sekali ke buffer stack 256 byte (heap bila lebih
+panjang, dengan `va_copy` untuk dua lintasan), lalu tulis dengan loop yang sama
+seperti `fwrite` (short write diulang, `EIO` bila nol byte).
+
+**Probe guest:** `user/examples/memstream_demo.c` → `/bin/memstream-demo`,
+marker `MEMSTREAM-PASS`. Ia memeriksa ukuran/isi setelah flush dan setelah
+close, celah nol hasil seek, NUL terminator, mode baca/tulis/append `fmemopen`,
+short write di kapasitas, `fileno` negatif, serta isi file hasil `dprintf`.
+
+**Validasi:** `make build/memstream_demo.elf build/libcxx_format_smoke.elf
+build/libcxx_container_smoke.elf -j6` → `exit=0`, tanpa error/undefined symbol.
+Probe belum dijalankan di QEMU dari workspace ini.
+
+## 102. Pencarian, traversal, dan ekspansi kata (25 November 2026)
+
+Ported build tools memakai sekumpulan API yang belum ada sama sekali di
+OCTAGRAM: tabel simbol (`tsearch`), pembacaan direktori terurut (`scandir`),
+ekspansi baris perintah tanpa shell (`wordexp`), dan penelusuran pohon
+(`nftw`). Ronde ini mengisinya di `user/posix_extra.c` beserta lima header.
+
+**String & opsi:** `strchrnul` (mengembalikan terminator bila tidak ketemu),
+`strcasestr` (case-insensitive ASCII), dan `getsubopt` (`name=value,name`
+dengan indeks token, `-1` untuk opsi tak dikenal, dan `*value_pointer` yang
+selalu NUL-terminated).
+
+**`<search.h>`:**
+
+- `tsearch`/`tfind`/`tdelete` dengan pohon **AVL** (rotasi kiri/kanan, tinggi
+diperbarui, rebalance ganda) sehingga penyisipan berurutan tetap `O(log n)`—
+persis pola pemasukan lokasi sumber oleh compiler.
+- `tdelete` mengembalikan parent node (atau `NULL` bila akar/tidak ada), dan
+  menghapus node berdua anak dengan menarik key successor lebih dulu.
+- `twalk` mengikuti urutan glibc: `leaf` untuk daun, selain itu `preorder`,
+  `postorder` setelah subtree kiri, `endorder` setelah subtree kanan.
+- `tdestroy`, plus `insque`/`remque` untuk daftar intrusif `struct qelem`.
+
+**`<dirent.h>`:** `scandir`/`scandirat` menyalin entri (ukuran
+`offsetof(d_name) + strlen + 1`), memfilter, dan mengurutkan dengan insertion
+sort yang reentran (tidak memerlukan trampolin `qsort` global). `scandirat`
+memakai `openat`+`fdopendir` untuk dirfd relatif. `alphasort` memakai
+`strcoll`; `versionsort` memakai `strverscmp`.
+
+**`<wordexp.h>`:** mesin status untuk kutip tunggal/ganda, `\` escape,
+`$VAR`/`${VAR}`, `~` (dari `HOME`), wildcard `*?[` via `glob(GLOB_NOCHECK)`,
+serta kode error POSIX: `WRDE_SYNTAX` (kutip tak tertutup), `WRDE_BADCHAR`
+(`|&;<>(){}`), `WRDE_BADVAL` (`WRDE_UNDEF` pada variabel tak terdefinisi),
+`WRDE_NOSPACE`, dan `WRDE_CMDSUB`. `WRDE_DOOFFS`/`WRDE_APPEND`/`WRDE_REUSE`
+dihormati; field kosong hasil kutip dipertahankan, hasil ekspansi kosong
+tanpa kutip dibuang. **Batas jujur:** command substitution (`` ` `` dan `$(`)
+tidak diimplementasikan — dilaporkan `WRDE_CMDSUB`, bukan dijalankan diam-diam.
+
+**`<ftw.h>`:** `nftw` menelusuri dengan `opendir`/`readdir`, path penuh dibangun
+per entri, mendukung `FTW_PHYS` (`lstat`), `FTW_MOUNT` (tidak menyeberang
+`st_dev`), dan `FTW_DEPTH` (callback `FTW_DP` setelah anak). Tipe `FTW_DNR`,
+`FTW_NS`, `FTW_SL`, dan `FTW_SLN` (symlink menggantung) dilaporkan apa adanya.
+`descriptors` dan `FTW_CHDIR` diterima lalu diabaikan (satu `DIR` pada satu
+waktu, path selalu penuh) — dicatat di header. `ftw` adalah pembungkus
+`nftw(..., FTW_DEPTH | FTW_PHYS)` dengan callback gaya lama.
+
+**`<libgen.h>` + `<string.h>`:** dua bentuk `basename`. Bentuk GNU (dari
+`<string.h>`) tidak pernah mengubah argumen; bentuk POSIX `__xpg_basename`
+membuang garis miring di akhir dan mengembalikan `"."` untuk string kosong.
+`dirname` memotong buffer di garis miring terakhir. `<libgen.h>` memetakan
+`basename` ke `__xpg_basename`, dan `<string.h>` melewatkan deklarasi GNU-nya
+bila header itu sudah dimasukkan, sehingga keduanya tidak bertabrakan.
+
+**Probe guest:** `user/examples/posix_search_demo.c` → `/bin/posix-search-demo`,
+marker `POSIX-SEARCH-PASS`: sisip/cari/hapus/walk pohon, `scandir` pada `/`
+dengan kedua comparator, `wordexp` (kutip, `$VAR`, `WRDE_UNDEF`, `WRDE_NOCMD`,
+kutip tak tertutup, metakarakter, glob `/bin/sh*`, `WRDE_DOOFFS|WRDE_APPEND`),
+`nftw` preorder dan `FTW_DEPTH`, `ftw`, serta kedua bentuk `basename`/`dirname`.
+
+**Tambahan arsip libc++:** `tz.cpp`, `tzdb_list.cpp`, `verbose_abort.cpp`,
+`legacy_pointer_safety.cpp`, `new_handler.cpp`, dan `new_helpers.cpp` kini
+masuk `libcxx.a`. `tz`/`tzdb` hanya terpakai bila program menyentuh zona waktu;
+probe zona waktu belum dibuat karena guest belum punya data TZif, dan itu
+dicatat sebagai batasan, bukan diklaim berfungsi.
+
+**Validasi:** `make build/posix_search_demo.elf build/memstream_demo.elf
+build/libcxx_format_smoke.elf -j6` → `exit=0`, tanpa error/undefined symbol.
+Probe belum dijalankan di QEMU dari workspace ini.

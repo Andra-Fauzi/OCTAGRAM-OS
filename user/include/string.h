@@ -49,6 +49,15 @@ size_t strlcat(char *destination, const char *source, size_t size);
 size_t strnlen(const char *text, size_t maximum);
 void explicit_bzero(void *buffer, size_t length);
 int strverscmp(const char *left, const char *right);
+char *strchrnul(const char *text, int character);
+char *strcasestr(const char *haystack, const char *needle);
+
+/* GNU basename: never modifies its argument. <libgen.h> provides the POSIX
+ * form under the same name, so this declaration is skipped once a source file
+ * has asked for that one. */
+#if !defined(OCTAGRAM_LIBGEN_H)
+char *basename(const char *path);
+#endif
 
 
 #ifdef __cplusplus

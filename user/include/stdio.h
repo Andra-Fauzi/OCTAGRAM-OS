@@ -80,6 +80,15 @@ int vprintf(const char *format, va_list arguments);
 int printf(const char *format, ...);
 int vsnprintf(char *buffer, size_t size, const char *format, va_list arguments);
 
+/* Memory-backed streams. The buffer published by open_memstream stays valid
+ * until the stream is closed or written to again, and is always NUL terminated. */
+FILE *open_memstream(char **buffer, size_t *size);
+FILE *fmemopen(void *buffer, size_t size, const char *mode);
+
+/* Formatted output to a raw descriptor. */
+int dprintf(int fd, const char *format, ...);
+int vdprintf(int fd, const char *format, va_list arguments);
+
 /* GNU extensions used by libc++'s locale and chrono formatting. */
 int asprintf(char **result, const char *format, ...);
 int vasprintf(char **result, const char *format, va_list arguments);

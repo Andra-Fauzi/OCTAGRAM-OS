@@ -40,6 +40,8 @@ dipanggil dari shell, bukan cross-build dari host.
 | Container & utilitas (`map`/`set`/`unordered_*`/`valarray`/`bitset`/`variant`/`optional`/`any`/`shared_mutex`) | dibangun di host; marker guest sudah dipasang | `build/libcxx_container_smoke.elf`, marker `LIBCXX-CONTAINER-PASS` |
 | `pthread_rwlock_*`, `pthread_mutex_timedlock`, `pthread_cond_clockwait` | dibangun di host | dipakai `std::shared_mutex`/`shared_timed_mutex` |
 | `std::format`/`std::print` (C++23), `std::expected`, `std::osyncstream`, mdspan | dibangun di host; marker guest sudah dipasang | `build/libcxx_format_smoke.elf`, marker `LIBCXX-FORMAT-PASS` |
+| Stream memori (`open_memstream`, `fmemopen`) dan `dprintf` | dibangun di host; marker guest sudah dipasang | `build/memstream_demo.elf`, marker `MEMSTREAM-PASS` |
+| Pencarian & traversal (`tsearch`, `scandir`, `wordexp`, `nftw`, `basename`/`dirname`) | dibangun di host; marker guest sudah dipasang | `build/posix_search_demo.elf`, marker `POSIX-SEARCH-PASS` |
 | `std::random`, `std::regex`, `std::chrono` | dibangun di host; guest menunggu QEMU | probe fs yang sama |
 | POSIX `stat` timespec, `S_ISBLK/FIFO/SOCK`, `_PC_*`, `sendfile` | terbukti di host | `include/sys/stat.h`, `include/unistd.h`, `runtime.c` |
 | libLLVM untuk host OCTAGRAM | **belum** | — |
@@ -241,6 +243,8 @@ serial. Marker yang harus muncul:
 | `OCTAGRAM-CARGO-PASS` | `octagram-cargo plan --locked` dan `metadata` membaca workspace demo di guest |
 | `LIBCXX-CONTAINER-PASS` | container asosiatif, `valarray`, `bitset`, tipe kosakata C++17, `std::function`, `std::atomic`, dan `std::shared_mutex` berjalan di guest |
 | `LIBCXX-FORMAT-PASS` | `std::format`/`format_to`/`vformat`, spesifier numerik & float, `std::print`/`println`, `std::expected`, `osyncstream`, dan mdspan berjalan di guest |
+| `MEMSTREAM-PASS` | `open_memstream`/`fmemopen` (baca/tulis/append, celah nol, short write) dan `dprintf` berjalan di guest |
+| `POSIX-SEARCH-PASS` | `tsearch`/`twalk`/`tdelete`, `scandir`+comparator, `wordexp`+kode error, `nftw`/`ftw`, dan `basename`/`dirname` berjalan di guest |
 | `RUST-NATIVE-LD-PASS` | object `rustc` ditautkan `ld` native lalu dijalankan |
 | `SYSCALL-TEST: PASS` | suite kompatibilitas syscall |
 

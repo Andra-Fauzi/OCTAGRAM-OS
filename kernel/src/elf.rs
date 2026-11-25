@@ -22,22 +22,30 @@ use crate::memory::{
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const MAX_PROGRAM_HEADERS: usize = 128;
-// 256 KiB gives Rust/C userspace enough room for compiler-generated stack
-// probes and nested runtime frames. The previous 32 KiB limit faulted at the
-// guard page while entering Command::output after fork/exec smoke tests.
-const STACK_PAGES: u64 = 64;
+// 4 MiB mirrors what a compiler needs: rustc and LLVM recurse deeply while
+// lowering and optimising, and 256 KiB (the previous value, itself raised from
+// 32 KiB after Command::output faulted) is far too small to run `rustc` at all.
+// Every page is backed eagerly by a frame, so this is also a per-process memory
+// cost; 4 MiB is the compromise between rustc's stack use and running many
+// small commands from the shell.
+const STACK_PAGES: u64 = 1024;
 /// Jumlah halaman entropi untuk menggeser puncak stack user per eksekusi.
 const STACK_RANDOM_PAGES: u64 = 64;
-const MAX_ARGUMENTS: usize = 64;
-const MAX_ARGUMENT_BYTES: usize = 4096;
-const MAX_ENVIRONMENT_VARIABLES: usize = 64;
-const MAX_ENVIRONMENT_BYTES: usize = 4096;
+// Cargo invokes rustc with long argument lists (dozens of -L/--extern/-C flags
+// per crate) and passes a sizeable environment, so the fork/exec limits have to
+// be far above what a hand-typed command needs.
+const MAX_ARGUMENTS: usize = 256;
+const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
+const MAX_ENVIRONMENT_VARIABLES: usize = 128;
+const MAX_ENVIRONMENT_BYTES: usize = 32 * 1024;
 const STACK_TOP: u64 = paging::USER_ADDRESS_MAX;
 const MMAP_START: u64 = 0x1_0000_0000;
 const MMAP_END: u64 = STACK_TOP - (STACK_PAGES + STACK_RANDOM_PAGES + 1) * PAGE_SIZE;
 const MAX_USER_PATH: usize = 256;
 const MAX_SYSCALL_IO: usize = 4096;
-const MAX_OPEN_FILES: usize = 16;
+// cargo keeps pipes open to its rustc children and rustc opens inputs, outputs
+// and temporary files at the same time.
+const MAX_OPEN_FILES: usize = 64;
 const MAX_SCHEDULED_PROCESSES: usize = 64;
 const PIPE_CAPACITY: usize = 4096;
 const WAIT_ANY_PID: u64 = u64::MAX;
@@ -11013,7 +11021,7 @@ mod tests {
             Err(ElfError::InvalidArguments)
         );
 
-        let too_many = alloc::vec![String::from("arg"); 65];
+        let too_many = alloc::vec![String::from("arg"); MAX_ARGUMENTS + 1];
         assert_eq!(
             build_initial_stack(0x7000, 4096, &too_many, &[], &[(0, 0)]),
             Err(ElfError::ArgumentsTooLarge)

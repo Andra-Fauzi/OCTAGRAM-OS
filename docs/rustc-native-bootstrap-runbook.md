@@ -234,6 +234,13 @@ yang disediakan di atas.
 - **Relokasi linker.** Jika `librustc_driver`/`std` menghasilkan relokasi di
   luar cakupan `kernel/src/toolchain.rs`, fallback adalah memport LLD.
 - **Memori.** `rustc` butuh heap besar; batas `mmap` dan allocator guest perlu
-  diukur sebelum dinyatakan layak.
+  diukur sebelum dinyatakan layak. Allocator guest mengambil blok ≥64 KiB
+  langsung lewat `mmap`, jadi alokasi besar tidak bergantung pada `brk`.
+- **Batas proses di kernel.** Agar `rustc`/`cargo` bisa dijalankan dari shell,
+  `kernel/src/elf.rs` menaikkan stack user menjadi 4 MiB (dari 256 KiB),
+  argumen menjadi 256 entri / 64 KiB, environment 128 entri / 32 KiB, dan
+  deskriptor per proses 64 (dari 16). Stack dialokasikan eager per halaman,
+  jadi ini juga biaya RAM per proses; nilai ini konstanta kompromi, bukan hasil
+  pengukuran dengan `rustc` sungguhan.
 - **Belum ada CI.** Job bootstrap belum ditambahkan; artefak `sysroot.json`
   dan `llvm-config --version` harus dicatat saat job itu dibuat.

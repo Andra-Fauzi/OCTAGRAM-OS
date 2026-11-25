@@ -48,11 +48,18 @@ int main(void)
         unlink(path);
         return 33;
     }
-    /* Special permission bits are currently discarded by the kernel. */
-    if (fchmod(fd, 01000) != 0) {
+    /* Special permission bits are ignored; the ordinary rwx bits still apply. */
+    if (fchmod(fd, 01000) != 0 || fstat(fd, &status) != 0 ||
+        (status.st_mode & 0777) != 0000) {
         close(fd);
         unlink(path);
         return 34;
+    }
+    /* Restore owner read/write permissions for the access() checks below. */
+    if (fchmod(fd, 0600) != 0) {
+        close(fd);
+        unlink(path);
+        return 37;
     }
     /* Values that cannot be represented by the kernel's u16 mode are invalid. */
     if (fchmod(fd, 0x10000) != -1) {

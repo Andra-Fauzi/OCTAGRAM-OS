@@ -151,6 +151,12 @@ Semua harus direkam sebagai uji guest, bukan build host:
 | Cargo memanggil rustc native | log `-v` menunjukkan `rustc` dari `/toolchain/bin`, bukan host |
 | Stage 1 → Stage 2 | toolchain hasil build membangun ulang dirinya dan artefaknya sama |
 
+Harness `tools/qemu_syscall_test.py` sudah menjalankan gate ini secara otomatis bila
+`/toolchain/bin/rustc` ada di image: `rustc --version`, lalu
+`cargo build --offline` pada `/cargo-demo`, dengan marker
+`OCTAGRAM-RUSTC-PASS`. Image tanpa toolchain mencetak `OCTAGRAM-RUSTC-SKIP`
+dan tidak menggagalkan run.
+
 `/bin/cargo` di image saat ini adalah `octagram-cargo` (driver C++ offline,
 lihat [user/cargo/README.md](../user/cargo/README.md)). Ia sudah menjadi jalur
 `plan`/`build`/`metadata`/`clean`, tetapi `build` tetap membutuhkan `rustc`

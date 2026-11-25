@@ -528,6 +528,39 @@ def main():
         return 1
     print("OCTAGRAM-CARGO-PASS")
 
+    # M4.3.4 gate, executed only when a native toolchain was installed into
+    # /toolchain (tools/install-disk.sh --toolchain ...): the compiler must run
+    # as an OCTAGRAM process and Cargo must drive it offline. An image without
+    # a toolchain reports SKIP instead of failing the run.
+    rustc_offset = len(serial_text())
+    send_line("rustc --version")
+    if not wait_prompt(60):
+        print("NATIVE-RUSTC-FAIL: shell did not return after rustc --version")
+        print(serial_text()[-6000:])
+        return 1
+    rustc_output = serial_text()[rustc_offset:]
+    if "command not found" in rustc_output:
+        print("OCTAGRAM-RUSTC-SKIP: no /toolchain/bin/rustc in this image")
+    else:
+        if "rustc 1." not in rustc_output:
+            print("NATIVE-RUSTC-FAIL: rustc --version printed no version string")
+            print(rustc_output[-3000:])
+            return 1
+        print("NATIVE-RUSTC-VERSION-PASS")
+
+        build_offset = len(serial_text())
+        send_line("cargo build --offline --manifest-path /cargo-demo/Cargo.toml")
+        if not wait_prompt(600):
+            print("NATIVE-CARGO-FAIL: cargo build --offline did not return")
+            print(serial_text()[-6000:])
+            return 1
+        build_output = serial_text()[build_offset:]
+        if "error" in build_output.lower():
+            print("NATIVE-CARGO-FAIL: cargo build --offline reported an error")
+            print(build_output[-6000:])
+            return 1
+        print("OCTAGRAM-RUSTC-PASS")
+
     # M4.3.0: the object emitted by rustc for x86_64-unknown-octagram is linked
     # by the guest's own `ld` and the result runs, so the native linker is
     # proven against real rustc relocation and section-symbol output.

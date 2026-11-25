@@ -37,11 +37,6 @@ void __libcpp_verbose_abort(const char* format, ...)
     abort();
 }
 
-// std::terminate is throw-site machinery from src/exception.cpp. Without
-// unwinding the only correct action is to stop the process.
-void terminate() _NOEXCEPT { abort(); }
-
-
 
 // src/condition_variable.cpp pulls in src/thread.cpp (std::__thread_struct),
 // promise/future support, and the libc++ support shim layer, none of which the
@@ -83,5 +78,41 @@ bool uncaught_exception() _NOEXCEPT { return false; }
 // exceptions it has to abort. It lives directly in std, not in the inline
 // namespace.
 _LIBCPP_NORETURN void __throw_bad_alloc() { abort(); }
+
+// std::terminate is throw-site machinery from src/exception.cpp. Without
+// unwinding the only correct action is to stop the process.
+void terminate() _NOEXCEPT { abort(); }
+
+// libc++ implements std::exception_ptr through libc++abi's
+// __exceptionPtrCreate/Copy/Destroy, which this port does not have. With
+// -fno-exceptions no exception object can ever be created, so the pointer is
+// always null and a shallow copy is exact; rethrow_exception is unreachable
+// but still has to exist for std::thread and std::future to link.
+exception_ptr::exception_ptr(const exception_ptr& other) _NOEXCEPT
+    : __ptr_(other.__ptr_)
+{
+}
+
+exception_ptr& exception_ptr::operator=(const exception_ptr& other) _NOEXCEPT
+{
+    __ptr_ = other.__ptr_;
+    return *this;
+}
+
+exception_ptr::~exception_ptr() _NOEXCEPT {}
+
+exception_ptr exception_ptr::__from_native_exception_pointer(void* pointer) _NOEXCEPT
+{
+    exception_ptr result;
+    result.__ptr_ = pointer;
+    return result;
+}
+
+_LIBCPP_NORETURN void rethrow_exception(exception_ptr)
+{
+    abort();
+}
+
+exception_ptr current_exception() _NOEXCEPT { return exception_ptr(); }
 
 } // namespace std

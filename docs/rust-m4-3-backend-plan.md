@@ -251,7 +251,7 @@ Sampai revisi ini, program C++ hanya memakai **header** libc++ 18.1.8; isi
 library (`libcxx/src`) belum dikompilasi, sehingga `std::string`,
 `std::sort`, dan `std::mutex` masih gagal di link. Source `src/` kini
 di-vendor di `user/third_party/libcxx/src` dan `user/Makefile` membangun
-`build/libc++.a` dari sembilan belas translation unit:
+`build/libc++.a` dari dua puluh dua translation unit:
 
 | Objek | Alasan |
 | --- | --- |
@@ -266,6 +266,9 @@ di-vendor di `user/third_party/libcxx/src` dan `user/Makefile` membangun
 | `locale.cpp` | facet `numpunct`/`ctype`/`collate`/`time_put`/`codecvt`/`moneypunct` dari locale C |
 | `ios.cpp`, `ios.instantiations.cpp`, `iostream.cpp`, `ostream.cpp` | `std::cout`, `stringstream`, buffer stdout/stdin |
 | `call_once.cpp`, `memory.cpp` | `__call_once` dan `__shared_count` yang dipakai facet locale |
+| `fstream.cpp` | `basic_filebuf`, `ofstream`/`ifstream`/`fstream` di atas VFS |
+| `thread.cpp` | `std::thread`, `__thread_struct`, TLS per thread |
+| `future.cpp` | `promise`/`future`/`packaged_task`, `__assoc_sub_state` |
 
 Keputusan build:
 
@@ -334,7 +337,22 @@ Probe `user/examples/libcxx_iostream_smoke.cpp` dijalankan sebagai
 `/bin/libcxx-iostream-smoke`: `ostringstream` dengan `std::hex`/`setw`/
 `setfill`, `istringstream`, facet `numpunct`/`ctype`, dan `std::cout`.
 
-Belum termasuk: `fstream`, `thread.cpp`, `filesystem/*`, dan `random`.
+Lapisan thread/future/file-stream ikut serta:
+
+- `thread.cpp` dan `future.cpp` membutuhkan `std::exception_ptr`, yang di
+  libc++ berasal dari `libc++abi` (`__exceptionPtrCreate/Copy/Destroy`). Port
+  ini tidak membawa libc++abi, jadi `user/libcxx_runtime.cpp` mendefinisikan
+  anggota `exception_ptr` sendiri; dengan `-fno-exceptions` pointer-nya selalu
+  null sehingga salinan dangkal sudah tepat. `rethrow_exception` menjadi
+  jalur abort yang tidak pernah dieksekusi.
+- Probe `user/examples/libcxx_thread_smoke.cpp` dijalankan sebagai
+  `/bin/libcxx-thread-smoke`: empat thread dengan `std::mutex` +
+  `condition_variable` (handshake `wait(lock, pred)`), isolasi
+  `thread_local`, `std::promise`/`std::future`, `std::atomic`, lalu tulis-baca
+  `/fstream-probe.txt` dengan `std::ofstream`/`std::ifstream` (termasuk
+  `std::getline` dan `operator>>`).
+
+Belum termasuk: `filesystem`, `random`, `regex`, `chrono` formatting.
 
 ## 7. Risiko dan mitigasi
 

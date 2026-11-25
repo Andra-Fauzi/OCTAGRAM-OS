@@ -383,6 +383,25 @@ def main():
         return 1
     print("LIBCXX-IOSTREAM-PASS")
 
+    # M4.3.2: threading, futures, and file streams. This is the part of
+    # libc++ that Cargo/rustc lean on most: std::thread, mutex/condition
+    # variable, promise/future, and std::fstream over the guest VFS.
+    thread_offset = len(serial_text())
+    send_line("run /bin/libcxx-thread-smoke")
+    if not wait_for_after("LIBCXX-THREAD-SUITE-PASS", thread_offset, 60):
+        print("LIBCXX-THREAD-FAIL: thread probe did not emit its marker")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", thread_offset, 30):
+        print("LIBCXX-THREAD-FAIL: thread probe did not exit with status 0")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("LIBCXX-THREAD-FAIL: shell did not return after the thread probe")
+        print(serial_text()[-6000:])
+        return 1
+    print("LIBCXX-THREAD-PASS")
+
     # M4.3.0: the object emitted by rustc for x86_64-unknown-octagram is linked
     # by the guest's own `ld` and the result runs, so the native linker is
     # proven against real rustc relocation and section-symbol output.

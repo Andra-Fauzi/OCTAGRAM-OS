@@ -8,6 +8,19 @@ Status: **scaffolding**. Skrip, toolchain file, dan sysroot sudah ada di repo,
 tetapi belum pernah dijalankan sampai selesai di workspace mana pun. Jangan
 menandai M4.3.3 selesai sebelum gate di §5 lulus di QEMU.
 
+## 0. Jalur cepat
+
+Seluruh rangkaian (sysroot → libLLVM → bootstrap rustc/cargo) punya satu pintu:
+ 
+```sh
+tools/build_octagram_toolchain.sh --jobs "$(nproc)"   --libc-checkout build/toolchain/libc
+```
+
+Skrip itu memanggil tiga langkah di bawah ini secara berurutan dan berhenti pada
+kegagalan pertama. Gunakan `--prepare-only` untuk berhenti setelah sysroot dan
+`config.toml` bootstrap tanpa menjalankan `x.py`, atau `--llvm-prefix DIR` untuk
+memakai libLLVM yang sudah dibangun.
+
 ## 1. Prasyarat
 
 Host (Debian/Ubuntu):

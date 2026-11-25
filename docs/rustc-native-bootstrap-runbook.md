@@ -69,6 +69,13 @@ satu file berubah.
 
 ## 4. Menjalankan bootstrap
 
+Satu pintu untuk semua langkah (sysroot → libLLVM → bootstrap):
+
+```sh
+tools/build_octagram_toolchain.sh --jobs "$(nproc)" \
+  --libc-checkout build/toolchain/libc
+```
+
 Persiapan saja (menulis `config.toml`, menerapkan patch, tanpa compile):
 
 ```sh

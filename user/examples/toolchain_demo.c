@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int failures;
@@ -212,6 +213,66 @@ static void test_mmap64(void)
     check(munmap(mapping, length) == 0, "munmap released the mapping");
 }
 
+/* ---- strptime ----------------------------------------------------------- */
+
+static void test_strptime(void)
+{
+    struct tm value;
+    memset(&value, 0, sizeof(value));
+    const char *rest = strptime("2026-11-25 13:45:07 tail", "%Y-%m-%d %H:%M:%S",
+                                &value);
+    check(rest != NULL, "strptime parsed a timestamp");
+    if (rest != NULL) {
+        check(strcmp(rest, " tail") == 0, "strptime stopped after the timestamp");
+        check(value.tm_year == 126, "strptime stored the year offset");
+        check(value.tm_mon == 10, "strptime stored the month");
+        check(value.tm_mday == 25, "strptime stored the day");
+        check(value.tm_hour == 13 && value.tm_min == 45 && value.tm_sec == 7,
+              "strptime stored the time of day");
+    }
+
+    memset(&value, 0, sizeof(value));
+    rest = strptime("Wed, 25 Nov 2026 23:30:00 GMT", "%a, %d %b %Y %H:%M:%S %Z",
+                    &value);
+    check(rest != NULL && *rest == '\0', "strptime parsed an HTTP date");
+    if (rest != NULL) {
+        check(value.tm_mon == 10 && value.tm_mday == 25 && value.tm_hour == 23,
+              "HTTP date fields");
+        check(value.tm_wday == 3, "strptime stored the weekday name");
+    }
+
+    memset(&value, 0, sizeof(value));
+    rest = strptime("11:05 pm", "%I:%M %p", &value);
+    check(rest != NULL && value.tm_hour == 23 && value.tm_min == 5,
+          "12-hour clock with pm");
+
+    memset(&value, 0, sizeof(value));
+    rest = strptime("12:30 am", "%I:%M %p", &value);
+    check(rest != NULL && value.tm_hour == 0, "12-hour clock midnight wrap");
+
+    memset(&value, 0, sizeof(value));
+    check(strptime("not-a-date", "%Y-%m-%d", &value) == NULL,
+          "strptime rejects mismatched input");
+    check(strptime("2026-11-25", "%Y-%m-%d %H:%M", &value) == NULL,
+          "strptime rejects truncated input");
+
+    /* Round trip through strftime. */
+    char rendered[32];
+    memset(&value, 0, sizeof(value));
+    value.tm_year = 126;
+    value.tm_mon = 10;
+    value.tm_mday = 25;
+    const size_t written = strftime(rendered, sizeof(rendered), "%Y-%m-%d", &value);
+    check(written == 10, "strftime rendered ten characters");
+    struct tm reparsed;
+    memset(&reparsed, 0, sizeof(reparsed));
+    check(strptime(rendered, "%Y-%m-%d", &reparsed) != NULL,
+          "strptime read the rendered date back");
+    check(reparsed.tm_year == value.tm_year && reparsed.tm_mon == value.tm_mon &&
+              reparsed.tm_mday == value.tm_mday,
+          "round trip preserved the date");
+}
+
 int main(void)
 {
     test_popen_read();
@@ -220,6 +281,7 @@ int main(void)
     test_temporary_files();
     test_arc4random();
     test_mmap64();
+    test_strptime();
 
     if (failures != 0) {
         printf("TOOLCHAIN-FAIL: %d check(s) failed\n", failures);

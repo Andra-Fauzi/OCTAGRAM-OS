@@ -2982,3 +2982,38 @@ sufiks negatif ditolak), perbedaan dua buffer `arc4random_buf` dan batas
 **Validasi:** `make build/toolchain_demo.elf build/posix_search_demo.elf
 build/memstream_demo.elf -j6` → `exit=0`, tanpa error/undefined symbol. Probe
 belum dijalankan di QEMU dari workspace ini.
+
+## 104. `strptime` (25 November 2026)
+
+`strftime` sudah ada, tetapi kebalikannya belum: alat portabel memakai
+`strptime` untuk membaca timestamp dari header HTTP, log build, dan berkas
+metadata. Ronde ini menambahkannya di `user/posix_extra.c` dengan deklarasi di
+`<time.h>`, memakai `struct tm` yang sudah dipakai `mktime`/`strftime`.
+
+**Konversi yang didukung:** `%a`/`%A` (nama hari, disimpan ke `tm_wday`),
+`%b`/`%B`/`%h` (nama bulan, disimpan ke `tm_mon`), `%C`, `%d`/`%e`, `%H`/`%k`,
+`%I`/`%l` (jam 12, dipadukan dengan `%p`/`%P`), `%j`, `%m`, `%M`, `%S`,
+`%y` (69-99 → 1900-an, 00-68 → 2000-an), `%Y`, `%u`, `%w`, `%U`/`%W`/`%V`
+(dibaca dan divalidasi), `%Z` (nama zona dikonsumsi), `%z` (offset `+hhmm`/
+`+hh:mm`/`Z`), `%n`/`%t`, `%%`, serta singkatan format `%D`, `%F`, `%R`, `%T`,
+`%r`, `%x`, `%X`, dan `%c`. Spasi pada format mencocokkan nol atau lebih
+karakter spasi pada input, seperti `strptime` glibc.
+
+**Batasan yang dicatat, bukan disembunyikan:**
+
+- Nama zona pada `%Z` dikonsumsi tetapi tidak disimpan — `struct tm` tidak punya
+  medan untuk offset/nama zona; penentuan DST tetap tugas `mktime`.
+- `%U`/`%W`/`%V` divalidasi rentangnya (0–53) tetapi nomor minggu tidak
+  diterjemahkan menjadi tanggal; itu butuh perhitungan ISO-8601 yang belum ada.
+- Konversi tak dikenal mengembalikan `NULL` (gagal), bukan dilewati diam-diam,
+  supaya kesalahan format terlihat.
+
+**Probe guest:** bagian `test_strptime` di `user/examples/toolchain_demo.c`
+(marker `TOOLCHAIN-PASS`) menguji timestamp `%Y-%m-%d %H:%M:%S` beserta sisa
+string, tanggal gaya HTTP (`%a, %d %b %Y %H:%M:%S %Z`, termasuk `tm_wday`),
+jam 12 dengan `pm` dan `am` (termasuk pembungkusan 12 → 0), penolakan input yang
+tidak cocok/terpotong, dan round trip `strftime("%Y-%m-%d")` → `strptime`.
+
+**Validasi:** `make build/toolchain_demo.elf build/posix_search_demo.elf -j6`
+→ `exit=0`, tanpa error/undefined symbol. Probe belum dijalankan di QEMU dari
+workspace ini.

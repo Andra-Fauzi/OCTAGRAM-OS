@@ -20,6 +20,11 @@ clock_t clock(void);
 double difftime(time_t later, time_t earlier);
 time_t mktime(struct tm *time_value);
 char *asctime(const struct tm *time_value);
+/* Parses `format` from `input`, filling the fields it recognises and returning
+ * a pointer past the consumed input, or NULL on mismatch. Weekday and zone
+ * names are validated but not stored (struct tm has no field for them). */
+char *strptime(const char *input, const char *format, struct tm *value);
+
 size_t strftime(char *buffer, size_t capacity, const char *format,
                 const struct tm *time_value);
 size_t strftime_l(char *buffer, size_t capacity, const char *format,

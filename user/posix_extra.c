@@ -2768,6 +2768,339 @@ int hsearch_r(ENTRY item, ACTION action, ENTRY **result,
     return 1;
 }
 
+/* ---- strptime ----------------------------------------------------------- */
+
+static const char *const month_names[] = {"january", "february", "march",
+                                          "april",   "may",      "june",
+                                          "july",    "august",   "september",
+                                          "october", "november", "december"};
+
+static const char *const month_abbreviations[] = {"jan", "feb", "mar", "apr",
+                                                  "may", "jun", "jul", "aug",
+                                                  "sep", "oct", "nov", "dec"};
+
+static const char *const day_names[] = {"sunday",   "monday", "tuesday",
+                                        "wednesday", "thursday", "friday",
+                                        "saturday"};
+
+static const char *const day_abbreviations[] = {"sun", "mon", "tue", "wed",
+                                                "thu", "fri", "sat"};
+
+static int match_name(const char **cursor, const char *text)
+{
+    const size_t length = strlen(text);
+    for (size_t index = 0; index < length; ++index) {
+        if (cursor[0][index] == '\0') {
+            return 0;
+        }
+        if (tolower((unsigned char)cursor[0][index]) !=
+            (unsigned char)text[index]) {
+            return 0;
+        }
+    }
+    *cursor += length;
+    return 1;
+}
+
+static int parse_digits(const char **cursor, int minimum, int maximum, int *value)
+{
+    int digits = 0;
+    int result = 0;
+    while (digits < maximum && isdigit((unsigned char)cursor[0][0])) {
+        result = result * 10 + (cursor[0][0] - '0');
+        ++cursor[0];
+        ++digits;
+    }
+    if (digits < minimum) {
+        return 0;
+    }
+    *value = result;
+    return 1;
+}
+
+static void skip_whitespace(const char **cursor)
+{
+    while (isspace((unsigned char)cursor[0][0])) {
+        ++cursor[0];
+    }
+}
+
+/* Parses the time/date formats a build log or HTTP header actually carries. The
+ * weekday and zone names are validated but not stored: struct tm has no field
+ * for them, and DST determination is left to mktime. */
+char *strptime(const char *input, const char *format, struct tm *value)
+{
+    if (input == NULL || format == NULL || value == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    const char *cursor = input;
+    for (const char *spec = format; *spec != '\0'; ++spec) {
+        if (*spec != '%') {
+            if (isspace((unsigned char)*spec)) {
+                skip_whitespace(&cursor);
+                continue;
+            }
+            if (*cursor != *spec) {
+                return NULL;
+            }
+            ++cursor;
+            continue;
+        }
+
+        ++spec;
+        const char conversion = *spec;
+        int number = 0;
+        switch (conversion) {
+        case '\0':
+            return NULL;
+        case '%':
+            if (*cursor != '%') {
+                return NULL;
+            }
+            ++cursor;
+            break;
+        case 'n':
+        case 't':
+            skip_whitespace(&cursor);
+            break;
+        case 'a':
+        case 'A': {
+            int matched = 0;
+            for (int index = 0; index < 7 && matched == 0; ++index) {
+                const char *probe = cursor;
+                if (match_name(&probe, day_abbreviations[index]) != 0 ||
+                    match_name(&probe, day_names[index]) != 0) {
+                    cursor = probe;
+                    value->tm_wday = index;
+                    matched = 1;
+                }
+            }
+            if (matched == 0) {
+                return NULL;
+            }
+            break;
+        }
+        case 'b':
+        case 'B':
+        case 'h': {
+            int matched = 0;
+            for (int index = 0; index < 12 && matched == 0; ++index) {
+                const char *probe = cursor;
+                if (match_name(&probe, month_abbreviations[index]) != 0 ||
+                    match_name(&probe, month_names[index]) != 0) {
+                    cursor = probe;
+                    value->tm_mon = index;
+                    matched = 1;
+                }
+            }
+            if (matched == 0) {
+                return NULL;
+            }
+            break;
+        }
+        case 'C':
+            if (parse_digits(&cursor, 1, 2, &number) == 0) {
+                return NULL;
+            }
+            value->tm_year = (number * 100) - 1900;
+            break;
+        case 'd':
+        case 'e':
+            skip_whitespace(&cursor);
+            if (parse_digits(&cursor, 1, 2, &number) == 0 || number < 1 ||
+                number > 31) {
+                return NULL;
+            }
+            value->tm_mday = number;
+            break;
+        case 'H':
+        case 'k':
+            skip_whitespace(&cursor);
+            if (parse_digits(&cursor, 1, 2, &number) == 0 || number > 23) {
+                return NULL;
+            }
+            value->tm_hour = number;
+            break;
+        case 'I':
+        case 'l':
+            skip_whitespace(&cursor);
+            if (parse_digits(&cursor, 1, 2, &number) == 0 || number < 1 ||
+                number > 12) {
+                return NULL;
+            }
+            value->tm_hour = number % 12;
+            break;
+        case 'j':
+            if (parse_digits(&cursor, 1, 3, &number) == 0 || number < 1 ||
+                number > 366) {
+                return NULL;
+            }
+            value->tm_yday = number - 1;
+            break;
+        case 'm':
+            if (parse_digits(&cursor, 1, 2, &number) == 0 || number < 1 ||
+                number > 12) {
+                return NULL;
+            }
+            value->tm_mon = number - 1;
+            break;
+        case 'M':
+            if (parse_digits(&cursor, 1, 2, &number) == 0 || number > 59) {
+                return NULL;
+            }
+            value->tm_min = number;
+            break;
+        case 'p':
+        case 'P': {
+            const char *probe = cursor;
+            if (match_name(&probe, "am") != 0) {
+                if (value->tm_hour == 12) {
+                    value->tm_hour = 0;
+                }
+            } else if (match_name(&probe, "pm") != 0) {
+                if (value->tm_hour < 12) {
+                    value->tm_hour += 12;
+                }
+            } else {
+                return NULL;
+            }
+            cursor = probe;
+            break;
+        }
+        case 'S':
+            if (parse_digits(&cursor, 1, 2, &number) == 0 || number > 60) {
+                return NULL;
+            }
+            value->tm_sec = number;
+            break;
+        case 'y':
+            if (parse_digits(&cursor, 1, 2, &number) == 0) {
+                return NULL;
+            }
+            value->tm_year = number < 69 ? number + 100 : number;
+            break;
+        case 'Y':
+            if (parse_digits(&cursor, 1, 4, &number) == 0) {
+                return NULL;
+            }
+            value->tm_year = number - 1900;
+            break;
+        case 'u':
+            if (parse_digits(&cursor, 1, 1, &number) == 0 || number < 1 ||
+                number > 7) {
+                return NULL;
+            }
+            value->tm_wday = number % 7;
+            break;
+        case 'w':
+            if (parse_digits(&cursor, 1, 1, &number) == 0 || number > 6) {
+                return NULL;
+            }
+            value->tm_wday = number;
+            break;
+        case 'U':
+        case 'W':
+        case 'V':
+            if (parse_digits(&cursor, 1, 2, &number) == 0 || number > 53) {
+                return NULL;
+            }
+            break;
+        case 'Z': {
+            /* Zone names are consumed but not interpreted; only %z carries a
+             * numeric offset, and struct tm has no place for either. */
+            while (isalpha((unsigned char)*cursor) || *cursor == '/' ||
+                   *cursor == '+' || *cursor == '-') {
+                ++cursor;
+            }
+            break;
+        }
+        case 'z':
+            if (*cursor == 'Z') {
+                ++cursor;
+                break;
+            }
+            if (*cursor == '+' || *cursor == '-') {
+                ++cursor;
+            } else {
+                return NULL;
+            }
+            if (parse_digits(&cursor, 2, 2, &number) == 0) {
+                return NULL;
+            }
+            if (*cursor == ':') {
+                ++cursor;
+            }
+            if (parse_digits(&cursor, 2, 2, &number) == 0) {
+                return NULL;
+            }
+            break;
+        case 'D': {
+            const char *rest = strptime(cursor, "%m/%d/%y", value);
+            if (rest == NULL) {
+                return NULL;
+            }
+            cursor = rest;
+            break;
+        }
+        case 'F': {
+            const char *rest = strptime(cursor, "%Y-%m-%d", value);
+            if (rest == NULL) {
+                return NULL;
+            }
+            cursor = rest;
+            break;
+        }
+        case 'R': {
+            const char *rest = strptime(cursor, "%H:%M", value);
+            if (rest == NULL) {
+                return NULL;
+            }
+            cursor = rest;
+            break;
+        }
+        case 'T':
+        case 'X': {
+            const char *rest = strptime(cursor, "%H:%M:%S", value);
+            if (rest == NULL) {
+                return NULL;
+            }
+            cursor = rest;
+            break;
+        }
+        case 'r': {
+            const char *rest = strptime(cursor, "%I:%M:%S %p", value);
+            if (rest == NULL) {
+                return NULL;
+            }
+            cursor = rest;
+            break;
+        }
+        case 'x': {
+            const char *rest = strptime(cursor, "%m/%d/%y", value);
+            if (rest == NULL) {
+                return NULL;
+            }
+            cursor = rest;
+            break;
+        }
+        case 'c': {
+            const char *rest = strptime(cursor, "%a %b %e %H:%M:%S %Y", value);
+            if (rest == NULL) {
+                return NULL;
+            }
+            cursor = rest;
+            break;
+        }
+        default:
+            /* Unknown conversions are rejected instead of silently skipped. */
+            return NULL;
+        }
+    }
+    return (char *)cursor;
+}
+
 /* ---- mmap64 ------------------------------------------------------------- */
 
 /* OCTAGRAM's off_t is already 64-bit, so mmap64 is the same call. It exists for

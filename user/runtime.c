@@ -7816,12 +7816,419 @@ struct tm *gmtime(const time_t *time_value)
     result.tm_wday = week_day;
     result.tm_yday = year_day;
     result.tm_isdst = 0;
+    result.tm_gmtoff = 0;
+    result.tm_zone = "UTC";
     return &result;
+}
+
+/* ---- Time zone ---------------------------------------------------------- */
+
+/* POSIX TZ strings are a small language:
+ *
+ *   std offset [dst [offset] [,start[/time],end[/time]]]
+ *
+ * Offsets are written the POSIX way (positive west of Greenwich), so `WIB-7`
+ * means UTC+07:00. Rules select the transition day with Mm.w.d (month, week,
+ * weekday), Jn (Julian day, February 29 never counted) or n (zero-based day of
+ * year, February 29 counted). `time` is local wall-clock time, default 02:00.
+ *
+ * A TZ that cannot be parsed leaves the zone at UTC, and a dst name without
+ * rules keeps standard time all year (POSIX leaves that case
+ * implementation-defined); both choices are documented instead of guessed.
+ */
+
+struct oct_tz_rule {
+    int kind;     /* 0: Mm.w.d, 1: Jn, 2: n */
+    int month;    /* 1..12 */
+    int week;     /* 1..5 */
+    int weekday;  /* 0..6, Sunday = 0 */
+    int day;      /* Jn or n */
+    long seconds; /* local time of day of the transition */
+};
+
+struct oct_tz_state {
+    char standard_name[16];
+    char daylight_name[16];
+    long standard_offset; /* seconds east of UTC */
+    long daylight_offset;
+    int has_daylight;
+    int has_rules;
+    struct oct_tz_rule start;
+    struct oct_tz_rule end;
+    char source[96];
+    int loaded;
+};
+
+static struct oct_tz_state oct_time_zone;
+char *tzname[2] = {"UTC", "UTC"};
+long timezone = 0;
+int daylight = 0;
+
+static int oct_tz_digit(int character)
+{
+    return character >= '0' && character <= '9';
+}
+
+static int oct_tz_alpha(int character)
+{
+    return (character >= 'a' && character <= 'z') ||
+           (character >= 'A' && character <= 'Z');
+}
+
+static int oct_tz_parse_name(const char **cursor, char *buffer, size_t size)
+{
+    const char *text = *cursor;
+    size_t used = 0;
+    if (text[0] == '<') {
+        ++text;
+        while (text[0] != '\0' && text[0] != '>') {
+            if (used + 1 < size) {
+                buffer[used++] = text[0];
+            }
+            ++text;
+        }
+        if (text[0] != '>') {
+            return -1;
+        }
+        buffer[used] = '\0';
+        *cursor = text + 1;
+        return 0;
+    }
+    while (oct_tz_alpha(text[0]) != 0) {
+        if (used + 1 < size) {
+            buffer[used++] = text[0];
+        }
+        ++text;
+    }
+    if (used < 3) {
+        return -1;
+    }
+    buffer[used] = '\0';
+    *cursor = text;
+    return 0;
+}
+
+/* Reads `[+|-]hh[:mm[:ss]]` and stores seconds east of UTC. */
+static int oct_tz_parse_offset(const char **cursor, long *east_offset)
+{
+    const char *text = *cursor;
+    int sign = 1;
+    if (text[0] == '-') {
+        sign = -1;
+        ++text;
+    } else if (text[0] == '+') {
+        ++text;
+    }
+    if (oct_tz_digit(text[0]) == 0) {
+        return -1;
+    }
+    long hours = 0;
+    int digits = 0;
+    while (oct_tz_digit(text[0]) != 0 && digits < 3) {
+        hours = hours * 10 + (text[0] - '0');
+        ++text;
+        ++digits;
+    }
+    long minutes = 0;
+    long seconds = 0;
+    if (text[0] == ':') {
+        ++text;
+        if (oct_tz_digit(text[0]) == 0) {
+            return -1;
+        }
+        minutes = (text[0] - '0') * 10;
+        ++text;
+        if (oct_tz_digit(text[0]) != 0) {
+            minutes += text[0] - '0';
+            ++text;
+        }
+        if (text[0] == ':') {
+            ++text;
+            if (oct_tz_digit(text[0]) == 0) {
+                return -1;
+            }
+            seconds = (text[0] - '0') * 10;
+            ++text;
+            if (oct_tz_digit(text[0]) != 0) {
+                seconds += text[0] - '0';
+                ++text;
+            }
+        }
+    }
+    *east_offset = -(sign * (hours * 3600 + minutes * 60 + seconds));
+    *cursor = text;
+    return 0;
+}
+
+static int oct_tz_parse_number(const char **cursor, int *value)
+{
+    const char *text = *cursor;
+    if (oct_tz_digit(text[0]) == 0) {
+        return -1;
+    }
+    int result = 0;
+    int digits = 0;
+    while (oct_tz_digit(text[0]) != 0 && digits < 3) {
+        result = result * 10 + (text[0] - '0');
+        ++text;
+        ++digits;
+    }
+    *value = result;
+    *cursor = text;
+    return 0;
+}
+
+static int oct_tz_parse_rule(const char **cursor, struct oct_tz_rule *rule)
+{
+    const char *text = *cursor;
+    memset(rule, 0, sizeof(*rule));
+    rule->seconds = 2 * 3600;
+    if (text[0] == 'M') {
+        ++text;
+        rule->kind = 0;
+        if (oct_tz_parse_number(&text, &rule->month) < 0 || text[0] != '.') {
+            return -1;
+        }
+        ++text;
+        if (oct_tz_parse_number(&text, &rule->week) < 0 || text[0] != '.') {
+            return -1;
+        }
+        ++text;
+        if (oct_tz_parse_number(&text, &rule->weekday) < 0) {
+            return -1;
+        }
+        if (rule->month < 1 || rule->month > 12 || rule->week < 1 ||
+            rule->week > 5 || rule->weekday > 6) {
+            return -1;
+        }
+    } else if (text[0] == 'J') {
+        ++text;
+        rule->kind = 1;
+        if (oct_tz_parse_number(&text, &rule->day) < 0 || rule->day < 1 ||
+            rule->day > 365) {
+            return -1;
+        }
+    } else {
+        rule->kind = 2;
+        if (oct_tz_parse_number(&text, &rule->day) < 0 || rule->day > 365) {
+            return -1;
+        }
+    }
+    if (text[0] == '/') {
+        ++text;
+        int sign = 1;
+        if (text[0] == '-') {
+            sign = -1;
+            ++text;
+        } else if (text[0] == '+') {
+            ++text;
+        }
+        if (oct_tz_digit(text[0]) == 0) {
+            return -1;
+        }
+        long value = 0;
+        int digits = 0;
+        while (oct_tz_digit(text[0]) != 0 && digits < 3) {
+            value = value * 10 + (text[0] - '0');
+            ++text;
+            ++digits;
+        }
+        long seconds = value * 3600;
+        if (text[0] == ':') {
+            ++text;
+            if (oct_tz_digit(text[0]) == 0) {
+                return -1;
+            }
+            seconds += (text[0] - '0') * 600;
+            ++text;
+            if (oct_tz_digit(text[0]) != 0) {
+                seconds += (text[0] - '0') * 60;
+                ++text;
+            }
+            if (text[0] == ':') {
+                ++text;
+                if (oct_tz_digit(text[0]) == 0) {
+                    return -1;
+                }
+                seconds += (text[0] - '0') * 10;
+                ++text;
+                if (oct_tz_digit(text[0]) != 0) {
+                    seconds += text[0] - '0';
+                    ++text;
+                }
+            }
+        }
+        rule->seconds = sign * seconds;
+    }
+    *cursor = text;
+    return 0;
+}
+
+/* Days since 1970-01-01 for a proleptic Gregorian date. */
+static long long oct_days_from_civil(long long year, int month, int day)
+{
+    year -= month <= 2;
+    const long long era = (year >= 0 ? year : year - 399) / 400;
+    const unsigned int year_of_era = (unsigned int)(year - era * 400);
+    const unsigned int day_of_year =
+        (153u * (unsigned int)(month + (month > 2 ? -3 : 9)) + 2u) / 5u +
+        (unsigned int)(day - 1);
+    const unsigned int day_of_era = year_of_era * 365 + year_of_era / 4 -
+                                    year_of_era / 100 + day_of_year;
+    return era * 146097 + (long long)day_of_era - 719468;
+}
+
+static int oct_month_length(int year, int month)
+{
+    static const int lengths[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const int leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+    return month == 2 && leap ? 29 : lengths[month - 1];
+}
+
+static long long oct_rule_days(int year, const struct oct_tz_rule *rule)
+{
+    if (rule->kind == 0) {
+        const long long first = oct_days_from_civil(year, rule->month, 1);
+        const int first_weekday = (int)(((first + 4) % 7 + 7) % 7);
+        int day = 1 + ((rule->weekday - first_weekday + 7) % 7) +
+                  (rule->week - 1) * 7;
+        const int length = oct_month_length(year, rule->month);
+        while (day > length) {
+            day -= 7;
+        }
+        return first + day - 1;
+    }
+    const long long january_first = oct_days_from_civil(year, 1, 1);
+    if (rule->kind == 1) {
+        int day = rule->day;
+        if (oct_month_length(year, 2) == 29 && day >= 60) {
+            ++day;
+        }
+        return january_first + day - 1;
+    }
+    return january_first + rule->day;
+}
+
+static int oct_tz_daylight_active(time_t when)
+{
+    if (oct_time_zone.has_daylight == 0 || oct_time_zone.has_rules == 0) {
+        return 0;
+    }
+    struct tm broken;
+    const time_t reference = when + oct_time_zone.standard_offset;
+    if (gmtime_r(&reference, &broken) == NULL) {
+        return 0;
+    }
+    const int year = broken.tm_year + 1900;
+    const long long start =
+        oct_rule_days(year, &oct_time_zone.start) * 86400 +
+        oct_time_zone.start.seconds - oct_time_zone.standard_offset;
+    const long long end = oct_rule_days(year, &oct_time_zone.end) * 86400 +
+                          oct_time_zone.end.seconds - oct_time_zone.daylight_offset;
+    const long long moment = (long long)when;
+    if (start < end) {
+        return moment >= start && moment < end;
+    }
+    /* Southern hemisphere: daylight spans the new year. */
+    return moment >= start || moment < end;
+}
+
+static long oct_tz_offset(time_t when, int *is_daylight)
+{
+    tzset();
+    if (oct_tz_daylight_active(when) != 0) {
+        *is_daylight = 1;
+        return oct_time_zone.daylight_offset;
+    }
+    *is_daylight = 0;
+    return oct_time_zone.standard_offset;
+}
+
+void tzset(void)
+{
+    const char *environment = getenv("TZ");
+    if (environment == NULL) {
+        environment = "";
+    }
+    if (oct_time_zone.loaded != 0 &&
+        strcmp(oct_time_zone.source, environment) == 0) {
+        return;
+    }
+
+    memset(&oct_time_zone, 0, sizeof(oct_time_zone));
+    oct_time_zone.loaded = 1;
+    size_t length = strlen(environment);
+    if (length >= sizeof(oct_time_zone.source)) {
+        length = sizeof(oct_time_zone.source) - 1;
+    }
+    memcpy(oct_time_zone.source, environment, length);
+    oct_time_zone.source[length] = '\0';
+    strcpy(oct_time_zone.standard_name, "UTC");
+    strcpy(oct_time_zone.daylight_name, "UTC");
+
+    const char *cursor = environment;
+    int parsed = 0;
+    if (environment[0] != '\0') {
+        if (oct_tz_parse_name(&cursor, oct_time_zone.standard_name,
+                              sizeof(oct_time_zone.standard_name)) == 0 &&
+            oct_tz_parse_offset(&cursor, &oct_time_zone.standard_offset) == 0) {
+            parsed = 1;
+        }
+    }
+
+    if (parsed != 0 && cursor[0] != '\0') {
+        if (oct_tz_parse_name(&cursor, oct_time_zone.daylight_name,
+                              sizeof(oct_time_zone.daylight_name)) == 0) {
+            oct_time_zone.has_daylight = 1;
+            oct_time_zone.daylight_offset = oct_time_zone.standard_offset + 3600;
+            if (oct_tz_parse_offset(&cursor, &oct_time_zone.daylight_offset) < 0) {
+                oct_time_zone.daylight_offset = oct_time_zone.standard_offset + 3600;
+            }
+            if (cursor[0] == ',') {
+                ++cursor;
+                if (oct_tz_parse_rule(&cursor, &oct_time_zone.start) == 0 &&
+                    cursor[0] == ',') {
+                    ++cursor;
+                    if (oct_tz_parse_rule(&cursor, &oct_time_zone.end) == 0) {
+                        oct_time_zone.has_rules = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if (parsed == 0) {
+        oct_time_zone.standard_offset = 0;
+        oct_time_zone.daylight_offset = 0;
+        oct_time_zone.has_daylight = 0;
+        oct_time_zone.has_rules = 0;
+    }
+
+    tzname[0] = oct_time_zone.standard_name;
+    tzname[1] = oct_time_zone.has_daylight != 0 ? oct_time_zone.daylight_name
+                                               : oct_time_zone.standard_name;
+    timezone = -oct_time_zone.standard_offset;
+    daylight = oct_time_zone.has_daylight;
 }
 
 struct tm *localtime(const time_t *time_value)
 {
-    return gmtime(time_value);
+    static struct tm result;
+    if (time_value == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    int is_daylight = 0;
+    const long offset = oct_tz_offset(*time_value, &is_daylight);
+    const time_t shifted = *time_value + (time_t)offset;
+    if (gmtime_r(&shifted, &result) == NULL) {
+        return NULL;
+    }
+    result.tm_isdst = is_daylight;
+    result.tm_gmtoff = offset;
+    result.tm_zone = is_daylight != 0 ? oct_time_zone.daylight_name
+                                      : oct_time_zone.standard_name;
+    return &result;
 }
 
 char *ctime(const time_t *time_value)
@@ -10709,7 +11116,9 @@ int fsetpos(FILE *stream, const fpos_t *position)
 
 /* mktime for a UTC-only environment: normalise the calendar fields, reject
  * obviously invalid ones, and convert to seconds since the epoch. */
-time_t mktime(struct tm *value)
+/* Interprets the fields as UTC. Publicly reachable as timegm(); mktime() adds
+ * the time zone offset on top of it. */
+static time_t oct_utc_timestamp(struct tm *value)
 {
     if (value == NULL) {
         return (time_t)-1;
@@ -10753,6 +11162,51 @@ time_t mktime(struct tm *value)
         *value = normalised;
     }
     return result;
+}
+
+time_t timegm(struct tm *value)
+{
+    if (value == NULL) {
+        return (time_t)-1;
+    }
+    return oct_utc_timestamp(value);
+}
+
+/* mktime interprets the fields as local time. A caller that says tm_isdst = 0
+ * or > 0 selects the standard or daylight offset; -1 lets the zone rules decide,
+ * and the guess is refined once so a wall-clock time near a transition picks
+ * the offset that actually applies. */
+time_t mktime(struct tm *value)
+{
+    if (value == NULL) {
+        return (time_t)-1;
+    }
+    struct tm fields = *value;
+    const int dst_hint = value->tm_isdst;
+    const time_t utc = oct_utc_timestamp(&fields);
+    if (utc == (time_t)-1) {
+        return (time_t)-1;
+    }
+
+    tzset();
+    long offset = oct_time_zone.standard_offset;
+    if (oct_time_zone.has_daylight != 0 && dst_hint == 0) {
+        offset = oct_time_zone.standard_offset;
+    } else if (oct_time_zone.has_daylight != 0 && dst_hint > 0) {
+        offset = oct_time_zone.daylight_offset;
+    } else {
+        int is_daylight = 0;
+        offset = oct_tz_offset(utc, &is_daylight);
+        const time_t candidate = utc - (time_t)offset;
+        offset = oct_tz_offset(candidate, &is_daylight);
+    }
+
+    const time_t local = utc - (time_t)offset;
+    struct tm normalised;
+    if (localtime_r(&local, &normalised) != NULL) {
+        *value = normalised;
+    }
+    return local;
 }
 
 /* asctime writes into a static buffer; the caller must consume it immediately,
@@ -10959,12 +11413,16 @@ size_t strftime(char *buffer, size_t capacity, const char *format, const struct 
             case 'Y':
                 length = (size_t)snprintf(text, sizeof text, "%lld", year);
                 break;
-            case 'z':
-                /* OCTAGRAM keeps the wall clock in UTC, so the offset is zero. */
-                piece = "+0000";
+            case 'z': {
+                const long offset = value->tm_gmtoff;
+                const long magnitude = offset < 0 ? -offset : offset;
+                length = (size_t)snprintf(text, sizeof text, "%c%02ld%02ld",
+                                          offset < 0 ? '-' : '+',
+                                          magnitude / 3600, (magnitude / 60) % 60);
                 break;
+            }
             case 'Z':
-                piece = "UTC";
+                piece = value->tm_zone != NULL ? value->tm_zone : "UTC";
                 break;
             default:
                 /* Unsupported conversions are undefined behaviour in C; keep the

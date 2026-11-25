@@ -61,7 +61,24 @@ struct tm {
     int tm_wday;
     int tm_yday;
     int tm_isdst;
+    /* GNU/BDS extensions: the UTC offset in seconds east of Greenwich and the
+     * zone abbreviation in effect for this broken-down time. */
+    long tm_gmtoff;
+    const char *tm_zone;
 };
+
+/* Time zone. TZ supports the POSIX forms `std offset`, `std offset dst offset`
+ * and the rule suffix `,start[/time],end[/time]` with Mm.w.d, Jn or n rules.
+ * Zones named after a system file (/usr/share/zoneinfo/...) are not loaded:
+ * TZ is interpreted as a POSIX string, and an unparsable TZ falls back to UTC.
+ */
+void tzset(void);
+extern char *tzname[2];
+extern long timezone;
+extern int daylight;
+
+/* Like mktime but interprets the fields as UTC. */
+time_t timegm(struct tm *time_value);
 
 time_t time(time_t *result);
 int clock_gettime(clockid_t clock_id, struct timespec *time_value);

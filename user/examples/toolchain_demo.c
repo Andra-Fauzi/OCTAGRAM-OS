@@ -280,6 +280,68 @@ static void test_regex(void)
           "regcomp reports REG_EESCAPE");
 }
 
+/* ---- time zone ---------------------------------------------------------- */
+
+static void test_timezone(void)
+{
+    setenv("TZ", "WIB-7", 1);
+    tzset();
+    check(strcmp(tzname[0], "WIB") == 0, "tzset parsed the standard name");
+    check(timezone == -7 * 3600, "timezone is seconds west of UTC");
+    check(daylight == 0, "no daylight rule for a fixed zone");
+
+    const time_t instant = 1700000000; /* 2023-11-14T22:13:20Z */
+    struct tm local;
+    check(localtime_r(&instant, &local) != NULL, "localtime_r for UTC+7");
+    check(local.tm_hour == 5 && local.tm_min == 13 && local.tm_mday == 15,
+          "UTC+7 shifts the wall clock past midnight");
+    check(local.tm_gmtoff == 7 * 3600, "tm_gmtoff carries the offset");
+    check(local.tm_zone != NULL && strcmp(local.tm_zone, "WIB") == 0,
+          "tm_zone carries the name");
+
+    char rendered[40];
+    rendered[0] = '\0';
+    strftime(rendered, sizeof(rendered), "%Y-%m-%d %H:%M %z %Z", &local);
+    check(strcmp(rendered, "2023-11-15 05:13 +0700 WIB") == 0,
+          "strftime renders %z and %Z from the zone");
+
+    struct tm round_trip = local;
+    check(mktime(&round_trip) == instant, "mktime inverts localtime for a fixed zone");
+
+    /* A DST zone with POSIX rules: US Eastern. */
+    setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+    tzset();
+    check(strcmp(tzname[0], "EST") == 0 && strcmp(tzname[1], "EDT") == 0,
+          "standard and daylight names");
+    check(timezone == 5 * 3600 && daylight == 1, "EST offset and daylight flag");
+
+    const time_t summer = 1719835200; /* 2024-07-01T12:00:00Z */
+    check(localtime_r(&summer, &local) != NULL, "localtime_r in summer");
+    check(local.tm_hour == 8 && local.tm_isdst == 1 &&
+              local.tm_gmtoff == -4 * 3600,
+          "summer uses EDT (UTC-4)");
+    struct tm summer_round_trip = local;
+    check(mktime(&summer_round_trip) == summer, "mktime round trip with DST");
+
+    const time_t winter = 1705320000; /* 2024-01-15T12:00:00Z */
+    check(localtime_r(&winter, &local) != NULL, "localtime_r in winter");
+    check(local.tm_hour == 7 && local.tm_isdst == 0 &&
+              local.tm_gmtoff == -5 * 3600,
+          "winter uses EST (UTC-5)");
+    struct tm winter_round_trip = local;
+    check(mktime(&winter_round_trip) == winter, "mktime round trip in winter");
+
+    /* A zone file path is not a POSIX TZ string: fall back to UTC. */
+    setenv("TZ", "/usr/share/zoneinfo/Asia/Jakarta", 1);
+    tzset();
+    check(timezone == 0 && strcmp(tzname[0], "UTC") == 0,
+          "unparsable TZ falls back to UTC");
+    check(localtime_r(&instant, &local) != NULL && local.tm_hour == 22,
+          "fallback keeps UTC wall clock");
+    unsetenv("TZ");
+    tzset();
+}
+
 /* ---- strptime ----------------------------------------------------------- */
 
 static void test_strptime(void)
@@ -349,6 +411,7 @@ int main(void)
     test_arc4random();
     test_mmap64();
     test_regex();
+    test_timezone();
     test_strptime();
 
     if (failures != 0) {

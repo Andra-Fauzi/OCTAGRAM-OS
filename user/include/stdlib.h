@@ -108,9 +108,10 @@ char *mkdtemp(char *path_template);
 
 /* mkstemp variants: extra open flags (mkostemp) and a preserved suffix
  * (mkstemps/mkostemps), both GNU extensions used by toolchains. */
-int mkostemp(char *template, int flags);
-int mkstemps(char *template, int suffix_length);
-int mkostemps(char *template, int suffix_length, int flags);
+/* The parameter is called path_template because `template` is a C++ keyword. */
+int mkostemp(char *path_template, int flags);
+int mkstemps(char *path_template, int suffix_length);
+int mkostemps(char *path_template, int suffix_length, int flags);
 size_t malloc_usable_size(void *pointer);
 int system(const char *command);
 

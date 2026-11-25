@@ -247,7 +247,7 @@ serial. Marker yang harus muncul:
 | `LIBCXX-FORMAT-PASS` | `std::format`/`format_to`/`vformat`, spesifier numerik & float, `std::print`/`println`, `std::expected`, `osyncstream`, dan mdspan berjalan di guest |
 | `MEMSTREAM-PASS` | `open_memstream`/`fmemopen` (baca/tulis/append, celah nol, short write) dan `dprintf` berjalan di guest |
 | `POSIX-SEARCH-PASS` | `tsearch`/`twalk`/`tdelete`, `scandir`+comparator, `wordexp`+kode error, `nftw`/`ftw`, `fts`(+`fts_children`/`FTS_SKIP`), dan `basename`/`dirname` berjalan di guest |
-| `TOOLCHAIN-PASS` | `popen`/`pclose`, `hsearch`(+`_r`), `mkostemp`/`mkstemps`/`mkostemps`, `arc4random`, `mmap64`, `strptime`, dan `regcomp`/`regexec` (ERE+BRE, leftmost-longest) berjalan di guest |
+| `TOOLCHAIN-PASS` | `popen`/`pclose`, `hsearch`(+`_r`), `mkostemp`/`mkstemps`/`mkostemps`, `arc4random`, `mmap64`, `strptime`, `regcomp`/`regexec` (ERE+BRE, leftmost-longest), dan `tzset`/DST/`localtime`/`mktime` berjalan di guest |
 | `RUST-NATIVE-LD-PASS` | object `rustc` ditautkan `ld` native lalu dijalankan |
 | `SYSCALL-TEST: PASS` | suite kompatibilitas syscall |
 

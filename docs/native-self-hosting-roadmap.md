@@ -3127,3 +3127,58 @@ yang `-1`, `re_nsub`, empat kode error, `regerror`, anchor `REG_NEWLINE`,
 
 **Validasi:** `make build/toolchain_demo.elf -j6` → `exit=0`, tanpa
 error/undefined symbol. Probe guest belum dijalankan di QEMU dari workspace ini.
+
+## 107. Zona waktu: `tzset`, DST, `localtime`/`mktime` (25 November 2026)
+
+Sebelumnya `localtime()` hanyalah alias `gmtime()`: `TZ` diabaikan, tidak ada
+`tzset`, `tzname`, `timezone`, `daylight`, maupun `timegm`, dan `%z` selalu
+`+0000`. Ronde ini menambahkan mesin zona waktu POSIX di `user/runtime.c`.
+
+**`tzset()` dan bahasa `TZ`:** `std offset [dst [offset] [,start[/time],end[/time]]]`.
+Nama 3+ huruf atau `<...>`, offset POSIX (positif di barat Greenwich, jadi
+`WIB-7` = UTC+07:00) dengan `hh[:mm[:ss]]`, dan aturan transisi `Mm.w.d` (bulan,
+minggu ke-n, hari), `Jn` (hari Julian, 29 Februari tidak dihitung), atau `n`
+(hari ke-n, 29 Februari dihitung). `time` pada aturan adalah waktu dinding lokal,
+default 02:00. `TZ` di-cache berdasarkan string-nya, jadi `tzset` berulang murah.
+
+**`struct tm` mendapat `tm_gmtoff`/`tm_zone`** (ekstensi GNU/BSD). `gmtime` mengisi
+0/`"UTC"`; `localtime` mengisi offset dan nama zona yang berlaku.
+
+**`localtime`:** `tzset` → pilih offset (standar atau DST) → `gmtime` dari
+`t + offset` → isi `tm_isdst`, `tm_gmtoff`, `tm_zone`. `localtime_r` memakai
+buffer pemanggil.
+
+**`mktime`/`timegm`:** body lama dijadikan `oct_utc_timestamp` (dinormalisasi
+lewat `gmtime_r`). `timegm` mengeksposnya; `mktime` menghitung timestamp UTC lalu
+mengurangi offset. `tm_isdst = 0` memaksa offset standar, `> 0` memaksa offset
+DST, dan `-1` memakai aturan zona dengan satu iterasi penyempurnaan agar waktu
+dekat transisi mendapat offset yang benar. `localtime_r` mengisi ulang
+`*value` sehingga hasilnya ternormalisasi.
+
+**DST:** `oct_tz_daylight_active` menghitung kedua transisi untuk tahun waktu
+referensi memakai hari-dari-tanggal Gregorian (`oct_days_from_civil`) dan
+membandingkan instan UTC; zona belahan selatan (transisi akhir tahun) juga
+benar karena rentang yang melewati pergantian tahun ditangani terpisah.
+
+**`strftime`:** `%z` kini dirender dari `tm_gmtoff` (`+0700`), `%Z` dari
+`tm_zone`.
+
+**Batasan yang dicatat:** berkas `zoneinfo` tidak dibaca — `TZ` diinterpretasi
+sebagai string POSIX, dan nilai yang tidak bisa diparsing (mis.
+`/usr/share/zoneinfo/Asia/Jakarta`) jatuh ke UTC; `dst` tanpa aturan berarti
+standar sepanjang tahun (POSIX membiarkannya implementation-defined); detik
+kabisat diabaikan.
+
+**Probe guest:** `test_timezone` di `user/examples/toolchain_demo.c`
+(marker `TOOLCHAIN-PASS`): `WIB-7` (nama, `timezone`, `tm_gmtoff`, `tm_zone`,
+pergeseran lewat tengah malam, `strftime %z/%Z`, round trip `mktime`), zona DST
+gaya US (`EST5EDT,M3.2.0,M11.1.0`: nama, offset, Juli memakai UTC-4, Januari
+UTC-5, round trip keduanya), dan `TZ` berupa path yang jatuh ke UTC.
+
+**Perbaikan kecil:** parameter `mkostemp`/`mkstemps`/`mkostemps` di
+`<stdlib.h>` dinamai `path_template` karena `template` adalah keyword C++ —
+header itu dipakai probe C++.
+
+**Validasi:** `make build/toolchain_demo.elf build/posix_search_demo.elf
+build/memstream_demo.elf build/libcxx_format_smoke.elf -j6` → `exit=0`, tanpa
+error/undefined symbol. Probe guest belum dijalankan di QEMU dari workspace ini.

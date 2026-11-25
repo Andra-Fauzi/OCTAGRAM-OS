@@ -20,6 +20,8 @@ seterusnya.
 | `check` | same resolution, `--emit=metadata` instead of an output file |
 | `run` | build, then execute the binary target (the only one, or `--bin NAME`); arguments after `--` are passed to the program |
 | `clean` | remove the target directory |
+| `new PATH` | create a binary package (`Cargo.toml`, `src/main.rs`, `Cargo.lock`) in a new or empty directory |
+| `init [PATH]` | same as `new`, in an existing directory (default `.`) |
 | `metadata` | print a minimal JSON description (packages, targets, source paths) |
 | `version` | print the driver version |
 

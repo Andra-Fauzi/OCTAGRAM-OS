@@ -107,6 +107,7 @@ typedef struct OctRuntimeThreadState {
     volatile uint64_t tid;
     int errno_value;
     int h_errno_value;
+    locale_t locale_value;
     void *key_values[64];
     uint64_t key_generations[64];
     OctThreadExitNode *thread_exit_chain;
@@ -7727,6 +7728,7 @@ static OctRuntimeThreadState *oct_runtime_state_for_thread(void)
     if (slot != NULL && (slot->pid != pid || slot->tid != tid)) {
         slot->errno_value = 0;
         slot->h_errno_value = 0;
+        slot->locale_value = (locale_t)0;
         for (unsigned int key = 0; key < 64; ++key) {
             slot->key_values[key] = NULL;
             slot->key_generations[key] = 0;
@@ -10001,7 +10003,11 @@ locale_t duplocale(locale_t object)
     return &oct_c_locale;
 }
 
+#if defined(OCTAGRAM_SHARED)
+#define oct_current_locale (oct_runtime_state_for_thread()->locale_value)
+#else
 static _Thread_local locale_t oct_current_locale;
+#endif
 
 locale_t uselocale(locale_t object)
 {

@@ -259,6 +259,7 @@ def main():
     send_line("run /bin/rust-std-probe")
     for marker, label in (
         ("RUST-STD-GETRANDOM-FLAGS-PASS", "getrandom flags and error validation"),
+        ("RUST-STD-FIONBIO-PASS", "ioctl FIONBIO enables nonblocking pipe reads"),
         ("RUST-STD-SOCKET-EMPTY-IOV-PASS", "sendmsg/recvmsg zero-iovec validation"),
         ("RUST-STD-UNIX-SOCKETPAIR-MSG-PASS", "AF_UNIX sendmsg/recvmsg and MSG_PEEK"),
         ("RUST-STD-UNIX-SOCKETPAIR-RECV-NAME-PASS", "unnamed socketpair source address"),
@@ -272,6 +273,7 @@ def main():
         ("RUST-STD-UNIX-SOCKETPAIR-NONBLOCK-PASS", "socketpair nonblocking flags"),
         ("RUST-STD-UNIX-SOCKETPAIR-SHUTDOWN-PASS", "socketpair half-close and EOF"),
         ("RUST-STD-UNIX-SOCKETPAIR-SEND-RECV-PASS", "socketpair send/recv and MSG_PEEK"),
+        ("RUST-STD-UNIX-SEQPACKET-VECTORED-PASS", "SOCK_SEQPACKET writev/readv preserve one record"),
         ("RUST-STD-TLS-PASS", "Rust local-exec TLS initialization"),
         ("RUST-STD-THREAD-MAIN-CURRENT-PASS", "main-thread identity"),
         ("RUST-STD-THREAD-CLOSURE-ENTER-PASS", "Rust thread closure entry"),

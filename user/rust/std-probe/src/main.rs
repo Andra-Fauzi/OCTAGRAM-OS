@@ -146,6 +146,36 @@ fn main() {
     }
     marker("RUST-STD-GETRANDOM-FLAGS-PASS");
 
+    // Rust std configures ChildPipe readers through ioctl(FIONBIO, &int).
+    let mut nonblocking_pipe = [-1i32; 2];
+    let pipe_created = unsafe {
+        syscall3(21, nonblocking_pipe.as_mut_ptr() as usize as u64, 0, 0)
+    };
+    let enabled = 1i32;
+    let ioctl_nonblock = if pipe_created == 0 && nonblocking_pipe[0] >= 0 {
+        unsafe { syscall3(81, nonblocking_pipe[0] as u64, 0x5421,
+            &enabled as *const i32 as usize as u64) }
+    } else { -1 };
+    let nonblock_flags = if ioctl_nonblock == 0 {
+        unsafe { syscall3(34, nonblocking_pipe[0] as u64, 3, 0) }
+    } else { -1 };
+    let mut empty_pipe_byte = 0u8;
+    let nonblock_read = if ioctl_nonblock == 0 {
+        unsafe { syscall3(2, nonblocking_pipe[0] as u64,
+            &mut empty_pipe_byte as *mut u8 as usize as u64, 1) }
+    } else { -1 };
+    if nonblocking_pipe[0] >= 0 {
+        unsafe { syscall3(4, nonblocking_pipe[0] as u64, 0, 0); }
+    }
+    if nonblocking_pipe[1] >= 0 {
+        unsafe { syscall3(4, nonblocking_pipe[1] as u64, 0, 0); }
+    }
+    if ioctl_nonblock != 0 || nonblock_flags & 0x800 == 0 || nonblock_read != -11 {
+        marker("RUST-STD-FIONBIO-FAIL");
+        std::process::exit(84);
+    }
+    marker("RUST-STD-FIONBIO-PASS");
+
     // Linux x86_64 recvmsg/sendmsg ABI: zero iovecs are valid even when
     // msg_iov is null. An invalid descriptor should therefore reach EBADF,
     // not fail pointer validation with EFAULT.
@@ -612,6 +642,45 @@ fn main() {
         std::process::exit(78);
     }
     marker("RUST-STD-UNIX-SOCKETPAIR-SEND-RECV-PASS");
+
+    // SOCK_SEQPACKET writev is one record and readv scatters that same record.
+    let mut seqpacket_pair = [-1i32; 2];
+    let seqpacket_result = unsafe {
+        syscall4(127, 1, 5, 0, seqpacket_pair.as_mut_ptr() as usize as u64)
+    };
+    let part_one = *b"one";
+    let part_two = *b"two";
+    let send_vectors = [
+        ProbeIoVec { base: part_one.as_ptr() as usize as u64, len: 3 },
+        ProbeIoVec { base: part_two.as_ptr() as usize as u64, len: 3 },
+    ];
+    let mut recv_one = [0u8; 2];
+    let mut recv_two = [0u8; 4];
+    let mut recv_vectors = [
+        ProbeIoVec { base: recv_one.as_mut_ptr() as usize as u64, len: 2 },
+        ProbeIoVec { base: recv_two.as_mut_ptr() as usize as u64, len: 4 },
+    ];
+    let seqpacket_writev = if seqpacket_result == 0 && seqpacket_pair[0] >= 0 {
+        unsafe { syscall3(104, seqpacket_pair[0] as u64,
+            send_vectors.as_ptr() as usize as u64, send_vectors.len() as u64) }
+    } else { -1 };
+    let seqpacket_readv = if seqpacket_writev == 6 && seqpacket_pair[1] >= 0 {
+        unsafe { syscall3(105, seqpacket_pair[1] as u64,
+            recv_vectors.as_ptr() as usize as u64, recv_vectors.len() as u64) }
+    } else { -1 };
+    if seqpacket_pair[0] >= 0 {
+        unsafe { syscall3(4, seqpacket_pair[0] as u64, 0, 0); }
+    }
+    if seqpacket_pair[1] >= 0 {
+        unsafe { syscall3(4, seqpacket_pair[1] as u64, 0, 0); }
+    }
+    if seqpacket_writev != 6 || seqpacket_readv != 6
+        || recv_one != *b"on" || recv_two != *b"etwo"
+    {
+        marker("RUST-STD-UNIX-SEQPACKET-VECTORED-FAIL");
+        std::process::exit(87);
+    }
+    marker("RUST-STD-UNIX-SEQPACKET-VECTORED-PASS");
 
     let (tls_value, tls_address) = RUST_TLS_PROBE.with(|value| {
         let initial = value.get();

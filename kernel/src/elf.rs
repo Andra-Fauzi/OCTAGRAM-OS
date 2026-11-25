@@ -1345,15 +1345,11 @@ struct Pipe {
 
 impl Pipe {
     fn write(&mut self, input: &[u8]) -> Result<usize, i32> {
-        if self.readers == 0 {
-            return Err(EPIPE);
-        }
+        if self.readers == 0 { return Err(EPIPE); }
         let available = PIPE_CAPACITY - self.length;
         if self.packetized {
-            // A packet is indivisible: never enqueue a partial message.
-            if input.len() > available {
-                return Err(EAGAIN);
-            }
+            if input.len() > PIPE_CAPACITY { return Err(EMSGSIZE); }
+            if input.len() > available { return Err(EAGAIN); }
             self.packet_lengths.try_reserve(1).map_err(|_| ENOMEM)?;
             for byte in input {
                 let tail = (self.head + self.length) % PIPE_CAPACITY;
@@ -1363,9 +1359,7 @@ impl Pipe {
             self.packet_lengths.push_back(input.len());
             return Ok(input.len());
         }
-        if available == 0 {
-            return Err(EAGAIN);
-        }
+        if available == 0 { return Err(EAGAIN); }
         let count = input.len().min(available);
         for byte in &input[..count] {
             let tail = (self.head + self.length) % PIPE_CAPACITY;
@@ -1380,46 +1374,60 @@ impl Pipe {
     }
 
     fn read_with_peek(&mut self, output: &mut [u8], peek: bool) -> Result<usize, i32> {
+        let mut outputs = [output];
+        self.read_iov_with_peek(&mut outputs, peek).map(|(copied, _)| copied)
+    }
+
+    fn read_iov_with_peek(
+        &mut self,
+        outputs: &mut [&mut [u8]],
+        peek: bool,
+    ) -> Result<(usize, usize), i32> {
+        let capacity = outputs.iter().try_fold(0usize, |total, output| {
+            total.checked_add(output.len()).ok_or(EINVAL)
+        })?;
+        if capacity == 0 { return Ok((0, 0)); }
+
         if self.packetized {
-            let Some(packet_length) = self.packet_lengths.front().copied() else {
-                return if self.writers == 0 {
-                    Ok(0)
-                } else {
-                    Err(EAGAIN)
-                };
+            let Some(record_length) = self.packet_lengths.front().copied() else {
+                return if self.writers == 0 { Ok((0, 0)) } else { Err(EAGAIN) };
             };
-            if output.is_empty() {
-                return Ok(0);
-            }
-            let count = output.len().min(packet_length);
-            for (offset, byte) in output[..count].iter_mut().enumerate() {
-                *byte = self.buffer[(self.head + offset) % PIPE_CAPACITY];
+            let copied = capacity.min(record_length);
+            let mut offset = 0usize;
+            for output in outputs.iter_mut() {
+                if offset == copied { break; }
+                let count = output.len().min(copied - offset);
+                for byte in output[..count].iter_mut() {
+                    *byte = self.buffer[(self.head + offset) % PIPE_CAPACITY];
+                    offset += 1;
+                }
             }
             if !peek {
-                // SOCK_DGRAM/SOCK_SEQPACKET discard the un-copied tail when
-                // the receiver's buffer is smaller than the queued record.
                 self.packet_lengths.pop_front();
-                self.head = (self.head + packet_length) % PIPE_CAPACITY;
-                self.length -= packet_length;
+                self.head = (self.head + record_length) % PIPE_CAPACITY;
+                self.length -= record_length;
             }
-            return Ok(count);
+            return Ok((copied, record_length));
         }
+
         if self.length == 0 {
-            return if self.writers == 0 {
-                Ok(0)
-            } else {
-                Err(EAGAIN)
-            };
+            return if self.writers == 0 { Ok((0, 0)) } else { Err(EAGAIN) };
         }
-        let count = output.len().min(self.length);
-        for (offset, byte) in output[..count].iter_mut().enumerate() {
-            *byte = self.buffer[(self.head + offset) % PIPE_CAPACITY];
+        let copied = capacity.min(self.length);
+        let mut offset = 0usize;
+        for output in outputs.iter_mut() {
+            if offset == copied { break; }
+            let count = output.len().min(copied - offset);
+            for byte in output[..count].iter_mut() {
+                *byte = self.buffer[(self.head + offset) % PIPE_CAPACITY];
+                offset += 1;
+            }
         }
         if !peek {
-            self.head = (self.head + count) % PIPE_CAPACITY;
-            self.length -= count;
+            self.head = (self.head + copied) % PIPE_CAPACITY;
+            self.length -= copied;
         }
-        Ok(count)
+        Ok((copied, copied))
     }
 }
 
@@ -2701,8 +2709,12 @@ fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
                     return frame_pointer;
                 }
                 let pipe_wait = match number {
-                    SYSCALL_READ => pipe_wait_target(frame.rdi, true),
-                    SYSCALL_WRITE => pipe_wait_target(frame.rdi, false),
+                    SYSCALL_READ | SYSCALL_READV => pipe_wait_target(frame.rdi, true, false),
+                    SYSCALL_WRITE | SYSCALL_WRITEV => pipe_wait_target(frame.rdi, false, false),
+                    SYSCALL_RECV => pipe_wait_target(frame.rdi, true, frame.r10 & 0x40 != 0),
+                    SYSCALL_SEND => pipe_wait_target(frame.rdi, false, frame.r10 & 0x40 != 0),
+                    SYSCALL_RECVMSG => pipe_wait_target(frame.rdi, true, frame.rdx & 0x40 != 0),
+                    SYSCALL_SENDMSG => pipe_wait_target(frame.rdi, false, frame.rdx & 0x40 != 0),
                     _ => None,
                 };
                 if let Some((_, wait_reason)) = pipe_wait {
@@ -2860,10 +2872,26 @@ fn syscall_get_thread_pointer() -> Result<u64, i32> {
 fn syscall_ioctl(fd: u64, request: u64, arg: u64) -> Result<u64, i32> {
     const FIOCLEX: u64 = 0x5451;
     const FIONCLEX: u64 = 0x5450;
+    const FIONBIO: u64 = 0x5421;
     let fd = usize::try_from(fd).map_err(|_| EBADF)?;
-    let process = USER_PROCESS.lock();
-    if !process.active {
-        return Err(EINTR);
+    let mut process = USER_PROCESS.lock();
+    if !process.active { return Err(EINTR); }
+    if request == FIONBIO {
+        if process.descriptors.get(fd).and_then(Option::as_ref).is_none() {
+            return Err(EBADF);
+        }
+        paging::validate_user_range(arg, core::mem::size_of::<i32>(), false)
+            .map_err(|_| EFAULT)?;
+        let enabled = unsafe { (arg as *const i32).read_unaligned() } != 0;
+        let descriptor_count = process.descriptors.len();
+        process.descriptor_flags.resize(descriptor_count, 0);
+        let flags = process.descriptor_flags[fd];
+        process.descriptor_flags[fd] = if enabled {
+            flags | O_NONBLOCK as u32
+        } else {
+            flags & !(O_NONBLOCK as u32)
+        };
+        return Ok(0);
     }
     if request == FIOCLEX || request == FIONCLEX {
         // POSIX descriptor-flag ioctls apply to every descriptor kind. Rust
@@ -3833,7 +3861,7 @@ fn execve_current(
     let environment = copy_user_environment(environment_address)
         .map_err(|error| if error == ENAMETOOLONG { E2BIG } else { error })?;
     let (cwd, terminal, pid, creation_mask, process_group, session,
-         descriptors, descriptor_flags) = {
+         descriptors, descriptor_flags, cloexec_pipe_ids, cloexec_file_locks) = {
         let process = USER_PROCESS.lock();
         if !process.active {
             return Err(EINTR);
@@ -3842,26 +3870,32 @@ fn execve_current(
             return Err(EIO);
         }
         let mut descriptors = Vec::new();
-        descriptors
-            .try_reserve_exact(process.descriptors.len())
+        descriptors.try_reserve_exact(process.descriptors.len()).map_err(|_| ENOMEM)?;
+        let mut cloexec_pipe_ids = Vec::new();
+        cloexec_pipe_ids
+            .try_reserve_exact(process.descriptors.len().saturating_mul(2))
             .map_err(|_| ENOMEM)?;
-        descriptors.extend(
-            process
-                .descriptors
-                .iter()
-                .zip(&process.descriptor_flags)
-                .map(|(descriptor, flags)| {
-                    if flags & FD_CLOEXEC != 0 {
-                        None
-                    } else {
-                        descriptor.clone()
+        let mut cloexec_file_locks = false;
+        for (descriptor, flags) in process.descriptors.iter().zip(&process.descriptor_flags) {
+            if flags & FD_CLOEXEC == 0 {
+                descriptors.push(descriptor.clone());
+                continue;
+            }
+            if let Some(descriptor) = descriptor.as_ref() {
+                match descriptor {
+                    UserDescriptor::Pipe(endpoint) => cloexec_pipe_ids.push(endpoint.pipe.lock().id),
+                    UserDescriptor::SocketPair(endpoint) => {
+                        cloexec_pipe_ids.push(endpoint.read_end.pipe.lock().id);
+                        cloexec_pipe_ids.push(endpoint.write_end.pipe.lock().id);
                     }
-                }),
-        );
+                    UserDescriptor::File(_) => cloexec_file_locks = true,
+                    _ => {}
+                }
+            }
+            descriptors.push(None);
+        }
         let mut descriptor_flags = Vec::new();
-        descriptor_flags
-            .try_reserve_exact(descriptors.len())
-            .map_err(|_| ENOMEM)?;
+        descriptor_flags.try_reserve_exact(descriptors.len()).map_err(|_| ENOMEM)?;
         descriptor_flags.resize(descriptors.len(), 0);
         (
             process.cwd.clone(),
@@ -3872,6 +3906,8 @@ fn execve_current(
             process.session,
             descriptors,
             descriptor_flags,
+            cloexec_pipe_ids,
+            cloexec_file_locks,
         )
     };
 
@@ -3967,6 +4003,12 @@ fn execve_current(
             scheduler.retired_kernel_stacks.push(old_kernel_stack);
         }
         *active_process = state;
+        for pipe_id in cloexec_pipe_ids {
+            wake_pipe_waiters_in_scheduler(&mut scheduler, pipe_id, true, true);
+        }
+        if cloexec_file_locks {
+            wake_file_lock_waiters_in_scheduler(&mut scheduler);
+        }
         old_image
     };
 
@@ -4091,28 +4133,35 @@ fn write_user_u64(address: u64, value: u64) -> Result<(), i32> {
     Ok(())
 }
 
-fn pipe_wait_target(fd: u64, reading: bool) -> Option<(u64, ProcessWait)> {
+fn pipe_wait_target(
+    fd: u64,
+    reading: bool,
+    force_nonblocking: bool,
+) -> Option<(u64, ProcessWait)> {
     let fd = usize::try_from(fd).ok()?;
     let process = USER_PROCESS.lock();
-    if !process.active {
-        return None;
-    }
-    if process
-        .descriptor_flags
-        .get(fd)
+    if !process.active || force_nonblocking { return None; }
+    if process.descriptor_flags.get(fd)
         .is_some_and(|flags| flags & O_NONBLOCK as u32 != 0)
     {
         return None;
     }
-    let Some(UserDescriptor::Pipe(endpoint)) = process.descriptors.get(fd).and_then(Option::as_ref)
-    else {
-        return None;
-    };
-    let pipe_id = endpoint.pipe.lock().id;
-    let wait = match (reading, endpoint.readable, endpoint.writable) {
-        (true, true, _) => ProcessWait::PipeReadable(pipe_id),
-        (false, _, true) => ProcessWait::PipeWritable(pipe_id),
+    let descriptor = process.descriptors.get(fd).and_then(Option::as_ref)?;
+    let endpoint = match descriptor {
+        UserDescriptor::Pipe(endpoint) => endpoint,
+        UserDescriptor::SocketPair(endpoint) => {
+            if reading { &endpoint.read_end } else { &endpoint.write_end }
+        }
         _ => return None,
+    };
+    if (reading && !endpoint.readable) || (!reading && !endpoint.writable) {
+        return None;
+    }
+    let pipe_id = endpoint.pipe.lock().id;
+    let wait = if reading {
+        ProcessWait::PipeReadable(pipe_id)
+    } else {
+        ProcessWait::PipeWritable(pipe_id)
     };
     Some((pipe_id, wait))
 }
@@ -6155,7 +6204,7 @@ fn syscall_send(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i
 }
 
 fn syscall_recv(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i32> {
-    if flags & !0x42 != 0 {
+    if flags & !0x62 != 0 {
         return Err(EINVAL);
     }
     let length = usize::try_from(length).map_err(|_| EINVAL)?;
@@ -6176,13 +6225,15 @@ fn syscall_recv(fd: u64, address: u64, length: u64, flags: u64) -> Result<u64, i
             return Ok(0);
         }
         let mut pipe = endpoint.read_end.pipe.lock();
-        let count = pipe.read_with_peek(output, flags & 0x02 != 0)?;
+        let mut output_slices = [output];
+        let (copied, record_length) =
+            pipe.read_iov_with_peek(&mut output_slices, flags & 0x02 != 0)?;
         let pipe_id = pipe.id;
         drop(pipe);
         if flags & 0x02 == 0 {
             wake_pipe_waiters(pipe_id, false, true);
         }
-        return Ok(count as u64);
+        return Ok(if flags & 0x20 != 0 { record_length as u64 } else { copied as u64 });
     }
     if let Ok(socket) = udp_socket_for_fd(fd) {
         let (copied, _total, _source_ip, _source_port) =
@@ -6730,9 +6781,16 @@ fn syscall_close(fd: u64) -> Result<u64, i32> {
     if descriptor.is_none() {
         return Err(EBADF);
     }
-    let pipe_id = descriptor.as_ref().and_then(|descriptor| match descriptor {
-        UserDescriptor::Pipe(endpoint) => Some(endpoint.pipe.lock().id),
-        _ => None,
+    let pipe_ids = descriptor.as_ref().map(|descriptor| match descriptor {
+        UserDescriptor::Pipe(endpoint) => [Some(endpoint.pipe.lock().id), None],
+        UserDescriptor::SocketPair(endpoint) => [
+            Some(endpoint.read_end.pipe.lock().id),
+            Some(endpoint.write_end.pipe.lock().id),
+        ],
+        _ => [None, None],
+    }).unwrap_or([None, None]);
+    let file_lock_to_wake = descriptor.as_ref().is_some_and(|descriptor| {
+        matches!(descriptor, UserDescriptor::File(file) if Arc::strong_count(file) == 1)
     });
     let tcp_socket_to_close = descriptor.as_ref().and_then(|descriptor| match descriptor {
         UserDescriptor::TcpSocket(socket)
@@ -6747,8 +6805,11 @@ fn syscall_close(fd: u64) -> Result<u64, i32> {
         *flags = 0;
     }
     drop(process);
-    if let Some(pipe_id) = pipe_id {
+    for pipe_id in pipe_ids.into_iter().flatten() {
         wake_pipe_waiters(pipe_id, true, true);
+    }
+    if file_lock_to_wake {
+        wake_file_lock_waiters();
     }
     if let Some(socket) = tcp_socket_to_close {
         crate::network::close_tcp_socket(&socket);
@@ -8327,14 +8388,20 @@ fn descriptor_poll_state(process: &UserProcess, index: usize, fd: i32) -> Option
             }
         }
         UserDescriptor::SocketPair(endpoint) => {
-            let pipe = endpoint.read_end.pipe.lock();
+            let (readable_data, read_writers) = {
+                let pipe = endpoint.read_end.pipe.lock();
+                (pipe.length > 0 || (pipe.packetized && !pipe.packet_lengths.is_empty()), pipe.writers)
+            };
+            let (write_length, write_readers) = {
+                let pipe = endpoint.write_end.pipe.lock();
+                (pipe.length, pipe.readers)
+            };
             PollState {
-                readable: endpoint.read_end.readable
-                    && (pipe.length > 0 || pipe.writers == 0),
+                readable: endpoint.read_end.readable && (readable_data || read_writers == 0),
                 writable: endpoint.write_end.writable
-                    && (pipe.length < PIPE_CAPACITY || pipe.readers == 0),
-                hangup: endpoint.read_end.readable && pipe.writers == 0,
-                error: endpoint.write_end.writable && pipe.readers == 0,
+                    && (write_length < PIPE_CAPACITY || write_readers == 0),
+                hangup: endpoint.read_end.readable && read_writers == 0,
+                error: endpoint.write_end.writable && write_readers == 0,
             }
         }
         UserDescriptor::Epoll(_) => PollState::IDLE,
@@ -9046,14 +9113,24 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
             0
         } else {
         let mut pipe = endpoint.read_end.pipe.lock();
-        let count = pipe.read_with_peek(&mut payload, flags & 0x02 != 0)?;
+        let mut payload_slices = [payload.as_mut_slice()];
+        let (copied, record_length) =
+            pipe.read_iov_with_peek(&mut payload_slices, flags & 0x02 != 0)?;
         let pipe_id = pipe.id;
         drop(pipe);
         if flags & 0x02 == 0 {
             wake_pipe_waiters(pipe_id, false, true);
         }
-        header.flags = 0;
-        count
+        header.flags = if endpoint.socket_type != SOCK_STREAM && record_length > copied {
+            0x20
+        } else {
+            0
+        };
+        if flags & 0x20 != 0 && endpoint.socket_type != SOCK_STREAM {
+            record_length
+        } else {
+            copied
+        }
         }
     } else if let Ok(socket) = udp_socket_for_fd(fd) {
         let (copied, datagram_len, source_ip, source_port) =
@@ -9104,35 +9181,92 @@ fn syscall_recvmsg(fd: u64, header_addr: u64, flags: u64) -> Result<u64, i32> {
 
 fn syscall_writev(fd: u64, iov_addr: u64, iovcnt: u64) -> Result<u64, i32> {
     if iovcnt > 1024 { return Err(EINVAL); }
+    if iovcnt == 0 { return Ok(0); }
     let iov_size = (iovcnt as usize).checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
     paging::validate_user_range(iov_addr, iov_size, false).map_err(|_| EFAULT)?;
-    let mut total = 0u64;
+    let mut vectors = Vec::new();
+    vectors.try_reserve_exact(iovcnt as usize).map_err(|_| ENOMEM)?;
+    let mut total = 0usize;
     for i in 0..iovcnt as usize {
         let iov = unsafe {
-            &*((iov_addr as usize + i * core::mem::size_of::<IoVec>()) as *const IoVec)
+            ((iov_addr as usize + i * core::mem::size_of::<IoVec>()) as *const IoVec).read_unaligned()
         };
-        if iov.len == 0 { continue; }
-        let n = dispatch_syscall(SYSCALL_WRITE, fd, iov.base, iov.len, 0, 0, 0)?;
-        total = total.saturating_add(n);
+        let len = usize::try_from(iov.len).map_err(|_| EINVAL)?;
+        total = total.checked_add(len).ok_or(EINVAL)?;
+        if total > MAX_SYSCALL_IO { return Err(EMSGSIZE); }
+        if len != 0 { paging::validate_user_range(iov.base, len, false).map_err(|_| EFAULT)?; }
+        vectors.push((iov.base, len));
     }
-    Ok(total)
+    let mut payload = Vec::new();
+    payload.try_reserve_exact(total).map_err(|_| ENOMEM)?;
+    for (base, len) in vectors {
+        if len != 0 {
+            payload.extend_from_slice(unsafe { core::slice::from_raw_parts(base as *const u8, len) });
+        }
+    }
+    syscall_write_bytes(usize::try_from(fd).map_err(|_| EBADF)?, &payload)
 }
 
 fn syscall_readv(fd: u64, iov_addr: u64, iovcnt: u64) -> Result<u64, i32> {
     if iovcnt > 1024 { return Err(EINVAL); }
+    if iovcnt == 0 { return Ok(0); }
     let iov_size = (iovcnt as usize).checked_mul(core::mem::size_of::<IoVec>()).ok_or(EINVAL)?;
     paging::validate_user_range(iov_addr, iov_size, false).map_err(|_| EFAULT)?;
-    let mut total = 0u64;
+    let mut vectors = Vec::new();
+    vectors.try_reserve_exact(iovcnt as usize).map_err(|_| ENOMEM)?;
+    let mut total = 0usize;
     for i in 0..iovcnt as usize {
         let iov = unsafe {
-            &*((iov_addr as usize + i * core::mem::size_of::<IoVec>()) as *const IoVec)
+            ((iov_addr as usize + i * core::mem::size_of::<IoVec>()) as *const IoVec).read_unaligned()
         };
-        if iov.len == 0 { continue; }
-        let n = dispatch_syscall(SYSCALL_READ, fd, iov.base, iov.len, 0, 0, 0)?;
-        total = total.saturating_add(n);
-        if n < iov.len { break; } // EOF
+        let len = usize::try_from(iov.len).map_err(|_| EINVAL)?;
+        total = total.checked_add(len).ok_or(EINVAL)?;
+        if total > MAX_SYSCALL_IO { return Err(EMSGSIZE); }
+        if len != 0 { paging::validate_user_range(iov.base, len, true).map_err(|_| EFAULT)?; }
+        vectors.push((iov.base, len));
     }
-    Ok(total)
+
+    let fd_index = usize::try_from(fd).map_err(|_| EBADF)?;
+    let mut outputs: Vec<&mut [u8]> = Vec::new();
+    outputs.try_reserve_exact(vectors.len()).map_err(|_| ENOMEM)?;
+    for (base, len) in &vectors {
+        if *len != 0 {
+            outputs.push(unsafe { core::slice::from_raw_parts_mut(*base as *mut u8, *len) });
+        }
+    }
+    let mut process = USER_PROCESS.lock();
+    if !process.active { return Err(EINTR); }
+    let descriptor = process.descriptors.get(fd_index).and_then(Option::as_ref).ok_or(EBADF)?;
+    let mut pipe_id = None;
+    let mut pipe_result = None;
+    match descriptor {
+        UserDescriptor::Pipe(endpoint) => {
+            if !endpoint.readable { return Err(EBADF); }
+            let mut pipe = endpoint.pipe.lock();
+            let (copied, _) = pipe.read_iov_with_peek(&mut outputs, false)?;
+            pipe_id = Some(pipe.id);
+            pipe_result = Some(copied as u64);
+        }
+        UserDescriptor::SocketPair(endpoint) => {
+            if !endpoint.read_end.readable { return Ok(0); }
+            let mut pipe = endpoint.read_end.pipe.lock();
+            let (copied, _) = pipe.read_iov_with_peek(&mut outputs, false)?;
+            pipe_id = Some(pipe.id);
+            pipe_result = Some(copied as u64);
+        }
+        _ => {}
+    }
+    drop(process);
+    if let Some(pipe_id) = pipe_id { wake_pipe_waiters(pipe_id, false, true); }
+    if let Some(result) = pipe_result { return Ok(result); }
+    let mut total_read = 0u64;
+    for (base, len) in vectors {
+        if len == 0 { continue; }
+        let n = dispatch_syscall(SYSCALL_READ, fd, base, len as u64, 0, 0, 0)?;
+        total_read = total_read.saturating_add(n);
+        if n < len as u64 { break; }
+    }
+    Ok(total_read)
 }
 
 // sysconf: nilai mengikuti penomoran _SC_* gaya glibc
@@ -9754,9 +9888,16 @@ fn terminate_user_inner_with_wait_status(
             save_task_state(&mut scheduler, &mut active_process);
             scheduler.processes[current].state.active = false;
             while let Some(descriptor) = scheduler.processes[current].state.descriptors.pop() {
-                let pipe_id = descriptor.as_ref().and_then(|descriptor| match descriptor {
-                    UserDescriptor::Pipe(endpoint) => Some(endpoint.pipe.lock().id),
-                    _ => None,
+                let pipe_ids = descriptor.as_ref().map(|descriptor| match descriptor {
+                    UserDescriptor::Pipe(endpoint) => [Some(endpoint.pipe.lock().id), None],
+                    UserDescriptor::SocketPair(endpoint) => [
+                        Some(endpoint.read_end.pipe.lock().id),
+                        Some(endpoint.write_end.pipe.lock().id),
+                    ],
+                    _ => [None, None],
+                }).unwrap_or([None, None]);
+                let file_lock_to_wake = descriptor.as_ref().is_some_and(|descriptor| {
+                    matches!(descriptor, UserDescriptor::File(file) if Arc::strong_count(file) == 1)
                 });
                 let socket_to_close = descriptor.as_ref().and_then(|descriptor| match descriptor {
                     UserDescriptor::TcpSocket(socket)
@@ -9767,8 +9908,11 @@ fn terminate_user_inner_with_wait_status(
                     _ => None,
                 });
                 drop(descriptor);
-                if let Some(pipe_id) = pipe_id {
+                for pipe_id in pipe_ids.into_iter().flatten() {
                     wake_pipe_waiters_in_scheduler(&mut scheduler, pipe_id, true, true);
+                }
+                if file_lock_to_wake {
+                    wake_file_lock_waiters_in_scheduler(&mut scheduler);
                 }
                 if let Some(socket) = socket_to_close {
                     crate::network::close_tcp_socket(&socket);
@@ -11168,6 +11312,47 @@ mod tests {
         assert_eq!(pipe.read(&mut output), Ok(7));
         assert_eq!(&output[..7], b"message");
         assert_eq!(pipe.read(&mut output), Err(EAGAIN));
+    }
+
+    #[test]
+    fn packetized_pipe_scatter_read_preserves_record_and_reports_truncation() {
+        let mut buffer = Vec::new();
+        buffer.resize(PIPE_CAPACITY, 0);
+        let mut pipe = Pipe {
+            id: 4, buffer, head: 0, length: 0, readers: 1, writers: 1,
+            packetized: true, packet_lengths: VecDeque::new(),
+        };
+        assert_eq!(pipe.write(b"onetwo"), Ok(6));
+        let (mut first, mut second) = ([0u8; 2], [0u8; 4]);
+        let mut outputs: [&mut [u8]; 2] = [&mut first, &mut second];
+        assert_eq!(pipe.read_iov_with_peek(&mut outputs, false), Ok((6, 6)));
+        assert_eq!(&first, b"on");
+        assert_eq!(&second, b"etwo");
+        assert_eq!(pipe.read(&mut [0u8; 8]), Err(EAGAIN));
+
+        assert_eq!(pipe.write(b"oversized-read"), Ok(14));
+        let mut short = [0u8; 3];
+        let mut outputs: [&mut [u8]; 1] = [&mut short];
+        assert_eq!(pipe.read_iov_with_peek(&mut outputs, false), Ok((3, 14)));
+        assert_eq!(&short, b"ove");
+        assert_eq!(pipe.length, 0);
+        assert_eq!(pipe.write(&alloc::vec![0u8; PIPE_CAPACITY + 1]), Err(super::EMSGSIZE));
+    }
+
+    #[test]
+    fn packetized_pipe_consumes_zero_length_records_without_losing_next_record() {
+        let mut buffer = Vec::new();
+        buffer.resize(PIPE_CAPACITY, 0);
+        let mut pipe = Pipe {
+            id: 5, buffer, head: 0, length: 0, readers: 1, writers: 1,
+            packetized: true, packet_lengths: VecDeque::new(),
+        };
+        assert_eq!(pipe.write(&[]), Ok(0));
+        assert_eq!(pipe.write(b"next"), Ok(4));
+        let mut output = [0u8; 8];
+        assert_eq!(pipe.read(&mut output), Ok(0));
+        assert_eq!(pipe.read(&mut output), Ok(4));
+        assert_eq!(&output[..4], b"next");
     }
 
     #[test]

@@ -84,7 +84,7 @@ menyediakan inline wrappers.
 | 78 | `shutdown` | `RDI=fd`, `RSI=how` (`SHUT_RD/WR/RDWR`) | 0 |
 | 79 | `getsockname` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=socklen_t*` | 0 |
 | 80 | `getpeername` | `RDI=fd`, `RSI=sockaddr_in*`, `RDX=socklen_t*` | 0 |
-| 81 | `ioctl` | `RDI=fd`, `RSI=request`, `RDX=arg` | Hasil sesuai request |
+| 81 | `ioctl` | `RDI=fd`, `RSI=request`, `RDX=arg` | Termasuk `FIONBIO` (`arg` menunjuk `int` nonblocking), `FIOCLEX`, dan `FIONCLEX` |
 | 82 | `getuid` | — | 0 |
 | 83 | `getgid` | — | 0 |
 | 84 | `geteuid` | — | 0 |

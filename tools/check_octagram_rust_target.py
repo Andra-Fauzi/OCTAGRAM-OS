@@ -3,19 +3,21 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TOOLCHAIN = os.environ.get("OCTAGRAM_RUST_TOOLCHAIN", "nightly")
 TARGET = ROOT / "user/rust/targets/x86_64-unknown-octagram.json"
 
 
 def main() -> int:
     command = [
         "rustc",
-        "+nightly",
+        f"+{TOOLCHAIN}",
         "-Z",
         "unstable-options",
         "--print",

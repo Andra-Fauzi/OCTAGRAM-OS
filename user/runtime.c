@@ -99,6 +99,8 @@ FILE *stdout = &standard_output;
 FILE *stderr = &standard_error;
 
 char **environ;
+typedef struct OctThreadExitNode OctThreadExitNode;
+
 #if defined(OCTAGRAM_SHARED)
 typedef struct OctRuntimeThreadState {
     volatile uint64_t pid;
@@ -107,6 +109,7 @@ typedef struct OctRuntimeThreadState {
     int h_errno_value;
     void *key_values[64];
     uint64_t key_generations[64];
+    OctThreadExitNode *thread_exit_chain;
 } OctRuntimeThreadState;
 
 static OctRuntimeThreadState *oct_runtime_state_for_thread(void);
@@ -2709,13 +2712,19 @@ int pthread_setspecific(pthread_key_t key, const void *value)
 /* C++ thread_local objects with non-trivial destructors are registered here by
  * the compiler (`__cxa_thread_atexit`) and unwound at thread exit. The chain is
  * per thread because the nodes live in thread-local storage. */
-typedef struct OctThreadExitNode {
+struct OctThreadExitNode {
     struct OctThreadExitNode *next;
     void (*destructor)(void *);
     void *object;
-} OctThreadExitNode;
+};
 
+#if defined(OCTAGRAM_SHARED)
+/* The shared libc has no dynamic TLS resolver yet. Keep this chain in the
+ * runtime's per-thread state, which is selected using the kernel TID. */
+#define oct_thread_exit_chain (oct_runtime_state_for_thread()->thread_exit_chain)
+#else
 static __thread OctThreadExitNode *oct_thread_exit_chain;
+#endif
 
 int __cxa_thread_atexit(void (*destructor)(void *), void *object, void *dso)
 {

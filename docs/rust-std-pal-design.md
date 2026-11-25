@@ -289,3 +289,74 @@ proses anak hasil `execve` (hanya bertahan selama description masih terbuka,
 sesuai `dup`/`fork`); dan `lockf`/`fcntl(F_SETLK)` byte-range lock belum
 diimplementasikan. File lock bukan bukti bahwa Cargo native sudah berjalan;
 rustc dan Cargo native tetap milestone terpisah.
+
+## Status `-Z build-std` untuk OCTAGRAM (hasil pengukuran)
+
+Perintah yang dipakai:
+
+```
+cd user/rust
+cargo +nightly -Z unstable-options -Z build-std=std -Z json-target-spec check \
+    --manifest-path std-probe/Cargo.toml \
+    --target targets/x86_64-unknown-octagram.json
+```
+
+Sebelum std bisa dicoba, dua applier harus dijalankan pada sumber yang dipakai
+build-std (rust-src dari komponen nightly, dan salinan `libc` di registry
+crates.io):
+
+```
+python3 tools/patch_rust_std_octagram.py   # rust-src (checkout atau rust-src)
+python3 tools/apply_rust_libc_octagram.py "$HOME/.cargo/registry/src/<index>/libc-0.2.191" --allow-unpinned
+```
+
+Hasil terukur:
+
+- `compiler_builtins`, `core`, dan `alloc` **selesai** dibangun untuk
+  `x86_64-unknown-octagram`, juga `libc` setelah modul OCTAGRAM dipasang.
+- `std` belum selesai. `tools/patch_rust_std_octagram.py` sekarang juga
+  memperlebar setiap gerbang `cfg(target_os = "linux")` di `library/std/src`
+  menjadi `any(target_os = "linux", target_os = "octagram")` (61-64 file),
+  kecuali file yang sudah punya cabang OCTAGRAM sendiri
+  (`sys/args/unix.rs`, `sys/fs/unix.rs`, `sys/paths/unix.rs`,
+  `sys/random/mod.rs`, `sys/thread/unix.rs`) dan file yang bergantung pada
+  fitur yang tidak ada di guest (`os/unix/net/ancillary.rs`,
+  `os/unix/net/ucred.rs`, `sys/io/kernel_copy/mod.rs`).
+
+Kegagalan `std` yang tersisa, semuanya karena `libc` untuk OCTAGRAM:
+
+| Simbol yang dicari std | Keadaan di OCTAGRAM |
+| --- | --- |
+| `MSG_NOSIGNAL` | ada di `user/include/sys/socket.h` (`0x4000`), belum di modul Rust |
+| `MAP_FAILED`, `mprotect`, `SA_ONSTACK`, `SA_SIGINFO`, `SS_DISABLE`, `sigaltstack` | ada di `user/include/sys/mman.h` dan `signal.h` |
+| `off64_t`, `stat64`/`fstat64`/`lstat64`/`fstatat64`, `open64`/`openat64`, `lseek64`, `ftruncate64`, `pread64`/`pwrite64`, `dirent64`/`readdir64` | `off_t` sudah 64 bit; ini alias ABI dari fungsi C biasa |
+| `SYS_futex` + konstanta `FUTEX_*` | ada di `user/include/linux/futex.h` (nomor 202) |
+| `MSGHDR`/`CMSG_*`/`SCM_RIGHTS` | `SCM_RIGHTS` **tidak didukung** guest (`user/runtime.c`) |
+| `splice`, `SO_PEERCRED`/`ucred` | tidak ada di guest |
+| `unix::CachedFileMetadata`, `unix::sleep_until` | API baru std; cabang OCTAGRAM di `sys/fs/unix.rs` dan `sys/thread/unix.rs` belum punya |
+
+Sebab struktural yang paling penting: `libc` 0.2.191 punya dua pohon modul,
+`src/unix/` dan `src/new/`. std untuk OCTAGRAM masuk lewat `src/new/`
+(`src/new/mod.rs` mengimpor `common::posix::unistd`), sedangkan
+`patches/rust-libc/octagram/` masih mengisi pohon lama `src/unix/octagram/`.
+Karena itu simbol yang sudah ditambahkan di pohon lama (termasuk blok
+kompatibilitas Linux: `MSG_NOSIGNAL`, `stat64` dan kawan-kawan, `SYS_futex`,
+`mprotect`, `sigaltstack`, `sendfile`) belum terlihat oleh std.
+
+Langkah berikutnya, berurutan:
+
+1. Port `patches/rust-libc/octagram/` ke pohon `src/new/` (atau daftarkan
+   OCTAGRAM sebagai pemakai `src/new/common/posix` dengan tipe ABI sendiri),
+   lalu jalankan ulang `-Z build-std=std check`.
+2. Tambahkan `splice`, `SO_PEERCRED`/`ucred`, dan `SCM_RIGHTS` di guest
+   (kernel + `user/runtime.c` + header) atau nyatakan fitur itu tidak tersedia
+   di std lewat cabang khusus OCTAGRAM.
+3. Lengkapi `sys/fs/unix.rs` dan `sys/thread/unix.rs` cabang OCTAGRAM
+   (`CachedFileMetadata`, `sleep_until`).
+4. Setelah `check` lulus, baru `-Z build-std=std build` (butuh linker:
+   `user/toolchain/bin/x86_64-octagram-ld`), lalu uji `rustc --version` di
+   guest.
+
+Sampai keempat langkah itu selesai, `rustc`/`cargo` native OCTAGRAM belum bisa
+dipanggil dari shell; yang sudah terbukti hanya `core`+`alloc` untuk target
+OCTAGRAM dan probe runtime C/C++ (`tools/check_octagram_runtime_probes.sh`).

@@ -13,3 +13,5 @@ qemu.log/iso_root/
 # Local OCTAGRAM AI credentials and Python environment
 .env
 .venv/
+__pycache__/
+*.pyc

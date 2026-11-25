@@ -558,3 +558,81 @@ extern "C" {
     pub fn pthread_getspecific(key: pthread_key_t) -> *mut c_void;
     pub fn pthread_setspecific(key: pthread_key_t, value: *const c_void) -> c_int;
 }
+
+// ---------------------------------------------------------------------------
+// Linux-compatible extras used by Rust's Unix PAL.
+//
+// OCTAGRAM's `off_t` is already 64 bit and the C library exports the plain
+// names, so the `*64` entry points are ABI aliases of the base functions
+// instead of new kernel interfaces.
+
+pub type off64_t = off_t;
+pub type stat64 = stat;
+pub type dirent64 = dirent;
+
+pub const MAP_FAILED: *mut c_void = -1isize as *mut c_void;
+
+pub const SA_ONSTACK: c_int = 0x0800_0000;
+pub const SA_SIGINFO: c_int = 0x0000_0004;
+pub const SS_DISABLE: c_int = 2;
+
+pub const MSG_NOSIGNAL: c_int = 0x4000;
+
+pub const SYS_futex: c_long = 202;
+pub const FUTEX_WAIT: c_int = 0;
+pub const FUTEX_WAKE: c_int = 1;
+pub const FUTEX_REQUEUE: c_int = 3;
+pub const FUTEX_CMP_REQUEUE: c_int = 4;
+pub const FUTEX_WAKE_OP: c_int = 5;
+pub const FUTEX_WAIT_BITSET: c_int = 9;
+pub const FUTEX_WAKE_BITSET: c_int = 10;
+pub const FUTEX_PRIVATE_FLAG: c_int = 128;
+pub const FUTEX_CLOCK_REALTIME: c_int = 256;
+pub const FUTEX_WAIT_PRIVATE: c_int = FUTEX_WAIT | FUTEX_PRIVATE_FLAG;
+pub const FUTEX_WAKE_PRIVATE: c_int = FUTEX_WAKE | FUTEX_PRIVATE_FLAG;
+pub const FUTEX_REQUEUE_PRIVATE: c_int = FUTEX_REQUEUE | FUTEX_PRIVATE_FLAG;
+pub const FUTEX_CMP_REQUEUE_PRIVATE: c_int = FUTEX_CMP_REQUEUE | FUTEX_PRIVATE_FLAG;
+pub const FUTEX_WAKE_OP_PRIVATE: c_int = FUTEX_WAKE_OP | FUTEX_PRIVATE_FLAG;
+pub const FUTEX_WAIT_BITSET_PRIVATE: c_int = FUTEX_WAIT_BITSET | FUTEX_PRIVATE_FLAG;
+pub const FUTEX_WAKE_BITSET_PRIVATE: c_int = FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG;
+
+s! {
+    pub struct stack_t {
+        pub ss_sp: *mut c_void,
+        pub ss_flags: c_int,
+        pub ss_size: size_t,
+    }
+}
+
+const _: [(); 24] = [(); core::mem::size_of::<stack_t>()];
+const _: [(); 8] = [(); core::mem::align_of::<stack_t>()];
+
+extern "C" {
+    pub fn syscall(number: c_long, ...) -> c_long;
+    pub fn mprotect(address: *mut c_void, length: size_t, protection: c_int) -> c_int;
+    pub fn sigaltstack(new_stack: *const stack_t, old_stack: *mut stack_t) -> c_int;
+    pub fn sendfile(out_fd: c_int, in_fd: c_int, offset: *mut off_t, count: size_t) -> ssize_t;
+
+    #[link_name = "open"]
+    pub fn open64(path: *const c_char, oflag: c_int, ...) -> c_int;
+    #[link_name = "openat"]
+    pub fn openat64(dirfd: c_int, path: *const c_char, oflag: c_int, ...) -> c_int;
+    #[link_name = "stat"]
+    pub fn stat64(path: *const c_char, buf: *mut stat) -> c_int;
+    #[link_name = "lstat"]
+    pub fn lstat64(path: *const c_char, buf: *mut stat) -> c_int;
+    #[link_name = "fstat"]
+    pub fn fstat64(fd: c_int, buf: *mut stat) -> c_int;
+    #[link_name = "fstatat"]
+    pub fn fstatat64(dirfd: c_int, path: *const c_char, buf: *mut stat, flag: c_int) -> c_int;
+    #[link_name = "lseek"]
+    pub fn lseek64(fd: c_int, offset: off64_t, whence: c_int) -> off64_t;
+    #[link_name = "ftruncate"]
+    pub fn ftruncate64(fd: c_int, length: off64_t) -> c_int;
+    #[link_name = "pread"]
+    pub fn pread64(fd: c_int, buf: *mut c_void, count: size_t, offset: off64_t) -> ssize_t;
+    #[link_name = "pwrite"]
+    pub fn pwrite64(fd: c_int, buf: *const c_void, count: size_t, offset: off64_t) -> ssize_t;
+    #[link_name = "readdir"]
+    pub fn readdir64(dirp: *mut DIR) -> *mut dirent64;
+}

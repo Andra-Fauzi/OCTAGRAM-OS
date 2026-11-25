@@ -21,14 +21,28 @@ def replace_once(path: Path, old: str, new: str) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: apply_rust_libc_octagram.py UPSTREAM_LIBC_CHECKOUT")
-    root = Path(sys.argv[1]).resolve()
-    actual = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=root, text=True
-    ).strip()
-    if actual != EXPECTED_COMMIT:
-        raise SystemExit(f"wrong upstream libc revision: {actual}")
+    arguments = [argument for argument in sys.argv[1:] if argument != "--allow-unpinned"]
+    allow_unpinned = len(arguments) != len(sys.argv[1:])
+    if len(arguments) != 1:
+        raise SystemExit(
+            "usage: apply_rust_libc_octagram.py UPSTREAM_LIBC_CHECKOUT [--allow-unpinned]"
+        )
+    root = Path(arguments[0]).resolve()
+    # A vendored copy (for example the extracted crates.io source used by
+    # `-Z build-std`) has no git history, so the pin cannot be verified there.
+    # The anchors below still fail loudly if the sources moved.
+    if not allow_unpinned:
+        try:
+            actual = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            raise SystemExit(
+                f"{root} is not a git checkout; pass --allow-unpinned after checking "
+                f"that it is libc {EXPECTED_COMMIT}"
+            ) from None
+        if actual != EXPECTED_COMMIT:
+            raise SystemExit(f"wrong upstream libc revision: {actual}")
 
     replace_once(
         root / "build.rs",

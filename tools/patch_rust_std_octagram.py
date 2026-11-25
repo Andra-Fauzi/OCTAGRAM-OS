@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -123,6 +124,50 @@ def enable_std_file_locks(std: Path) -> None:
     print("RUST-STD-FILE-LOCK-PASS: std File locking dispatches to OCTAGRAM flock")
 
 
+OCTAGRAM_LINUX = 'any(target_os = "linux", target_os = "octagram")'
+
+OCTAGRAM_ARM_FILES = {
+    "os/unix/net/ancillary.rs",
+    "os/unix/net/ucred.rs",
+    "sys/args/unix.rs",
+    "sys/io/kernel_copy/mod.rs",
+    "sys/fs/unix.rs",
+    "sys/paths/unix.rs",
+    "sys/random/mod.rs",
+    "sys/thread/unix.rs",
+}
+
+
+def widen_linux_cfg_gates(std: Path) -> None:
+    """Treat OCTAGRAM like Linux in every std cfg gate.
+
+    std picks its Unix PAL pieces with hundreds of `cfg(target_os = "linux")`
+    gates: getrandom, futex mutexes, pipes, process spawning, `flock` and so
+    on. OCTAGRAM implements the Linux userspace ABI, so each of those gates
+    must select OCTAGRAM too. Nested `any` predicates are valid cfg syntax.
+    Files that already mention the widened predicate are skipped, so running
+    this again is a no-op.
+    """
+    widened = 0
+    for path in sorted(std.rglob("*.rs")):
+        relative = path.relative_to(std)
+        if relative.parts[:2] == ("os", "linux"):
+            continue
+        # These files get an OCTAGRAM arm of their own below (or above, for the
+        # file lock allowlist); widening them too would define the same item
+        # twice.
+        if relative.as_posix() in OCTAGRAM_ARM_FILES:
+            continue
+        source = path.read_text(encoding="utf-8")
+        if OCTAGRAM_LINUX in source:
+            continue
+        updated = source.replace('target_os = "linux"', OCTAGRAM_LINUX)
+        if updated != source:
+            path.write_text(updated, encoding="utf-8")
+            widened += 1
+    print(f"RUST-STD-OCTAGRAM-CFG-PASS: {widened} std files now select Linux for OCTAGRAM")
+
+
 def main() -> int:
     sysroot = Path(subprocess.check_output(
         ["rustc", "+nightly", "--print", "sysroot"], text=True
@@ -213,6 +258,7 @@ def main() -> int:
         source = ROOT / "patches/rust-std/octagram" / name
         destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
+    widen_linux_cfg_gates(std)
     print("RUST-STD-OCTAGRAM-PATCH-PASS: Unix target glue installed in rust-src")
     return 0
 

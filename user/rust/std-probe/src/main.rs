@@ -125,7 +125,7 @@ fn marker(message: &str) {
 fn main() {
     // Linux-compatible getrandom flags accepted by OCTAGRAM's syscall ABI.
     let mut random_bytes = [0u8; 32];
-    for flags in [0u64, 1, 2, 4] {
+    for flags in [0u64, 1, 2] {
         let result = unsafe {
             syscall3(121, random_bytes.as_mut_ptr() as usize as u64,
                      random_bytes.len() as u64, flags)

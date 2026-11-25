@@ -38,7 +38,7 @@ size_t strnlen(const char *text, size_t maximum)
     return length;
 }
 EOF
-CC="\${CC:-gcc}"
+CC="${CC:-gcc}"
 GCC_INTERNAL="$("$CC" -print-file-name=include)"
 "$CC" -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
     -fno-pie -fno-pic -mno-red-zone -mcmodel=small -march=x86-64 \

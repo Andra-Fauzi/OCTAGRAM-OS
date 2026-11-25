@@ -117,8 +117,13 @@ if ! "$SRC/configure" \
     --disable-load \
     --disable-posix-spawn; then
     if [[ -f config.log ]]; then
-        echo "GNU-MAKE-OCTAGRAM: configure diagnostics (last 100 lines of config.log):" >&2
-        tail -n 100 config.log >&2
+        echo "GNU-MAKE-OCTAGRAM: compiler-probe diagnostics from config.log:" >&2
+        # Autoconf appends a large variable dump after the useful compiler
+        # failure. Show the conftest compile/link command and its diagnostics
+        # explicitly so CI logs retain the actual target-linker failure.
+        grep -n -A24 -B8 -E 'checking whether the C compiler works|conftest\\.(c|o)|cannot create executables|collect2:|ld: error:|undefined reference|fatal error:' config.log | tail -n 180 >&2 || true
+        echo "GNU-MAKE-OCTAGRAM: configure diagnostics (last 40 lines of config.log):" >&2
+        tail -n 40 config.log >&2
     fi
     fail "upstream configure failed"
 fi

@@ -17,33 +17,18 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-void __libcpp_verbose_abort(const char* format, ...)
-{
-    char buffer[256];
-    va_list arguments;
-    va_start(arguments, format);
-    int length = vsnprintf(buffer, sizeof buffer, format, arguments);
-    va_end(arguments);
-    if (length < 0) {
-        length = 0;
-    }
-    if ((size_t)length >= sizeof buffer) {
-        length = (int)(sizeof buffer - 1);
-    }
-    static const char prefix[] = "libc++ abort: ";
-    (void)!write(2, prefix, sizeof prefix - 1);
-    (void)!write(2, buffer, (size_t)length);
-    (void)!write(2, "\n", 1);
-    abort();
-}
-
+// `__libcpp_verbose_abort` and `__throw_bad_alloc` are both defined by
+// libc++.a (verbose_abort.o, stdexcept.o). Defining them here as well makes
+// every program that pulls those archive members fail to link with "multiple
+// definition", so the libc++ versions are used.
 
 // src/condition_variable.cpp pulls in src/thread.cpp (std::__thread_struct),
 // promise/future support, and the libc++ support shim layer, none of which the
 // OCTAGRAM port has yet. The class is a thin wrapper over pthread condition
 // variables that user/pthread.h already provides, so the members needed by
 // mutex.cpp and by guest code are defined here instead.
-condition_variable::~condition_variable() { pthread_cond_destroy(&__cv_); }
+// The destructor itself lives in libc++.a (condition_variable_destructor.o);
+// only the members from src/condition_variable.cpp are missing here.
 
 void condition_variable::notify_one() _NOEXCEPT { pthread_cond_signal(&__cv_); }
 
@@ -74,10 +59,8 @@ const char* exception::what() const _NOEXCEPT { return "std::exception"; }
 // sentry still calls it. Nothing can be in flight in a -fno-exceptions port.
 bool uncaught_exception() _NOEXCEPT { return false; }
 
-// libc++ routes allocation failure through std::__throw_bad_alloc; without
-// exceptions it has to abort. It lives directly in std, not in the inline
-// namespace.
-_LIBCPP_NORETURN void __throw_bad_alloc() { abort(); }
+// std::__throw_bad_alloc comes from libc++.a (stdexcept.o), which aborts via
+// the verbose-abort path when built without exceptions.
 
 // std::terminate is throw-site machinery from src/exception.cpp. Without
 // unwinding the only correct action is to stop the process.

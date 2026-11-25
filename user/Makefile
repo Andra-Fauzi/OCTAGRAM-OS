@@ -433,7 +433,7 @@ build/runtime.pic.o: runtime.c $(HEADERS) | build
 	@if readelf -rW $@ | grep -q 'R_X86_64_TLS'; then \
 		echo "ERROR: shared runtime must not emit ELF TLS relocations"; exit 1; \
 	fi
-	@if nm -u $@ | grep -q ' __tls_get_addr$'; then \
+	@if nm -u $@ | grep -q '__tls_get_addr'; then \
 		echo "ERROR: shared runtime must not depend on __tls_get_addr"; exit 1; \
 	fi
 	@echo "TLS declarations surviving shared-runtime preprocessing:"

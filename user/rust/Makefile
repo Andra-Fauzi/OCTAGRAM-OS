@@ -9,6 +9,7 @@ RUST_HELLO := build/rust_hello.elf
 RUST_MAKE := build/make.elf
 RUST_OCTAGRAM_HELLO := build/rust_hello_octagram.elf
 RUST_NATIVE_OBJECT := build/rust_native_probe.o
+RUST_STD_PROBE := build/rust_std_probe.elf
 RUST_BUILD_FLAGS := +nightly -Z unstable-options -Z build-std=core,alloc -Z json-target-spec
 
 # The native-linker probe is emitted as a single relocatable object for the
@@ -17,7 +18,7 @@ RUST_BUILD_FLAGS := +nightly -Z unstable-options -Z build-std=core,alloc -Z json
 RUST_OBJECT_FLAGS := -C linker=true -C relocation-model=static -C no-redzone=yes \
 	-C target-feature=+sse,+sse2
 
-.PHONY: all clean make build-octagram check stage0-inventory
+.PHONY: all clean make build-octagram check stage0-inventory std-probe
 all: $(RUST_HELLO) $(RUST_MAKE) $(RUST_NATIVE_OBJECT)
 
 make: $(RUST_MAKE) $(RUST_NATIVE_OBJECT)
@@ -31,6 +32,11 @@ build:
 
 build/crt0.o: ../crt0.S | build
 	$(AS) --64 -o $@ $<
+
+# The image links programs with the linker script from the parent tree; keep a
+# copy next to this Makefile so the relative `link-arg=-Tlinker.ld` applies.
+linker.ld: ../linker.ld
+	cp $< $@
 
 $(RUST_HELLO): Cargo.toml rust-toolchain.toml .cargo/config.toml \
 		$(RUST_TARGET_JSON) linker.ld build/crt0.o hello/Cargo.toml \
@@ -55,6 +61,17 @@ $(RUST_NATIVE_OBJECT): Cargo.toml rust-toolchain.toml .cargo/config.toml \
 		-p octagram-native-probe --release --bin rust_native_probe \
 		--target $(RUST_TARGET_JSON) -- --emit=obj
 	cp "$$(ls -t target/$(RUST_TARGET)/release/build/octagram-native-probe/*/out/rust_native_probe.o | head -n 1)" $@
+
+# Upstream std probe. Unlike the crates above it links against the guest libc
+# archive, so it is built by the script that owns that recipe, then installed
+# where kernel/src/fs/mod.rs embeds it from.
+std-probe: $(RUST_STD_PROBE)
+
+$(RUST_STD_PROBE): Cargo.toml rust-toolchain.toml .cargo/config.toml \
+		$(RUST_TARGET_JSON) std-probe/Cargo.toml std-probe/src/main.rs \
+		../../tools/build_octagram_std_probe.sh | build
+	../../tools/build_octagram_std_probe.sh
+	cp std-probe/target/$(RUST_TARGET)/debug/octagram-std-probe $@
 
 # Verify that the produced program is a static x86-64 ELF executable.
 check: all

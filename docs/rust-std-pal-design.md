@@ -470,10 +470,42 @@ nyata, bukan header kosong.
 
 #### Kenapa flag link tidak ada di `user/rust/.cargo/config.toml`
 
-Blok `[target.x86_64-unknown-octagram]` sekarang hanya memuat flag codegen
-(`relocation-model`, `no-redzone`, `target-feature`). Argumen link
-(`-T user/linker.ld`, `user/build/crt0.o`, `-L .../libc.a`) harus berupa path
-absolut karena rustc menafsirkan `link-arg` relatif terhadap direktori
-pemanggilan — untuk cargo itu direktori package, bukan root repo. Skrip probe
-memberikannya lewat `CARGO_ENCODED_RUSTFLAGS`, satu-satunya variabel yang
-**menggantikan** flag config alih-alih menambahkannya.
+`user/rust/.cargo/config.toml` tetap memuat argumen link relatif
+(`-Tlinker.ld`, `build/crt0.o`), karena cargo menjalankan rustc dengan direktori
+kerja tempat cargo dimulai — yaitu `user/rust`, yang kini punya salinan
+`linker.ld` (aturan `linker.ld: ../linker.ld` di `user/rust/Makefile`).
+
+Yang dulu gagal bukan jalur relatifnya, melainkan berkasnya: `user/rust/linker.ld`
+dan `user/rust/build/crt0.o` belum pernah dibuat, sehingga link berhenti dengan
+`cannot find linker script linker.ld`. Skrip probe tidak bergantung pada berkas
+itu: ia mengirim path absolut dan direktori `libm`/`librt`/`libpthread` lewat
+`CARGO_ENCODED_RUSTFLAGS`, satu-satunya variabel yang **menggantikan** flag
+config alih-alih menambahkannya, jadi skrip bisa dijalankan dari cwd mana pun.
+
+#### Menyambung probe ke image kernel
+
+`kernel/src/fs/mod.rs` sudah lama menanam probe ini sebagai `/bin/rust-std-probe`
+(`include_bytes!("../../../user/rust/build/rust_std_probe.elf")`), dan harness
+`tools/qemu_syscall_test.py` menjalankannya lewat `run /bin/rust-std-probe`.
+Yang belum ada hanyalah langkah yang membuat berkas itu. Sekarang ada:
+
+```
+make -C user/rust std-probe
+#   -> tools/build_octagram_std_probe.sh
+#   -> cp std-probe/target/x86_64-unknown-octagram/debug/octagram-std-probe \
+#         build/rust_std_probe.elf
+```
+
+Diverifikasi: `cargo build` kernel sekarang **tidak lagi** mengeluh soal
+`user/rust/build/rust_std_probe.elf` — sisa error image berasal dari artefak
+lain yang belum dibangun (`user/build/gnu-make-octagram/make`,
+`user/rust/build/rust_hello_octagram.elf`, `user/build/libcxx_*_smoke.elf`) dan
+dari `user/build/dynamic_demo.elf` yang gagal di-link
+(`R_X86_64_32S against hidden symbol __init_array_start` pada `-pie`). Keduanya
+masalah lama, bukan dari perubahan std/PAL.
+
+`user/rust/Makefile` juga kini menyalin `../linker.ld` ke `user/rust/linker.ld`
+(aturan `linker.ld: ../linker.ld`), sehingga argumen relatif
+`-Tlinker.ld`/`build/crt0.o` di `.cargo/config.toml` benar-benar menemukan
+berkasnya. Tanpa aturan itu `make -C user/rust` berhenti di "No rule to make
+target 'linker.ld'"; itulah penyebab asli kegagalan link sebelumnya.

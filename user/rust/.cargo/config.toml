@@ -16,16 +16,15 @@ rustflags = [
     "link-arg=build/crt0.o",
 ]
 
-# Host-side codegen for OCTAGRAM target crates.
+# Host-side codegen and link setup for OCTAGRAM target crates.
 #
-# Only code generation flags live here on purpose. The link-time arguments
-# (`-T user/linker.ld`, `user/build/crt0.o`, the guest `libc.a`) must be
-# absolute paths, because rustc resolves `link-arg` values relative to the
-# directory it is invoked from, which for cargo is the package directory.
-# tools/build_octagram_std_probe.sh therefore supplies those arguments through
-# CARGO_ENCODED_RUSTFLAGS, which replaces these flags instead of appending to
-# them.
+# `linker.ld` and `build/crt0.o` are relative on purpose: cargo runs rustc with
+# the directory it was started in, so these resolve when the build runs from
+# user/rust (which is what user/rust/Makefile does, and that Makefile copies the
+# linker script in from the parent tree). Tools that build from another working
+# directory pass absolute paths instead -- see tools/build_octagram_std_probe.sh.
 [target.x86_64-unknown-octagram]
+linker = "rust-lld"
 rustflags = [
     "-C",
     "relocation-model=static",
@@ -33,4 +32,8 @@ rustflags = [
     "no-redzone=yes",
     "-C",
     "target-feature=+sse,+sse2",
+    "-C",
+    "link-arg=-Tlinker.ld",
+    "-C",
+    "link-arg=build/crt0.o",
 ]

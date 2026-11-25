@@ -747,8 +747,16 @@ void print_plan(const Workspace& workspace)
     }
 }
 
+struct LibraryOutput {
+    std::string crate_name; // rustc --crate-name and --extern name
+    fs::path path;          // produced rlib
+};
+
 struct BuildState {
-    std::map<std::string, fs::path> library_outputs; // package name -> rlib
+    // Keyed by package name: Cargo.toml dependency keys are package names,
+    // while rustc wants the library crate name, which [lib] name can rename and
+    // which never contains hyphens (package `demo-lib` is crate `demo_lib`).
+    std::map<std::string, LibraryOutput> libraries;
 };
 
 bool sources_are_current(const Manifest& manifest, const fs::path& output)
@@ -805,16 +813,26 @@ int build_workspace(const Workspace& workspace, const Options& options, bool che
             arguments.push_back(target_triple != nullptr && target_triple[0] != '\0'
                                    ? target_triple
                                    : "x86_64-unknown-octagram");
+            // The target's builtin linker is the host-side GCC driver, which a
+            // guest image does not carry. Inside OCTAGRAM the only executable
+            // linker is TinyCC, so the driver selects it explicitly; a native
+            // linker dropped into PATH can be chosen with
+            // OCTAGRAM_RUST_LINKER.
+            const char* linker = std::getenv("OCTAGRAM_RUST_LINKER");
+            arguments.push_back("-C");
+            arguments.push_back(std::string("linker=") +
+                                (linker != nullptr && linker[0] != '\0' ? linker : "tcc"));
             for (const Dependency& dependency : manifest.dependencies) {
-                auto found = state.library_outputs.find(dependency.name);
-                if (found == state.library_outputs.end()) {
+                auto found = state.libraries.find(dependency.name);
+                if (found == state.libraries.end()) {
                     // A dependency that produced no library output (for
                     // example a binary-only path dependency) has no rlib to
                     // pass, which matches what rustc would need anyway.
                     continue;
                 }
                 arguments.push_back("--extern");
-                arguments.push_back(dependency.name + "=" + found->second.string());
+                arguments.push_back(found->second.crate_name + "=" +
+                                    found->second.path.string());
             }
             arguments.push_back("-L");
             arguments.push_back("dependency=" + profile_directory.string());
@@ -847,7 +865,7 @@ int build_workspace(const Workspace& workspace, const Options& options, bool che
                 ++built;
             }
             if (target.kind == "lib") {
-                state.library_outputs[target.name] = output;
+                state.libraries[manifest.package_name] = LibraryOutput{target.name, output};
             }
         }
     }
@@ -918,7 +936,7 @@ void clean(const Options& options)
     }
 }
 
-void print_metadata(const Workspace& workspace)
+void print_metadata(const Workspace& workspace, const Options& options)
 {
     std::cout << "{\n  \"packages\": [\n";
     bool first = true;
@@ -942,7 +960,8 @@ void print_metadata(const Workspace& workspace)
         }
         std::cout << "]}";
     }
-    std::cout << "\n  ],\n  \"target_directory\": \"target\"\n}\n";
+    std::cout << "\n  ],\n  \"target_directory\": \""
+              << fs::absolute(options.target_directory).string() << "\"\n}\n";
 }
 
 Options parse_options(const std::vector<std::string>& arguments)
@@ -1064,7 +1083,7 @@ int run(int argc, char** argv)
         return 0;
     }
     if (command == "metadata") {
-        print_metadata(workspace);
+        print_metadata(workspace, options);
         return 0;
     }
     if (command == "build") {

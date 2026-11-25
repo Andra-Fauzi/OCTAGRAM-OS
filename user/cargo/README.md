@@ -50,6 +50,14 @@ It needs a native `rustc`: once the toolchain is installed in `/toolchain/bin`,
   `/toolchain/bin`, so a native compiler dropped there is picked up). The
   target triple comes from `$OCTAGRAM_RUST_TARGET`, defaulting to
   `x86_64-unknown-octagram`.
+- **Linker is chosen for the guest.** The builtin target names the host-side
+  `x86_64-octagram-gcc` driver, which an OCTAGRAM image does not carry, so the
+  driver passes `-C linker=tcc` (the only executable linker in the image).
+  Override with `$OCTAGRAM_RUST_LINKER` once a native linker exists.
+- **Dependency names follow rustc, not Cargo.** Dependencies are looked up by
+  package name and passed as `--extern <crate>=<rlib>` using the library crate
+  name (`[lib] name`, or the package name with `-` replaced by `_`), because
+  `--extern demo-lib=...` is not a valid rustc argument.
 
 Because of those limits, `octagram-cargo build` is not evidence that native
 Cargo works. The M4.4 gate still requires upstream Cargo running in the guest

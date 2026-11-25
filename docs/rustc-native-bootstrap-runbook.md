@@ -151,6 +151,13 @@ Semua harus direkam sebagai uji guest, bukan build host:
 | Cargo memanggil rustc native | log `-v` menunjukkan `rustc` dari `/toolchain/bin`, bukan host |
 | Stage 1 → Stage 2 | toolchain hasil build membangun ulang dirinya dan artefaknya sama |
 
+Driver Cargo di guest menambahkan `-C linker=tcc` pada setiap pemanggilan
+`rustc`, karena linker bawaan target (`x86_64-octagram-gcc`) hanya ada di host
+dan satu-satunya linker executable di image adalah TinyCC. Belum terbukti tcc
+mau menautkan object `librustc_driver`/`std`; bila gagal, pasang linker native
+lalu set `OCTAGRAM_RUST_LINKER`. Bootstrap di host tidak terpengaruh karena
+`config.toml` menetapkan `target.<host>.linker` sendiri.
+
 Harness `tools/qemu_syscall_test.py` sudah menjalankan gate ini secara otomatis bila
 `/toolchain/bin/rustc` ada di image: `rustc --version`, lalu
 `cargo build --offline` pada `/cargo-demo`, dengan marker

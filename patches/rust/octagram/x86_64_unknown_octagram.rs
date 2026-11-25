@@ -9,7 +9,9 @@
 //   * static ELF `ET_EXEC`, base 0x400000, `user/linker.ld`, no dynamic loader;
 //   * TLS is local-exec/initial-exec only, no TLS in shared objects;
 //   * linker is the GCC driver in user/toolchain/bin, which adds `crt0.o`,
-//     `libc.a`, `libc++.a` and the linker script;
+//     `libc.a`, `libc++.a` and the linker script. That driver only exists on
+//     a host, so builds inside OCTAGRAM override it (`cargo` passes
+//     `-C linker=tcc`, or `$OCTAGRAM_RUST_LINKER`);
 //   * panic strategy abort, no red zone, SSE/SSE2 only.
 
 use crate::spec::{

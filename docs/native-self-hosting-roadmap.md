@@ -3182,3 +3182,48 @@ header itu dipakai probe C++.
 **Validasi:** `make build/toolchain_demo.elf build/posix_search_demo.elf
 build/memstream_demo.elf build/libcxx_format_smoke.elf -j6` → `exit=0`, tanpa
 error/undefined symbol. Probe guest belum dijalankan di QEMU dari workspace ini.
+
+## 108. Semaphore bernama dan helper alokator (25 November 2026)
+
+`sem_init`/`sem_wait`/`sem_post`/`sem_timedwait` sudah ada di `runtime.c`
+(di atas futex), tetapi belum ada bentuk bernama dan belum ada header
+`<semaphore.h>` untuk program yang mengikuti POSIX. Selain itu beberapa helper
+alokator GNU hilang. Ronde ini melengkapi keduanya.
+
+**`<semaphore.h>`:** header baru yang meneruskan `sem_t` dan keluarga
+wait/post ke `<sys/semaphore.h>` (implementasi futex yang sudah ada), lalu
+menambahkan `SEM_FAILED`, `SEM_VALUE_MAX`, dan bentuk bernama:
+`semp_open`, `sem_close`, `sem_unlink`.
+
+**Semaphore bernama:** tabel 8 slot per proses dengan nama maksimum 63 karakter.
+`sem_open(O_CREAT, mode, value)` membuat slot, `O_EXCL` pada nama yang sudah ada
+mengembalikan `EEXIST`, `sem_open` tanpa `O_CREAT` mengembalikan `ENOENT`, dan
+tabel penuh mengembalikan `ENFILE`. **Batasan jujur:** tabel ini per proses,
+bukan objek kernel — dua proses yang membuka nama sama mendapat semaphore
+berbeda. Semaphore lintas proses menunggu objek kernel yang belum ada, dan itu
+ditulis di header maupun di sini.
+
+**Helper alokator (`<malloc.h>`, `<stdlib.h>`, `<unistd.h>`):**
+
+- `getpagesize()` dari `sysconf(_SC_PAGESIZE)` dengan fallback 4096.
+- `memalign` (alignment dinormalkan minimal `sizeof(void*)`, bukan pangkat dua →
+  `EINVAL`), `valloc` (halaman), `pvalloc` (halaman, ukuran dibulatkan ke atas,
+  nol → satu halaman), `cfree`.
+- `mallopt` mengembalikan 0 karena alokator ini tidak punya ambang yang bisa
+disetel — bukan pura-pura berhasil. `malloc_trim` mengembalikan 0 (arena tidak
+dikembalikan ke sistem), dan `malloc_stats` menulis satu baris jujur ke `stderr`
+bahwa statistik per-arena tidak dilacak.
+
+**Probe guest:** `test_semaphores` dan `test_allocator_helpers` di
+`user/examples/toolchain_demo.c` (marker `TOOLCHAIN-PASS`): semaphore
+nilai awal/`sem_getvalue`, `sem_wait`, `sem_trywait` → `EAGAIN`, `sem_timedwait`
+dengan deadline lewat → `ETIMEDOUT`, `sem_post` + ambil token, lalu satu thread
+pekerja yang memblokir di `sem_wait` sampai `sem_post` dari thread lain (jalur
+futex), serta semaphore bernama (`O_CREAT`, `O_EXCL` → `EEXIST`, close, unlink,
+`ENOENT` sesudahnya). Untuk alokator: `getpagesize`, `valloc`/`pvalloc` yang
+benar-benar sejajar halaman, `memalign` 64-byte, penolakan alignment bukan
+pangkat dua, `mallopt`/`malloc_trim` yang melaporkan tidak didukung.
+
+**Validasi:** `make build/toolchain_demo.elf -j6` → `exit=0`, tanpa
+error/undefined symbol maupun `multiple definition`. Probe guest belum
+dijalankan di QEMU dari workspace ini.

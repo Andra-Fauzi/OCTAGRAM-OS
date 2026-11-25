@@ -7,8 +7,12 @@
  * through the LFS name (`mmap64`). This probe exercises all of them.
  */
 
+#include <errno.h>
 #include <fcntl.h>
+#include <malloc.h>
+#include <pthread.h>
 #include <regex.h>
+#include <semaphore.h>
 #include <search.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -280,6 +284,97 @@ static void test_regex(void)
           "regcomp reports REG_EESCAPE");
 }
 
+/* ---- semaphores --------------------------------------------------------- */
+
+static sem_t worker_semaphore;
+static int worker_result;
+
+static void *semaphore_worker(void *argument)
+{
+    (void)argument;
+    worker_result = 1;
+    sem_post(&worker_semaphore);
+    return NULL;
+}
+
+static void test_semaphores(void)
+{
+    sem_t semaphore;
+    check(sem_init(&semaphore, 0, 1) == 0, "sem_init");
+
+    int value = -1;
+    check(sem_getvalue(&semaphore, &value) == 0 && value == 1,
+          "sem_getvalue reports the initial token");
+    check(sem_wait(&semaphore) == 0, "sem_wait takes the token");
+    check(sem_trywait(&semaphore) == -1 && errno == EAGAIN,
+          "sem_trywait reports an empty semaphore");
+
+    struct timespec deadline;
+    check(clock_gettime(CLOCK_REALTIME, &deadline) == 0, "clock_gettime");
+    deadline.tv_sec -= 1;
+    check(sem_timedwait(&semaphore, &deadline) == -1 && errno == ETIMEDOUT,
+          "sem_timedwait times out on an empty semaphore");
+
+    check(sem_post(&semaphore) == 0, "sem_post releases a token");
+    check(sem_timedwait(&semaphore, &deadline) == 0,
+          "sem_timedwait takes an available token");
+    check(sem_destroy(&semaphore) == 0, "sem_destroy");
+
+    /* A waiter really sleeps until another thread posts. */
+    check(sem_init(&worker_semaphore, 0, 0) == 0, "sem_init for the worker");
+    worker_result = 0;
+    pthread_t thread;
+    check(pthread_create(&thread, NULL, semaphore_worker, NULL) == 0,
+          "pthread_create for the semaphore worker");
+    check(sem_wait(&worker_semaphore) == 0, "sem_wait blocks until the post");
+    check(worker_result == 1, "the worker ran before the token arrived");
+    pthread_join(thread, NULL);
+    sem_destroy(&worker_semaphore);
+
+    /* Named semaphores are process-local. */
+    sem_t *named = sem_open("/octagram-probe", O_CREAT, 0600, 2);
+    check(named != SEM_FAILED, "sem_open creates a named semaphore");
+    value = -1;
+    check(sem_getvalue(named, &value) == 0 && value == 2,
+          "named semaphore carries the initial value");
+    check(sem_open("/octagram-probe", O_CREAT | O_EXCL, 0600, 1) == SEM_FAILED &&
+              errno == EEXIST,
+          "O_EXCL rejects an existing name");
+    check(sem_close(named) == 0, "sem_close");
+    check(sem_unlink("/octagram-probe") == 0, "sem_unlink");
+    check(sem_open("/octagram-probe", 0) == SEM_FAILED && errno == ENOENT,
+          "opening without O_CREAT fails after unlink");
+}
+
+/* ---- allocator helpers -------------------------------------------------- */
+
+static void test_allocator_helpers(void)
+{
+    const int page = getpagesize();
+    check(page >= 4096, "getpagesize reports a plausible page size");
+
+    void *block = valloc(64);
+    check(block != NULL && ((uintptr_t)block % (uintptr_t)page) == 0,
+          "valloc aligns to the page size");
+    free(block);
+
+    block = pvalloc(1);
+    check(block != NULL && ((uintptr_t)block % (uintptr_t)page) == 0,
+          "pvalloc aligns to the page size");
+    free(block);
+
+    block = memalign(64, 100);
+    check(block != NULL && ((uintptr_t)block % 64u) == 0,
+          "memalign honours the requested alignment");
+    cfree(block);
+
+    check(memalign(3, 8) == NULL && errno == EINVAL,
+          "memalign rejects a non power of two");
+    check(mallopt(M_TRIM_THRESHOLD, 1024) == 0,
+          "mallopt reports that tuning is unsupported");
+    check(malloc_trim(0) == 0, "malloc_trim reports nothing released");
+}
+
 /* ---- time zone ---------------------------------------------------------- */
 
 static void test_timezone(void)
@@ -412,6 +507,8 @@ int main(void)
     test_mmap64();
     test_regex();
     test_timezone();
+    test_semaphores();
+    test_allocator_helpers();
     test_strptime();
 
     if (failures != 0) {

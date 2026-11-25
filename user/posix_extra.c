@@ -19,11 +19,15 @@
 #include <getopt.h>
 #include <fcntl.h>
 #include <fts.h>
+#include <limits.h>
+#include <linux/futex.h>
+#include <malloc.h>
 #include <ftw.h>
 #include <glob.h>
 #include <pthread.h>
 #include <sched.h>
 #include <search.h>
+#include <semaphore.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -34,6 +38,7 @@
 #include <sys/mman.h>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/sysinfo.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -3704,4 +3709,177 @@ void *mmap64(void *address, size_t length, int protection, int flags,
              int file_descriptor, off_t offset)
 {
     return mmap(address, length, protection, flags, file_descriptor, offset);
+}
+
+/* ---- Allocator helpers -------------------------------------------------- */
+
+int getpagesize(void)
+{
+    const long page = sysconf(_SC_PAGESIZE);
+    return page > 0 ? (int)page : 4096;
+}
+
+void *memalign(size_t alignment, size_t size)
+{
+    if (alignment < sizeof(void *)) {
+        alignment = sizeof(void *);
+    }
+    if ((alignment & (alignment - 1)) != 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    void *pointer = NULL;
+    const int status = posix_memalign(&pointer, alignment, size);
+    if (status != 0) {
+        errno = status;
+        return NULL;
+    }
+    return pointer;
+}
+
+void *valloc(size_t size)
+{
+    return memalign((size_t)getpagesize(), size);
+}
+
+/* pvalloc rounds the request up to whole pages, and a zero size asks for one
+ * page, which is the glibc behaviour. */
+void *pvalloc(size_t size)
+{
+    const size_t page = (size_t)getpagesize();
+    if (size == 0) {
+        size = page;
+    }
+    if (size > SIZE_MAX - page) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    const size_t rounded = (size + page - 1) & ~(page - 1);
+    return memalign(page, rounded);
+}
+
+void cfree(void *pointer)
+{
+    free(pointer);
+}
+
+int mallopt(int parameter, int value)
+{
+    (void)parameter;
+    (void)value;
+    /* No thresholds exist in this allocator; report "not applied" rather than
+     * claiming the tuning took effect. */
+    return 0;
+}
+
+int malloc_trim(size_t pad)
+{
+    (void)pad;
+    return 0;
+}
+
+void malloc_stats(void)
+{
+    static const char message[] =
+        "OCTAGRAM allocator: per-arena statistics are not tracked\n";
+    (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+}
+
+/* ---- Named semaphores ---------------------------------------------------- */
+/* The counting semaphore (sem_t, sem_wait/sem_post) is implemented over a futex
+ * in runtime.c; only the named form is new here. */
+
+
+#define SEMAPHORE_NAMED_SLOTS 8
+
+struct octagram_named_semaphore {
+    char name[64];
+    sem_t semaphore;
+    int active;
+};
+
+static struct octagram_named_semaphore octagram_named_semaphores[SEMAPHORE_NAMED_SLOTS];
+
+sem_t *sem_open(const char *name, int flags, ...)
+{
+    if (name == NULL || name[0] == '\0') {
+        errno = EINVAL;
+        return SEM_FAILED;
+    }
+
+    unsigned int value = 0;
+    if ((flags & O_CREAT) != 0) {
+        va_list arguments;
+        va_start(arguments, flags);
+        (void)va_arg(arguments, int); /* mode_t, unused: nothing touches disk */
+        value = va_arg(arguments, unsigned int);
+        va_end(arguments);
+    }
+
+    for (size_t slot = 0; slot < SEMAPHORE_NAMED_SLOTS; ++slot) {
+        struct octagram_named_semaphore *entry = &octagram_named_semaphores[slot];
+        if (entry->active != 0 && strcmp(entry->name, name) == 0) {
+            if ((flags & O_EXCL) != 0) {
+                errno = EEXIST;
+                return SEM_FAILED;
+            }
+            return &entry->semaphore;
+        }
+    }
+    if ((flags & O_CREAT) == 0) {
+        errno = ENOENT;
+        return SEM_FAILED;
+    }
+    for (size_t slot = 0; slot < SEMAPHORE_NAMED_SLOTS; ++slot) {
+        struct octagram_named_semaphore *entry = &octagram_named_semaphores[slot];
+        if (entry->active != 0) {
+            continue;
+        }
+        const size_t length = strlen(name);
+        if (length + 1 > sizeof(entry->name)) {
+            errno = ENAMETOOLONG;
+            return SEM_FAILED;
+        }
+        memcpy(entry->name, name, length + 1);
+        (void)sem_init(&entry->semaphore, 0, value);
+        entry->active = 1;
+        return &entry->semaphore;
+    }
+    errno = ENFILE;
+    return SEM_FAILED;
+}
+
+int sem_close(sem_t *semaphore)
+{
+    if (semaphore == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (size_t slot = 0; slot < SEMAPHORE_NAMED_SLOTS; ++slot) {
+        if (octagram_named_semaphores[slot].active != 0 &&
+            &octagram_named_semaphores[slot].semaphore == semaphore) {
+            octagram_named_semaphores[slot].active = 0;
+            return 0;
+        }
+    }
+    /* Unnamed semaphores are closed by sem_destroy, not sem_close. */
+    errno = EINVAL;
+    return -1;
+}
+
+int sem_unlink(const char *name)
+{
+    if (name == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (size_t slot = 0; slot < SEMAPHORE_NAMED_SLOTS; ++slot) {
+        struct octagram_named_semaphore *entry = &octagram_named_semaphores[slot];
+        if (entry->active != 0 && strcmp(entry->name, name) == 0) {
+            entry->active = 0;
+            return 0;
+        }
+    }
+    errno = ENOENT;
+    return -1;
 }

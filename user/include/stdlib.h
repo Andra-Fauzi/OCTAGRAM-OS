@@ -119,6 +119,13 @@ int system(const char *command);
  * Returns the token index, or -1 for an unknown option. */
 int getsubopt(char **option_pointer, char *const *tokens, char **value_pointer);
 
+/* Aligned allocation helpers. valloc/pvalloc align to the page size; cfree is
+ * the historic name for free. */
+void *memalign(size_t alignment, size_t size);
+void *valloc(size_t size);
+void *pvalloc(size_t size);
+void cfree(void *pointer);
+
 /* BSD random API. Buffers are filled from getrandom, with a documented
  * splitmix64 fallback when the kernel call is unavailable. */
 void arc4random_buf(void *buffer, size_t length);

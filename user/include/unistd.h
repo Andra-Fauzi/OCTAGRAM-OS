@@ -77,6 +77,7 @@ void *sbrk(intptr_t increment);
 unsigned int sleep(unsigned int seconds);
 int usleep(useconds_t microseconds);
 long sysconf(int name);
+int getpagesize(void);
 pid_t getppid(void);
 int fsync(int fd);
 int fdatasync(int fd);

@@ -3227,3 +3227,70 @@ pangkat dua, `mallopt`/`malloc_trim` yang melaporkan tidak didukung.
 **Validasi:** `make build/toolchain_demo.elf -j6` → `exit=0`, tanpa
 error/undefined symbol maupun `multiple definition`. Probe guest belum
 dijalankan di QEMU dari workspace ini.
+
+## 109. Unwinder, `<execinfo.h>`, `dladdr`, hitungan prosesor (25 November 2026)
+
+LLVM memanggil `backtrace()` saat mencetak stack trace dan `dladdr()` saat
+menamai modul, sementara libc++ memakai `_Unwind_Backtrace` untuk
+`<stacktrace>`. Ketiganya sebelumnya kosong: `_Unwind_Backtrace` hanya
+mengembalikan `_URC_END_OF_STACK` tanpa memanggil callback, dan `dladdr` tidak
+ada sama sekali.
+
+**Unwinder berbasis frame pointer (`<unwind.h>`):** header baru berisi
+tipe Itanium minimal (`_Unwind_Reason_Code`, `struct _Unwind_Context`,
+`_Unwind_Trace_Fn`). Implementasi berjalan di rantai frame pointer: tiap frame
+divalidasi (selaras, naik, delta ≤ 1 MiB), `trace` dipanggil dengan
+`_Unwind_Context` yang menyimpan IP dan CFA, dan walker berhenti pada
+`_URC_END_OF_STACK` atau saat callback meminta berhenti. `_Unwind_GetIP`,
+`_Unwind_GetIPInfo` (selalu `before_insn = 0`, seperti libgcc),
+`_Unwind_GetCFA` lengkap. Keluarga `_Unwind_RaiseException` **tidak** ada:
+OCTAGRAM tidak punya exception table, jadi lebih baik gagal saat link daripada
+pura-pura bisa unwind.
+
+**Konsekuensi build:** `-fno-omit-frame-pointer` ditambahkan ke `CFLAGS` dan
+`CXXFLAGS`. Tanpa itu rantai frame tidak bisa diikuti. Kode pihak ketiga yang
+dikompilasi tanpa frame pointer akan memotong trace di frame tersebut — bukan
+bug, dan itu yang membuat walker selalu berakhir dengan `_URC_END_OF_STACK`.
+
+**`<execinfo.h>`:** `backtrace` (kolektor di atas `_Unwind_Backtrace`),
+`backtrace_symbols` (satu alokasi untuk tabel + teks, format `#N 0x%016x`), dan
+`backtrace_symbols_fd` (menulis langsung dengan `write`, berhenti pada
+`EBADF`/`EPIPE`). Tidak ada tabel simbol untuk biner statis, jadi nama fungsi
+tidak dicetak — itu batasan nyata, bukan placeholder; gunakan `dladdr` pada
+program dinamis kalau butuh nama.
+
+**`dladdr`:** `Dl_info` ditambahkan ke `<dlfcn.h>`; implementasinya hook
+`__oct_dladdr_hook` yang didaftarkan loader dinamis (`ldso/loader.c`). Loader
+mencari objek yang rentang `PT_LOAD`-nya memuat alamat, mengisi
+`dli_fname`/`dli_fbase`, lalu memilih simbol `STT_FUNC` terdekat di bawah alamat
+untuk `dli_sname`/`dli_saddr`. Program statis (hook NULL) mengembalikan 0 dengan
+`Dl_info` yang sudah dinolkan, sama seperti glibc untuk alamat tak dikenal.
+
+**`get_nprocs`/`get_nprocs_conf` (`<sys/sysinfo.h>`):** glibc membacanya dari
+`_SC_NPROCESSORS_ONLN`/`_SC_NPROCESSORS_CONF`; kernel sudah menjawab keduanya
+(`syscall_sysconf`), jadi nilainya tidak dikarang. Kegagalan `sysconf` menjadi 1
+seperti glibc, supaya tidak ada pool berukuran nol.
+
+**Probe guest:** `test_backtrace` (callback unwinder + `_Unwind_GetIP`/
+`_Unwind_GetIPInfo`/`_Unwind_GetCFA`, `backtrace` minimal 3 frame,
+`backtrace_symbols`, `backtrace_symbols_fd` ke berkas lalu diperiksa ukurannya,
+dan pemotongan pada buffer 2 entri), `test_dladdr` (statis: hasil dinolkan;
+dinamis: nama objek dan base terisi), dan `test_processor_count`. Semua di
+`user/examples/toolchain_demo.c`, marker `TOOLCHAIN-PASS`.
+
+**Validasi:** `make build/toolchain_demo.elf build/ld-octagram.elf -j6` →
+`exit=0`; `build/libc++.a` + `build/libcxx_format_smoke.elf` dibangun ulang dari
+nol dengan flag baru → `exit=0`; `make -k all` → semua program, enam probe
+libc++, `cpp_smoke`, TCC, `ldso`, dan `octagram-cargo` berhasil. Satu-satunya
+kegagalan adalah lima demo dinamis (`dynamic_demo`, `copy_reloc_demo`,
+`versioned_demo`, `dlopen_demo`, `aslr_demo`): `build/liboctagram.so` memakai
+`strnlen` (didefinisikan di `posix_extra.c`, yang tidak ikut ke `.so`) dan
+`__tls_get_addr`. Itu **sudah gagal di HEAD sebelum ronde ini** — dibuktikan
+dengan membangun `dynamic_demo.elf` pada worktree `HEAD` — dan tidak disentuh
+ronde ini. Probe guest tetap belum dijalankan di QEMU.
+
+**Masih kurang untuk LLVM (jujur):** `statvfs`/`fstatvfs` dan
+`utimensat`/`utimes` masih `ENOSYS` karena kernel tidak punya syscall-nya, jadi
+`llvm::sys::fs::disk_space` dan penyetelan timestamp belum bekerja; exception
+C++ tetap tidak didukung; dan hambatan terbesarnya bukan libc melainkan memori
+(heap kernel statis 32 MiB di `kernel/src/memory/heap.rs`).

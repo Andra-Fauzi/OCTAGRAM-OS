@@ -732,6 +732,21 @@ int sysinfo(struct sysinfo *information)
     return 0;
 }
 
+/* glibc's processor-count helpers over the _SC_NPROCESSORS_* queries the
+ * kernel answers. A failure from sysconf becomes 1, matching what glibc does
+ * when it cannot query the system, so callers never see a zero-sized pool. */
+int get_nprocs(void)
+{
+    long online = sysconf(_SC_NPROCESSORS_ONLN);
+    return online < 1 ? 1 : (int)online;
+}
+
+int get_nprocs_conf(void)
+{
+    long configured = sysconf(_SC_NPROCESSORS_CONF);
+    return configured < 1 ? 1 : (int)configured;
+}
+
 unsigned long getauxval(unsigned long type)
 {
     (void)type;

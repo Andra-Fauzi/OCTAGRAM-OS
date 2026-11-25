@@ -7,7 +7,9 @@
  * through the LFS name (`mmap64`). This probe exercises all of them.
  */
 
+#include <dlfcn.h>
 #include <errno.h>
+#include <execinfo.h>
 #include <fcntl.h>
 #include <malloc.h>
 #include <pthread.h>
@@ -18,9 +20,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/sysinfo.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <unwind.h>
 
 static int failures;
 
@@ -497,6 +502,124 @@ static void test_strptime(void)
           "round trip preserved the date");
 }
 
+/* ---- stack unwinding ---------------------------------------------------- */
+
+struct unwind_probe {
+    int frames;
+    uintptr_t first_ip;
+};
+
+static _Unwind_Reason_Code unwind_probe_callback(struct _Unwind_Context *context,
+                                                  void *argument)
+{
+    struct unwind_probe *state = argument;
+    uintptr_t ip = _Unwind_GetIP(context);
+    int before = -1;
+    if (ip == 0) {
+        return _URC_END_OF_STACK;
+    }
+    if (_Unwind_GetIPInfo(context, &before) != ip || before != 0) {
+        return _URC_FATAL_PHASE1_ERROR;
+    }
+    if (_Unwind_GetCFA(context) == 0) {
+        return _URC_FATAL_PHASE1_ERROR;
+    }
+    if (state->frames == 0) {
+        state->first_ip = ip;
+    }
+    state->frames++;
+    return _URC_NO_REASON;
+}
+
+__attribute__((noinline)) static int unwind_inner(void *frames, int size)
+{
+    return backtrace(frames, size);
+}
+
+__attribute__((noinline)) static int unwind_middle(void *frames, int size)
+{
+    return unwind_inner(frames, size);
+}
+
+static void test_backtrace(void)
+{
+    struct unwind_probe probe;
+    probe.frames = 0;
+    probe.first_ip = 0;
+    _Unwind_Reason_Code code = _Unwind_Backtrace(unwind_probe_callback, &probe);
+    check(code == _URC_END_OF_STACK, "_Unwind_Backtrace ends at the stack base");
+    check(probe.frames >= 2, "_Unwind_Backtrace visited the caller frames");
+    check(probe.first_ip != 0, "_Unwind_Backtrace reported an instruction pointer");
+
+    void *frames[32];
+    int count = unwind_middle(frames, 32);
+    check(count >= 3, "backtrace returned the call chain");
+    check(count <= 32, "backtrace respects the buffer size");
+    int complete = 1;
+    for (int index = 0; index < count; ++index) {
+        if (frames[index] == NULL) {
+            complete = 0;
+        }
+    }
+    check(complete, "every recorded frame carries an address");
+
+    char **symbols = backtrace_symbols(frames, count);
+    check(symbols != NULL, "backtrace_symbols allocates its table");
+    if (symbols != NULL) {
+        check(symbols[0] != NULL && strncmp(symbols[0], "#0 0x", 5) == 0,
+              "backtrace_symbols formats the first frame");
+        check(symbols[count - 1] != NULL, "backtrace_symbols fills the last row");
+        free(symbols);
+    }
+
+    const char *path = "/tmp/backtrace-probe.txt";
+    int descriptor = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
+    check(descriptor >= 0, "backtrace_symbols_fd target opened");
+    if (descriptor >= 0) {
+        backtrace_symbols_fd(frames, count, descriptor);
+        close(descriptor);
+        struct stat information;
+        check(stat(path, &information) == 0 && information.st_size > 0,
+              "backtrace_symbols_fd wrote one line per frame");
+        unlink(path);
+    }
+
+    /* A buffer that cannot hold the whole chain still returns a prefix. */
+    void *two[2];
+    int truncated = unwind_middle(two, 2);
+    check(truncated == 2, "backtrace stops at the buffer size");
+}
+
+/* ---- dladdr ------------------------------------------------------------- */
+
+static void test_dladdr(void)
+{
+    Dl_info information;
+    memset(&information, 0x5a, sizeof(information));
+    int found = dladdr((const void *)(uintptr_t)&test_dladdr, &information);
+    if (found) {
+        check(information.dli_fname != NULL, "dladdr names the owning object");
+        check(information.dli_fbase != NULL, "dladdr reports the load base");
+    } else {
+        check(information.dli_fname == NULL && information.dli_fbase == NULL
+                  && information.dli_sname == NULL
+                  && information.dli_saddr == NULL,
+              "dladdr clears the result when it cannot attribute the address");
+    }
+    check(dladdr(NULL, &information) == 0, "dladdr rejects a NULL address");
+}
+
+/* ---- processor count ---------------------------------------------------- */
+
+static void test_processor_count(void)
+{
+    int online = get_nprocs();
+    int configured = get_nprocs_conf();
+    check(online >= 1, "get_nprocs reports at least one processor");
+    check(configured >= online,
+          "get_nprocs_conf never reports fewer than get_nprocs");
+}
+
 int main(void)
 {
     test_popen_read();
@@ -510,6 +633,9 @@ int main(void)
     test_semaphores();
     test_allocator_helpers();
     test_strptime();
+    test_backtrace();
+    test_dladdr();
+    test_processor_count();
 
     if (failures != 0) {
         printf("TOOLCHAIN-FAIL: %d check(s) failed\n", failures);

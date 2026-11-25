@@ -1212,8 +1212,85 @@ static void register_pointer_symbol(const char *name, void *value)
     }
 }
 
+#define STT_FUNC 2
+
+/* Mirrors Dl_info from <dlfcn.h>; the loader cannot include the C library
+ * header because it is the program that provides those symbols. Keeping the
+ * field order identical is what makes the one shared hook safe. */
+typedef struct {
+    const char *dli_fname;
+    void *dli_fbase;
+    const char *dli_sname;
+    void *dli_saddr;
+} DlInfo;
+
+static int ldso_dladdr(const void *address, void *info_argument)
+{
+    DlInfo *info = info_argument;
+    uint64_t target = (uint64_t)(uintptr_t)address;
+    if (info == 0 || address == 0) {
+        return 0;
+    }
+    for (unsigned object_index = 0; object_index < object_count; ++object_index) {
+        Object *object = &objects[object_index];
+        if (!object->loaded) {
+            continue;
+        }
+        uint64_t lowest = UINT64_MAX;
+        uint64_t highest = 0;
+        for (uint16_t index = 0; index < object->header_count; ++index) {
+            ProgramHeader *header = &object->headers[index];
+            if (header->type != PT_LOAD) {
+                continue;
+            }
+            uint64_t start = object->base + header->vaddr;
+            uint64_t end = start + header->memsz;
+            if (start < lowest) {
+                lowest = start;
+            }
+            if (end > highest) {
+                highest = end;
+            }
+        }
+        if (lowest == UINT64_MAX || target < lowest || target >= highest) {
+            continue;
+        }
+        info->dli_fname = object->name;
+        info->dli_fbase = (void *)(uintptr_t)object->base;
+        if (object->symbols != 0 && object->strings != 0) {
+            uint64_t best_address = 0;
+            const char *best_name = 0;
+            for (uint64_t index = 0; index < object->symbol_count; ++index) {
+                Symbol *symbol = &object->symbols[index];
+                if (symbol->value == 0 || symbol->name == 0) {
+                    continue;
+                }
+                if ((symbol->info & 0xf) != STT_FUNC) {
+                    continue;
+                }
+                uint64_t candidate = object->base + symbol->value;
+                if (candidate > target) {
+                    continue;
+                }
+                if (best_name == 0 || candidate > best_address) {
+                    best_address = candidate;
+                    best_name = object->strings + symbol->name;
+                }
+            }
+            if (best_name != 0) {
+                info->dli_sname = best_name;
+                info->dli_saddr = (void *)(uintptr_t)best_address;
+            }
+        }
+        return 1;
+    }
+    return 0;
+}
+
 static void register_dynamic_loading(void)
 {
+    register_pointer_symbol("__oct_dladdr_hook",
+                            (void *)(uintptr_t)ldso_dladdr);
     register_pointer_symbol("__oct_dlopen_hook",
                             (void *)(uintptr_t)ldso_dlopen);
     register_pointer_symbol("__oct_dlsym_hook",

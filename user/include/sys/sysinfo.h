@@ -30,6 +30,11 @@ struct sysinfo {
  */
 int sysinfo(struct sysinfo *information);
 
+/* glibc's processor-count helpers: both read _SC_NPROCESSORS_ONLN and
+ * _SC_NPROCESSORS_CONF from the kernel, so they report what sysconf reports. */
+int get_nprocs(void);
+int get_nprocs_conf(void);
+
 #ifdef __cplusplus
 }
 #endif

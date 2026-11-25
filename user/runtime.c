@@ -4,6 +4,7 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <execinfo.h>
 #include <fcntl.h>
 #include <grp.h>
 #include <inttypes.h>
@@ -25,6 +26,7 @@
 #include <sys/ioctl.h>
 #include <stdarg.h>
 #include <time.h>
+#include <unwind.h>
 #include <unistd.h>
 #include <netinet/in.h>
 #include <netdb.h>
@@ -5756,20 +5758,162 @@ void perror(const char *message)
     fprintf(stderr, "%s\n", strerror(errno));
 }
 
-/* panic=abort has no language-level unwinding. Keep std's optional
- * backtrace formatting linkable and report an empty trace until OCTAGRAM
- * grows a native unwinder. */
-int _Unwind_Backtrace(int (*trace)(void *, void *), void *context)
+/* ---------- stack unwinding (frame-pointer chain) ---------- */
+
+/* OCTAGRAM has no exception tables, so there is nothing to walk except the
+ * frame-pointer chain. That works because the runtime and the C++ library are
+ * built with -fno-omit-frame-pointer; code built without a frame pointer makes
+ * the walk stop at that frame, which is why every trace ends in
+ * _URC_END_OF_STACK rather than inventing frames. */
+
+struct oct_unwind_frame {
+    uintptr_t instruction_pointer;
+    uintptr_t canonical_frame_address;
+};
+
+#define OCT_UNWIND_MAX_FRAMES 128
+/* A saved frame pointer must point upwards and reasonably close; anything else
+ * means the chain is corrupt and walking on would dereference garbage. */
+#define OCT_UNWIND_MAX_FRAME_BYTES (1024u * 1024u)
+
+_Unwind_Reason_Code _Unwind_Backtrace(_Unwind_Trace_Fn trace, void *argument)
 {
-    (void)trace;
-    (void)context;
-    return 5; /* _URC_END_OF_STACK */
+    if (trace == NULL) {
+        return _URC_FATAL_PHASE1_ERROR;
+    }
+    uintptr_t *frame = (uintptr_t *)__builtin_frame_address(0);
+    for (unsigned depth = 0; depth < OCT_UNWIND_MAX_FRAMES; ++depth) {
+        if (frame == NULL || ((uintptr_t)frame & (sizeof(uintptr_t) - 1u)) != 0) {
+            break;
+        }
+        uintptr_t canonical_frame_address = (uintptr_t)frame;
+        uintptr_t instruction_pointer = frame[1];
+        if (instruction_pointer == 0) {
+            break;
+        }
+        struct oct_unwind_frame state;
+        state.instruction_pointer = instruction_pointer;
+        state.canonical_frame_address = canonical_frame_address;
+        _Unwind_Reason_Code code = trace((struct _Unwind_Context *)&state,
+                                         argument);
+        if (code != _URC_NO_REASON) {
+            return code;
+        }
+        uintptr_t next = frame[0];
+        if (next <= canonical_frame_address
+            || next - canonical_frame_address > OCT_UNWIND_MAX_FRAME_BYTES) {
+            break;
+        }
+        frame = (uintptr_t *)next;
+    }
+    return _URC_END_OF_STACK;
 }
 
-uintptr_t _Unwind_GetIP(void *context)
+uintptr_t _Unwind_GetIP(struct _Unwind_Context *context)
 {
-    (void)context;
-    return 0;
+    if (context == NULL) {
+        return 0;
+    }
+    return ((const struct oct_unwind_frame *)context)->instruction_pointer;
+}
+
+/* Every address this walker reports is a return address, i.e. the instruction
+ * *after* the call, so `*before_insn` is always 0 like libgcc reports. */
+uintptr_t _Unwind_GetIPInfo(struct _Unwind_Context *context, int *before_insn)
+{
+    if (before_insn != NULL) {
+        *before_insn = 0;
+    }
+    return _Unwind_GetIP(context);
+}
+
+uintptr_t _Unwind_GetCFA(struct _Unwind_Context *context)
+{
+    if (context == NULL) {
+        return 0;
+    }
+    return ((const struct oct_unwind_frame *)context)->canonical_frame_address;
+}
+
+/* ---------- <execinfo.h> ---------- */
+
+struct oct_backtrace_state {
+    void **buffer;
+    int capacity;
+    int count;
+};
+
+static _Unwind_Reason_Code oct_backtrace_collect(struct _Unwind_Context *context,
+                                                 void *argument)
+{
+    struct oct_backtrace_state *state = argument;
+    if (state->count >= state->capacity) {
+        return _URC_END_OF_STACK;
+    }
+    state->buffer[state->count++] = (void *)_Unwind_GetIP(context);
+    return _URC_NO_REASON;
+}
+
+int backtrace(void **buffer, int size)
+{
+    if (buffer == NULL || size <= 0) {
+        return 0;
+    }
+    struct oct_backtrace_state state;
+    state.buffer = buffer;
+    state.capacity = size;
+    state.count = 0;
+    _Unwind_Backtrace(oct_backtrace_collect, &state);
+    return state.count;
+}
+
+/* 2 ("#0") + 1 + 18 ("0x" + 16 digits) + 1 (NUL), rounded up. */
+#define OCT_BACKTRACE_TEXT 32
+
+static int oct_backtrace_format(char *text, size_t capacity, int index,
+                                void *address)
+{
+    int written = snprintf(text, capacity, "#%d 0x%016" PRIxPTR, index,
+                            (uintptr_t)address);
+    return written < 0 ? 0 : written;
+}
+
+char **backtrace_symbols(void *const *buffer, int size)
+{
+    if (buffer == NULL || size <= 0) {
+        return NULL;
+    }
+    size_t pointers = (size_t)size * sizeof(char *);
+    size_t text = (size_t)size * OCT_BACKTRACE_TEXT;
+    char **table = malloc(pointers + text);
+    if (table == NULL) {
+        return NULL;
+    }
+    char *strings = (char *)(table + size);
+    for (int index = 0; index < size; ++index) {
+        char *line = strings + (size_t)index * OCT_BACKTRACE_TEXT;
+        oct_backtrace_format(line, OCT_BACKTRACE_TEXT, index, buffer[index]);
+        table[index] = line;
+    }
+    return table;
+}
+
+void backtrace_symbols_fd(void *const *buffer, int size, int descriptor)
+{
+    if (buffer == NULL || size <= 0) {
+        return;
+    }
+    for (int index = 0; index < size; ++index) {
+        char line[OCT_BACKTRACE_TEXT + 1];
+        int length = oct_backtrace_format(line, sizeof(line) - 1, index,
+                                          buffer[index]);
+        line[length] = '\n';
+        ssize_t ignored = write(descriptor, line, (size_t)length + 1);
+        (void)ignored;
+        if (errno == EBADF || errno == EPIPE) {
+            return;
+        }
+    }
 }
 
 size_t fread(void *buffer, size_t size, size_t count, FILE *stream)
@@ -9166,6 +9310,24 @@ __attribute__((weak)) int dlclose(void *handle)
         return -1;
     }
     return 0;
+}
+
+/* The loader owns the object list and the symbol tables, so address-to-name is
+ * a hook too. A static binary leaves the hook NULL and dladdr reports "not
+ * found" instead of guessing a name from a raw address. */
+int (*__oct_dladdr_hook)(const void *address, void *info);
+
+__attribute__((weak)) int dladdr(const void *address, Dl_info *info)
+{
+    if (address == NULL || info == NULL) {
+        errno = EINVAL;
+        return 0;
+    }
+    memset(info, 0, sizeof(*info));
+    if (__oct_dladdr_hook == NULL) {
+        return 0;
+    }
+    return __oct_dladdr_hook(address, (void *)info);
 }
 
 int setuid(uid_t uid)

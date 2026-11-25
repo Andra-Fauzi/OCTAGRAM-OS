@@ -638,8 +638,9 @@ mod tests {
             })
         );
         let entries = devfs.read_dir("/").unwrap();
-        assert_eq!(entries.len(), 10);
+        assert_eq!(entries.len(), 11);
         assert!(entries.iter().any(|entry| entry.name == "fb0"));
+        assert!(entries.iter().any(|entry| entry.name == "tty3"));
         assert!(Device::from_path("/stdin").unwrap().readable());
         assert!(Device::from_path("/stdout").unwrap().writable());
         assert_eq!(device_access("/dev/stdin"), Some((true, false)));

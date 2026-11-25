@@ -32,18 +32,18 @@ size_t strnlen(const char *text, size_t maximum)
     if (text == NULL) {
         return 0;
     }
-    while (length < maximum && text[length] != '\\0') {
+    while (length < maximum && text[length] != '\0') {
         length++;
     }
     return length;
 }
 EOF
-CC="${CC:-gcc}"
+CC="\${CC:-gcc}"
 GCC_INTERNAL="$("$CC" -print-file-name=include)"
-"$CC" -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \\
-    -fno-pie -fno-pic -mno-red-zone -mcmodel=small -march=x86-64 \\
-    -mno-avx -mno-avx2 -mno-avx512f -mno-mmx -msse2 -mfpmath=387 \\
-    -nostdinc -isystem "$GCC_INTERNAL" -c \\
+"$CC" -std=gnu11 -O2 -ffreestanding -fno-builtin -fno-stack-protector \
+    -fno-pie -fno-pic -mno-red-zone -mcmodel=small -march=x86-64 \
+    -mno-avx -mno-avx2 -mno-avx512f -mno-mmx -msse2 -mfpmath=387 \
+    -nostdinc -isystem "$GCC_INTERNAL" -c \
     -o "$BUILD/octagram_gnu_make_compat.o" "$BUILD/octagram_gnu_make_compat.c"
 
 # GNU Make tracks generated Autotools files outside Git. Bootstrap the pinned

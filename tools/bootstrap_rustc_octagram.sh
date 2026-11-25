@@ -115,6 +115,22 @@ if [ "$current" != "$RUST_PIN" ]; then
     git -C "$rust_checkout" checkout --detach "$RUST_PIN"
 fi
 
+# 1b. Submodules the build reads from ---------------------------------------
+# src/tools/cargo and library/backtrace are submodules, and config.toml keeps
+# `submodules = false` so bootstrap never clones src/llvm-project (we link the
+# system libLLVM instead). Without these two, `x.py build src/tools/cargo` and
+# the std build fail with empty directories.
+for submodule in src/tools/cargo library/backtrace; do
+    status=$(git -C "$rust_checkout" submodule status -- "$submodule" 2>/dev/null || true)
+    case $status in
+        -*) echo "initializing submodule $submodule"
+            git -C "$rust_checkout" submodule update --init --depth 1 "$submodule" ;;
+        '') echo "bootstrap_rustc_octagram: error: $submodule is not a submodule of this checkout" >&2
+            exit 1 ;;
+        *) echo "submodule $submodule already present" ;;
+    esac
+done
+
 # 2. OCTAGRAM patches ------------------------------------------------------
 patch_file=$repo_root/patches/rust/0001-std-recognize-octagram-target.patch
 if git -C "$rust_checkout" apply --reverse --check "$patch_file" >/dev/null 2>&1; then

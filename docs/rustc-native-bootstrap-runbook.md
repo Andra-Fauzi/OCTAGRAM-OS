@@ -113,6 +113,13 @@ Konfigurasi penting di `config.toml` yang dihasilkan:
 | `rust.jemalloc`, `rust.profiler`, `rust.backtrace` | `false` | mengurangi permukaan port |
 | `rust.channel` | `nightly` | bootstrap butuh nightly |
 | `llvm.download-ci-llvm` | `false` | LLVM harus benar-benar target OCTAGRAM |
+| `build.submodules` | `false` | `src/llvm-project` tidak diunduh; submodule yang dipakai diinisialisasi manual |
+
+`src/tools/cargo` dan `library/backtrace` adalah submodule di commit Rust yang
+dipin, jadi skrip bootstrap menjalankan `git submodule update --init --depth 1`
+untuk keduanya sebelum build. `submodules = false` mencegah bootstrap mengunduh
+`src/llvm-project`, yang tidak diperlukan karena LLVM ditautkan sebagai library
+statis dari prefix M4.3.3.
 
 Hasil stage 2 berada di `build/<host>/stage2/bin/{rustc,cargo}` dan disalin oleh
 `tools/stage_octagram_toolchain.sh` ke `build/toolchain/octagram-toolchain/`

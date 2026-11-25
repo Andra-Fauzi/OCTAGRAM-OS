@@ -82,10 +82,13 @@ def git_metadata() -> dict[str, object]:
     }
 
 
+RUST_TOOLCHAIN = os.environ.get("OCTAGRAM_RUST_TOOLCHAIN", "nightly")
+
+
 def toolchain_metadata() -> dict[str, str | None]:
     return {
-        "rustc": run(["rustc", "+nightly", "--version"]),
-        "cargo": run(["cargo", "+nightly", "--version"]),
+        "rustc": run(["rustc", f"+{RUST_TOOLCHAIN}", "--version"]),
+        "cargo": run(["cargo", f"+{RUST_TOOLCHAIN}", "--version"]),
         "cc": run(["cc", "--version"]),
         "ld_lld": run(["ld.lld", "--version"]),
         "nasm": run(["nasm", "-v"]),

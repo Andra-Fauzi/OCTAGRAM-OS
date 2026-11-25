@@ -17,6 +17,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  OCTAGRAM_RUST_TOOLCHAIN: nightly-2026-11-23
+
 permissions:
   contents: read
 
@@ -35,12 +38,13 @@ jobs:
       - name: Install host dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential binutils nasm lld xorriso mtools gdisk qemu-system-x86 python3 curl git autoconf automake autopoint gettext perl
+          sudo apt-get install -y build-essential binutils nasm lld xorriso mtools gdisk qemu-system-x86 python3 curl git autoconf automake autopoint gettext perl texinfo
 
-      - name: Install Rust nightly
+      - name: Install pinned Rust nightly
         run: |
-          rustup toolchain install nightly --component rustfmt --component rust-src --target x86_64-unknown-none
-          rustup default nightly
+          rustup toolchain install "$OCTAGRAM_RUST_TOOLCHAIN" --profile minimal --component rustfmt --component rust-src --target x86_64-unknown-none
+          rustup default "$OCTAGRAM_RUST_TOOLCHAIN"
+          rustc -vV
 
       - name: Checkout pinned upstream Rust libc
         uses: actions/checkout@v4
@@ -60,14 +64,14 @@ jobs:
         # The imported trunk code currently has repository-wide rustfmt drift.
         # Keep this diagnostic visible without blocking compilation and tests.
         continue-on-error: true
-        run: cargo +nightly fmt --manifest-path kernel/Cargo.toml --check
+        run: cargo "+$OCTAGRAM_RUST_TOOLCHAIN" fmt --manifest-path kernel/Cargo.toml --check
 
       - name: Validate experimental OCTAGRAM Rust host target
         run: python3 tools/check_octagram_rust_target.py
 
       - name: Compile no_std runtime for experimental OCTAGRAM host target
         run: |
-          cargo +nightly -Z build-std=core,alloc -Z json-target-spec build \
+          cargo "+$OCTAGRAM_RUST_TOOLCHAIN" -Z build-std=core,alloc -Z json-target-spec build \
             --manifest-path user/rust/Cargo.toml \
             --package octagram-runtime \
             --release \
@@ -77,7 +81,7 @@ jobs:
       # so create them before invoking cargo test or compilation fails early.
       - name: Compile no_std + alloc probe for experimental OCTAGRAM host target
         run: |
-          cargo +nightly -Z build-std=core,alloc -Z json-target-spec build \
+          cargo "+$OCTAGRAM_RUST_TOOLCHAIN" -Z build-std=core,alloc -Z json-target-spec build \
             --manifest-path user/rust/Cargo.toml \
             --package octagram-alloc-probe \
             --release \
@@ -97,7 +101,7 @@ jobs:
 
       - name: Test Rust runtime freestanding memory ABI
         run: |
-          cargo +nightly test \
+          cargo "+$OCTAGRAM_RUST_TOOLCHAIN" test \
             --manifest-path user/rust/Cargo.toml \
             --package octagram-runtime \
             --target x86_64-unknown-linux-gnu
@@ -121,10 +125,11 @@ jobs:
           ln -sf libc.a user/build/libm.a
           ln -sf libc.a user/build/librt.a
           ln -sf libc.a user/build/libpthread.a
+          nm -g --defined-only user/build/libc.a | grep -q __oct_tls_initialize
           mkdir -p user/rust/build
           as --64 -o user/rust/build/crt0.o user/crt0.S
-          export RUSTFLAGS="-C linker=ld.lld -C link-arg=-T$GITHUB_WORKSPACE/user/linker.ld -C link-arg=$GITHUB_WORKSPACE/user/rust/build/crt0.o -C link-arg=-L$GITHUB_WORKSPACE/user/build"
-          cargo +nightly -Zjson-target-spec -Zbuild-std=std build --release \
+          export RUSTFLAGS="-C linker=ld.lld -C link-arg=-T$GITHUB_WORKSPACE/user/linker.ld -C link-arg=$GITHUB_WORKSPACE/user/rust/build/crt0.o -C link-arg=-u -C link-arg=__oct_tls_initialize -C link-arg=-L$GITHUB_WORKSPACE/user/build"
+          cargo "+$OCTAGRAM_RUST_TOOLCHAIN" -Zjson-target-spec -Zbuild-std=std build --release \
             --manifest-path user/rust/std-probe/Cargo.toml \
             --target user/rust/targets/x86_64-unknown-octagram.json \
             --target-dir user/rust/std-probe/target \
@@ -151,7 +156,7 @@ jobs:
         run: make -C user dynamic
 
       - name: Run kernel host tests
-        run: cargo +nightly test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
+        run: cargo "+$OCTAGRAM_RUST_TOOLCHAIN" test --manifest-path kernel/Cargo.toml --target x86_64-unknown-linux-gnu
 
       - name: Run libc host tests
         run: |

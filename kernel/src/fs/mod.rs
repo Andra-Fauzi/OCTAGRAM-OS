@@ -114,6 +114,14 @@ const USER_HEADERS: &[(&str, &[u8])] = &[
         include_bytes!("../../../user/include/errno.h"),
     ),
     (
+        "/include/langinfo.h",
+        include_bytes!("../../../user/include/langinfo.h"),
+    ),
+    (
+        "/include/locale.h",
+        include_bytes!("../../../user/include/locale.h"),
+    ),
+    (
         "/include/grp.h",
         include_bytes!("../../../user/include/grp.h"),
     ),

@@ -1,5 +1,6 @@
 //! Loader for static ELF64 x86_64 programs and the minimal OCTAGRAM syscall ABI.
 
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -1337,6 +1338,9 @@ struct Pipe {
     length: usize,
     readers: usize,
     writers: usize,
+    /// SOCK_DGRAM/SOCK_SEQPACKET preserve one record per write/send operation.
+    packetized: bool,
+    packet_lengths: VecDeque<usize>,
 }
 
 impl Pipe {
@@ -1345,6 +1349,20 @@ impl Pipe {
             return Err(EPIPE);
         }
         let available = PIPE_CAPACITY - self.length;
+        if self.packetized {
+            // A packet is indivisible: never enqueue a partial message.
+            if input.len() > available {
+                return Err(EAGAIN);
+            }
+            self.packet_lengths.try_reserve(1).map_err(|_| ENOMEM)?;
+            for byte in input {
+                let tail = (self.head + self.length) % PIPE_CAPACITY;
+                self.buffer[tail] = *byte;
+                self.length += 1;
+            }
+            self.packet_lengths.push_back(input.len());
+            return Ok(input.len());
+        }
         if available == 0 {
             return Err(EAGAIN);
         }
@@ -1362,6 +1380,30 @@ impl Pipe {
     }
 
     fn read_with_peek(&mut self, output: &mut [u8], peek: bool) -> Result<usize, i32> {
+        if self.packetized {
+            let Some(packet_length) = self.packet_lengths.front().copied() else {
+                return if self.writers == 0 {
+                    Ok(0)
+                } else {
+                    Err(EAGAIN)
+                };
+            };
+            if output.is_empty() {
+                return Ok(0);
+            }
+            let count = output.len().min(packet_length);
+            for (offset, byte) in output[..count].iter_mut().enumerate() {
+                *byte = self.buffer[(self.head + offset) % PIPE_CAPACITY];
+            }
+            if !peek {
+                // SOCK_DGRAM/SOCK_SEQPACKET discard the un-copied tail when
+                // the receiver's buffer is smaller than the queued record.
+                self.packet_lengths.pop_front();
+                self.head = (self.head + packet_length) % PIPE_CAPACITY;
+                self.length -= packet_length;
+            }
+            return Ok(count);
+        }
         if self.length == 0 {
             return if self.writers == 0 {
                 Ok(0)
@@ -1394,6 +1436,8 @@ struct DuplexEnd {
     write_end: PipeEnd,
     /// Credentials captured when the peer socketpair endpoint was created.
     peer_credentials: UserUcred,
+    /// Actual AF_UNIX socket type returned through SO_TYPE.
+    socket_type: i32,
 }
 
 #[derive(Clone, Copy)]
@@ -5166,6 +5210,8 @@ fn create_pipe() -> Result<(PipeEnd, PipeEnd), i32> {
         length: 0,
         readers: 1,
         writers: 1,
+        packetized: false,
+        packet_lengths: VecDeque::new(),
     }));
     Ok((
         PipeEnd {
@@ -8666,9 +8712,8 @@ fn socket_descriptor_type(fd: u64) -> Result<i32, i32> {
     }
     match process.descriptors.get(fd).and_then(Option::as_ref) {
         Some(UserDescriptor::UdpSocket(_)) => Ok(SOCK_DGRAM_TYPE),
-        Some(UserDescriptor::TcpSocket(_)) | Some(UserDescriptor::SocketPair(_)) => {
-            Ok(SOCK_STREAM_TYPE)
-        }
+        Some(UserDescriptor::TcpSocket(_)) => Ok(SOCK_STREAM_TYPE),
+        Some(UserDescriptor::SocketPair(endpoint)) => Ok(endpoint.socket_type),
         Some(_) => Err(ENOTSOCK),
         None => Err(EBADF),
     }
@@ -10054,6 +10099,7 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, ElfError> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::collections::VecDeque;
     use super::{
         EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPERM,
         CAP_NETWORK, CAP_VFS_WRITE, CAP_SYS_ADMIN, device_access_allowed, EPIPE, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
@@ -10061,6 +10107,7 @@ mod tests {
         FUTEX_OWNER_DIED, FUTEX_WAITERS,
         effective_priority_target, priority_change_allowed, priority_target_matches,
         SCHED_OTHER, ElfError, select_tls_base, selector_returns_to_user, slot_is_resumable,
+        socketpair_type_info, SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MAP_STACK, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
         PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_INITIAL_PAGES, STACK_MAX_PAGES,
         STACK_RANDOM_PAGES, MAX_ARGUMENTS,
@@ -11033,6 +11080,8 @@ mod tests {
             length: 0,
             readers: 1,
             writers: 1,
+            packetized: false,
+            packet_lengths: VecDeque::new(),
         };
         let mut output = [0; 5];
         assert_eq!(pipe.read(&mut output), Err(EAGAIN));
@@ -11053,6 +11102,72 @@ mod tests {
         let mut drain = [0; PIPE_CAPACITY];
         assert_eq!(pipe.read(&mut drain), Ok(PIPE_CAPACITY));
         assert_eq!(pipe.read(&mut drain), Ok(0));
+    }
+
+    #[test]
+    fn socketpair_type_validation_accepts_stream_datagram_and_seqpacket() {
+        assert_eq!(socketpair_type_info(SOCK_STREAM), Ok((SOCK_STREAM, 0)));
+        assert_eq!(socketpair_type_info(SOCK_DGRAM), Ok((SOCK_DGRAM, 0)));
+        assert_eq!(
+            socketpair_type_info(SOCK_SEQPACKET | 0x800 | 0x80000),
+            Ok((SOCK_SEQPACKET, 0x800 | 0x80000))
+        );
+        assert_eq!(socketpair_type_info(3), Err(EPROTOTYPE));
+        assert_eq!(socketpair_type_info(SOCK_SEQPACKET | 0x100), Err(EINVAL));
+    }
+
+    #[test]
+    fn packetized_pipe_preserves_record_boundaries_and_discards_truncated_tail() {
+        let mut buffer = Vec::new();
+        buffer.resize(PIPE_CAPACITY, 0);
+        let mut pipe = Pipe {
+            id: 2,
+            buffer,
+            head: 0,
+            length: 0,
+            readers: 1,
+            writers: 1,
+            packetized: true,
+            packet_lengths: VecDeque::new(),
+        };
+
+        assert_eq!(pipe.write(b"first"), Ok(5));
+        assert_eq!(pipe.write(b"second"), Ok(6));
+
+        let mut short = [0; 2];
+        assert_eq!(pipe.read(&mut short), Ok(2));
+        assert_eq!(&short, b"fi");
+
+        let mut next = [0; 16];
+        assert_eq!(pipe.read(&mut next), Ok(6));
+        assert_eq!(&next[..6], b"second");
+        assert_eq!(pipe.read(&mut next), Err(EAGAIN));
+
+        pipe.writers = 0;
+        assert_eq!(pipe.read(&mut next), Ok(0));
+    }
+
+    #[test]
+    fn packetized_pipe_peek_does_not_consume_a_record() {
+        let mut buffer = Vec::new();
+        buffer.resize(PIPE_CAPACITY, 0);
+        let mut pipe = Pipe {
+            id: 3,
+            buffer,
+            head: 0,
+            length: 0,
+            readers: 1,
+            writers: 1,
+            packetized: true,
+            packet_lengths: VecDeque::new(),
+        };
+        assert_eq!(pipe.write(b"message"), Ok(7));
+
+        let mut output = [0; 16];
+        assert_eq!(pipe.read_with_peek(&mut output, true), Ok(7));
+        assert_eq!(pipe.read(&mut output), Ok(7));
+        assert_eq!(&output[..7], b"message");
+        assert_eq!(pipe.read(&mut output), Err(EAGAIN));
     }
 
     #[test]
@@ -11113,6 +11228,8 @@ const TFD_TIMER_ABSTIME: u64 = 1;
 const TIMER_ABSTIME: u64 = 1;
 const AF_UNIX: u64 = 1;
 const SOCK_STREAM: u64 = 1;
+const SOCK_DGRAM: u64 = 2;
+const SOCK_SEQPACKET: u64 = 5;
 const SOCK_TYPE_MASK: u64 = 0xF;
 
 fn install_descriptor(descriptor: UserDescriptor) -> Result<u64, i32> {
@@ -11448,6 +11565,20 @@ fn syscall_epoll_wait(epfd: u64, events: u64, maxevents: u64, timeout_ms: u64) -
     Ok(0)
 }
 
+fn socketpair_type_info(socket_type: u64) -> Result<(u64, u64), i32> {
+    const SOCK_NONBLOCK: u64 = 0x800;
+    const SOCK_CLOEXEC: u64 = 0x80000;
+    let base_type = socket_type & SOCK_TYPE_MASK;
+    let type_flags = socket_type & !SOCK_TYPE_MASK;
+    if type_flags & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
+        return Err(EINVAL);
+    }
+    if !matches!(base_type, SOCK_STREAM | SOCK_DGRAM | SOCK_SEQPACKET) {
+        return Err(EPROTOTYPE);
+    }
+    Ok((base_type, type_flags))
+}
+
 fn syscall_socketpair(domain: u64, socket_type: u64, protocol: u64, addresses: u64) -> Result<u64, i32> {
     const SOCK_NONBLOCK: u64 = 0x800;
     const SOCK_CLOEXEC: u64 = 0x80000;
@@ -11457,13 +11588,7 @@ fn syscall_socketpair(domain: u64, socket_type: u64, protocol: u64, addresses: u
     if protocol != 0 {
         return Err(EPROTONOSUPPORT);
     }
-    let type_flags = socket_type & !SOCK_TYPE_MASK;
-    if type_flags & !(SOCK_NONBLOCK | SOCK_CLOEXEC) != 0 {
-        return Err(EINVAL);
-    }
-    if socket_type & SOCK_TYPE_MASK != SOCK_STREAM {
-        return Err(EPROTOTYPE);
-    }
+    let (base_type, type_flags) = socketpair_type_info(socket_type)?;
     paging::validate_user_range(addresses, core::mem::size_of::<[i32; 2]>(), true)
         .map_err(|_| EFAULT)?;
     let peer_credentials = {
@@ -11486,15 +11611,22 @@ fn syscall_socketpair(domain: u64, socket_type: u64, protocol: u64, addresses: u
     };
     let (first_read, first_write) = create_pipe()?;
     let (second_read, second_write) = create_pipe()?;
+    let packetized = base_type != SOCK_STREAM;
+    if packetized {
+        first_read.pipe.lock().packetized = true;
+        second_read.pipe.lock().packetized = true;
+    }
     let first = install_descriptor(UserDescriptor::SocketPair(DuplexEnd {
         read_end: first_read,
         write_end: second_write,
         peer_credentials,
+        socket_type: base_type as i32,
     }))?;
     let second = match install_descriptor(UserDescriptor::SocketPair(DuplexEnd {
         read_end: second_read,
         write_end: first_write,
         peer_credentials,
+        socket_type: base_type as i32,
     })) {
         Ok(fd) => fd,
         Err(error) => {

@@ -130,7 +130,7 @@ menyediakan inline wrappers.
 | 124 | `epoll_wait` | `RDI=epfd`, `RSI=events*`, `RDX=maxevents`, `R10=timeout_ms` | Jumlah event siap |
 | 125 | `timerfd_settime` | `RDI=fd`, `RSI=flags`, `RDX=new*`, `R10=old*` | 0 |
 | 126 | `timerfd_gettime` | `RDI=fd`, `RSI=current*` | 0 |
-| 127 | `socketpair` | `RDI=domain`, `RSI=type`, `RDX=protocol`, `R10=sv*` | 0 |
+| 127 | `socketpair` | `RDI=domain`, `RSI=type`, `RDX=protocol`, `R10=sv*` | 0 untuk `AF_UNIX` dengan `SOCK_STREAM`, `SOCK_DGRAM`, atau `SOCK_SEQPACKET` |
 | 128 | `clock_nanosleep` | `RDI=clock_id`, `RSI=flags`, `RDX=request*`, `R10=remain*` | 0 |
 | 129 | `getpgrp` | — | Process group ID |
 | 130 | `setpgid` | `RDI=pid`, `RSI=process_group` | 0 |
@@ -264,11 +264,13 @@ ke nol, atau mengembalikan 1 per panggilan bila flag `EFD_SEMAPHORE` dipakai.
 `timerfd_create` menerima `CLOCK_REALTIME`, `CLOCK_MONOTONIC`, dan
 `CLOCK_BOOTTIME`; `timerfd_settime` mendukung `TFD_TIMER_ABSTIME` untuk clock
 monoton, dan `read` mengembalikan jumlah expiration yang sudah lewat sebagai
-`u64`. `socketpair` saat ini hanya menerima `AF_UNIX`, `SOCK_STREAM`, dan protocol 0;
-`SOCK_CLOEXEC` serta `SOCK_NONBLOCK` dapat diminta saat pembuatan. Kedua endpoint
-dibangun dari dua pipe sehingga komunikasi dua arah memakai ujung baca/tulis
-terpisah. `shutdown(SHUT_RD/SHUT_WR/SHUT_RDWR)` menutup sisi endpoint terkait,
-mengirim EOF ke peer, dan membangunkan waiter. `SOCK_DGRAM` belum didukung.
+`u64`. `socketpair` menerima `AF_UNIX` dengan protocol 0 dan tipe
+`SOCK_STREAM`, `SOCK_DGRAM`, atau `SOCK_SEQPACKET`; `SOCK_CLOEXEC` serta
+`SOCK_NONBLOCK` dapat diminta saat pembuatan. `SOCK_STREAM` memakai aliran byte,
+sedangkan `SOCK_DGRAM` dan `SOCK_SEQPACKET` mempertahankan batas record per
+operasi tulis/kirim dan membuang sisa record bila buffer baca terlalu kecil.
+Kedua endpoint dibangun dari dua kanal pipe satu arah. `shutdown(SHUT_RD/SHUT_WR/SHUT_RDWR)`
+menutup sisi endpoint terkait, mengirim EOF ke peer, dan membangunkan waiter.
 
 `sendmsg`/`recvmsg` menerima `struct msghdr` x86_64 Linux-compatible dengan
 maksimum 1024 iovec dan batas total mengikuti `MAX_SYSCALL_IO`. Data iovec

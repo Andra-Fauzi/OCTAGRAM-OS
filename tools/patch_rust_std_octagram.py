@@ -249,6 +249,23 @@ def main() -> int:
         + current_exe_anchor,
     )
 
+    # OCTAGRAM exposes clock_nanosleep on CLOCK_MONOTONIC and the cached
+    # metadata wrapper only forwards Read/Write, so both Linux-only items are
+    # usable as they are.
+    replace_once(
+        std / "sys/thread/unix.rs",
+        '    target_os = "vxworks",\n    target_os = "wasi",\n))]\npub fn sleep_until',
+        '    target_os = "vxworks",\n    target_os = "wasi",\n'
+        '    target_os = "octagram",\n))]\npub fn sleep_until',
+    )
+    replace_once(
+        std / "sys/fs/unix.rs",
+        '#[cfg(any(target_os = "linux", target_os = "android"))]\n'
+        'pub(in crate::sys) use cfm::CachedFileMetadata;',
+        '#[cfg(any(target_os = "linux", target_os = "android", target_os = "octagram"))]\n'
+        'pub(in crate::sys) use cfm::CachedFileMetadata;',
+    )
+
     target = std / "os/octagram"
     target.mkdir(parents=True, exist_ok=True)
     for name in ("mod.rs", "raw.rs", "fs.rs"):

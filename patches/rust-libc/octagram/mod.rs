@@ -4,7 +4,26 @@
 //! not reuse Linux or Redox structure layouts. Keep this module synchronized
 //! with the OCTAGRAM public headers and ABI validator.
 
-use crate::prelude::*;
+// libc re-exports its primitive aliases from whichever module tree is active,
+// and the OCTAGRAM module is shared by both of them. Declaring them here keeps
+// the module independent of that choice.
+use core::ffi::{
+    c_char, c_double, c_float, c_int, c_long, c_longlong, c_short, c_uchar, c_uint, c_ulong,
+    c_ulonglong, c_ushort, c_void,
+};
+
+use core::option::Option;
+
+pub type intptr_t = isize;
+pub type size_t = usize;
+pub type ssize_t = isize;
+pub type uintptr_t = usize;
+
+/// Opaque directory stream handle, matching `DIR *` in the OCTAGRAM headers.
+#[repr(C)]
+pub struct DIR {
+    _private: [u8; 0],
+}
 
 pub type wchar_t = i32;
 pub type blkcnt_t = i64;
@@ -507,10 +526,10 @@ extern "C" {
     pub fn bind(fd: c_int, address: *const sockaddr, address_length: socklen_t) -> c_int;
     pub fn recvfrom(fd: c_int, buffer: *mut c_void, length: size_t, flags: c_int,
                     address: *mut sockaddr, address_length: *mut socklen_t) -> ssize_t;
-    pub fn readv(fd: c_int, vectors: *const crate::iovec, count: c_int) -> ssize_t;
-    pub fn writev(fd: c_int, vectors: *const crate::iovec, count: c_int) -> ssize_t;
+    pub fn readv(fd: c_int, vectors: *const iovec, count: c_int) -> ssize_t;
+    pub fn writev(fd: c_int, vectors: *const iovec, count: c_int) -> ssize_t;
     pub fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
-    pub fn dirfd(directory: *mut crate::DIR) -> c_int;
+    pub fn dirfd(directory: *mut DIR) -> c_int;
     pub fn futimens(fd: c_int, times: *const crate::timespec) -> c_int;
     pub fn utimensat(dirfd: c_int, path: *const c_char, times: *const crate::timespec, flags: c_int) -> c_int;
     pub fn setgroups(size: size_t, groups: *const gid_t) -> c_int;
@@ -635,4 +654,70 @@ extern "C" {
     pub fn pwrite64(fd: c_int, buf: *const c_void, count: size_t, offset: off64_t) -> ssize_t;
     #[link_name = "readdir"]
     pub fn readdir64(dirp: *mut DIR) -> *mut dirent64;
+}
+
+// Ancillary data. The OCTAGRAM guest rejects SCM_RIGHTS at runtime, but std and
+// its users still name these symbols while building, so the ABI-matching
+// definitions live here.
+pub const SCM_RIGHTS: c_int = 1;
+
+s! {
+    pub struct cmsghdr {
+        pub cmsg_len: size_t,
+        pub cmsg_level: c_int,
+        pub cmsg_type: c_int,
+    }
+}
+
+const _: [(); 16] = [(); core::mem::size_of::<cmsghdr>()];
+
+s! {
+    pub struct iovec {
+        pub iov_base: *mut c_void,
+        pub iov_len: size_t,
+    }
+
+    pub struct msghdr {
+        pub msg_name: *mut c_void,
+        pub msg_namelen: socklen_t,
+        pub msg_iov: *mut iovec,
+        pub msg_iovlen: size_t,
+        pub msg_control: *mut c_void,
+        pub msg_controllen: size_t,
+        pub msg_flags: c_int,
+    }
+}
+
+pub const fn CMSG_ALIGN(length: usize) -> usize {
+    (length + core::mem::size_of::<usize>() - 1) & !(core::mem::size_of::<usize>() - 1)
+}
+
+pub const fn CMSG_SPACE(length: u32) -> u32 {
+    (CMSG_ALIGN(core::mem::size_of::<cmsghdr>()) + CMSG_ALIGN(length as usize)) as u32
+}
+
+pub const fn CMSG_LEN(length: u32) -> u32 {
+    (CMSG_ALIGN(core::mem::size_of::<cmsghdr>()) + length as usize) as u32
+}
+
+pub unsafe fn CMSG_DATA(cmsg: *const cmsghdr) -> *mut c_uchar {
+    (cmsg as *mut c_uchar).add(CMSG_ALIGN(core::mem::size_of::<cmsghdr>()))
+}
+
+pub unsafe fn CMSG_FIRSTHDR(mhdr: *const msghdr) -> *mut cmsghdr {
+    if (*mhdr).msg_controllen >= core::mem::size_of::<cmsghdr>() as _ {
+        (*mhdr).msg_control as *mut cmsghdr
+    } else {
+        core::ptr::null_mut()
+    }
+}
+
+pub unsafe fn CMSG_NXTHDR(mhdr: *const msghdr, cmsg: *const cmsghdr) -> *mut cmsghdr {
+    let next = (cmsg as *const c_uchar).add(CMSG_ALIGN((*cmsg).cmsg_len)) as *const cmsghdr;
+    let end = (*mhdr).msg_control as *const c_uchar;
+    if next.is_null() || (next as *const c_uchar) >= end.add((*mhdr).msg_controllen) {
+        core::ptr::null_mut()
+    } else {
+        next as *mut cmsghdr
+    }
 }

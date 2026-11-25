@@ -360,3 +360,50 @@ Langkah berikutnya, berurutan:
 Sampai keempat langkah itu selesai, `rustc`/`cargo` native OCTAGRAM belum bisa
 dipanggil dari shell; yang sudah terbukti hanya `core`+`alloc` untuk target
 OCTAGRAM dan probe runtime C/C++ (`tools/check_octagram_runtime_probes.sh`).
+
+### Pembaruan: `libc` sudah lolos, `std` tersisa di permukaan Linux
+
+Tabel dan penyebab struktural di atas sudah tidak berlaku lagi. Yang berubah:
+
+- `apply_rust_libc_octagram.py` menulis penanda `.cargo-ok` (`{"v":1}`). Tanpa
+  penanda itu cargo mengekstrak ulang crate dari cache dan menghapus semua
+  suntingan applier tanpa peringatan — ini sebab sebenarnya kenapa tambalan
+  libc sebelumnya tidak pernah terpakai.
+- Modul OCTAGRAM kini juga diekspor ke pohon modul baru libc (`src/new/mod.rs`)
+  lewat daftar nama eksplisit (`stat64`, `open64`, `SYS_futex`, `MSG_NOSIGNAL`,
+  `mprotect`, `sigaltstack`, `sendfile`, `cmsghdr`/`CMSG_*`/`SCM_RIGHTS`,
+  `msghdr`, `iovec`, `stack_t`, ...). Glob `pub use ... ::*` sengaja tidak
+  dipakai karena menimbulkan `E0659` (ambigu) dengan tipe POSIX umum.
+- Modul OCTAGRAM sekarang mandiri: tipe primitif diambil dari `core::ffi`,
+  `DIR`, `iovec`, `msghdr`, dan `cmsghdr` dideklarasikan di dalamnya sehingga
+  tidak bergantung pada pohon modul mana yang aktif.
+- Dua API std yang baru ditambahkan ke cabang OCTAGRAM: `sleep_until`
+  (`clock_nanosleep`, tersedia di guest) dan `CachedFileMetadata`.
+
+Hasil: `cargo -Z build-std=std check` untuk `x86_64-unknown-octagram` **lolos
+libc** dan berhenti di `std` dengan 90 error yang semuanya berupa nama milik
+jalur Linux. Yang tersisa, dikelompokkan menurut sifatnya:
+
+1. **Ada di guest, tinggal didaftarkan di modul Rust**: `siginfo_t`,
+   `cpu_set_t`, `sendmsg`, `recvmsg`, `SOCK_CLOEXEC`, `WEXITED`, `MSG_TRUNC`,
+   `MSG_CTRUNC`, `GRND_NONBLOCK`. Nilai/strukturnya bisa diambil langsung dari
+   `user/include/signal.h`, `sched.h`, dan `sys/socket.h`.
+2. **Tidak ada di guest, dipakai jalur Linux std**: `pthread_getattr_np`,
+   `pthread_attr_getstack` (stack-overflow guard), `SYS_pidfd_send_signal`,
+   `CLD_TRAPPED`/`CLD_STOPPED` (process wait), `SO_PASSCRED`,
+   `MSG_CMSG_CLOEXEC`, `TCP_QUICKACK`, `TCP_DEFER_ACCEPT`, `GRND_INSECURE`.
+   Untuk ini pilihannya: implementasikan di guest, atau kembalikan std ke
+   implementasi portabelnya (menambah berkas ke `OCTAGRAM_ARM_FILES`).
+3. **Bentrok ABI**: std memakai `libc::stat.st_rdev`, sedangkan `struct stat`
+   publik OCTAGRAM belum punya field itu. Ini tidak bisa ditambal di sisi Rust:
+   header guest (`user/include/sys/stat.h`) dan `user/runtime.c` harus
+   menambahkan field tersebut pada posisi yang benar, lalu `patches/rust-libc/
+   octagram/mod.rs` mengikutinya.
+4. **Ambigu**: `raw` dan `fs` dilaporkan ambigu saat re-export OCTAGRAM
+   bertabrakan dengan modul POSIX umum; perlu daftar ekspor yang lebih sempit
+   atau nama modul yang berbeda.
+
+Kesimpulan: target "rustc/cargo bisa dipanggil di shell" masih terhalang, tetapi
+sekarang bukan lagi di libc atau di gerbang cfg std — tersisa 90 rujukan yang
+harus diselesaikan satu per satu sesuai tiga kategori di atas, dimulai dari
+`struct stat.st_rdev` (kategori 3) karena itu satu-satunya yang menyentuh ABI.

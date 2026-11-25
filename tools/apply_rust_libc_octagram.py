@@ -61,7 +61,7 @@ def main() -> int:
         '        mod haiku;\n'
         '        pub use self::haiku::*;\n'
         '    } else if #[cfg(target_os = "octagram")] {\n'
-        '        mod octagram;\n'
+        '        pub(crate) mod octagram;\n'
         '        pub use self::octagram::*;\n'
         '    } else if #[cfg(target_os = "redox")] {',
     )
@@ -77,12 +77,36 @@ def main() -> int:
         '            pub fn dladdr(addr: *const c_void, info: *mut Dl_info) -> c_int;',
     )
 
+    # libc 0.2.x carries two module trees: the legacy `src/unix` one and the
+    # newer `src/new` one that std actually resolves through. The OCTAGRAM ABI
+    # module lives in the legacy tree, so make it visible from `src/new` too
+    # instead of maintaining two copies of the same definitions.
     new_mod = root / "src/new/mod.rs"
     replace_once(
         new_mod,
         "mod common;\n",
-        "mod common;\n\n#[cfg(target_os = \"octagram\")]\nuse common::posix::unistd;\n",
+        "mod common;\n"
+        "\n"
+        "#[cfg(target_os = \"octagram\")]\n"
+        "use common::posix::unistd;\n"
+        "#[cfg(target_os = \"octagram\")]\n"
+        "pub use crate::unix::octagram::{\n"
+        "    dirent64, fstat64, fstatat64, ftruncate64, lseek64, lstat64, open64, openat64,\n"
+        "    pread64, pwrite64, readdir64, sendfile, sigaltstack, stat64, stack_t, syscall,\n"
+        "    MAP_FAILED, MSG_NOSIGNAL, SA_ONSTACK, SA_SIGINFO, SS_DISABLE, SYS_futex, off64_t,\n"
+        "    cmsghdr, CMSG_ALIGN, CMSG_DATA, CMSG_FIRSTHDR, CMSG_LEN, CMSG_NXTHDR, CMSG_SPACE,\n"
+        "    SCM_RIGHTS,\n"
+        "    FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP,\n"
+        "    FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET, FUTEX_PRIVATE_FLAG, FUTEX_CLOCK_REALTIME,\n"
+        "    FUTEX_WAIT_PRIVATE, FUTEX_WAKE_PRIVATE, FUTEX_REQUEUE_PRIVATE,\n"
+        "    FUTEX_CMP_REQUEUE_PRIVATE, FUTEX_WAKE_OP_PRIVATE, FUTEX_WAIT_BITSET_PRIVATE,\n"
+        "    FUTEX_WAKE_BITSET_PRIVATE,\n"
+        "};\n",
     )
+    # Cargo re-extracts a registry crate whenever this marker is missing, which
+    # silently discards the edits above; keep the marker so the patched sources
+    # are the ones cargo compiles.
+    (root / ".cargo-ok").write_text('{"v":1}', encoding="utf-8")
 
     target_module = root / "src/unix/octagram/mod.rs"
     target_module.parent.mkdir(parents=True, exist_ok=True)

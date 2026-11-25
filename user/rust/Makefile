@@ -10,7 +10,8 @@ RUST_MAKE := build/make.elf
 RUST_OCTAGRAM_HELLO := build/rust_hello_octagram.elf
 RUST_NATIVE_OBJECT := build/rust_native_probe.o
 RUST_STD_PROBE := build/rust_std_probe.elf
-RUST_BUILD_FLAGS := +nightly -Z unstable-options -Z build-std=core,alloc -Z json-target-spec
+OCTAGRAM_RUST_TOOLCHAIN ?= nightly
+RUST_BUILD_FLAGS := +$(OCTAGRAM_RUST_TOOLCHAIN) -Z unstable-options -Z build-std=core,alloc -Z json-target-spec
 
 # The native-linker probe is emitted as a single relocatable object for the
 # guest's own `ld`. The link step is skipped by pointing rustc at a no-op

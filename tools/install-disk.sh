@@ -93,6 +93,12 @@ if [[ -n "$TOOLCHAIN" ]]; then
   cp -R "$TOOLCHAIN/bin" "$WORK/root/toolchain/"
   [[ -d "$TOOLCHAIN/lib" ]] && cp -R "$TOOLCHAIN/lib" "$WORK/root/toolchain/"
   chmod -R u+rwX,go+rX "$WORK/root/toolchain"
+  if [[ -f "$TOOLCHAIN/toolchain.json" ]]; then
+    cp "$TOOLCHAIN/toolchain.json" "$WORK/root/toolchain/toolchain.json"
+  else
+    echo "WARNING: $TOOLCHAIN has no toolchain.json; stage it with" \
+      "tools/stage_octagram_toolchain.sh to record what was installed" >&2
+  fi
   for binary in rustc cargo; do
     if [[ -f "$WORK/root/toolchain/bin/$binary" ]]; then
       chmod 0755 "$WORK/root/toolchain/bin/$binary"

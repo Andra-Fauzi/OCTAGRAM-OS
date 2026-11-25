@@ -679,6 +679,7 @@ int run_process(const std::vector<std::string>& arguments)
 struct Options {
     fs::path manifest_path = "Cargo.toml";
     fs::path target_directory = "target";
+    bool target_directory_explicit = false;
     std::string profile = "dev";
     std::string rustc = "rustc";
     std::string linker;
@@ -793,10 +794,22 @@ bool sources_are_current(const Manifest& manifest, const fs::path& output)
     return newest_source_time(manifest.directory / "src") <= output_time;
 }
 
+// Like Cargo, the target directory belongs to the workspace root, not to the
+// caller's working directory: `cargo build --manifest-path /app/Cargo.toml` run
+// from `/` must not write /target.
+fs::path resolved_target_directory(const Workspace& workspace, const Options& options)
+{
+    if (options.target_directory_explicit) {
+        return options.target_directory;
+    }
+    return workspace.root_manifest().directory / "target";
+}
+
 int build_workspace(const Workspace& workspace, const Options& options, bool check_only)
 {
     BuildState state;
-    fs::path profile_directory = fs::absolute(options.target_directory) / options.profile;
+    fs::path profile_directory =
+        fs::absolute(resolved_target_directory(workspace, options)) / options.profile;
     std::error_code error;
     fs::create_directories(profile_directory, error);
     if (error) {
@@ -925,8 +938,8 @@ int run_target(const Workspace& workspace, const Options& options)
         fail("no binary target named " + options.bin);
     }
 
-    fs::path executable =
-        fs::absolute(options.target_directory) / options.profile / target_output_name(*selected);
+    fs::path executable = fs::absolute(resolved_target_directory(workspace, options)) /
+                          options.profile / target_output_name(*selected);
     std::error_code error;
     if (!fs::exists(executable, error)) {
         fail("built binary is missing: " + executable.string());
@@ -1011,10 +1024,10 @@ int create_project(const Options& options, bool initialize)
     return 0;
 }
 
-void clean(const Options& options)
+void clean(const Workspace& workspace, const Options& options)
 {
     std::error_code error;
-    fs::path target = fs::absolute(options.target_directory);
+    fs::path target = fs::absolute(resolved_target_directory(workspace, options));
     if (fs::exists(target, error)) {
         fs::remove_all(target, error);
         if (error) {
@@ -1051,7 +1064,8 @@ void print_metadata(const Workspace& workspace, const Options& options)
         std::cout << "]}";
     }
     std::cout << "\n  ],\n  \"target_directory\": \""
-              << fs::absolute(options.target_directory).string() << "\"\n}\n";
+              << fs::absolute(resolved_target_directory(workspace, options)).string()
+              << "\"\n}\n";
 }
 
 Options parse_options(const std::vector<std::string>& arguments)
@@ -1071,6 +1085,7 @@ Options parse_options(const std::vector<std::string>& arguments)
             options.manifest_path = next("--manifest-path");
         } else if (argument == "--target-dir") {
             options.target_directory = next("--target-dir");
+            options.target_directory_explicit = true;
         } else if (argument == "--release") {
             options.profile = "release";
         } else if (argument == "--profile") {
@@ -1147,10 +1162,6 @@ int run(int argc, char** argv)
         usage();
         return 0;
     }
-    if (command == "clean") {
-        clean(options);
-        return 0;
-    }
     if (command == "new") {
         return create_project(options, false);
     }
@@ -1177,6 +1188,10 @@ int run(int argc, char** argv)
         }
     }
 
+    if (command == "clean") {
+        clean(workspace, options);
+        return 0;
+    }
     if (command == "plan") {
         print_plan(workspace);
         return 0;

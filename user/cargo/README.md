@@ -59,6 +59,10 @@ It needs a native `rustc`: once the toolchain is installed in `/toolchain/bin`,
   and finally `tcc` (the only linker the base image ships). A native linker
   installed with the toolchain is therefore picked up without changes, and a
   link failure names the linker it used.
+- **Target directory follows the workspace.** Unless `--target-dir` is given,
+  output goes to `<workspace root>/target` like Cargo, not to the current
+  directory, so `cargo build --manifest-path /app/Cargo.toml` from `/` does not
+  write `/target`.
 - **Dependency names follow rustc, not Cargo.** Dependencies are looked up by
   package name and passed as `--extern <crate>=<rlib>` using the library crate
   name (`[lib] name`, or the package name with `-` replaced by `_`), because

@@ -2,7 +2,7 @@ name: Upstream Rust patch validation
 
 on:
   push:
-    branches: [feature/native-self-hosting]
+    branches: [feature/native-self-hosting, feature/native-self-hosting-testing-4]
     paths:
       - "patches/rust/**"
       - "patches/libc/**"
@@ -15,6 +15,9 @@ on:
       - "user/rust/targets/x86_64-unknown-octagram.json"
       - ".github/workflows/rust-upstream-patches.yml"
   workflow_dispatch:
+
+env:
+  OCTAGRAM_RUST_TOOLCHAIN: nightly-2026-11-23
 
 permissions:
   contents: read
@@ -71,8 +74,9 @@ jobs:
           git checkout --detach a03dd7c2e298b0ca482f30ce07efd3115938328e
 
       - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.OCTAGRAM_RUST_TOOLCHAIN }}
           components: rust-src
 
       - name: Check and apply OCTAGRAM libc patch
@@ -83,6 +87,6 @@ jobs:
 
       - name: Compile upstream libc against OCTAGRAM target
         run: |
-          cargo +nightly check --manifest-path libc-src/Cargo.toml --lib \
+          cargo "+$OCTAGRAM_RUST_TOOLCHAIN" check --manifest-path libc-src/Cargo.toml --lib \
             --target user/rust/targets/x86_64-unknown-octagram.json \
             --no-default-features -Zjson-target-spec -Zbuild-std=core

@@ -463,9 +463,12 @@ build/ldso_loader.o: ldso/loader.c $(HEADERS) | build
 $(LDSO_ELF): $(LDSO_OBJECTS) ldso/linker.ld
 	$(LD) -m elf_x86_64 -static -nostdlib -T ldso/linker.ld -o $@ $(LDSO_OBJECTS)
 
-$(SHARED_LIBC): build/runtime.pic.o
+build/posix_extra.pic.o: posix_extra.c $(HEADERS) | build
+	$(CC) $(RUNTIME_PIC_CFLAGS) -c -o $@ $<
+
+$(SHARED_LIBC): build/runtime.pic.o build/posix_extra.pic.o
 	$(LD) -m elf_x86_64 -shared --hash-style=gnu -soname liboctagram.so \
-		-o $@ $<
+		-o $@ $^
 
 build/dynlib.o: examples/dynlib.c $(HEADERS) | build
 	$(CC) $(PIC_CFLAGS) -c -o $@ $<

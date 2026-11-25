@@ -1,0 +1,29 @@
+#!/bin/sh
+# Linker driver for x86_64-unknown-octagram.
+#
+# Wraps the host `ld` with OCTAGRAM's static ET_EXEC settings so callers can
+# link objects without repeating the flags. rustc is pointed at
+# x86_64-octagram-gcc instead (it needs a compiler driver for -Wl/-z
+# translation), but CMake and manual link steps can use this directly.
+#
+# Environment: OCTAGRAM_SYSROOT (default: <repo>/user/build/sysroot-octagram)
+set -eu
+
+script=$0
+case $script in
+    */*) bin_dir=$(cd "$(dirname "$script")" && pwd) ;;
+    *) bin_dir=$(cd "$(dirname "$(command -v -- "$script")")" && pwd) ;;
+esac
+toolchain_dir=$(cd "$bin_dir/.." && pwd)
+repo_root=$(cd "$toolchain_dir/../.." && pwd)
+sysroot=${OCTAGRAM_SYSROOT:-$repo_root/user/build/sysroot-octagram}
+linker_script=$sysroot/usr/lib/octagram.ld
+
+if [ ! -f "$linker_script" ]; then
+    echo "x86_64-octagram-ld: error: no linker script at $linker_script" >&2
+    echo "x86_64-octagram-ld: run 'make -C user sysroot' first" >&2
+    exit 1
+fi
+
+exec ld -m elf_x86_64 -static -nostdlib -L"$sysroot/usr/lib" \
+    -T "$linker_script" --build-id=none "$@"

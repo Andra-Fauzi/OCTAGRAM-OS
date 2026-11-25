@@ -57,7 +57,10 @@ ada atau tidak memuat entri untuk user tersebut, `login` berjalan tanpa
 verifikasi seperti sebelumnya.
 
 **Toolchain dan eksekusi**
-`as`, `ld`, `cc`, `tcc`, `run`, `runp`.
+`as`, `ld`, `cc`, `tcc`, `cargo`, `run`, `runp`.
+`cargo` adalah driver Cargo offline (`octagram-cargo`, lihat
+[user/cargo/README.md](../user/cargo/README.md)); `rustc` dan toolchain native lain
+dicari terakhir di `/toolchain/bin` setelah dipasang ke image.
 
 Program lain dapat dijalankan dengan menyebut namanya jika ada di `PATH`
 (direktori program biasanya `/bin`).

@@ -7,6 +7,10 @@ gate, written in C++ against the libc++ and libc that OCTAGRAM already runs, so
 that the manifest/lockfile/planning/invocation logic is native and tested
 before a compiler lands.
 
+Binary ini ditanam di image sebagai `/bin/octagram-cargo` dan `/bin/cargo`,
+jadi dari shell OCTAGRAM cukup jalankan `cargo plan`, `cargo metadata`, dan
+seterusnya.
+
 ## What it does
 
 | Command | Behaviour |

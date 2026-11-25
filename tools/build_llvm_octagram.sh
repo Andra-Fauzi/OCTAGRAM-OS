@@ -1,0 +1,195 @@
+#!/bin/sh
+# build_llvm_octagram.sh: cross-build a static libLLVM for the OCTAGRAM
+# userspace ABI (x86_64, static ET_EXEC, OCTAGRAM libc/libc++).
+#
+# This is stage M4.3.3 of docs/rust-m4-3-backend-plan.md and the prerequisite
+# for the rustc host bootstrap in M4.3.4. It does not run anything on OCTAGRAM:
+# the result is a host-side static library set plus llvm-config, llc and
+# llvm-nm that are themselves OCTAGRAM executables (to be copied into the
+# guest's /toolchain/bin once a toolchain image step exists).
+#
+# Prerequisites (host):
+#   gcc g++ cmake ninja-build curl python3
+#   make -C user sysroot
+#
+# Usage:
+#   tools/build_llvm_octagram.sh [--llvm-version 21.1.0] [--prefix DIR]
+#                                [--source DIR] [--jobs N] [--clean]
+#
+# Pinning: rustc refuses to build against an LLVM older than the revision its
+# checkout requires. Before running, confirm the version from the Rust source
+# you will bootstrap:
+#   grep -m1 LLVM_VERSION_MAJOR build/toolchain/rust/src/llvm-project/llvm/CMakeLists.txt
+# The default below must be bumped together with that checkout; there is no
+# version sniffing because a mismatch must fail loudly, not silently rebuild.
+#
+# Status: scaffolding. Not yet executed in this workspace (no cmake/ninja and
+# no OCTAGRAM sysroot build here), so treat any result as unverified until the
+# guest-side gates in docs/rust-llvm-octagram-build.md pass.
+
+set -eu
+
+script=$0
+case $script in
+    */*) tools_dir=$(cd "$(dirname "$script")" && pwd) ;;
+    *) tools_dir=$(cd "$(dirname "$(command -v -- "$script")")" && pwd) ;;
+esac
+repo_root=$(cd "$tools_dir/.." && pwd)
+
+llvm_version=${LLVM_VERSION:-21.1.0}
+jobs=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
+build_root=${OCTAGRAM_TOOLCHAIN_BUILD:-$repo_root/build/toolchain}
+prefix=
+source_dir=
+clean=0
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --llvm-version) llvm_version=$2; shift 2 ;;
+        --prefix) prefix=$2; shift 2 ;;
+        --source) source_dir=$2; shift 2 ;;
+        --jobs) jobs=$2; shift 2 ;;
+        --clean) clean=1; shift ;;
+        -h|--help)
+            sed -n '2,34p' "$0"
+            exit 0
+            ;;
+        *)
+            echo "build_llvm_octagram: unknown argument '$1'" >&2
+            exit 2
+            ;;
+    esac
+done
+
+llvm_short=$(printf '%s' "$llvm_version" | cut -d. -f1)
+install_prefix=${prefix:-$build_root/llvm-$llvm_version-octagram}
+work_dir=$build_root/llvm-$llvm_version
+cmake_build=$work_dir/build-octagram
+
+for tool in cmake ninja gcc g++ curl tar; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "build_llvm_octagram: error: '$tool' is required on the host" >&2
+        exit 1
+    fi
+done
+
+sysroot=${OCTAGRAM_SYSROOT:-$repo_root/user/build/sysroot-octagram}
+if [ ! -f "$sysroot/usr/lib/libc++.a" ]; then
+    echo "build_llvm_octagram: error: no OCTAGRAM sysroot at $sysroot" >&2
+    echo "build_llvm_octagram: run 'make -C user sysroot' first" >&2
+    exit 1
+fi
+
+toolchain_file=$repo_root/user/toolchain/octagram-toolchain.cmake
+if [ ! -f "$toolchain_file" ]; then
+    echo "build_llvm_octagram: error: missing $toolchain_file" >&2
+    exit 1
+fi
+
+if [ "$clean" -eq 1 ]; then
+    rm -rf "$cmake_build" "$install_prefix"
+fi
+
+mkdir -p "$work_dir"
+
+if [ -z "$source_dir" ]; then
+    source_dir=$work_dir/llvm-project-$llvm_version.src
+    if [ ! -f "$source_dir/llvm/CMakeLists.txt" ]; then
+        tarball=$work_dir/llvm-project-$llvm_version.src.tar.xz
+        if [ ! -f "$tarball" ]; then
+            url="https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvm_version/llvm-project-$llvm_version.src.tar.xz"
+            echo "downloading $url"
+            curl -fL --retry 3 -o "$tarball.part" "$url"
+            if [ -n "${LLVM_SHA256:-}" ]; then
+                actual=$(sha256sum "$tarball.part" | cut -d' ' -f1)
+                if [ "$actual" != "$LLVM_SHA256" ]; then
+                    rm -f "$tarball.part"
+                    echo "build_llvm_octagram: sha256 mismatch for LLVM $llvm_version" >&2
+                    echo "  expected $LLVM_SHA256" >&2
+                    echo "  actual   $actual" >&2
+                    exit 1
+                fi
+            else
+                echo "build_llvm_octagram: LLVM_SHA256 not set; pin it for reproducible builds" >&2
+            fi
+            mv "$tarball.part" "$tarball"
+        fi
+        echo "extracting $tarball"
+        tar -xJf "$tarball" -C "$work_dir"
+    fi
+fi
+
+if [ ! -f "$source_dir/llvm/CMakeLists.txt" ]; then
+    echo "build_llvm_octagram: error: $source_dir is not an LLVM source tree" >&2
+    exit 1
+fi
+
+actual_version=$(sed -n 's/^set(LLVM_VERSION_MAJOR \([0-9]*\)).*/\1/p' "$source_dir/llvm/CMakeLists.txt" | head -n 1)
+if [ -n "$actual_version" ] && [ "$actual_version" != "$llvm_short" ]; then
+    echo "build_llvm_octagram: error: source is LLVM $actual_version, expected $llvm_short" >&2
+    exit 1
+fi
+
+# The guest has no dynamic loader for the toolchain and no TLS in shared
+# objects, so everything is static. Threads and terminfo are off because the
+# guest's pthread/TLS surface is still being hardened; LLVM only needs them to
+# parallelise work, and a single-threaded rustc is acceptable for bootstrap.
+cmake_arguments="
+-G Ninja
+-DCMAKE_TOOLCHAIN_FILE=$toolchain_file
+-DCMAKE_BUILD_TYPE=Release
+-DCMAKE_INSTALL_PREFIX=$install_prefix
+-DLLVM_TARGETS_TO_BUILD=X86
+-DLLVM_ENABLE_PROJECTS=
+-DLLVM_ENABLE_RUNTIMES=
+-DLLVM_BUILD_LLVM_DYLIB=OFF
+-DLLVM_LINK_LLVM_DYLIB=OFF
+-DLLVM_BUILD_SHARED_LIBS=OFF
+-DBUILD_SHARED_LIBS=OFF
+-DLLVM_ENABLE_THREADS=OFF
+-DLLVM_ENABLE_EH=OFF
+-DLLVM_ENABLE_RTTI=OFF
+-DLLVM_ENABLE_TERMINFO=OFF
+-DLLVM_ENABLE_ZLIB=OFF
+-DLLVM_ENABLE_ZSTD=OFF
+-DLLVM_ENABLE_LIBXML2=OFF
+-DLLVM_ENABLE_ASSERTIONS=OFF
+-DLLVM_ENABLE_UNWIND_TABLES=OFF
+-DLLVM_ENABLE_BINDINGS=OFF
+-DLLVM_INCLUDE_TESTS=OFF
+-DLLVM_INCLUDE_BENCHMARKS=OFF
+-DLLVM_INCLUDE_EXAMPLES=OFF
+-DLLVM_INCLUDE_DOCS=OFF
+-DLLVM_INCLUDE_UTILS=OFF
+-DLLVM_BUILD_TOOLS=ON
+-DLLVM_INSTALL_UTILS=OFF
+-DLLVM_OPTIMIZED_TABLEGEN=ON
+-DLLVM_BUILD_EXTERNAL_COMPILER_RT=OFF
+-DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF
+"
+
+echo "configuring LLVM $llvm_version for x86_64-unknown-octagram"
+echo "  source:  $source_dir"
+echo "  build:   $cmake_build"
+echo "  prefix:  $install_prefix"
+# shellcheck disable=SC2086 # cmake_arguments is a newline-separated list.
+cmake -S "$source_dir/llvm" -B "$cmake_build" $cmake_arguments
+
+echo "building libLLVM, llc, llvm-nm, llvm-config (-j$jobs)"
+cmake --build "$cmake_build" --target install -j "$jobs"
+
+llvm_config=$install_prefix/bin/llvm-config
+if [ ! -x "$llvm_config" ]; then
+    echo "build_llvm_octagram: error: install produced no llvm-config" >&2
+    exit 1
+fi
+
+echo
+echo "libLLVM for x86_64-unknown-octagram installed at $install_prefix"
+"$llvm_config" --version || true
+echo "  static libs: $("$llvm_config" --libdir 2>/dev/null || echo "$install_prefix/lib")"
+echo
+echo "Next: tools/bootstrap_rustc_octagram.sh --llvm-prefix $install_prefix"
+echo "The produced binaries are OCTAGRAM ELFs: they cannot be executed on this"
+echo "host. Guest verification requires copying them into an image and running"
+echo "them from the OCTAGRAM shell."

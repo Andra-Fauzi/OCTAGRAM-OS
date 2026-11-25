@@ -104,6 +104,20 @@ Urutan ini sengaja dimulai dari komponen yang bisa diuji hari ini.
 Angka di atas adalah perkiraan kasar, bukan komitmen; tahap M4.3.1–M4.3.3
 adalah bagian yang paling tidak pasti karena bergantung pada port C++ runtime.
 
+Scaffolding M4.3.3–M4.3.4 yang sekarang ada di repo (belum pernah dijalankan
+sampai selesai, jadi bukan bukti gate):
+
+- `make -C user sysroot` + `tools/stage_octagram_sysroot.py` — sysroot target
+  dengan header, `crt0.o`, `libc.a`, `libc++.a`, `libcxxrt.a`, dan `octagram.ld`.
+- `user/toolchain/bin/{octagram-cc,x86_64-octagram-gcc,x86_64-octagram-g++,
+  x86_64-octagram-ld}` dan `user/toolchain/octagram-toolchain.cmake` — driver
+  compiler/linker yang bisa dipanggil CMake dan rustc.
+- `tools/build_llvm_octagram.sh` — libLLVM statis + `llvm-config` (M4.3.3);
+  runbook: [rust-llvm-octagram-build.md](rust-llvm-octagram-build.md).
+- `tools/bootstrap_rustc_octagram.sh` — `config.toml` bootstrap
+  host=`x86_64-unknown-octagram`, patch Rust/libc, stage 2 `rustc`/`cargo`;
+  runbook: [rustc-native-bootstrap-runbook.md](rustc-native-bootstrap-runbook.md).
+
 ## 6. Langkah awal yang diimplementasikan
 
 ### 6.1. M4.3.0 — object `rustc` ditautkan oleh `ld` native

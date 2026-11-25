@@ -56,6 +56,11 @@ TCC_SUPPORT_CFLAGS := $(CFLAGS) -fPIC -fno-omit-frame-pointer \
 	-Ithird_party/tinycc
 TCC_LIBTCC1 := build/libtcc1.a
 TCC_LIBC := build/libc.a
+# Sysroot consumed by the native toolchain builds (libLLVM, then rustc). It is
+# assembled from the same objects the guest programs link against, so the
+# toolchain cannot drift from the image. See user/toolchain/README.md.
+SYSROOT := build/sysroot-octagram
+CXX_RUNTIME_ARCHIVE := build/libcxxrt.a
 LDSO_ELF := build/ld-octagram.elf
 DYNAMIC_DEMO := build/dynamic_demo.elf
 COPY_DEMO := build/copy_reloc_demo.elf
@@ -68,7 +73,7 @@ DYNAMIC_LIBRARY := build/libdyn_demo.so
 SHARED_LIBC := build/liboctagram.so
 LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 
-.PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test compiler-rt-test cpp-header-test libcxx-header-check dynamic
+.PHONY: all clean rust sysroot scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test compiler-rt-test cpp-header-test libcxx-header-check dynamic
 CPP_SMOKE := build/cpp_smoke.elf
 
 all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(LIBCXX_IOSTREAM_SMOKE) $(LIBCXX_THREAD_SMOKE) $(LIBCXX_FS_SMOKE) $(LIBCXX_CONTAINER_SMOKE) $(LIBCXX_FORMAT_SMOKE) $(OCTAGRAM_CARGO) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
@@ -366,6 +371,19 @@ $(OCTAGRAM_CARGO): build/octagram_cargo.o build/libcxx_runtime.o \
 
 build/libcxx_runtime.o: libcxx_runtime.cpp $(HEADERS) | build
 	$(CXX) $(LIBCXX_CXXFLAGS) -c -o $@ $<
+
+# C++ runtime objects a static OCTAGRAM C++ program needs: operator new/delete,
+# guarded statics, __cxa_thread_atexit, and the libc++ runtime shims.
+$(CXX_RUNTIME_ARCHIVE): build/cxx_runtime.o build/libcxx_runtime.o
+	rm -f $@
+	$(AR) rcs $@ $^
+
+# Stable sysroot for cross builds of the toolchain itself (libLLVM, rustc).
+# It copies headers plus the archives above; nothing here changes how guest
+# programs are built.
+sysroot: $(TCC_LIBC) $(LIBCXX_ARCHIVE) $(CXX_RUNTIME_ARCHIVE) build/crt0.o \
+		linker.ld $(HEADERS) $(LIBCXX_HEADERS)
+	python3 ../tools/stage_octagram_sysroot.py --build-dir build --output $(SYSROOT)
 
 build/libcxx_smoke.o: examples/libcxx_smoke.cpp $(HEADERS) | build
 	$(CXX) $(LIBCXX_CXXFLAGS) -c -o $@ $<

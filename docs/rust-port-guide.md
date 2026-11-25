@@ -46,9 +46,11 @@ dipanggil dari shell, bukan cross-build dari host.
 | POSIX regex (`regcomp`/`regexec`/`regerror`/`regfree`, ERE+BRE) | engine diverifikasi di host (`REGEX-HOST-PASS`); marker guest sudah dipasang | `build/regex.o`, `build/toolchain_demo.elf`, marker `TOOLCHAIN-PASS` |
 | `std::random`, `std::regex`, `std::chrono` | dibangun di host; guest menunggu QEMU | probe fs yang sama |
 | POSIX `stat` timespec, `S_ISBLK/FIFO/SOCK`, `_PC_*`, `sendfile` | terbukti di host | `include/sys/stat.h`, `include/unistd.h`, `runtime.c` |
-| libLLVM untuk host OCTAGRAM | **belum** | — |
-| `rustc` native (`rustc --version` di guest) | **belum** | — |
-| `cargo` native | **belum** | — |
+| Sysroot toolchain target | dibangun di host | `make -C user sysroot` → `user/build/sysroot-octagram/sysroot.json` |
+| Driver compiler `x86_64-octagram-gcc`/`g++`/`ld` | tersedia | `user/toolchain/bin/octagram-cc`, [user/toolchain/README.md](../user/toolchain/README.md) |
+| libLLVM statis untuk host OCTAGRAM | **scaffolding, belum dijalankan** | `tools/build_llvm_octagram.sh`, [rust-llvm-octagram-build.md](rust-llvm-octagram-build.md) |
+| Bootstrap `rustc` host OCTAGRAM | **scaffolding, belum dijalankan** | `tools/bootstrap_rustc_octagram.sh`, [rustc-native-bootstrap-runbook.md](rustc-native-bootstrap-runbook.md) |
+| `cargo` sebagai perintah shell | driver C++ offline ada di image | `/bin/cargo`, marker `OCTAGRAM-CARGO-PASS` |
 
 Catatan: “terbukti di host” berarti build/taut/link diperiksa di mesin
 pengembang. Marker guest sudah ada di harness, tetapi **belum dijalankan pada

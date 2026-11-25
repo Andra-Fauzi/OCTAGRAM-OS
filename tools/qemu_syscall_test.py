@@ -500,7 +500,9 @@ def main():
     # metadata. It does not claim to be upstream Cargo, and it is not asked to
     # build here because no rustc exists in the guest yet.
     cargo_offset = len(serial_text())
-    send_line("octagram-cargo --locked plan --manifest-path /cargo-demo/Cargo.toml")
+    # `cargo` is the shell-facing name of the octagram-cargo driver: the
+    # probe exercises the name a user types, not only the explicit binary.
+    send_line("cargo --locked plan --manifest-path /cargo-demo/Cargo.toml")
     if not wait_for_after("demo-lib 0.1.0", cargo_offset, 30):
         print("OCTAGRAM-CARGO-FAIL: plan did not list the path dependency")
         print(serial_text()[-6000:])
@@ -515,7 +517,7 @@ def main():
         return 1
 
     metadata_offset = len(serial_text())
-    send_line("octagram-cargo metadata --manifest-path /cargo-demo/Cargo.toml")
+    send_line("cargo metadata --manifest-path /cargo-demo/Cargo.toml")
     if not wait_for_after("\"name\": \"demo_lib\"", metadata_offset, 30):
         print("OCTAGRAM-CARGO-FAIL: metadata did not describe the lib target")
         print(serial_text()[-6000:])

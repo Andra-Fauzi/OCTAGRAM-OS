@@ -1,0 +1,119 @@
+#!/bin/sh
+# octagram-cc: host GCC driven as a freestanding compiler for OCTAGRAM's ABI.
+#
+# OCTAGRAM userspace is static x86_64 ET_EXEC linked with user/linker.ld and
+# OCTAGRAM's own libc/libc++, so a full cross toolchain is not required: the
+# host compiler in freestanding mode produces the same code the in-tree
+# Makefile produces. Wrapping it in a driver gives CMake and rustc the single
+# compiler program they expect (CMAKE_C_COMPILER, -C linker=...).
+#
+# Usage: octagram-cc c|c++ [compiler arguments...]
+#   x86_64-octagram-gcc / x86_64-octagram-g++ are thin wrappers around this.
+#
+# Environment:
+#   OCTAGRAM_SYSROOT  sysroot produced by `make -C user sysroot`
+#                     (default: <repo>/user/build/sysroot-octagram)
+#   OCTAGRAM_HOST_CC  host C compiler (default: gcc)
+#   OCTAGRAM_HOST_CXX host C++ compiler (default: g++)
+set -eu
+
+language=${1:-c}
+if [ $# -gt 0 ]; then
+    shift
+fi
+case $language in
+    c|c++) ;;
+    *)
+        echo "octagram-cc: error: language must be 'c' or 'c++', got '$language'" >&2
+        exit 2
+        ;;
+esac
+
+self=$0
+case $self in
+    */*) bin_dir=$(cd "$(dirname "$self")" && pwd) ;;
+    *) bin_dir=$(cd "$(dirname "$(command -v -- "$self")")" && pwd) ;;
+esac
+toolchain_dir=$(cd "$bin_dir/.." && pwd)
+repo_root=$(cd "$toolchain_dir/../.." && pwd)
+sysroot=${OCTAGRAM_SYSROOT:-$repo_root/user/build/sysroot-octagram}
+linker_script=$sysroot/usr/lib/octagram.ld
+
+if [ ! -d "$sysroot/usr/include" ] || [ ! -f "$linker_script" ]; then
+    echo "octagram-cc: error: no OCTAGRAM sysroot at $sysroot" >&2
+    echo "octagram-cc: run 'make -C user sysroot' before building target code" >&2
+    exit 1
+fi
+
+if [ "$language" = c++ ]; then
+    host_cc=${OCTAGRAM_HOST_CXX:-g++}
+else
+    host_cc=${OCTAGRAM_HOST_CC:-gcc}
+fi
+
+if ! command -v "$host_cc" >/dev/null 2>&1; then
+    echo "octagram-cc: error: host compiler '$host_cc' not found" >&2
+    exit 1
+fi
+
+# GCC's own freestanding headers (stdarg.h, stddef.h, ...) still come from the
+# host installation; everything else must come from the OCTAGRAM sysroot so a
+# glibc header can never be picked up by accident.
+gcc_include=$("$host_cc" -print-file-name=include)
+
+flags="-ffreestanding -fno-builtin -fno-stack-protector -fno-pie -fno-pic \
+-mno-red-zone -mcmodel=small -march=x86-64 -mtune=generic -mno-avx -mno-avx2 \
+-mno-avx512f -mno-mmx -msse2 -fno-omit-frame-pointer \
+-fno-asynchronous-unwind-tables -nostdinc"
+
+# GCC's own freestanding headers are for C only. C++ must see libc++'s
+# <stddef.h>/<stdarg.h> wrappers first, otherwise libc++'s consistency checks
+# (#error in <cstddef>, <cstdint>) fire on gcc's copies.
+includes="-isystem $sysroot/usr/include"
+language_flags=
+if [ "$language" = c++ ]; then
+    # Same order as LIBCXX_FLAGS in user/Makefile: libc++ headers, then
+    # OCTAGRAM's C headers (reached through #include_next), then libc++'s src/
+    # directory so __has_include_next in user/include/features.h has a
+    # directory after include/ to search.
+    includes="-isystem $sysroot/usr/include/c++/v1 $includes -isystem $sysroot/usr/include/c++/src"
+    language_flags="-fno-exceptions -fno-rtti -fno-threadsafe-statics -std=c++17"
+else
+    includes="-isystem $gcc_include $includes"
+fi
+flags="$flags $includes $language_flags"
+
+# Compile-only invocations must not receive link flags.
+linking=1
+for argument in "$@"; do
+    case $argument in
+        -c|-E|-S|-M|-MM|-fsyntax-only) linking=0 ;;
+    esac
+done
+
+if [ "$linking" -eq 0 ]; then
+    # shellcheck disable=SC2086 # flags is intentionally word-split.
+    exec "$host_cc" $flags "$@"
+fi
+
+# Start files: rustc and CMake expect the linker driver to supply them. A
+# caller that passes crt0.o or -nostartfiles keeps full control.
+startfiles=1
+for argument in "$@"; do
+    case $argument in
+        -nostartfiles|crt0.o|*/crt0.o) startfiles=0 ;;
+    esac
+done
+
+libs="-lc -lgcc"
+if [ "$language" = c++ ]; then
+    libs="-lc++ -lcxxrt -lc -lgcc"
+fi
+
+if [ "$startfiles" -eq 1 ]; then
+    set -- "$sysroot/usr/lib/crt0.o" "$@"
+fi
+
+# shellcheck disable=SC2086 # flags and libs are intentionally word-split.
+exec "$host_cc" $flags -nostdlib -static -Wl,-T,"$linker_script" \
+    -Wl,--build-id=none "$@" -L"$sysroot/usr/lib" $libs

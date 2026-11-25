@@ -994,6 +994,11 @@ pub fn init() {
             "/share/octagram",
             "/include",
             "/include/sys",
+            // Staging area for a native toolchain (rustc, cargo, LLD). It is
+            // searched last by the shell so a guest-installed toolchain never
+            // shadows a system program.
+            "/toolchain",
+            "/toolchain/bin",
             "/tmp",
             "/home",
             "/home/octagram",
@@ -1090,7 +1095,10 @@ pub fn init() {
             TOOLCHAIN_DEMO_ELF,
             0o755,
         );
+        // `cargo` is the name the shell user types; `octagram-cargo` stays as
+        // the explicit driver name used by docs and older probes.
         seed_file(&mut vfs, "/bin/octagram-cargo", OCTAGRAM_CARGO_ELF, 0o755);
+        seed_file(&mut vfs, "/bin/cargo", OCTAGRAM_CARGO_ELF, 0o755);
         // A tiny Cargo workspace for `octagram-cargo plan` to resolve. It is
         // not compiled: the probe only exercises manifest/lock parsing, path
         // dependency ordering, and metadata output.
@@ -1301,6 +1309,17 @@ mod tests {
             assert!(rust_hello_octagram.len > 0);
             assert_eq!(vfs.read("/bin/rust-hello-octagram", 0, &mut magic), Ok(4));
             assert_eq!(&magic, b"\x7FELF");
+
+            let cargo = vfs.metadata("/bin/cargo").unwrap();
+            assert_eq!(cargo.permissions, 0o755);
+            assert!(cargo.len > 0);
+            assert_eq!(vfs.read("/bin/cargo", 0, &mut magic), Ok(4));
+            assert_eq!(&magic, b"\x7FELF");
+
+            // /toolchain/bin is the staging directory for a native toolchain:
+            // it must exist before rustc can be installed into the image.
+            assert!(vfs.metadata("/toolchain").is_ok());
+            assert!(vfs.metadata("/toolchain/bin").is_ok());
 
             for path in ["/bin/gcc", "/bin/rustc", "/bin/chibicc"] {
                 assert_eq!(vfs.metadata(path), Err(FsError::NotFound));

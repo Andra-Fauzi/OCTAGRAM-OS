@@ -288,6 +288,7 @@ const HELP_ENTRIES: &[&str] = &[
     "cc <input.c> -o <out.elf> compile the kernel C subset",
     "tcc <input.c> [options] compile C with native TinyCC",
     "tcc <input.c> [-o <out.elf>] compile C with TinyCC",
+    "cargo plan|build|check|metadata  run the native Cargo driver",
     "echo <text>            print text",
     "run <path>             run a static x86_64 ELF",
     "runp <elf> <elf>...    run multiple ELFs with timer preemption",

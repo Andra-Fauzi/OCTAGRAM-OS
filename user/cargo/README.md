@@ -18,12 +18,18 @@ seterusnya.
 | `plan` | resolve workspace members and path dependencies, print build order, targets, and dependencies |
 | `build` | resolve, fingerprint sources, invoke `rustc` per target with Cargo-compatible arguments |
 | `check` | same resolution, `--emit=metadata` instead of an output file |
+| `run` | build, then execute the binary target (the only one, or `--bin NAME`); arguments after `--` are passed to the program |
 | `clean` | remove the target directory |
 | `metadata` | print a minimal JSON description (packages, targets, source paths) |
 | `version` | print the driver version |
 
 Options: `--manifest-path`, `--target-dir`, `--profile`, `--release`,
-`--rustc`, `--locked`, `--offline`, `-v`.
+`--rustc`, `--bin`, `--locked`, `--offline`, `-v`, and `-- ARGS...` for `run`.
+
+`run` replaces the driver process with the built binary (like `cargo run`), so
+the program inherits the terminal and its exit status is the shell's status.
+It needs a native `rustc`: once the toolchain is installed in `/toolchain/bin`,
+`cargo run --manifest-path /cargo-demo/Cargo.toml` builds and runs in one step.
 
 ## Deliberate limits
 

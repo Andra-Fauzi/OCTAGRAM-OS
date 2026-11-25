@@ -18,7 +18,7 @@
 // rather than silently ignored.
 //
 // Build: make -C user build/octagram-cargo.elf
-// Run in the guest: octagram-cargo plan|build|check|clean|metadata
+// Run in the guest: octagram-cargo plan|build|check|run|clean|metadata
 
 #include <algorithm>
 #include <cerrno>
@@ -659,8 +659,9 @@ int run_process(const std::vector<std::string>& arguments)
     }
     if (child == 0) {
         execvp(argv[0], argv.data());
-        const char* message = "octagram-cargo: cannot execute rustc\n";
-        (void)!write(2, message, std::strlen(message));
+        const std::string message =
+            std::string("octagram-cargo: cannot execute ") + argv[0] + "\n";
+        (void)!write(2, message.c_str(), message.size());
         _exit(127);
     }
     int status = 0;
@@ -683,6 +684,9 @@ struct Options {
     bool offline = true;   // always true: no registry support
     bool locked = false;
     bool verbose = false;
+    // `cargo run` selection: --bin NAME, plus everything after `--`.
+    std::string bin;
+    std::vector<std::string> run_arguments;
     std::vector<std::string> cargo_arguments;
 };
 
@@ -851,6 +855,54 @@ int build_workspace(const Workspace& workspace, const Options& options, bool che
     return 0;
 }
 
+// `run` is the shell workflow `cargo build` alone cannot give: compile with
+// the native rustc, then replace this process with the produced binary so the
+// program owns the terminal, its exit status, and any arguments after `--`.
+int run_target(const Workspace& workspace, const Options& options)
+{
+    int status = build_workspace(workspace, options, false);
+    if (status != 0) {
+        return status;
+    }
+
+    const Target* selected = nullptr;
+    for (const Manifest& manifest : workspace.order()) {
+        for (const Target& target : manifest.targets) {
+            if (target.kind != "bin") {
+                continue;
+            }
+            if (!options.bin.empty() && target.name != options.bin) {
+                continue;
+            }
+            if (selected != nullptr) {
+                fail("multiple binary targets; pass --bin NAME");
+            }
+            selected = &target;
+        }
+    }
+    if (selected == nullptr) {
+        if (options.bin.empty()) {
+            fail("no binary target in this workspace");
+        }
+        fail("no binary target named " + options.bin);
+    }
+
+    fs::path executable =
+        fs::absolute(options.target_directory) / options.profile / target_output_name(*selected);
+    std::error_code error;
+    if (!fs::exists(executable, error)) {
+        fail("built binary is missing: " + executable.string());
+    }
+
+    std::vector<std::string> arguments;
+    arguments.push_back(executable.string());
+    for (const std::string& argument : options.run_arguments) {
+        arguments.push_back(argument);
+    }
+    std::cout << "running " << executable.string() << "\n";
+    return run_process(arguments);
+}
+
 void clean(const Options& options)
 {
     std::error_code error;
@@ -919,6 +971,14 @@ Options parse_options(const std::vector<std::string>& arguments)
             options.offline = true;
         } else if (argument == "--locked") {
             options.locked = true;
+        } else if (argument == "--bin") {
+            options.bin = next("--bin");
+        } else if (argument == "--") {
+            // Everything after `--` belongs to the program, not to the driver.
+            for (size_t rest = index + 1; rest < arguments.size(); ++rest) {
+                options.run_arguments.push_back(arguments[rest]);
+            }
+            break;
         } else if (argument == "--verbose" || argument == "-v") {
             options.verbose = true;
         } else if (argument == "--help" || argument == "-h") {
@@ -939,6 +999,7 @@ void usage()
               << "commands:\n"
               << "  plan      resolve the workspace and print the build order\n"
               << "  build     compile every target with rustc\n"
+              << "  run       build, then execute the binary target\n"
               << "  check     type-check every target (--emit=metadata)\n"
               << "  clean     remove the target directory\n"
               << "  metadata  print a minimal JSON workspace description\n"
@@ -949,9 +1010,11 @@ void usage()
               << "  --profile NAME         dev or release\n"
               << "  --release              shorthand for --profile release\n"
               << "  --rustc PATH           rustc executable (default $RUSTC or rustc)\n"
+              << "  --bin NAME             binary target to run (default: the only one)\n"
               << "  --locked               require Cargo.lock to cover every package\n"
               << "  --offline              accepted; registry access is never used\n"
-              << "  -v, --verbose          print rustc command lines\n";
+              << "  -v, --verbose          print rustc command lines\n"
+              << "  -- ARGS...             arguments passed to the program by run\n";
 }
 
 int run(int argc, char** argv)
@@ -1009,6 +1072,9 @@ int run(int argc, char** argv)
     }
     if (command == "check") {
         return build_workspace(workspace, options, true);
+    }
+    if (command == "run") {
+        return run_target(workspace, options);
     }
     fail("unknown command: " + command);
 }

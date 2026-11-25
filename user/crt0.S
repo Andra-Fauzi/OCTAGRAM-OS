@@ -38,9 +38,11 @@ _start:
     mov %rdi, %r12
     mov %rsi, %r13
     /* Run C++ static constructors (.init_array) before main(). A freestanding
-       C program simply has an empty list. */
-    mov $__init_array_start, %rbx
-    mov $__init_array_end, %r14
+       C program simply has an empty list. The array bounds are addressed
+       RIP-relative: an absolute `mov $symbol` emits R_X86_64_32S, which a
+       dynamic (PIE) link rejects. */
+    lea __init_array_start(%rip), %rbx
+    lea __init_array_end(%rip), %r14
 .Lconstructors:
     cmp %r14, %rbx
     jae .Lconstructors_done
@@ -60,8 +62,8 @@ _start:
     call main
     mov %rax, %r12
     /* Run C++ static destructors (.fini_array) before exit(). */
-    mov $__fini_array_start, %rbx
-    mov $__fini_array_end, %r14
+    lea __fini_array_start(%rip), %rbx
+    lea __fini_array_end(%rip), %r14
 .Ldestructors:
     cmp %r14, %rbx
     jae .Ldestructors_done

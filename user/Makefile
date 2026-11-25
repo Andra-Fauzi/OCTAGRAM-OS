@@ -428,6 +428,10 @@ build/runtime.pic.o: runtime.c $(HEADERS) | build
 	$(CC) $(RUNTIME_PIC_CFLAGS) -c -o $@ $<
 	@echo "Undefined symbols in shared runtime object:"
 	@nm -u $@ || true
+	@echo "TLS relocations in shared runtime object:"
+	@readelf -rW $@ | grep -B2 -A2 -E 'TLS|tls_get_addr' || true
+	@echo "TLS declarations surviving shared-runtime preprocessing:"
+	@$(CC) $(RUNTIME_PIC_CFLAGS) -E -dD runtime.c | grep -n -E '__thread|_Thread_local' || true
 
 $(TCC_CONFIG): $(TCC_CONFIG_TEMPLATE)
 	cp $< $@

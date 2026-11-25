@@ -8,6 +8,8 @@ on:
     paths:
       - "user/rust/**"
       - "user/crt0.S"
+      - "user/linker.ld"
+      - "user/rust/Makefile"
       - "user/include/**"
       - "user/runtime.c"
       - "tools/rust_libc_abi_surface.json"
@@ -23,6 +25,8 @@ on:
     paths:
       - "user/rust/**"
       - "user/crt0.S"
+      - "user/linker.ld"
+      - "user/rust/Makefile"
       - "user/include/**"
       - "user/runtime.c"
       - "tools/rust_libc_abi_surface.json"
@@ -119,7 +123,7 @@ jobs:
           set -euo pipefail
           mkdir -p user/rust/build
           as --64 -o user/rust/build/crt0.o user/crt0.S
-          export RUSTFLAGS="-C linker=ld.lld -C link-arg=-T${GITHUB_WORKSPACE}/user/rust/linker.ld -C link-arg=${GITHUB_WORKSPACE}/user/rust/build/crt0.o -C link-arg=-u -C link-arg=__oct_tls_initialize -L native=${GITHUB_WORKSPACE}/user/build"
+          export RUSTFLAGS="-C linker=ld.lld -C link-arg=-T${GITHUB_WORKSPACE}/user/linker.ld -C link-arg=${GITHUB_WORKSPACE}/user/rust/build/crt0.o -C link-arg=-u -C link-arg=__oct_tls_initialize -L native=${GITHUB_WORKSPACE}/user/build"
           cargo +nightly -Zjson-target-spec -Zbuild-std=std build --release \
             --manifest-path user/rust/std-probe/Cargo.toml \
             --target user/rust/targets/x86_64-unknown-octagram.json \
@@ -182,7 +186,7 @@ jobs:
           set -euo pipefail
           mkdir -p user/rust/build
           as --64 -o user/rust/build/crt0.o user/crt0.S
-          export RUSTFLAGS="-C linker=ld.lld -C link-arg=-T${GITHUB_WORKSPACE}/user/rust/linker.ld -C link-arg=${GITHUB_WORKSPACE}/user/rust/build/crt0.o -L native=${GITHUB_WORKSPACE}/user/build"
+          export RUSTFLAGS="-C linker=ld.lld -C link-arg=-T${GITHUB_WORKSPACE}/user/linker.ld -C link-arg=${GITHUB_WORKSPACE}/user/rust/build/crt0.o -L native=${GITHUB_WORKSPACE}/user/build"
           cargo +nightly -Zjson-target-spec -Zbuild-std=std build --release \
             --manifest-path user/rust/std-probe/Cargo.toml \
             --target user/rust/targets/x86_64-unknown-octagram.json \

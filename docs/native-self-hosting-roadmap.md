@@ -3017,3 +3017,54 @@ tidak cocok/terpotong, dan round trip `strftime("%Y-%m-%d")` → `strptime`.
 **Validasi:** `make build/toolchain_demo.elf build/posix_search_demo.elf -j6`
 → `exit=0`, tanpa error/undefined symbol. Probe belum dijalankan di QEMU dari
 workspace ini.
+
+## 105. `fts`, `execvpe`, `posix_fallocate` (25 November 2026)
+
+`nftw` sudah bisa menelusuri pohon, tetapi API yang dipakai alat portabel untuk
+menelusuri sambil **mengubah** urutan (skip, ambil daftar anak, beberapa akar)
+adalah `fts`. Ronde ini menambahkan `<fts.h>` lengkap beserta implementasinya di
+`user/posix_extra.c`, plus tiga fungsi kecil yang selama ini hilang.
+
+**`fts_open`/`fts_read`/`fts_children`/`fts_set`/`fts_close`:**
+
+- `FTSENT` dialokasikan per entri dengan `fts_name` over-alokasi; `fts_path`
+  dibangun dari path induk, dan `fts_accpath` menunjuk ke path yang sama karena
+  tidak ada mode `chdir`.
+- Opsi yang benar-benar berlaku: `FTS_PHYSICAL` (`lstat`), `FTS_LOGICAL`
+  (`stat`, symlink menggantung → `FTS_SLNONE`), `FTS_COMFOLLOW` untuk akar,
+  `FTS_SEEDOT`, `FTS_XDEV` (berhenti di `st_dev` akar), dan `FTS_NOCHDIR`
+  (selalu benar). `FTS_NOSTAT` diterima tetapi **stat tetap dilakukan** karena
+  penelusuran butuh tipe entri — dicatat sebagai batasan.
+- `fts_read` mengembalikan `FTS_D` lalu anak-anaknya (materialisasi per
+direktori, diurutkan bila `compar` diberikan), lalu `FTS_DP` untuk direktori
+  yang sama. Direktori tak terbaca dilaporkan `FTS_DNR` (bukan `FTS_D` ganda),
+  entri tak terstat `FTS_NS`, dan siklus `(dev, ino)` terhadap leluhur
+  dilaporkan `FTS_DC` dengan `fts_cycle` menunjuk leluhurnya.
+- `fts_children` mengembalikan daftar anak (terhubung lewat `fts_link`) dan
+  memajukan `fts_read` ke kunjungan post-order, sesuai POSIX.
+- `fts_set(FTS_SKIP)` melewati sisa anak direktori yang sedang aktif;
+  `FTS_CHDIRED`/`FTS_DOT` adalah no-op karena tidak ada mode `chdir`.
+- Entri **ditahan sampai `fts_close`** agar pointer yang dipegang pemanggil
+  tidak menggantung; biayanya memori sebanding isi pohon, dan itu disebutkan
+  di komentar kode.
+
+**`execvpe`:** `execvp` dengan environment pemanggil. Pencarian `PATH` mengikuti
+aturan `execvp` yang sudah ada (elemen kosong = direktori saat ini, `EACCES`
+diingat bila kandidat berikutnya berhasil).
+
+**`posix_fallocate`:** tidak ada syscall `fallocate`, jadi ruang direservasi
+dengan `ftruncate` lalu `pwrite` satu byte nol di akhir — implementasi portabel
+yang diizinkan POSIX. Nilai baliknya **nomor error** (`0` bila sukses), bukan
+`-1`, sesuai standar.
+
+**`pthread_setname_np`/`pthread_getname_np`:** kernel tidak punya nama per
+thread, jadi keduanya mengembalikan `ENOSYS` alih-alih menyimpan nama palsu.
+
+**Probe guest:** `test_fts` di `user/examples/posix_search_demo.c` (marker
+`POSIX-SEARCH-PASS`) menelusuri `/bin` (menghitung `FTS_D`/`FTS_F`/`FTS_DP`),
+mengambil daftar lewat `fts_children` (dan memastikan `fts_read` lanjut ke
+`FTS_DP`), memakai `FTS_SKIP`, menelusuri dua akar (`/bin` dan `/dev`), serta
+memastikan `fts_open(NULL, …)` ditolak.
+
+**Validasi:** `make build/posix_search_demo.elf -j6` → `exit=0`, tanpa
+error/undefined symbol. Probe belum dijalankan di QEMU dari workspace ini.

@@ -44,6 +44,7 @@ int close(int fd);
 int access(const char *path, int mode);
 int execve(const char *path, char *const argv[], char *const envp[]);
 int execvp(const char *file, char *const argv[]);
+int execvpe(const char *file, char *const argv[], char *const environment[]);
 pid_t fork(void);
 int link(const char *oldpath, const char *newpath);
 int linkat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath, int flags);

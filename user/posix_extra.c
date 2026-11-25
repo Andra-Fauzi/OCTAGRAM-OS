@@ -18,8 +18,10 @@
 #include <fnmatch.h>
 #include <getopt.h>
 #include <fcntl.h>
+#include <fts.h>
 #include <ftw.h>
 #include <glob.h>
+#include <pthread.h>
 #include <sched.h>
 #include <search.h>
 #include <stdarg.h>
@@ -3099,6 +3101,599 @@ char *strptime(const char *input, const char *format, struct tm *value)
         }
     }
     return (char *)cursor;
+}
+
+/* ---- fts ---------------------------------------------------------------- */
+
+/* A directory being walked. Children are materialised on first use so that a
+ * caller-supplied comparison can order them; fts_children then just hands that
+ * list over and fts_read resumes at the next sibling directory. */
+struct fts_frame {
+    FTSENT *entry;
+    DIR *directory;
+    FTSENT **children;
+    size_t count;
+    size_t index;
+    int listed;
+};
+
+struct _fts {
+    int options;
+    int (*compar)(const FTSENT **, const FTSENT **);
+    char **roots;
+    size_t root_count;
+    size_t root_index;
+    struct fts_frame *frames;
+    size_t depth;
+    size_t frame_capacity;
+    FTSENT **entries; /* everything allocated, released in fts_close */
+    size_t entry_count;
+    size_t entry_capacity;
+    int root_device_set;
+    dev_t root_device;
+    FTSENT *current;
+    int finished;
+};
+
+/* Every FTSENT is retained until fts_close: fts_read hands out pointers that
+ * the caller may keep, and releasing an entry early would dangle them. */
+static int fts_track(FTS *stream, FTSENT *entry)
+{
+    if (stream->entry_count == stream->entry_capacity) {
+        const size_t capacity = stream->entry_capacity != 0
+                                    ? stream->entry_capacity * 2
+                                    : 32;
+        FTSENT **grown = realloc(stream->entries, capacity * sizeof(*grown));
+        if (grown == NULL) {
+            errno = ENOMEM;
+            return -1;
+        }
+        stream->entries = grown;
+        stream->entry_capacity = capacity;
+    }
+    stream->entries[stream->entry_count++] = entry;
+    return 0;
+}
+
+static void fts_entry_release(FTSENT *entry)
+{
+    if (entry == NULL) {
+        return;
+    }
+    free(entry->fts_path);
+    free(entry->fts_statp);
+    free(entry);
+}
+
+static FTSENT *fts_entry_create(const char *parent_path, const char *name,
+                                short level)
+{
+    const size_t name_length = strlen(name);
+    FTSENT *entry = calloc(1, offsetof(FTSENT, fts_name) + name_length + 1);
+    if (entry == NULL) {
+        return NULL;
+    }
+
+    size_t parent_length = 0;
+    size_t join = 0;
+    if (parent_path != NULL) {
+        parent_length = strlen(parent_path);
+        if (parent_length != 0 && parent_path[parent_length - 1] != '/') {
+            join = 1;
+        }
+    }
+    const size_t path_length = parent_length + join + name_length;
+    entry->fts_path = malloc(path_length + 1);
+    if (entry->fts_path == NULL) {
+        free(entry);
+        return NULL;
+    }
+    if (parent_length != 0) {
+        memcpy(entry->fts_path, parent_path, parent_length);
+    }
+    if (join != 0) {
+        entry->fts_path[parent_length] = '/';
+    }
+    memcpy(entry->fts_path + parent_length + join, name, name_length + 1);
+
+    memcpy(entry->fts_name, name, name_length + 1);
+    entry->fts_namelen = (unsigned short)name_length;
+    entry->fts_pathlen = (unsigned short)(path_length > 65535 ? 65535 : path_length);
+    entry->fts_accpath = entry->fts_path;
+    entry->fts_symfd = -1;
+    entry->fts_level = level;
+    entry->fts_info = FTS_INIT;
+    return entry;
+}
+
+static unsigned short fts_classify(mode_t mode)
+{
+    if (S_ISDIR(mode)) {
+        return FTS_D;
+    }
+    if (S_ISLNK(mode)) {
+        return FTS_SL;
+    }
+    if (S_ISREG(mode)) {
+        return FTS_F;
+    }
+    return FTS_DEFAULT;
+}
+
+static void fts_entry_stat(FTS *stream, FTSENT *entry, int is_root)
+{
+    struct stat metadata;
+    const int follow = (stream->options & FTS_LOGICAL) != 0 ||
+                       (is_root != 0 && (stream->options & FTS_COMFOLLOW) != 0);
+
+    int status = follow ? stat(entry->fts_path, &metadata)
+                        : lstat(entry->fts_path, &metadata);
+    if (status < 0 && follow != 0) {
+        /* A dangling symlink under FTS_LOGICAL is FTS_SLNONE, not FTS_NS. */
+        struct stat link_metadata;
+        if (lstat(entry->fts_path, &link_metadata) == 0 &&
+            S_ISLNK(link_metadata.st_mode)) {
+            metadata = link_metadata;
+            status = 0;
+            entry->fts_info = FTS_SLNONE;
+        }
+    }
+    if (status < 0) {
+        entry->fts_info = FTS_NS;
+        entry->fts_errno = errno;
+        return;
+    }
+
+    entry->fts_statp = malloc(sizeof(metadata));
+    if (entry->fts_statp == NULL) {
+        entry->fts_info = FTS_ERR;
+        entry->fts_errno = ENOMEM;
+        return;
+    }
+    *entry->fts_statp = metadata;
+    entry->fts_ino = metadata.st_ino;
+    entry->fts_dev = metadata.st_dev;
+    entry->fts_nlink = metadata.st_nlink;
+    if (entry->fts_info != FTS_SLNONE) {
+        entry->fts_info = fts_classify(metadata.st_mode);
+    }
+
+    if (is_root != 0 && stream->root_device_set == 0) {
+        stream->root_device = metadata.st_dev;
+        stream->root_device_set = 1;
+    }
+}
+
+static FTSENT *fts_find_cycle(FTS *stream, const FTSENT *entry)
+{
+    for (size_t index = stream->depth; index > 0; --index) {
+        FTSENT *ancestor = stream->frames[index - 1].entry;
+        if (ancestor != NULL && ancestor->fts_statp != NULL &&
+            ancestor->fts_ino == entry->fts_ino &&
+            ancestor->fts_dev == entry->fts_dev) {
+            return ancestor;
+        }
+    }
+    return NULL;
+}
+
+static int fts_push_directory(FTS *stream, FTSENT *entry)
+{
+    if ((stream->options & FTS_XDEV) != 0 && stream->root_device_set != 0 &&
+        entry->fts_dev != stream->root_device) {
+        /* Same filesystem only: report the directory but do not descend. */
+        return 0;
+    }
+    DIR *directory = opendir(entry->fts_path);
+    if (directory == NULL) {
+        entry->fts_info = FTS_DNR;
+        entry->fts_errno = errno;
+        return -1;
+    }
+    if (stream->depth == stream->frame_capacity) {
+        const size_t capacity =
+            stream->frame_capacity != 0 ? stream->frame_capacity * 2 : 16;
+        struct fts_frame *grown =
+            realloc(stream->frames, capacity * sizeof(*grown));
+        if (grown == NULL) {
+            closedir(directory);
+            entry->fts_info = FTS_ERR;
+            entry->fts_errno = ENOMEM;
+            errno = ENOMEM;
+            return -1;
+        }
+        stream->frames = grown;
+        stream->frame_capacity = capacity;
+    }
+    struct fts_frame *frame = &stream->frames[stream->depth++];
+    memset(frame, 0, sizeof(*frame));
+    frame->entry = entry;
+    frame->directory = directory;
+    return 0;
+}
+
+static void fts_frame_release(struct fts_frame *frame)
+{
+    if (frame->directory != NULL) {
+        closedir(frame->directory);
+        frame->directory = NULL;
+    }
+    free(frame->children);
+    frame->children = NULL;
+    frame->count = 0;
+    frame->index = 0;
+    frame->listed = 0;
+}
+
+static int fts_frame_materialize(FTS *stream, struct fts_frame *frame)
+{
+    frame->listed = 1;
+    if (frame->directory == NULL) {
+        return 0;
+    }
+
+    size_t capacity = 8;
+    size_t count = 0;
+    FTSENT **children = malloc(capacity * sizeof(*children));
+    if (children == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    const short child_level = (short)(frame->entry->fts_level + 1);
+    for (;;) {
+        errno = 0;
+        struct dirent *dirent = readdir(frame->directory);
+        if (dirent == NULL) {
+            if (errno != 0) {
+                const int error = errno;
+                free(children);
+                closedir(frame->directory);
+                frame->directory = NULL;
+                errno = error;
+                return -1;
+            }
+            break;
+        }
+        const char *name = dirent->d_name;
+        if ((stream->options & FTS_SEEDOT) == 0 &&
+            (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)) {
+            continue;
+        }
+        if (count == capacity) {
+            const size_t grown_capacity = capacity * 2;
+            FTSENT **grown =
+                realloc(children, grown_capacity * sizeof(*children));
+            if (grown == NULL) {
+                free(children);
+                errno = ENOMEM;
+                return -1;
+            }
+            children = grown;
+            capacity = grown_capacity;
+        }
+        FTSENT *child =
+            fts_entry_create(frame->entry->fts_path, name, child_level);
+        if (child == NULL || fts_track(stream, child) < 0) {
+            fts_entry_release(child);
+            free(children);
+            errno = ENOMEM;
+            return -1;
+        }
+        child->fts_parent = frame->entry;
+        fts_entry_stat(stream, child, 0);
+        if (child->fts_info == FTS_D) {
+            FTSENT *cycle = fts_find_cycle(stream, child);
+            if (cycle != NULL) {
+                child->fts_info = FTS_DC;
+                child->fts_cycle = cycle;
+            }
+        }
+        children[count++] = child;
+    }
+
+    closedir(frame->directory);
+    frame->directory = NULL;
+
+    if (stream->compar != NULL) {
+        for (size_t index = 1; index < count; ++index) {
+            FTSENT *current = children[index];
+            size_t position = index;
+            while (position > 0 &&
+                   stream->compar((const FTSENT **)&children[position - 1],
+                                  (const FTSENT **)&current) > 0) {
+                children[position] = children[position - 1];
+                --position;
+            }
+            children[position] = current;
+        }
+    }
+    for (size_t index = 0; index < count; ++index) {
+        children[index]->fts_link =
+            index + 1 < count ? children[index + 1] : NULL;
+    }
+
+    frame->children = children;
+    frame->count = count;
+    frame->index = 0;
+    return 0;
+}
+
+FTS *fts_open(char *const *path_argv, int options,
+              int (*compar)(const FTSENT **, const FTSENT **))
+{
+    if (path_argv == NULL || path_argv[0] == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    FTS *stream = calloc(1, sizeof(*stream));
+    if (stream == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    stream->options = options;
+    stream->compar = compar;
+
+    size_t count = 0;
+    while (path_argv[count] != NULL) {
+        ++count;
+    }
+    stream->roots = calloc(count, sizeof(*stream->roots));
+    if (stream->roots == NULL) {
+        free(stream);
+        errno = ENOMEM;
+        return NULL;
+    }
+    for (size_t index = 0; index < count; ++index) {
+        stream->roots[index] = strdup(path_argv[index]);
+        if (stream->roots[index] == NULL) {
+            stream->root_count = index;
+            fts_close(stream);
+            errno = ENOMEM;
+            return NULL;
+        }
+        stream->root_count = index + 1;
+    }
+    return stream;
+}
+
+FTSENT *fts_read(FTS *stream)
+{
+    if (stream == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (stream->finished != 0) {
+        errno = 0;
+        return NULL;
+    }
+
+    if (stream->depth > 0) {
+        struct fts_frame *frame = &stream->frames[stream->depth - 1];
+        if (frame->listed == 0 && fts_frame_materialize(stream, frame) < 0) {
+            stream->finished = 1;
+            return NULL;
+        }
+        if (frame->index < frame->count) {
+            FTSENT *entry = frame->children[frame->index++];
+            if (entry->fts_info == FTS_D) {
+                (void)fts_push_directory(stream, entry);
+            }
+            stream->current = entry;
+            errno = 0;
+            return entry;
+        }
+        FTSENT *directory = frame->entry;
+        fts_frame_release(frame);
+        stream->depth--;
+        directory->fts_info = FTS_DP;
+        stream->current = directory;
+        errno = 0;
+        return directory;
+    }
+
+    if (stream->root_index < stream->root_count) {
+        const char *path = stream->roots[stream->root_index++];
+        FTSENT *entry = fts_entry_create(NULL, path, 0);
+        if (entry == NULL || fts_track(stream, entry) < 0) {
+            fts_entry_release(entry);
+            stream->finished = 1;
+            errno = ENOMEM;
+            return NULL;
+        }
+        fts_entry_stat(stream, entry, 1);
+        if (entry->fts_info == FTS_D) {
+            (void)fts_push_directory(stream, entry);
+        }
+        stream->current = entry;
+        errno = 0;
+        return entry;
+    }
+
+    stream->finished = 1;
+    errno = 0;
+    return NULL;
+}
+
+FTSENT *fts_children(FTS *stream, int instructions)
+{
+    (void)instructions;
+    if (stream == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (stream->depth == 0) {
+        errno = 0;
+        return NULL;
+    }
+    struct fts_frame *frame = &stream->frames[stream->depth - 1];
+    if (frame->entry == NULL || stream->current != frame->entry) {
+        errno = 0;
+        return NULL;
+    }
+    if (frame->listed == 0) {
+        if (fts_frame_materialize(stream, frame) < 0) {
+            errno = 0;
+            return NULL;
+        }
+        /* The caller now owns the traversal of these entries. */
+        frame->index = frame->count;
+    }
+    errno = 0;
+    return frame->count != 0 ? frame->children[0] : NULL;
+}
+
+int fts_set(FTS *stream, FTSENT *entry, int instructions)
+{
+    if (stream == NULL || entry == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (instructions == FTS_SKIP) {
+        if (stream->depth > 0) {
+            struct fts_frame *frame = &stream->frames[stream->depth - 1];
+            if (frame->entry == entry) {
+                frame->index = frame->count;
+            }
+        }
+        return 0;
+    }
+    if (instructions == FTS_CHDIRED || instructions == FTS_DOT) {
+        /* There is no chdir mode, so both are no-ops here. */
+        return 0;
+    }
+    errno = EINVAL;
+    return -1;
+}
+
+int fts_close(FTS *stream)
+{
+    if (stream == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    while (stream->depth > 0) {
+        --stream->depth;
+        fts_frame_release(&stream->frames[stream->depth]);
+    }
+    free(stream->frames);
+    for (size_t index = 0; index < stream->entry_count; ++index) {
+        fts_entry_release(stream->entries[index]);
+    }
+    free(stream->entries);
+    for (size_t index = 0; index < stream->root_count; ++index) {
+        free(stream->roots[index]);
+    }
+    free(stream->roots);
+    free(stream);
+    return 0;
+}
+
+/* ---- execvpe ------------------------------------------------------------ */
+
+/* execvp with a caller-supplied environment. The PATH search follows the same
+ * rules as the existing execvp: an empty element means the current directory,
+ * and EACCES keeps being remembered in case a later candidate works. */
+int execvpe(const char *file, char *const argv[], char *const environment[])
+{
+    if (file == NULL || file[0] == '\0') {
+        errno = ENOENT;
+        return -1;
+    }
+    if (strchr(file, '/') != NULL) {
+        return execve(file, argv, environment);
+    }
+
+    const char *path = getenv("PATH");
+    if (path == NULL) {
+        path = "/bin:/usr/bin";
+    }
+
+    int saw_eacces = 0;
+    const char *cursor = path;
+    for (;;) {
+        const char *colon = strchr(cursor, ':');
+        const size_t length = colon != NULL ? (size_t)(colon - cursor) : strlen(cursor);
+        const size_t needed = length + (length != 0 ? 1 : 0) + strlen(file) + 1;
+        char *candidate = malloc(needed);
+        if (candidate == NULL) {
+            errno = ENOMEM;
+            return -1;
+        }
+        size_t position = 0;
+        if (length != 0) {
+            memcpy(candidate, cursor, length);
+            position = length;
+            candidate[position++] = '/';
+        }
+        strcpy(candidate + position, file);
+        (void)execve(candidate, argv, environment);
+        const int error = errno;
+        free(candidate);
+        if (error == EACCES) {
+            saw_eacces = 1;
+        } else if (error != ENOENT && error != ENOTDIR) {
+            errno = error;
+            return -1;
+        }
+        if (colon == NULL) {
+            break;
+        }
+        cursor = colon + 1;
+    }
+
+    errno = saw_eacces != 0 ? EACCES : ENOENT;
+    return -1;
+}
+
+/* ---- posix_fallocate ---------------------------------------------------- */
+
+/* There is no fallocate syscall: extend with ftruncate and touch the last byte
+ * so the blocks really exist, which is the portable implementation POSIX
+ * allows. The return value is an error number, not -1. */
+int posix_fallocate(int descriptor, off_t offset, off_t length)
+{
+    if (descriptor < 0 || offset < 0 || length <= 0) {
+        return EINVAL;
+    }
+    const off_t end = offset + length;
+    if (end < offset) {
+        return EOVERFLOW;
+    }
+    struct stat metadata;
+    if (fstat(descriptor, &metadata) < 0) {
+        return errno;
+    }
+    if (metadata.st_size >= end) {
+        return 0;
+    }
+    if (ftruncate(descriptor, end) < 0) {
+        return errno;
+    }
+    const char zero = 0;
+    if (pwrite(descriptor, &zero, 1, end - 1) != 1) {
+        return errno != 0 ? errno : EIO;
+    }
+    return 0;
+}
+
+/* ---- thread names ------------------------------------------------------- */
+
+/* The kernel has no per-thread name, so both calls report ENOSYS instead of
+ * pretending the name was stored somewhere. */
+int pthread_setname_np(pthread_t thread, const char *name)
+{
+    (void)thread;
+    (void)name;
+    return ENOSYS;
+}
+
+int pthread_getname_np(pthread_t thread, char *name, size_t length)
+{
+    (void)thread;
+    (void)name;
+    (void)length;
+    return ENOSYS;
 }
 
 /* ---- mmap64 ------------------------------------------------------------- */

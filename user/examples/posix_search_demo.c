@@ -20,6 +20,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <wordexp.h>
+#include <fts.h>
 #include <ftw.h>
 
 static int failures;
@@ -274,6 +275,88 @@ static void test_nftw(void)
           "nftw still calls back for a missing path");
 }
 
+/* ---- fts ---------------------------------------------------------------- */
+
+static void test_fts(void)
+{
+    char *roots[] = {"/bin", NULL};
+    FTS *stream = fts_open(roots, FTS_PHYSICAL, NULL);
+    check(stream != NULL, "fts_open");
+    if (stream == NULL) {
+        return;
+    }
+
+    int directories = 0;
+    int files = 0;
+    int post = 0;
+    FTSENT *entry = NULL;
+    while ((entry = fts_read(stream)) != NULL) {
+        if (entry->fts_info == FTS_D) {
+            directories++;
+        } else if (entry->fts_info == FTS_F) {
+            files++;
+        } else if (entry->fts_info == FTS_DP) {
+            post++;
+        }
+        check(entry->fts_path != NULL && entry->fts_name[0] != '\0',
+              "fts entry carries a name and a path");
+    }
+    check(directories >= 1, "fts reported the root directory");
+    check(files >= 1, "fts reported files");
+    check(post >= 1, "fts reported the post-order directory visit");
+    check(fts_close(stream) == 0, "fts_close");
+
+    /* fts_children hands the whole listing to the caller. */
+    stream = fts_open(roots, FTS_PHYSICAL, NULL);
+    check(stream != NULL, "fts_open for fts_children");
+    if (stream == NULL) {
+        return;
+    }
+    entry = fts_read(stream);
+    check(entry != NULL && entry->fts_info == FTS_D, "first fts entry is FTS_D");
+    int listed = 0;
+    for (FTSENT *child = fts_children(stream, 0); child != NULL;
+         child = child->fts_link) {
+        listed++;
+        check(child->fts_parent == entry, "child points at its parent");
+    }
+    check(listed >= 1, "fts_children listed entries");
+    check(fts_read(stream) == entry && entry->fts_info == FTS_DP,
+          "fts_read resumes with the post-order visit");
+    fts_close(stream);
+
+    /* FTS_SKIP suppresses the children of the directory just returned. */
+    stream = fts_open(roots, FTS_PHYSICAL, NULL);
+    check(stream != NULL, "fts_open for FTS_SKIP");
+    if (stream == NULL) {
+        return;
+    }
+    entry = fts_read(stream);
+    check(entry != NULL && fts_set(stream, entry, FTS_SKIP) == 0, "fts_set SKIP");
+    FTSENT *next = fts_read(stream);
+    check(next == entry && entry->fts_info == FTS_DP,
+          "skip yields only the post-order visit");
+    check(fts_read(stream) == NULL, "skip ends the walk");
+    fts_close(stream);
+
+    /* Several roots, one after another. */
+    char *many[] = {"/bin", "/dev", NULL};
+    stream = fts_open(many, FTS_PHYSICAL, NULL);
+    check(stream != NULL, "fts_open with two roots");
+    if (stream != NULL) {
+        int roots_seen = 0;
+        while ((entry = fts_read(stream)) != NULL) {
+            if (entry->fts_level == 0) {
+                roots_seen++;
+            }
+        }
+        check(roots_seen == 2, "both roots visited");
+        fts_close(stream);
+    }
+
+    check(fts_open(NULL, 0, NULL) == NULL, "fts_open rejects a missing root list");
+}
+
 /* ---- basename/dirname --------------------------------------------------- */
 
 static void test_path_parts(void)
@@ -302,6 +385,7 @@ int main(void)
     test_scandir();
     test_wordexp();
     test_nftw();
+    test_fts();
     test_path_parts();
 
     if (failures != 0) {

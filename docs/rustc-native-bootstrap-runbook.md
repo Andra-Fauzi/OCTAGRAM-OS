@@ -126,13 +126,23 @@ Konfigurasi penting di `config.toml` yang dihasilkan:
 | --- | --- | --- |
 | `build.host` | `x86_64-unknown-octagram` | compiler yang dihasilkan adalah program OCTAGRAM |
 | `build.target` | `x86_64-unknown-none` | program hasil build tetap freestanding |
-| `rust.llvm-config` / `target.<host>.llvm-config` | prefix M4.3.3 | memakai libLLVM statis, bukan LLVM CI |
+| `target.x86_64-unknown-linux-gnu.llvm-config` / `target.<host>.llvm-config` | prefix M4.3.3 | libLLVM statis dipakai oleh build machine maupun host |
 | `target.<host>.linker` | `user/toolchain/bin/x86_64-octagram-gcc` | driver menambahkan `crt0.o`, `libc.a`, `libc++.a` |
-| `rust.lld` / `rust.use-lld` | `false` | LLD tidak diport |
-| `rust.jemalloc`, `rust.profiler`, `rust.backtrace` | `false` | mengurangi permukaan port |
+| `rust.lld` | `false` | LLD tidak diport |
+| `rust.jemalloc`, `rust.backtrace` | `false` | mengurangi permukaan port |
 | `rust.channel` | `nightly` | bootstrap butuh nightly |
 | `llvm.download-ci-llvm` | `false` | LLVM harus benar-benar target OCTAGRAM |
 | `build.submodules` | `false` | `src/llvm-project` tidak diunduh; submodule yang dipakai diinisialisasi manual |
+
+Kunci config sudah dicocokkan dengan skema bootstrap pada commit pin
+(`src/bootstrap/src/core/config/toml/{target,rust,llvm,build}.rs`). Kunci yang
+tidak dikenal skema itu dihapus karena bootstrap menolak kunci asing:
+`rust.llvm-config` (LLVM dipilih per `target.<triple>`), `rust.profiler`
+(sekarang `target.<triple>.profiler`), `rust.use-lld`, `rust.tests`,
+`rust.docs`, `rust.vendor`, `target.<triple>.relocation-model` dan
+`target.<triple>.panic-strategy` (sifat ABI itu sudah ditetapkan oleh definisi
+target builtin), serta `llvm.targets` dan `[dist]` yang tidak relevan saat LLVM
+tidak dibangun.
 
 `src/tools/cargo` dan `library/backtrace` adalah submodule di commit Rust yang
 dipin, jadi skrip bootstrap menjalankan `git submodule update --init --depth 1`

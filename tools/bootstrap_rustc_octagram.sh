@@ -184,50 +184,37 @@ sysconfdir = "etc"
 
 [rust]
 channel = "nightly"
-llvm-config = "$llvm_config"
 optimize = 2
 debug = false
 debuginfo-level = 0
 backtrace = false
 jemalloc = false
-profiler = false
 lld = false
-use-lld = false
 codegen-tests = false
-tests = false
-docs = false
 download-rustc = false
 remap-debuginfo = false
-vendor = false
 EOF
-    # `rust.llvm-config` selects the library for the build machine; the host
-    # entry below selects it for the compiler being produced.
+    # External LLVM is selected per target triple: the build machine needs it
+    # to link stage0 tools, the OCTAGRAM host entry to produce a compiler that
+    # links against the same library. `llvm.targets` is omitted because no LLVM
+    # is built here.
     cat >> "$config" <<EOF
 
 [llvm]
 download-ci-llvm = false
-ninja = true
-targets = "X86"
 link-jobs = $jobs
-static-libstdcpp = false
+
+[target.x86_64-unknown-linux-gnu]
+llvm-config = "$llvm_config"
 
 [target.$HOST]
 linker = "$linker"
 llvm-config = "$llvm_config"
 crt-static = true
-relocation-model = "static"
-panic-strategy = "abort"
-EOF
-    cat >> "$config" <<EOF
 
 [target.$TARGET]
 linker = "$linker"
 crt-static = true
-relocation-model = "static"
-panic-strategy = "abort"
-
-[dist]
-compression-formats = ["xz"]
 EOF
 fi
 

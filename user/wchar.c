@@ -4,9 +4,11 @@
  * std, so they have to exist for the C++ standard headers to compile.
  *
  * The OCTAGRAM locale is ASCII/Latin-1: one byte is one wide character, and no
- * shift state is ever needed. Wide stdio (fgetwc, wprintf, ...) is not
- * implemented yet; those entry points are declared but have no definition, so
- * using one fails at link time instead of silently misbehaving.
+ * shift state is ever needed. Buffer formatting (swprintf/vswprintf) is
+ * implemented at the end of this file because libc++'s <string> numeric
+ * helpers call it. Stream-based wide stdio (fgetwc, wprintf, fwprintf, ...) is
+ * not implemented yet; those entry points are declared but have no definition,
+ * so using one fails at link time instead of silently misbehaving.
  */
 #include <stddef.h>
 #include <stdio.h>
@@ -414,4 +416,295 @@ intmax_t wcstoimax(const wchar_t *text, wchar_t **end, int base)
 uintmax_t wcstoumax(const wchar_t *text, wchar_t **end, int base)
 {
     return (uintmax_t)wcstoull(text, end, base);
+}
+
+/*
+ * Wide formatted output. Wide stdio streams (wprintf/fwprintf) still have no
+ * implementation, but libc++'s <string> numeric helpers call swprintf for
+ * std::to_wstring and the wide integer conversions, so the buffer form has to
+ * exist. The locale is ASCII/Latin-1 and one wide character is one byte, so a
+ * conversion is: format the narrow text, then widen it byte by byte.
+ */
+
+static size_t oct_swprintf_put(wchar_t *buffer, size_t count, size_t position,
+                               wchar_t value)
+{
+    if (position + 1 < count) {
+        buffer[position] = value;
+    }
+    return position + 1;
+}
+
+static size_t oct_swprintf_put_narrow(wchar_t *buffer, size_t count,
+                                      size_t position, const char *text)
+{
+    while (*text != '\0') {
+        position = oct_swprintf_put(buffer, count, position, (wchar_t)(unsigned char)*text);
+        ++text;
+    }
+    return position;
+}
+
+static size_t oct_swprintf_put_wide(wchar_t *buffer, size_t count,
+                                    size_t position, const wchar_t *text)
+{
+    while (*text != L'\0') {
+        position = oct_swprintf_put(buffer, count, position, *text);
+        ++text;
+    }
+    return position;
+}
+
+int vswprintf(wchar_t *buffer, size_t count, const wchar_t *format,
+              va_list arguments)
+{
+    if (buffer == NULL || count == 0 || format == NULL) {
+        return -1;
+    }
+
+    size_t written = 0;
+    const wchar_t *cursor = format;
+
+    while (*cursor != L'\0') {
+        if (*cursor != L'%') {
+            written = oct_swprintf_put(buffer, count, written, *cursor);
+            ++cursor;
+            continue;
+        }
+
+        ++cursor;
+        if (*cursor == L'%') {
+            written = oct_swprintf_put(buffer, count, written, L'%');
+            ++cursor;
+            continue;
+        }
+
+        /* Collect the specifier in narrow form; every C conversion specifier
+         * is ASCII, so the copy is always safe. */
+        char spec[40];
+        size_t spec_length = 0;
+        spec[spec_length++] = '%';
+
+        int dynamic_width = 0;
+        int dynamic_precision = 0;
+
+        while (*cursor == L'-' || *cursor == L'+' || *cursor == L' ' ||
+               *cursor == L'#' || *cursor == L'0' || *cursor == L'\'') {
+            if (spec_length + 1 < sizeof(spec)) {
+                spec[spec_length++] = (char)*cursor;
+            }
+            ++cursor;
+        }
+
+        if (*cursor == L'*') {
+            dynamic_width = 1;
+            ++cursor;
+        } else {
+            while (*cursor >= L'0' && *cursor <= L'9') {
+                if (spec_length + 1 < sizeof(spec)) {
+                    spec[spec_length++] = (char)*cursor;
+                }
+                ++cursor;
+            }
+        }
+
+        if (*cursor == L'.') {
+            if (spec_length + 1 < sizeof(spec)) {
+                spec[spec_length++] = '.';
+            }
+            ++cursor;
+            if (*cursor == L'*') {
+                dynamic_precision = 1;
+                ++cursor;
+            } else {
+                while (*cursor >= L'0' && *cursor <= L'9') {
+                    if (spec_length + 1 < sizeof(spec)) {
+                        spec[spec_length++] = (char)*cursor;
+                    }
+                    ++cursor;
+                }
+            }
+        }
+
+        /* OCTAGRAM only promises a narrow `int` for `*`, not the full C
+         * negative-width rules; a negative width is treated as the absolute
+         * value so the output stays well formed instead of corrupting the
+         * specifier buffer. */
+        if (dynamic_width) {
+            int width = va_arg(arguments, int);
+            if (width < 0) {
+                width = -width;
+            }
+            char digits[16];
+            size_t digit_count = 0;
+            do {
+                digits[digit_count++] = (char)('0' + (width % 10));
+                width /= 10;
+            } while (width > 0 && digit_count < sizeof(digits));
+            while (digit_count > 0) {
+                if (spec_length + 1 < sizeof(spec)) {
+                    spec[spec_length++] = digits[--digit_count];
+                } else {
+                    --digit_count;
+                }
+            }
+        }
+
+        if (dynamic_precision) {
+            int precision = va_arg(arguments, int);
+            if (precision < 0) {
+                precision = 0;
+            }
+            char digits[16];
+            size_t digit_count = 0;
+            do {
+                digits[digit_count++] = (char)('0' + (precision % 10));
+                precision /= 10;
+            } while (precision > 0 && digit_count < sizeof(digits));
+            while (digit_count > 0) {
+                if (spec_length + 1 < sizeof(spec)) {
+                    spec[spec_length++] = digits[--digit_count];
+                } else {
+                    --digit_count;
+                }
+            }
+        }
+
+        int longs = 0;
+        while (*cursor == L'h' || *cursor == L'l' || *cursor == L'j' ||
+               *cursor == L'z' || *cursor == L't' || *cursor == L'L') {
+            if (*cursor == L'l') {
+                ++longs;
+            }
+            if (spec_length + 1 < sizeof(spec)) {
+                spec[spec_length++] = (char)*cursor;
+            }
+            ++cursor;
+        }
+
+        wchar_t conversion = *cursor;
+        if (conversion == L'\0') {
+            /* Truncated conversion: emit what was collected literally. */
+            for (size_t index = 0; index < spec_length; ++index) {
+                written = oct_swprintf_put(buffer, count, written, (wchar_t)spec[index]);
+            }
+            break;
+        }
+        ++cursor;
+
+        if (spec_length + 1 < sizeof(spec)) {
+            spec[spec_length++] = (char)conversion;
+        }
+        spec[spec_length] = '\0';
+
+        switch (conversion) {
+        case L's':
+            if (longs > 0) {
+                const wchar_t *text = va_arg(arguments, const wchar_t *);
+                if (text == NULL) {
+                    text = L"(null)";
+                }
+                written = oct_swprintf_put_wide(buffer, count, written, text);
+            } else {
+                const char *text = va_arg(arguments, const char *);
+                if (text == NULL) {
+                    text = "(null)";
+                }
+                written = oct_swprintf_put_narrow(buffer, count, written, text);
+            }
+            break;
+        case L'c':
+            if (longs > 0) {
+                wint_t value = (wint_t)va_arg(arguments, wint_t);
+                written = oct_swprintf_put(buffer, count, written, (wchar_t)value);
+            } else {
+                int value = va_arg(arguments, int);
+                written = oct_swprintf_put(buffer, count, written, (wchar_t)(unsigned char)value);
+            }
+            break;
+        case L'd':
+        case L'i':
+        case L'o':
+        case L'u':
+        case L'x':
+        case L'X': {
+            char narrowed[64];
+            if (longs >= 2) {
+                if (conversion == L'd' || conversion == L'i') {
+                    snprintf(narrowed, sizeof(narrowed), spec, va_arg(arguments, long long));
+                } else {
+                    snprintf(narrowed, sizeof(narrowed), spec,
+                             va_arg(arguments, unsigned long long));
+                }
+            } else if (longs == 1) {
+                if (conversion == L'd' || conversion == L'i') {
+                    snprintf(narrowed, sizeof(narrowed), spec, va_arg(arguments, long));
+                } else {
+                    snprintf(narrowed, sizeof(narrowed), spec,
+                             va_arg(arguments, unsigned long));
+                }
+            } else {
+                if (conversion == L'd' || conversion == L'i') {
+                    snprintf(narrowed, sizeof(narrowed), spec, va_arg(arguments, int));
+                } else {
+                    snprintf(narrowed, sizeof(narrowed), spec,
+                             va_arg(arguments, unsigned int));
+                }
+            }
+            written = oct_swprintf_put_narrow(buffer, count, written, narrowed);
+            break;
+        }
+        case L'f':
+        case L'F':
+        case L'e':
+        case L'E':
+        case L'g':
+        case L'G':
+        case L'a':
+        case L'A': {
+            char narrowed[128];
+            if (longs > 0) {
+                snprintf(narrowed, sizeof(narrowed), spec,
+                         va_arg(arguments, long double));
+            } else {
+                snprintf(narrowed, sizeof(narrowed), spec, va_arg(arguments, double));
+            }
+            written = oct_swprintf_put_narrow(buffer, count, written, narrowed);
+            break;
+        }
+        case L'p': {
+            char narrowed[32];
+            snprintf(narrowed, sizeof(narrowed), spec, va_arg(arguments, void *));
+            written = oct_swprintf_put_narrow(buffer, count, written, narrowed);
+            break;
+        }
+        case L'n': {
+            /* %n is a security hazard and libc++ never needs it. */
+            (void)va_arg(arguments, int *);
+            break;
+        }
+        default: {
+            char narrowed[2];
+            narrowed[0] = (char)conversion;
+            narrowed[1] = '\0';
+            written = oct_swprintf_put_narrow(buffer, count, written, narrowed);
+            break;
+        }
+        }
+    }
+
+    /* C99 swprintf always NUL-terminates when count > 0 and reports the
+     * length the output would have had. */
+    size_t terminator = written < count ? written : count - 1;
+    buffer[terminator] = L'\0';
+    return (int)written;
+}
+
+int swprintf(wchar_t *buffer, size_t count, const wchar_t *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    int result = vswprintf(buffer, count, format, arguments);
+    va_end(arguments);
+    return result;
 }

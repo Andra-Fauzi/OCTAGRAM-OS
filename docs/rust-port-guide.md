@@ -25,7 +25,10 @@ dipanggil dari shell, bukan cross-build dari host.
 | compiler-rt float↔128-bit (`__floatuntidf`, `__fixunsdfti`) | terbukti di host | `user/compiler_rt.c`, uji di `/bin/cpp-smoke` |
 | compiler-rt `long double`↔128-bit (`__floatuntixf`, `__fixunsxfti`) | terbukti di host | `user/compiler_rt.c` (format x87 manual) |
 | Header publik valid untuk C dan C++ | terbukti di host | `python3 tools/check_cpp_headers.py` (57 header) |
-| libc++/libstdc++ subset, compiler-rt | **belum** | — |
+| compiler-rt (128-bit, float↔int, x87) | terbukti di host | `user/compiler_rt.c` |
+| `swprintf`/`vswprintf` wide | terbukti di host | `user/wchar.c` |
+| `libc++.a` inti (`std::string`, `std::vector`, `std::sort`, `std::mutex`) | dibangun di host; guest menunggu QEMU | `build/libc++.a` + `build/libcxx_string_smoke.elf`, marker `LIBCXX-LIBRARY-PASS` |
+| libc++ iostream/locale/filesystem/`<charconv>` float | **belum** | — |
 | libLLVM untuk host OCTAGRAM | **belum** | — |
 | `rustc` native (`rustc --version` di guest) | **belum** | — |
 | `cargo` native | **belum** | — |
@@ -82,7 +85,9 @@ Userspace C/C++:
 | `user/cxx_runtime.cpp` | `operator new/delete`, `__cxa_guard_*`, `__cxa_pure_virtual`, `__dso_handle` |
 | `user/include/*.h` | header publik; header C yang dipakai C++ wajib punya `extern "C"` |
 | `user/examples/cpp_smoke.cpp` | program C++ freestanding pertama |
-| `user/Makefile` | build userspace C/C++ (`CXXFLAGS` freestanding) |
+| `user/Makefile` | build userspace C/C++ (`CXXFLAGS` freestanding) dan `build/libc++.a` |
+| `user/third_party/libcxx/src/` | source library libc++ 18.1.8; hanya subset yang dikompilasi ke `libc++.a` |
+| `user/examples/libcxx_string_smoke.cpp` | probe guest pertama untuk `libc++.a` |
 
 Rust userspace & port:
 
@@ -133,7 +138,31 @@ make -C user build/cpp_smoke.elf             # program C++ freestanding
 make -C user wctype-test                     # uji host klasifikasi wide-character
 make -C user compiler-rt-test                # helper 128-bit vs pembagi libgcc
 make -C user cpp-header-test                 # semua header publik sebagai C dan C++
+make -C user build/libc++.a                  # pustaka libc++ hasil kompilasi
+make -C user build/libcxx_string_smoke.elf   # probe string/vector/sort/mutex
 ```
+
+`libc++.a` dikompilasi dari `user/third_party/libcxx/src` dengan flag
+freestanding yang sama seperti header probe, tetapi `-std=c++20` karena
+`src/algorithm.cpp` menginstansiasi internal `std::ranges` yang hanya
+dideklarasikan libc++ untuk C++20 ke atas. Delapan translation unit masuk
+arsip: `string`, `vector`, `algorithm`, `stdexcept`, `mutex`,
+`mutex_destructor`, `error_category`, dan `system_error`.
+
+Tiga simbol sengaja tidak diambil dari `src/` dan ditulis di
+`user/libcxx_runtime.cpp`: `__libcpp_verbose_abort` (menggantikan
+`src/verbose_abort.cpp`), `std::terminate`/`std::exception::~exception()`/
+`std::exception::what()` (karena `src/exception.cpp` masih memuat API
+`unexpected_handler` yang dihapus C++17), dan anggota
+`std::condition_variable` di atas `pthread_cond_*` (karena
+`src/condition_variable.cpp` menarik `src/thread.cpp` serta promise/future).
+`new`/`delete` tetap dari `user/cxx_runtime.cpp`.
+
+Untuk membuat `std::to_wstring` dan konversi wide lain bisa ditautkan,
+`user/wchar.c` sekarang menyediakan `vswprintf`/`swprintf` (subset C99:
+flag/width/precision, `%s`/`%ls`/`%c`/`%lc`, integer, floating point, pointer).
+Wide stdio berbasis `FILE *` (`wprintf`, `fwprintf`, `fgetwc`) tetap belum
+ada.
 
 Catatan: `make -C user/rust build/rust_native_probe.o` memakai linker no-op
 (`-C linker=true`) hanya untuk melewati tahap link, karena yang diuji adalah
@@ -181,6 +210,7 @@ serial. Marker yang harus muncul:
 | `RUST-NOSTD-PASS` | Rust `no_std + alloc` berjalan |
 | `RUST-STD-QEMU-PASS` | upstream `std` berjalan (54 sub-marker) |
 | `CPP-FREESTANDING-PASS` | C++ freestanding, `new/delete`, konstruktor statis |
+| `LIBCXX-LIBRARY-PASS` | `std::string`/`std::vector`/`std::sort`/`std::mutex` dari `libc++.a` berjalan di guest |
 | `RUST-NATIVE-LD-PASS` | object `rustc` ditautkan `ld` native lalu dijalankan |
 | `SYSCALL-TEST: PASS` | suite kompatibilitas syscall |
 
@@ -226,7 +256,7 @@ Ikuti urutan ini supaya klaim tetap bisa dipertanggungjawabkan:
 
 | Tahap | Isi | Gate |
 | --- | --- | --- |
-| M4.3.2 (lanjutan) | subset libc++/libstdc++ + compiler-rt (`strtold`, `wcs*`, locale/ctype) | test C++ (string/vector/mutex) di guest |
+| M4.3.2 (lanjutan) | perluas `libc++.a`: `<charconv>` float (butuh `FLT_*`/`DBL_*`), locale/facet, iostream, `std::thread`, filesystem | test C++ (string/vector/mutex) di guest, lalu iostream/thread |
 | M4.3.3 | libLLVM statis untuk host OCTAGRAM | satu tool LLVM berjalan di guest |
 | M4.3.4 | bootstrap `rustc` host OCTAGRAM + sysroot, linker `ld` native | `rustc --version` dan kompilasi `no_std` dari shell |
 | M4.3.5 | perluasan relokasi linker untuk `librustc_driver`/`std` | binary `std` hasil `rustc` native berjalan |

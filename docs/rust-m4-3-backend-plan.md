@@ -245,6 +245,60 @@ benar-benar berjalan di guest (semuanya sudah masuk `/bin/cpp-smoke`, tetapi
 QEMU belum dijalankan di workspace ini). Langkah berikutnya tetap subset libc++
 (`<string>`, `<vector>`, `<mutex>`) dan compiler-rt.
 
+### 6.4. M4.3.2 — `libc++.a` pertama (2026-11-25)
+
+Sampai revisi ini, program C++ hanya memakai **header** libc++ 18.1.8; isi
+library (`libcxx/src`) belum dikompilasi, sehingga `std::string`,
+`std::sort`, dan `std::mutex` masih gagal di link. Source `src/` kini
+di-vendor di `user/third_party/libcxx/src` dan `user/Makefile` membangun
+`build/libc++.a` dari delapan translation unit:
+
+| Objek | Alasan |
+| --- | --- |
+| `string.cpp` | instansiasi eksplisit `basic_string<char>` dan helper `char_traits` |
+| `vector.cpp` | instansiasi eksplisit `vector<bool>`/helper vektor |
+| `algorithm.cpp` | instansiasi `std::__sort` yang dipakai `std::sort` |
+| `stdexcept.cpp` | `__throw_length_error`/`__throw_out_of_range` (panic-abort karena `-fno-exceptions`) |
+| `mutex.cpp`, `mutex_destructor.cpp` | `std::mutex`/`recursive_mutex` di atas pthread OCTAGRAM |
+| `error_category.cpp`, `system_error.cpp` | kategori error generik yang dipakai `std::error_code` |
+
+Keputusan build:
+
+- Flag freestanding dan urutan include sama dengan header probe
+  (`-nostdinc -nostdinc++ -isystem libcxx/include -isystem include`).
+- `-std=c++20` hanya untuk objek library: `src/algorithm.cpp` memakai
+  `std::__bit_log2` dan `std::ranges` yang libc++ sembunyikan di C++17.
+  Program guest memakai standar yang sama agar instansiasi template konsisten.
+- `new`/`delete` tetap berasal dari `user/cxx_runtime.cpp`; `src/new.cpp` tidak
+  ikut dikompilasi supaya tidak ada dua definisi `operator new`.
+- `src/verbose_abort.cpp` juga tidak dikompilasi; `user/libcxx_runtime.cpp`
+  sudah menyediakan `__libcpp_verbose_abort`, dan tanpa exception itulah jalur
+  kegagalan yang diinginkan.
+- `src/exception.cpp` digantikan oleh definisi `std::terminate`,
+  `std::exception::~exception()`, dan `std::exception::what()` di runtime
+  shim: file upstream itu masih memakai `unexpected_handler` yang dihapus
+  C++17.
+- `src/condition_variable.cpp` (dan `src/thread.cpp` yang ditariknya) belum
+  masuk; anggota `std::condition_variable` yang dibutuhkan `mutex.cpp`
+  didefinisikan langsung di atas `pthread_cond_*`.
+- `src/string.cpp` memanggil `swprintf`; `user/wchar.c` karena itu mendapat
+  implementasi `vswprintf`/`swprintf` C99 untuk buffer (flag, width,
+  precision, `%s`/`%ls`/`%c`/`%lc`, integer, float, pointer, `%n` ditolak).
+  Wide stdio berbasis `FILE *` tetap belum ada.
+
+Probe guest baru `user/examples/libcxx_string_smoke.cpp` dijalankan sebagai
+`/bin/libcxx-string-smoke` dan mencetak `LIBCXX-STRING-PASS`,
+`LIBCXX-VECTOR-PASS`, `LIBCXX-MUTEX-PASS`, lalu `LIBCXX-LIBRARY-PASS`.
+Harness QEMU memeriksa marker terakhir dan exit status 0.
+
+Belum termasuk: `ios`/`ostream`/`locale`/`fstream` (iostream), `thread.cpp`,
+`filesystem/*`, `random`, dan `<charconv>` floating point. `<charconv>` gagal
+dikompilasi karena `third_party/libcxx/include/float.h` meneruskan ke
+`float.h` yang belum ada di `user/include`; makro `FLT_MANT_DIG`,
+`FLT_MAX_EXP`, `DBL_MANT_DIG`, dan kawan-kawan perlu disediakan sebelum
+`std::to_chars`/`std::from_chars` untuk floating point bisa dipakai. Ini juga
+prasyarat parsing versi/nomor di toolchain native.
+
 ## 7. Risiko dan mitigasi
 
 | Risiko | Dampak | Mitigasi |

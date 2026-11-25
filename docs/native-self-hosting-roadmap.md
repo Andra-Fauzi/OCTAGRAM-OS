@@ -2538,3 +2538,41 @@ yang dibangunkan `unlock`, dan pelepasan lock saat descriptor terakhir
 ditutup. Native `rustc`/Cargo **belum ada**: keduanya masih menunggu gate
 M4.3 (backend compiler dan linker native), jadi belum ada perintah
 `rustc`/`cargo` di shell.
+
+## 95. Pustaka libc++ hasil kompilasi pertama (25 November 2026)
+
+Program C++ OCTAGRAM sebelumnya hanya memakai header libc++ 18.1.8; isi
+library (`libcxx/src`) belum dibangun, sehingga `std::string`, `std::sort`,
+dan `std::mutex` masih undefined saat link. Revisi ini mem-vendor `src/` dan
+membangun `user/build/libc++.a`:
+
+- `user/third_party/libcxx/src/` berisi source libc++ dari tag yang sama
+  (`llvmorg-18.1.8`), tanpa modifikasi.
+- `user/Makefile` menambahkan target `build/libc++.a` yang mengompilasi
+  delapan translation unit: `string`, `vector`, `algorithm`, `stdexcept`,
+  `mutex`, `mutex_destructor`, `error_category`, `system_error`.
+- `user/libcxx_runtime.cpp` menambahkan `std::terminate`,
+  `std::exception::~exception()`, `std::exception::what()`, serta anggota
+  `std::condition_variable` di atas `pthread_cond_*`; `src/exception.cpp`
+  (masih memakai `unexpected_handler` C++17-removed) dan
+  `src/condition_variable.cpp`/`src/thread.cpp` belum dikompilasi.
+- `user/wchar.c` mendapat `vswprintf`/`swprintf` C99 untuk buffer karena
+  `src/string.cpp` memakainya; wide stdio berbasis `FILE *` tetap belum ada.
+- Objek library memakai flag freestanding yang sama dengan header probe tetapi
+  `-std=c++20`, karena `src/algorithm.cpp` menginstansiasi internal
+  `std::ranges`/`std::__bit_log2` yang libc++ sembunyikan pada C++17.
+- `user/examples/libcxx_string_smoke.cpp` menjadi probe guest pertama yang
+  menautkan `libc++.a`, di-seed sebagai `/bin/libcxx-string-smoke`, dan
+  mencetak `LIBCXX-STRING-PASS`, `LIBCXX-VECTOR-PASS`, `LIBCXX-MUTEX-PASS`,
+  lalu `LIBCXX-LIBRARY-PASS`.
+- `tools/qemu_syscall_test.py` menjalankan probe itu, memeriksa
+  `LIBCXX-LIBRARY-PASS` dan exit status 0. Selama QEMU belum dijalankan di
+  workspace ini, statusnya tetap **terbukti di host**, bukan guest-tested.
+
+Batas yang masih berlaku: `std::iostream` (locale/ios/fstream), `std::thread`,
+`std::filesystem`, `random`, dan `<charconv>` floating point belum masuk
+arsip. `<charconv>` berhenti di `FLT_MANT_DIG`/`FLT_MAX_EXP` karena
+`user/include` belum menyediakan `float.h`; itu pekerjaan berikutnya sebelum
+`std::to_chars`/`from_chars` dan parsing angka di toolchain native bisa
+dipakai. Native `rustc` dan Cargo tetap belum ada, dan M4.3/M4.4 tidak boleh
+ditandai selesai hanya karena `libc++.a` terbangun.

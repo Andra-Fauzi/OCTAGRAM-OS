@@ -13,11 +13,43 @@ traits available to the guest.
 - `LICENSE.TXT`, `CREDITS.TXT` — upstream license and credits (Apache-2.0 with
   LLVM exceptions).
 
-Only headers are vendored: libc++'s compiled library (`src/`) is not built yet.
-That is why the build links against OCTAGRAM's own runtime (`user/runtime.c`,
-`user/cxx_runtime.cpp`, `user/compiler_rt.c`) instead of `libc++.a`, and why
-`user/libcxx_runtime.cpp` supplies the one runtime symbol the headers need
-(`std::__1::__libcpp_verbose_abort`).
+## What is vendored now
+
+- `include/` — libc++ headers (see above).
+- `src/` — libc++'s compiled-library sources from the same tag, unmodified.
+  They are built into `user/build/libc++.a` by `make -C user`.
+
+Only the subset needed by the current guest probe is compiled so far
+(`string`, `vector`, `algorithm`, `stdexcept`, `mutex`, `mutex_destructor`,
+`error_category`, `system_error`). The rest of `src/` is vendored so later
+stages can widen the archive without another download: `iostream`/locale,
+`thread`, `filesystem`, and floating-point `<charconv>` still depend on libc
+facilities OCTAGRAM does not provide yet.
+
+`user/libcxx_runtime.cpp` supplies the symbols those translation units leave
+out instead of compiling the upstream file when the upstream file drags in
+unavailable machinery:
+
+- `std::__1::__libcpp_verbose_abort` (so `src/verbose_abort.cpp` is not built);
+  aborting on allocation or length errors is the intended behaviour while the
+  port has no exceptions.
+- `std::terminate`, `std::exception::~exception`, and `std::exception::what`
+  (`src/exception.cpp` also contains the C++17-removed `unexpected_handler`).
+- the `std::condition_variable` members that `src/mutex.cpp` links against,
+  implemented directly over `pthread_cond_*` (`src/condition_variable.cpp`
+  depends on `src/thread.cpp` and promise/future support).
+
+`new`/`delete` stay in `user/cxx_runtime.cpp`, so `src/new.cpp` is not built
+either.
+
+## Building the library
+
+`user/Makefile` compiles the vendored sources with the same freestanding flags
+and include order as the header probe (`-nostdinc -nostdinc++`, libc++ first)
+but with `-std=c++20`: `src/algorithm.cpp` instantiates `std::ranges`-based
+sort internals that libc++ only declares for C++20 and later. The resulting
+`libc++.a` is linked into `build/libcxx_string_smoke.elf`, which the guest
+runs as `/bin/libcxx-string-smoke`.
 
 ## Files OCTAGRAM generates
 
@@ -40,11 +72,12 @@ choice belongs to the port, not to a build directory:
 git clone --filter=blob:none --sparse --depth 1 --branch llvmorg-18.1.8 \
     https://github.com/llvm/llvm-project /tmp/llvm
 cd /tmp/llvm && git sparse-checkout set libcxx
-cp -r libcxx/include user/third_party/libcxx/
+cp -r libcxx/include libcxx/src user/third_party/libcxx/
 cp libcxx/LICENSE.TXT libcxx/CREDITS.TXT user/third_party/libcxx/
 cp libcxx/vendor/llvm/default_assertion_handler.in \
     user/third_party/libcxx/include/__assertion_handler
 ```
 
 Then re-create `include/__config_site` as described above and run
-`make -C user libcxx-header-check` to see which headers still compile.
+`make -C user libcxx-header-check build/libc++.a` to see which headers and
+library translation units still compile.

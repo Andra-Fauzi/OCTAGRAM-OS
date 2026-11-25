@@ -68,7 +68,7 @@ LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 .PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test compiler-rt-test cpp-header-test libcxx-header-check dynamic
 CPP_SMOKE := build/cpp_smoke.elf
 
-all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
+all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
 
@@ -169,9 +169,65 @@ LIBCXX_INCLUDE := third_party/libcxx/include
 # libc++'s own C headers forward to OCTAGRAM's with #include_next, so the
 # libc++ directory must be searched before include/ -- -I would always win over
 # -isystem, hence both are -isystem here.
-LIBCXX_FLAGS := -nostdinc -nostdinc++ -isystem $(LIBCXX_INCLUDE) -isystem include
+# third_party/libcxx/src is also on the search path: libc++'s own headers use
+# __has_include_next(<...>), which needs at least one directory after include/
+# even when the next header is never actually used.
+# OCTAGRAM keeps errno in TLS; libc++ sources that touch <cerrno> must see the
+# same declaration as user/runtime.c, otherwise ld rejects the non-TLS
+# reference to the TLS definition of errno.
+LIBCXX_FLAGS := -DOCTAGRAM_TLS_ERRNO -nostdinc -nostdinc++ \
+	-isystem $(LIBCXX_INCLUDE) -isystem include -isystem third_party/libcxx/src
 LIBCXX_CXXFLAGS := $(filter-out -Iinclude,$(CXXFLAGS)) $(LIBCXX_FLAGS)
 LIBCXX_SMOKE := build/libcxx_smoke.elf
+
+# Compiled libc++ (libc++.a). Headers alone cannot provide std::string,
+# std::sort, or std::mutex: they need libc++'s explicit instantiations and the
+# runtime shims in third_party/libcxx/src. The sources are compiled with the
+# same freestanding flags and include order as the header probe. C++20 is used
+# for the library objects because src/algorithm.cpp instantiates
+# std::ranges-based internals that libc++ only declares for C++20 and later.
+LIBCXX_SRC := third_party/libcxx/src
+LIBCXX_STD ?= c++20
+LIBCXX_ARCHIVE := build/libc++.a
+LIBCXX_OBJECTS := \
+	build/libcxx/string.o \
+	build/libcxx/vector.o \
+	build/libcxx/algorithm.o \
+	build/libcxx/stdexcept.o \
+	build/libcxx/mutex.o \
+	build/libcxx/mutex_destructor.o \
+	build/libcxx/error_category.o \
+	build/libcxx/system_error.o
+LIBCXX_STRING_SMOKE := build/libcxx_string_smoke.elf
+
+# Only the translation units that back the features exercised by the guest
+# probe are compiled so far. std::iostream (locale/ios/fstream), std::thread,
+# std::filesystem, and floating-point <charconv> still need library pieces and
+# libc functions that OCTAGRAM does not have yet.
+# Vendored sources are compiled without -Werror: libc++ is not written for
+# OCTAGRAM's warning set, and -Walloc-size-larger-than= fires on intentional
+# "impossible size" branches inside basic_string.
+LIBCXX_LIB_FLAGS := $(filter-out -Werror,$(LIBCXX_CXXFLAGS)) -std=$(LIBCXX_STD)
+
+build/libcxx/%.o: $(LIBCXX_SRC)/%.cpp | build
+	@mkdir -p $(dir $@)
+	$(CXX) $(LIBCXX_LIB_FLAGS) -c -o $@ $<
+
+$(LIBCXX_ARCHIVE): $(LIBCXX_OBJECTS)
+	rm -f $@
+	ar rcs $@ $(LIBCXX_OBJECTS)
+
+build/libcxx_string_smoke.o: examples/libcxx_string_smoke.cpp $(HEADERS) | build
+	$(CXX) $(LIBCXX_CXXFLAGS) -std=$(LIBCXX_STD) -c -o $@ $<
+
+$(LIBCXX_STRING_SMOKE): build/libcxx_string_smoke.o build/libcxx_runtime.o \
+		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o \
+		$(LIBCXX_ARCHIVE) linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/compiler_rt.o \
+		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
+		build/cxx_runtime.o build/libcxx_runtime.o build/libcxx_string_smoke.o \
+		$(LIBCXX_ARCHIVE)
 
 build/libcxx_runtime.o: libcxx_runtime.cpp $(HEADERS) | build
 	$(CXX) $(LIBCXX_CXXFLAGS) -c -o $@ $<

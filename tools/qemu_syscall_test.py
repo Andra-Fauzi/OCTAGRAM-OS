@@ -346,6 +346,25 @@ def main():
         return 1
     print("CPP-FREESTANDING-PASS")
 
+    # M4.3.2: first program linked against the compiled libc++ library
+    # (libc++.a) instead of headers only. It exercises std::string (small and
+    # heap-backed), std::vector, std::sort, and std::mutex.
+    libcxx_offset = len(serial_text())
+    send_line("run /bin/libcxx-string-smoke")
+    if not wait_for_after("LIBCXX-LIBRARY-PASS", libcxx_offset, 30):
+        print("LIBCXX-LIBRARY-FAIL: compiled libc++ probe did not emit its marker")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", libcxx_offset, 30):
+        print("LIBCXX-LIBRARY-FAIL: compiled libc++ probe did not exit with status 0")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("LIBCXX-LIBRARY-FAIL: shell did not return after the libc++ probe")
+        print(serial_text()[-6000:])
+        return 1
+    print("LIBCXX-LIBRARY-PASS")
+
     # M4.3.0: the object emitted by rustc for x86_64-unknown-octagram is linked
     # by the guest's own `ld` and the result runs, so the native linker is
     # proven against real rustc relocation and section-symbol output.

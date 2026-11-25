@@ -17,7 +17,7 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-#if __has_builtin(__remove_volatile)
+#if __has_builtin(__remove_volatile) && defined(__clang__)
 template <class _Tp>
 struct remove_volatile {
   using type _LIBCPP_NODEBUG = __remove_volatile(_Tp);

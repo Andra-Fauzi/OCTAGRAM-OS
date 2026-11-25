@@ -38,11 +38,25 @@ int main(void)
         unlink(path);
         return 31;
     }
-    if (fchmod(-1, 0600) != -1 || errno != EBADF ||
-        fchmod(fd, 01000) != -1 || errno != EINVAL) {
+    if (fchmod(-1, 0600) != -1) {
         close(fd);
         unlink(path);
         return 32;
+    }
+    if (errno != EBADF) {
+        close(fd);
+        unlink(path);
+        return 33;
+    }
+    if (fchmod(fd, 01000) != -1) {
+        close(fd);
+        unlink(path);
+        return 34;
+    }
+    if (errno != EINVAL) {
+        close(fd);
+        unlink(path);
+        return 35;
     }
     if (access(path, R_OK | W_OK) != 0) {
         int error = errno;

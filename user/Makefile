@@ -285,9 +285,9 @@ build/libcxx_string_smoke.o: examples/libcxx_string_smoke.cpp $(HEADERS) | build
 
 $(LIBCXX_STRING_SMOKE): build/libcxx_string_smoke.o build/libcxx_runtime.o \
 		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
-		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o \
 		$(LIBCXX_ARCHIVE) linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o \
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o \
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/cxx_runtime.o build/libcxx_runtime.o build/libcxx_string_smoke.o \
 		$(LIBCXX_ARCHIVE)
@@ -297,9 +297,9 @@ build/libcxx_iostream_smoke.o: examples/libcxx_iostream_smoke.cpp $(HEADERS) | b
 
 $(LIBCXX_IOSTREAM_SMOKE): build/libcxx_iostream_smoke.o build/libcxx_runtime.o \
 		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
-		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o \
 		$(LIBCXX_ARCHIVE) linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o \
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o \
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/cxx_runtime.o build/libcxx_runtime.o build/libcxx_iostream_smoke.o \
 		$(LIBCXX_ARCHIVE)
@@ -309,9 +309,9 @@ build/libcxx_thread_smoke.o: examples/libcxx_thread_smoke.cpp $(HEADERS) | build
 
 $(LIBCXX_THREAD_SMOKE): build/libcxx_thread_smoke.o build/libcxx_runtime.o \
 		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
-		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o \
 		build/setjmp.o $(LIBCXX_ARCHIVE) linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o \
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o \
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
 		build/libcxx_thread_smoke.o $(LIBCXX_ARCHIVE)
@@ -321,9 +321,9 @@ build/libcxx_fs_smoke.o: examples/libcxx_fs_smoke.cpp $(HEADERS) | build
 
 $(LIBCXX_FS_SMOKE): build/libcxx_fs_smoke.o build/libcxx_runtime.o \
 		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
-		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o \
 		build/setjmp.o $(LIBCXX_ARCHIVE) linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o \
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o \
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
 		build/libcxx_fs_smoke.o $(LIBCXX_ARCHIVE)
@@ -333,9 +333,9 @@ build/libcxx_container_smoke.o: examples/libcxx_container_smoke.cpp $(HEADERS) |
 
 $(LIBCXX_CONTAINER_SMOKE): build/libcxx_container_smoke.o build/libcxx_runtime.o \
 		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
-		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o \
 		build/setjmp.o $(LIBCXX_ARCHIVE) linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o \
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o \
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
 		build/libcxx_container_smoke.o $(LIBCXX_ARCHIVE)
@@ -345,9 +345,9 @@ build/libcxx_format_smoke.o: examples/libcxx_format_smoke.cpp $(HEADERS) | build
 
 $(LIBCXX_FORMAT_SMOKE): build/libcxx_format_smoke.o build/libcxx_runtime.o \
 		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
-		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o \
 		build/setjmp.o $(LIBCXX_ARCHIVE) linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o \
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o \
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
 		build/libcxx_format_smoke.o $(LIBCXX_ARCHIVE)
@@ -357,9 +357,9 @@ build/octagram_cargo.o: cargo/main.cpp $(HEADERS) | build
 
 $(OCTAGRAM_CARGO): build/octagram_cargo.o build/libcxx_runtime.o \
 		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
-		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o \
 		build/setjmp.o $(LIBCXX_ARCHIVE) linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o \
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o \
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
 		build/octagram_cargo.o $(LIBCXX_ARCHIVE)
@@ -370,11 +370,11 @@ build/libcxx_runtime.o: libcxx_runtime.cpp $(HEADERS) | build
 build/libcxx_smoke.o: examples/libcxx_smoke.cpp $(HEADERS) | build
 	$(CXX) $(LIBCXX_CXXFLAGS) -c -o $@ $<
 
-$(LIBCXX_SMOKE): build/libcxx_smoke.o build/libcxx_runtime.o build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o build/math.o build/math_wide.o build/wchar.o build/wctype.o build/cxx_runtime.o build/libcxx_runtime.o build/libcxx_smoke.o
+$(LIBCXX_SMOKE): build/libcxx_smoke.o build/libcxx_runtime.o build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o build/math.o build/math_wide.o build/wchar.o build/wctype.o build/cxx_runtime.o build/libcxx_runtime.o build/libcxx_smoke.o
 
-$(CPP_SMOKE): build/cpp_smoke.o build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/math.o build/wchar.o build/math_wide.o build/wctype.o build/compiler_rt.o build/cxx_runtime.o build/cpp_smoke.o
+$(CPP_SMOKE): build/cpp_smoke.o build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/math.o build/wchar.o build/math_wide.o build/wctype.o build/compiler_rt.o build/cxx_runtime.o build/cpp_smoke.o
 
 build/setjmp.o: setjmp.S | build
 	$(AS) --64 -o $@ $<
@@ -386,6 +386,12 @@ build/runtime.o: runtime.c $(HEADERS) | build
 # affinity and sysinfo queries). Separate from runtime.c because they need only
 # the public C API.
 build/posix_extra.o: posix_extra.c $(HEADERS) | build
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# POSIX regular expressions live in their own translation unit: they only need
+# the string/ctype helpers, and keeping them separate lets the engine be
+# exercised on the host without the rest of the freestanding runtime.
+build/regex.o: regex.c include/regex.h $(HEADERS) | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 build/wctype.o: wctype.c $(HEADERS) | build
@@ -510,8 +516,8 @@ $(SHARED_ERRNO_DEMO): build/shared_errno_demo.o build/crt0.pic.o $(SHARED_LIBC)
 		-dynamic-linker /lib/ld-octagram.so -e _start \
 		-o $@ build/crt0.pic.o build/shared_errno_demo.o -Lbuild -loctagram
 
-build/%.elf: build/%.o build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o build/math.o build/math_wide.o build/wctype.o build/wchar.o linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o build/math.o build/math_wide.o build/wctype.o build/wchar.o $<
+build/%.elf: build/%.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o build/math.o build/math_wide.o build/wctype.o build/wchar.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o build/math.o build/math_wide.o build/wctype.o build/wchar.o $<
 
 build/scanf_runtime.o: runtime.c $(HEADERS) | build
 	$(HOSTCC) -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
@@ -556,8 +562,8 @@ build/ipv6_test: build/scanf_runtime_start.o build/ipv6_test.o build/scanf_runti
 build/tcc_signals.o: tcc_signals.c | build
 	$(CC) $(TCC_CFLAGS) -c -o $@ $<
 
-$(TCC_ELF): $(TCC_OBJECTS) build/tcc_signals.o build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o build/wchar.o build/math_wide.o build/math.o $(TCC_SETJMP) linker.ld
-	$(LD) $(LDFLAGS) --gc-sections -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/compiler_rt.o build/wchar.o build/math_wide.o build/math.o $(TCC_SETJMP) $(TCC_OBJECTS) build/tcc_signals.o
+$(TCC_ELF): $(TCC_OBJECTS) build/tcc_signals.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o build/wchar.o build/math_wide.o build/math.o $(TCC_SETJMP) linker.ld
+	$(LD) $(LDFLAGS) --gc-sections -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o build/wchar.o build/math_wide.o build/math.o $(TCC_SETJMP) $(TCC_OBJECTS) build/tcc_signals.o
 
 $(TCC_LIBTCC1): $(TCC_SUPPORT_OBJECTS)
 	$(AR) rcs $@ $^
@@ -565,7 +571,7 @@ $(TCC_LIBTCC1): $(TCC_SUPPORT_OBJECTS)
 build/math.o: math.c $(HEADERS) | build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(TCC_LIBC): build/runtime.o build/posix_extra.o build/math.o build/math_wide.o build/wctype.o build/wchar.o build/compiler_rt.o $(TCC_SETJMP)
+$(TCC_LIBC): build/runtime.o build/posix_extra.o build/regex.o build/math.o build/math_wide.o build/wctype.o build/wchar.o build/compiler_rt.o $(TCC_SETJMP)
 	$(AR) rcs $@ $^
 
 clean:

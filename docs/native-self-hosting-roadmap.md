@@ -3068,3 +3068,62 @@ memastikan `fts_open(NULL, …)` ditolak.
 
 **Validasi:** `make build/posix_search_demo.elf -j6` → `exit=0`, tanpa
 error/undefined symbol. Probe belum dijalankan di QEMU dari workspace ini.
+
+## 106. POSIX regular expression engine (25 November 2026)
+
+`<regex.h>` sama sekali belum ada. Alat portabel (grep/sed/awk, parser
+konfigurasi) memakainya, jadi ronde ini menambahkan engine kecil di
+`user/regex.c` + `include/regex.h`, dan translation unit-nya ditautkan ke semua
+titik link yang sudah memakai `posix_extra.o`.
+
+**Alur:** pattern → parser (pohon sintaks) → codegen (array instruksi) → mesin
+backtracking. Instruksi: `CHAR`, `ANY`, `CLASS`, `BOL`, `EOL`, `SAVE`, `SPLIT`,
+`JUMP`, `BACKREF`, `MATCH`.
+
+**Sintaks:**
+
+- ERE (`REG_EXTENDED`): `|` `(` `)` `*` `+` `?` `{m}` `{m,}` `{m,n}`, `[...]`
+  (range, `^` negasi, `[:alpha:]` dan kawan-kawan), `.`, `^`, `$`. `{` yang
+  bukan interval valid menjadi kurung kurawal literal.
+- BRE (tanpa flag): operator bentuk backslash `\( \) \| \+ \? \{m,n\}`,
+  back-reference `\1`–`\9`, dan `*` di awal pola dianggap literal.
+- Escape: `\n \t \r \f \v \a \b`, serta kelas GNU `\w \W \s \S \d \D`
+  (di dalam maupun di luar bracket).
+
+**Semantik yang dipegang:**
+
+- **Leftmost-longest**: `regexec` mencoba setiap posisi awal dan, untuk posisi
+  yang cocok, menyimpan akhir terpanjang (`a|ab` pada `ab` → `ab`).
+- Setiap pasangan (instruksi, posisi) hanya dikunjungi sekali, sehingga loop
+  dengan badan kosong seperti `(a*)*b` berhenti.
+- Anggaran langkah 4 juta per posisi awal: pola patologis tidak bisa
+  menggantung CPU; bila anggaran habis, hasil terbaik yang sudah ditemukan yang
+dikembalikan.
+- `REG_ICASE` berlaku saat pencocokan karakter dan kelas; `REG_NEWLINE` membuat
+  `.` tidak cocok newline dan `^`/`$` cocok di sekitar newline; `REG_NOTBOL`/
+  `REG_NOTEOL` dihormati; `REG_STARTEND` memakai `matches[0]` sebagai rentang;
+  `REG_NOSUB` melewati pengisian grup.
+- Grup yang tidak ikut dalam jalur pemenang dilaporkan `-1` di kedua medan.
+- `regcomp` mengembalikan `REG_EBRACK`, `REG_EPAREN`, `REG_ERPAREN`,
+  `REG_BADBR`, `REG_EBRACE`, `REG_EESCAPE`, `REG_ESUBREG`, `REG_ERANGE`,
+  `REG_ECTYPE`, `REG_ESIZE`, dan `REG_ESPACE` sesuai penyebabnya; `regerror`
+  memberi teks plus pola yang gagal.
+
+**Batasan yang dicatat:** elemen collating (`[.x.]`/`[=x=]`) tidak didukung,
+kelas `\b`/`\<`/`\>` (batas kata) tidak ada dan `\b` berarti backspace, dan
+tidak ada quantifier lazy — `a*?` dibaca sebagai `a*` diikuti literal `?`.
+Kelas bracket dimiliki program hasil kompilasi; kompilasi yang gagal setelah
+parsing bisa meninggalkan beberapa set 32 byte (dicatat di komentar kode).
+
+**Verifikasi di host:** `user/regex.c` dikompilasi bersama harness sementara
+(di `/tmp`, tidak di-commit) memakai gcc host, lalu dijalankan: 30+ kasus
+(literal, `+`, `*`, `.*`, longest alternative, anchor, kelas bernama/negasi,
+interval `{2,3}`/`{2,}`, `REG_ICASE`, BRE grup/backref/interval, grup opsional
+yang `-1`, `re_nsub`, empat kode error, `regerror`, anchor `REG_NEWLINE`,
+`REG_NOTBOL`, dan loop badan kosong) semuanya lolos (`REGEX-HOST-PASS`).
+
+**Probe guest:** `test_regex` di `user/examples/toolchain_demo.c`
+(marker `TOOLCHAIN-PASS`) mengulang subset yang sama di guest.
+
+**Validasi:** `make build/toolchain_demo.elf -j6` → `exit=0`, tanpa
+error/undefined symbol. Probe guest belum dijalankan di QEMU dari workspace ini.

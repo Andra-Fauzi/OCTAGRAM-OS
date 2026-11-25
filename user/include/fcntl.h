@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "octagram.h"
+#include <sys/types.h>
 
 #define O_RDONLY OCT_O_RDONLY
 #define O_WRONLY OCT_O_WRONLY

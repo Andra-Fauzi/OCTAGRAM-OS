@@ -8,6 +8,7 @@
  */
 
 #include <fcntl.h>
+#include <regex.h>
 #include <search.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -213,6 +214,72 @@ static void test_mmap64(void)
     check(munmap(mapping, length) == 0, "munmap released the mapping");
 }
 
+/* ---- regex -------------------------------------------------------------- */
+
+static void check_regex(const char *pattern, int flags, const char *text,
+                        long expected_start, long expected_end, const char *what)
+{
+    regex_t expression;
+    check(regcomp(&expression, pattern, flags) == 0, what);
+    regmatch_t matches[4];
+    const int status = regexec(&expression, text, 4, matches, 0);
+    if (expected_start < 0) {
+        check(status == REG_NOMATCH, what);
+    } else {
+        check(status == 0 && matches[0].rm_so == expected_start &&
+                  matches[0].rm_eo == expected_end,
+              what);
+    }
+    regfree(&expression);
+}
+
+static void test_regex(void)
+{
+    check_regex("abc", REG_EXTENDED, "xabcx", 1, 4, "ERE literal");
+    check_regex("a+b", REG_EXTENDED, "aaab", 0, 4, "ERE plus");
+    check_regex(".*", REG_EXTENDED, "abc", 0, 3, "ERE dot star");
+    check_regex("a|ab", REG_EXTENDED, "ab", 0, 2, "ERE leftmost-longest");
+    check_regex("^foo$", REG_EXTENDED, "foo", 0, 3, "ERE anchors");
+    check_regex("[[:digit:]]+", REG_EXTENDED, "ab123cd", 2, 5, "ERE class");
+    check_regex("[^0-9]+", REG_EXTENDED, "12ab34", 2, 4, "ERE negated class");
+    check_regex("a{2,3}", REG_EXTENDED, "aaaa", 0, 3, "ERE interval");
+    check_regex("hello", REG_ICASE, "HeLLo", 0, 5, "REG_ICASE");
+    check_regex("[abc", REG_EXTENDED, "abc", -1, 0, "unmatched bracket");
+    check_regex("\\(ab\\)*c", 0, "ababc", 0, 5, "BRE group star");
+    check_regex("\\(a\\)\\1", 0, "xaay", 1, 3, "BRE back reference");
+    check_regex("a\\{2\\}", 0, "xaay", 1, 3, "BRE interval");
+
+    regex_t expression;
+    check(regcomp(&expression, "(a)(b)?", REG_EXTENDED) == 0, "group compile");
+    regmatch_t matches[3];
+    check(regexec(&expression, "a", 3, matches, 0) == 0, "optional group exec");
+    check(matches[1].rm_so == 0 && matches[1].rm_eo == 1, "group 1 span");
+    check(matches[2].rm_so == -1 && matches[2].rm_eo == -1,
+          "unmatched group reports -1");
+    check(expression.re_nsub == 2, "re_nsub counts the groups");
+    regfree(&expression);
+
+    char message[64];
+    check(regerror(REG_BADPAT, NULL, message, sizeof(message)) > 0,
+          "regerror returns a length");
+    check(strstr(message, "regular expression") != NULL, "regerror text");
+
+    check(regcomp(&expression, "(a*)*b", REG_EXTENDED) == 0, "empty-body loop");
+    check(regexec(&expression, "aaab", 1, matches, 0) == 0 &&
+              matches[0].rm_eo == 4,
+          "empty-body loop terminates");
+    regfree(&expression);
+
+    check(regcomp(&expression, "a[", REG_EXTENDED) == REG_EBRACK,
+          "regcomp reports REG_EBRACK");
+    check(regcomp(&expression, "(ab", REG_EXTENDED) == REG_EPAREN,
+          "regcomp reports REG_EPAREN");
+    check(regcomp(&expression, "a{3,1}", REG_EXTENDED) == REG_BADBR,
+          "regcomp reports REG_BADBR");
+    check(regcomp(&expression, "a\\", REG_EXTENDED) == REG_EESCAPE,
+          "regcomp reports REG_EESCAPE");
+}
+
 /* ---- strptime ----------------------------------------------------------- */
 
 static void test_strptime(void)
@@ -281,6 +348,7 @@ int main(void)
     test_temporary_files();
     test_arc4random();
     test_mmap64();
+    test_regex();
     test_strptime();
 
     if (failures != 0) {

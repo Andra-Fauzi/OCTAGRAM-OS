@@ -43,6 +43,7 @@ dipanggil dari shell, bukan cross-build dari host.
 | Stream memori (`open_memstream`, `fmemopen`) dan `dprintf` | dibangun di host; marker guest sudah dipasang | `build/memstream_demo.elf`, marker `MEMSTREAM-PASS` |
 | Pencarian & traversal (`tsearch`, `scandir`, `wordexp`, `nftw`, `fts`, `basename`/`dirname`) | dibangun di host; marker guest sudah dipasang | `build/posix_search_demo.elf`, marker `POSIX-SEARCH-PASS` |
 | Proses & tabel (`popen`, `hsearch`, `mkostemp`, `arc4random`, `mmap64`) | dibangun di host; marker guest sudah dipasang | `build/toolchain_demo.elf`, marker `TOOLCHAIN-PASS` |
+| POSIX regex (`regcomp`/`regexec`/`regerror`/`regfree`, ERE+BRE) | engine diverifikasi di host (`REGEX-HOST-PASS`); marker guest sudah dipasang | `build/regex.o`, `build/toolchain_demo.elf`, marker `TOOLCHAIN-PASS` |
 | `std::random`, `std::regex`, `std::chrono` | dibangun di host; guest menunggu QEMU | probe fs yang sama |
 | POSIX `stat` timespec, `S_ISBLK/FIFO/SOCK`, `_PC_*`, `sendfile` | terbukti di host | `include/sys/stat.h`, `include/unistd.h`, `runtime.c` |
 | libLLVM untuk host OCTAGRAM | **belum** | — |
@@ -246,7 +247,7 @@ serial. Marker yang harus muncul:
 | `LIBCXX-FORMAT-PASS` | `std::format`/`format_to`/`vformat`, spesifier numerik & float, `std::print`/`println`, `std::expected`, `osyncstream`, dan mdspan berjalan di guest |
 | `MEMSTREAM-PASS` | `open_memstream`/`fmemopen` (baca/tulis/append, celah nol, short write) dan `dprintf` berjalan di guest |
 | `POSIX-SEARCH-PASS` | `tsearch`/`twalk`/`tdelete`, `scandir`+comparator, `wordexp`+kode error, `nftw`/`ftw`, `fts`(+`fts_children`/`FTS_SKIP`), dan `basename`/`dirname` berjalan di guest |
-| `TOOLCHAIN-PASS` | `popen`/`pclose`, `hsearch`(+`_r`), `mkostemp`/`mkstemps`/`mkostemps`, `arc4random`, `mmap64`, dan `strptime` berjalan di guest |
+| `TOOLCHAIN-PASS` | `popen`/`pclose`, `hsearch`(+`_r`), `mkostemp`/`mkstemps`/`mkostemps`, `arc4random`, `mmap64`, `strptime`, dan `regcomp`/`regexec` (ERE+BRE, leftmost-longest) berjalan di guest |
 | `RUST-NATIVE-LD-PASS` | object `rustc` ditautkan `ld` native lalu dijalankan |
 | `SYSCALL-TEST: PASS` | suite kompatibilitas syscall |
 

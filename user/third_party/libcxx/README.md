@@ -21,10 +21,16 @@ traits available to the guest.
 
 Only the subset needed by the current guest probe is compiled so far
 (`string`, `vector`, `algorithm`, `stdexcept`, `mutex`, `mutex_destructor`,
-`error_category`, `system_error`). The rest of `src/` is vendored so later
-stages can widen the archive without another download: `iostream`/locale,
-`thread`, `filesystem`, and floating-point `<charconv>` still depend on libc
-facilities OCTAGRAM does not provide yet.
+`error_category`, `system_error`, `charconv`, and `ryu/{d2fixed,d2s,f2s}`).
+The rest of `src/` is vendored so later stages can widen the archive without
+another download: `iostream`/locale, `thread`, `filesystem`, and `random`
+still depend on libc facilities OCTAGRAM does not provide yet.
+
+`charconv.cpp` needs the C floating-point limits, so `user/include/float.h`
+provides `FLT_*`, `DBL_*`, `LDBL_*`, `*_DECIMAL_DIG`, and `DECIMAL_DIG` for
+x86_64 (binary32, binary64, x87 80-bit `long double`). libc++ 18 still has no
+floating-point `std::from_chars`, so only integer conversions and floating
+`to_chars` are available.
 
 `user/libcxx_runtime.cpp` supplies the symbols those translation units leave
 out instead of compiling the upstream file when the upstream file drags in

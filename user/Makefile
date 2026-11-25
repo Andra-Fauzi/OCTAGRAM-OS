@@ -197,7 +197,11 @@ LIBCXX_OBJECTS := \
 	build/libcxx/mutex.o \
 	build/libcxx/mutex_destructor.o \
 	build/libcxx/error_category.o \
-	build/libcxx/system_error.o
+	build/libcxx/system_error.o \
+	build/libcxx/charconv.o \
+	build/libcxx/ryu/d2fixed.o \
+	build/libcxx/ryu/d2s.o \
+	build/libcxx/ryu/f2s.o
 LIBCXX_STRING_SMOKE := build/libcxx_string_smoke.elf
 
 # Only the translation units that back the features exercised by the guest

@@ -251,7 +251,7 @@ Sampai revisi ini, program C++ hanya memakai **header** libc++ 18.1.8; isi
 library (`libcxx/src`) belum dikompilasi, sehingga `std::string`,
 `std::sort`, dan `std::mutex` masih gagal di link. Source `src/` kini
 di-vendor di `user/third_party/libcxx/src` dan `user/Makefile` membangun
-`build/libc++.a` dari delapan translation unit:
+`build/libc++.a` dari dua belas translation unit:
 
 | Objek | Alasan |
 | --- | --- |
@@ -261,6 +261,8 @@ di-vendor di `user/third_party/libcxx/src` dan `user/Makefile` membangun
 | `stdexcept.cpp` | `__throw_length_error`/`__throw_out_of_range` (panic-abort karena `-fno-exceptions`) |
 | `mutex.cpp`, `mutex_destructor.cpp` | `std::mutex`/`recursive_mutex` di atas pthread OCTAGRAM |
 | `error_category.cpp`, `system_error.cpp` | kategori error generik yang dipakai `std::error_code` |
+| `charconv.cpp` | `std::to_chars`/`std::from_chars` integer dan `to_chars` floating point |
+| `ryu/d2fixed.cpp`, `ryu/d2s.cpp`, `ryu/f2s.cpp` | algoritma ryu yang dipanggil `charconv.cpp` untuk double/float |
 
 Keputusan build:
 
@@ -291,13 +293,23 @@ Probe guest baru `user/examples/libcxx_string_smoke.cpp` dijalankan sebagai
 `LIBCXX-VECTOR-PASS`, `LIBCXX-MUTEX-PASS`, lalu `LIBCXX-LIBRARY-PASS`.
 Harness QEMU memeriksa marker terakhir dan exit status 0.
 
+`<charconv>` sekarang ikut serta. Untuk itu `user/include/float.h` ditambahkan:
+libc++ 18 `src/charconv.cpp` memakai `FLT_MANT_DIG`, `FLT_MAX_EXP`,
+`DBL_MANT_DIG`, `DBL_MAX_EXP`, `LDBL_*`, `*_DECIMAL_DIG`, dan `DECIMAL_DIG`,
+dan header itu sebelumnya tidak ada sama sekali di sysroot OCTAGRAM. Nilainya
+mengikuti x86_64: binary32, binary64, dan x87 80-bit untuk `long double`
+(`LDBL_MANT_DIG` 64, `DECIMAL_DIG` 21), dengan `FLT_EVAL_METHOD` 0 dan
+`FLT_ROUNDS` 1. `LDouble` x87 juga yang diasumsikan `user/math.c` dan
+`user/compiler_rt.c`.
+
+Batas `<charconv>`: `std::from_chars` untuk floating point tidak ada di libc++
+18 (overload itu hanya ada di MSVC dan di sini dihapus), jadi yang tersedia
+adalah integer `to_chars`/`from_chars` dan floating `to_chars`. Probe guest
+menguji `to_chars` integer, `from_chars` integer 64-bit, `to_chars` double,
+`std::to_string`, `std::stoi`, `std::to_wstring`, dan `swprintf`.
+
 Belum termasuk: `ios`/`ostream`/`locale`/`fstream` (iostream), `thread.cpp`,
-`filesystem/*`, `random`, dan `<charconv>` floating point. `<charconv>` gagal
-dikompilasi karena `third_party/libcxx/include/float.h` meneruskan ke
-`float.h` yang belum ada di `user/include`; makro `FLT_MANT_DIG`,
-`FLT_MAX_EXP`, `DBL_MANT_DIG`, dan kawan-kawan perlu disediakan sebelum
-`std::to_chars`/`std::from_chars` untuk floating point bisa dipakai. Ini juga
-prasyarat parsing versi/nomor di toolchain native.
+`filesystem/*`, dan `random`.
 
 ## 7. Risiko dan mitigasi
 

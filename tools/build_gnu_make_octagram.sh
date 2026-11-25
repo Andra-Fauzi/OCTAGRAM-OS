@@ -163,7 +163,9 @@ echo "GNU-MAKE-OCTAGRAM: generated Make variables (bounded diagnostic)"
 timeout 15s make -C lib -pn 2>/dev/null | grep -E '^(CC|CPP|CPPFLAGS|CFLAGS|DEFS|DEFAULT_INCLUDES|AM_CPPFLAGS|AM_CFLAGS|WARN_CFLAGS|libgnu_a_CFLAGS) ?[:=]' | head -n 40 || true
 
 echo "GNU-MAKE-OCTAGRAM: compile upstream GNU Make"
-make -j2 V=1
+# The manual is irrelevant for the guest binary; without this, Automake tries
+# to regenerate make.info and fails when texinfo/makeinfo is not installed.
+make -j2 V=1 MAKEINFO=true
 
 [[ -s "$BUILD/make" ]] || fail "cross-build did not produce make"
 readelf -h "$BUILD/make" | grep -q 'Advanced Micro Devices X86-64' || \

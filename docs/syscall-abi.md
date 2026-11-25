@@ -490,7 +490,7 @@ kernel dan proses lain, seperti Linux tanpa mount namespace. Descriptor
 terbuka tetap berupa state per proses.
 `getcwd` mengembalikan jumlah byte termasuk NUL; `-ERANGE` berarti buffer
 terlalu kecil.
-`chmod` menerima mode permission hingga `0777`; tipe file tidak dapat diubah.
+`chmod` menyimpan bit permission `0777`; bit tipe file dan bit khusus di luar rentang tersebut diabaikan. Nilai `mode` yang tidak muat dalam `u16` ditolak dengan `EINVAL`.
 `access` menerima `F_OK`, `R_OK`, `W_OK`, dan `X_OK`. Karena proses belum punya
 UID/GID, pemeriksaan permission saat ini memakai bit owner pada mode file.
 `fstat` mendukung descriptor file dan direktori; pipe dan console mengembalikan
@@ -554,8 +554,10 @@ diikuti. `readlink` tidak mengikuti symlink terakhir dan menyalin maksimal
 `/bin/path-api-demo`.
 `stat` mengikuti symlink terakhir, sedangkan `lstat` melaporkan metadata
 symlink itu sendiri. `fchmod` mengubah permission file atau direktori dari
-descriptor terbuka; mode di luar `0777` ditolak dengan `EINVAL`. Permission
-dapat diubah hanya pada filesystem yang mendukungnya.
+descriptor terbuka. Kernel menyimpan bit `0777`; bit tipe file dan bit khusus
+di luar rentang itu diabaikan, sedangkan nilai `mode` yang tidak muat dalam
+`u16` ditolak dengan `EINVAL`. Permission dapat diubah hanya pada filesystem
+yang mendukungnya.
 Syscall `*at` menerima `AT_FDCWD` (`-100`) untuk menggunakan cwd atau descriptor
 direktori terbuka untuk path relatif; path absolut mengabaikan descriptor.
 `fstatat` hanya mendukung flag `AT_SYMLINK_NOFOLLOW`, sedangkan `unlinkat`

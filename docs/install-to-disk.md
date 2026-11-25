@@ -118,6 +118,18 @@ Script host tetap tersedia bila ingin menyiapkan disk dari Linux:
 sudo tools/install-disk.sh /dev/sdX
 ```
 
+Script host juga bisa sekaligus memasang toolchain native Rust/Cargo:
+
+```sh
+sudo tools/install-disk.sh --toolchain build/toolchain/octagram-toolchain /dev/sdX
+```
+
+Direktori itu berasal dari `tools/bootstrap_rustc_octagram.sh` dan berisi
+`bin/rustc`, `bin/cargo`, serta `lib/rustlib`. Isinya disalin ke `/toolchain`
+pada root EXT2, dan `/toolchain/bin` sudah ada di PATH shell OCTAGRAM, jadi
+setelah boot `rustc --version` dan `cargo build --offline` bisa langsung
+dijalankan. Tanpa opsi ini root tetap dibuat dan `/toolchain/bin` kosong.
+
 Ganti `/dev/sdX` dengan **whole disk** yang benar, bukan partisi. Script host
 membuat ESP FAT32 dan root EXT2. Kernel mendeteksi marker root EXT2 tersebut.
 

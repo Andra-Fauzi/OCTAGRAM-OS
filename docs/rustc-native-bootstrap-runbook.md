@@ -120,8 +120,16 @@ puluhan MB `rustc` + `lib/rustlib`.
 
 Pilihan yang tersedia untuk langkah image:
 
-1. **Root ext2 persisten** — tulis `octagram-toolchain/` ke root terpasang
-   (`installer`/`selfupdate` sudah menulis root ext2), lalu boot dari situ.
+1. **Root ext2 persisten** — sudah tersedia lewat script host:
+
+   ```sh
+   sudo tools/install-disk.sh --toolchain build/toolchain/octagram-toolchain /dev/sdX
+   ```
+
+   `bin/` dan `lib/` disalin ke `/toolchain` saat disk dipasang, sehingga
+   `rustc`/`cargo` langsung ditemukan lewat PATH setelah boot. Ini jalur
+   Linux/WSL untuk pengembang; installer internal dan `selfupdate` di guest
+   belum punya langkah yang setara.
 2. **Paket `/apps`** — bungkus toolchain sebagai paket `pkg`, dengan
    `/apps/<nama>/bin` di `PATH`; ukuran paket perlu diukur dulu.
 3. **Image builder native** — `kernel/src/image_builder.rs` tumbuh menjadi

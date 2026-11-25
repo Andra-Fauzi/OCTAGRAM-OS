@@ -249,6 +249,10 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
         "/share/octagram",
         "/include",
         "/include/sys",
+        // Native toolchain staging: PATH searches /toolchain/bin last, so an
+        // installed rustc/cargo never shadows a system program.
+        "/toolchain",
+        "/toolchain/bin",
         "/tmp",
         "/var",
         "/var/log",
@@ -300,7 +304,7 @@ fn install_to_disk(device_name: &str) -> Result<(), String> {
         ("/etc/octagram-root", b"OCTAGRAM-OS persistent root v1\nfilesystem=ext2\n", "root marker"),
         ("/etc/os-release", b"OCTAGRAM_OS_NAME=\"OCTAGRAM-OS\"\nOCTAGRAM_OS_ID=octagram\nOCTAGRAM_OS_VERSION=1.0\n", "os-release"),
         ("/etc/passwd", b"octagram:x:0:0:OCTAGRAM User:/home/octagram:/bin/sh\n", "passwd"),
-        ("/home/octagram/.profile", b"export PATH=/bin:/usr/bin:/usr/local/bin\n", "user profile"),
+        ("/home/octagram/.profile", b"export PATH=/bin:/usr/bin:/usr/local/bin:/toolchain/bin\n", "user profile"),
         ("/apps/apps.txt", b"# OCTAGRAM native application registry\n", "app registry"),
         ("/var/lib/octagram/packages/registry.txt", b"", "package registry"),
     ];

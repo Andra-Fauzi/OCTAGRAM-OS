@@ -78,8 +78,15 @@ def main() -> int:
             "timespec fields changed")
 
     stat_header = read("user/include/sys/stat.h")
+    # The layout uses POSIX `struct timespec` members with glibc-style macros
+    # aliasing `st_atime`/`st_mtime`/`st_ctime`, and carries `st_rdev` so Rust's
+    # std can read it.
     require(re.search(
-        r"struct\s+stat\s*\{\s*off_t\s+st_size;\s*mode_t\s+st_mode;\s*dev_t\s+st_dev;\s*ino_t\s+st_ino;\s*nlink_t\s+st_nlink;\s*uid_t\s+st_uid;\s*gid_t\s+st_gid;\s*time_t\s+st_atime;\s*time_t\s+st_mtime;\s*time_t\s+st_ctime;\s*blksize_t\s+st_blksize;\s*blkcnt_t\s+st_blocks;",
+        r"struct\s+stat\s*\{\s*off_t\s+st_size;\s*mode_t\s+st_mode;\s*dev_t\s+st_dev;"
+        r"\s*ino_t\s+st_ino;\s*nlink_t\s+st_nlink;\s*uid_t\s+st_uid;\s*gid_t\s+st_gid;"
+        r".*?dev_t\s+st_rdev;\s*blksize_t\s+st_blksize;\s*blkcnt_t\s+st_blocks;"
+        r".*?struct\s+timespec\s+st_atim;\s*struct\s+timespec\s+st_mtim;"
+        r"\s*struct\s+timespec\s+st_ctim;",
         stat_header, re.S) is not None,
         "public struct stat field order changed")
 

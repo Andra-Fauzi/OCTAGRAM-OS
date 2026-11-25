@@ -169,7 +169,7 @@
     {
       "name": "stat",
       "header": "user/include/sys/stat.h",
-      "size": 112,
+      "size": 120,
       "align": 8,
       "fields": [
         [
@@ -208,32 +208,32 @@
           40
         ],
         [
-          "st_atime",
-          "time_t",
+          "st_rdev",
+          "dev_t",
           48
-        ],
-        [
-          "st_mtime",
-          "time_t",
-          56
-        ],
-        [
-          "st_ctime",
-          "time_t",
-          64
         ],
         [
           "st_blksize",
           "blksize_t",
-          72
+          56
         ],
         [
           "st_blocks",
           "blkcnt_t",
-          80
+          64
+        ],
+        [
+          "st_atime",
+          "time_t",
+          72
         ],
         [
           "st_atime_nsec",
+          "time_t",
+          80
+        ],
+        [
+          "st_mtime",
           "time_t",
           88
         ],
@@ -243,9 +243,14 @@
           96
         ],
         [
-          "st_ctime_nsec",
+          "st_ctime",
           "time_t",
           104
+        ],
+        [
+          "st_ctime_nsec",
+          "time_t",
+          112
         ]
       ]
     },

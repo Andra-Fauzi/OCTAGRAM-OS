@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+TOOLCHAIN = os.environ.get("OCTAGRAM_RUST_TOOLCHAIN", "nightly")
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_SPEC = ROOT / "user/rust/targets/x86_64-unknown-octagram.json"
 KERNEL_TARGET = "x86_64-unknown-none"
@@ -87,26 +89,26 @@ def main() -> int:
     if mismatches:
         fail("custom target specification mismatch: " + "; ".join(mismatches))
 
-    rustc_verbose = run(("rustc", "+nightly", "-vV"))
+    rustc_verbose = run(("rustc", f"+{TOOLCHAIN}", "-vV"))
     host_line = next(
         (line.partition(":")[2].strip() for line in rustc_verbose.splitlines() if line.startswith("host:")),
         None,
     )
     if not host_line:
-        fail("rustc +nightly -vV did not report a host triple")
+        fail(f"rustc +{TOOLCHAIN} -vV did not report a host triple")
     if not host_line.startswith("x86_64-"):
         fail(f"Stage 0 must run on an x86_64 build machine; rustc reports {host_line}")
 
-    rustc_version = run(("rustc", "+nightly", "--version", "--verbose"))
-    cargo_version = run(("cargo", "+nightly", "--version", "--verbose"))
-    sysroot = run(("rustc", "+nightly", "--print", "sysroot"))
-    installed_components = run(("rustup", "component", "list", "--installed", "--toolchain", "nightly"))
+    rustc_version = run(("rustc", f"+{TOOLCHAIN}", "--version", "--verbose"))
+    cargo_version = run(("cargo", f"+{TOOLCHAIN}", "--version", "--verbose"))
+    sysroot = run(("rustc", f"+{TOOLCHAIN}", "--print", "sysroot"))
+    installed_components = run(("rustup", "component", "list", "--installed", "--toolchain", TOOLCHAIN))
     if not any(line == "rust-src" or line.startswith("rust-src-") for line in installed_components.splitlines()):
-        fail("nightly rust-src component is required for -Z build-std")
+        fail(f"{TOOLCHAIN} rust-src component is required for -Z build-std")
     if not any(line == "rustfmt" or line.startswith("rustfmt-") for line in installed_components.splitlines()):
-        fail("nightly rustfmt component is required by the pinned toolchain setup")
+        fail(f"{TOOLCHAIN} rustfmt component is required by the pinned toolchain setup")
 
-    builtin_targets = set(run(("rustc", "+nightly", "--print", "target-list")).splitlines())
+    builtin_targets = set(run(("rustc", f"+{TOOLCHAIN}", "--print", "target-list")).splitlines())
     if KERNEL_TARGET not in builtin_targets:
         fail(f"Stage 0 rustc does not list the required kernel target {KERNEL_TARGET}")
 

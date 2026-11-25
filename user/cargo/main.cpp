@@ -681,6 +681,7 @@ struct Options {
     fs::path target_directory = "target";
     std::string profile = "dev";
     std::string rustc = "rustc";
+    std::string linker;
     bool offline = true;   // always true: no registry support
     bool locked = false;
     bool verbose = false;
@@ -703,6 +704,26 @@ std::string rustc_from_environment()
     // /toolchain/bin is on the shell PATH in OCTAGRAM; fall back to the name so
     // a host-side dry run can use its own rustc.
     return "rustc";
+}
+
+// The builtin target names the host-side GCC driver as its linker, and an
+// OCTAGRAM image does not carry it. Prefer a native linker installed with the
+// toolchain (or in /bin), and fall back to TinyCC, the only executable linker
+// the base image ships. This is what makes a future native ld drop-in work
+// without recompiling the driver.
+std::string select_linker()
+{
+    const char* configured = std::getenv("OCTAGRAM_RUST_LINKER");
+    if (configured != nullptr && configured[0] != '\0') {
+        return configured;
+    }
+    for (const char* candidate : {"/toolchain/bin/ld", "/bin/ld", "/usr/bin/ld"}) {
+        std::error_code error;
+        if (fs::exists(candidate, error)) {
+            return candidate;
+        }
+    }
+    return "tcc";
 }
 
 std::string target_output_name(const Target& target)
@@ -813,15 +834,9 @@ int build_workspace(const Workspace& workspace, const Options& options, bool che
             arguments.push_back(target_triple != nullptr && target_triple[0] != '\0'
                                    ? target_triple
                                    : "x86_64-unknown-octagram");
-            // The target's builtin linker is the host-side GCC driver, which a
-            // guest image does not carry. Inside OCTAGRAM the only executable
-            // linker is TinyCC, so the driver selects it explicitly; a native
-            // linker dropped into PATH can be chosen with
-            // OCTAGRAM_RUST_LINKER.
-            const char* linker = std::getenv("OCTAGRAM_RUST_LINKER");
+            // Overrides the target's host-only linker; see select_linker().
             arguments.push_back("-C");
-            arguments.push_back(std::string("linker=") +
-                                (linker != nullptr && linker[0] != '\0' ? linker : "tcc"));
+            arguments.push_back("linker=" + options.linker);
             for (const Dependency& dependency : manifest.dependencies) {
                 auto found = state.libraries.find(dependency.name);
                 if (found == state.libraries.end()) {
@@ -859,8 +874,13 @@ int build_workspace(const Workspace& workspace, const Options& options, bool che
                 }
                 int status = run_process(arguments);
                 if (status != 0) {
-                    fail("rustc failed for " + target.name + " (status " +
-                         std::to_string(status) + ")");
+                    std::string message = "rustc failed for " + target.name + " (status " +
+                                          std::to_string(status) + ", linker " +
+                                          options.linker + ")";
+                    if (options.linker == "tcc") {
+                        message += "; if the linker is at fault, set OCTAGRAM_RUST_LINKER";
+                    }
+                    fail(message);
                 }
                 ++built;
             }
@@ -1038,6 +1058,7 @@ Options parse_options(const std::vector<std::string>& arguments)
 {
     Options options;
     options.rustc = rustc_from_environment();
+    options.linker = select_linker();
     for (size_t index = 0; index < arguments.size(); ++index) {
         const std::string& argument = arguments[index];
         auto next = [&](const char* name) -> std::string {

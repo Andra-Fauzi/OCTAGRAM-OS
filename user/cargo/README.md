@@ -54,8 +54,11 @@ It needs a native `rustc`: once the toolchain is installed in `/toolchain/bin`,
   `x86_64-unknown-octagram`.
 - **Linker is chosen for the guest.** The builtin target names the host-side
   `x86_64-octagram-gcc` driver, which an OCTAGRAM image does not carry, so the
-  driver passes `-C linker=tcc` (the only executable linker in the image).
-  Override with `$OCTAGRAM_RUST_LINKER` once a native linker exists.
+  driver passes `-C linker=` with the first executable linker it finds:
+  `$OCTAGRAM_RUST_LINKER`, then `/toolchain/bin/ld`, `/bin/ld`, `/usr/bin/ld`,
+  and finally `tcc` (the only linker the base image ships). A native linker
+  installed with the toolchain is therefore picked up without changes, and a
+  link failure names the linker it used.
 - **Dependency names follow rustc, not Cargo.** Dependencies are looked up by
   package name and passed as `--extern <crate>=<rlib>` using the library crate
   name (`[lib] name`, or the package name with `-` replaced by `_`), because

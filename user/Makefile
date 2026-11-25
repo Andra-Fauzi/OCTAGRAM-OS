@@ -391,8 +391,8 @@ sysroot: $(TCC_LIBC) $(LIBCXX_ARCHIVE) $(CXX_RUNTIME_ARCHIVE) build/crt0.o \
 build/libcxx_smoke.o: examples/libcxx_smoke.cpp $(HEADERS) | build
 	$(CXX) $(LIBCXX_CXXFLAGS) -c -o $@ $<
 
-$(LIBCXX_SMOKE): build/libcxx_smoke.o build/libcxx_runtime.o build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o linker.ld
-	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o build/math.o build/math_wide.o build/wchar.o build/wctype.o build/cxx_runtime.o build/libcxx_runtime.o build/libcxx_smoke.o
+$(LIBCXX_SMOKE): build/libcxx_smoke.o build/libcxx/verbose_abort.o build/libcxx_runtime.o build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/compiler_rt.o build/math.o build/math_wide.o build/wchar.o build/wctype.o build/cxx_runtime.o build/libcxx_runtime.o build/libcxx/verbose_abort.o build/libcxx_smoke.o
 
 $(CPP_SMOKE): build/cpp_smoke.o build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o build/math.o build/compiler_rt.o build/crt0.o build/runtime.o build/posix_extra.o build/regex.o linker.ld
 	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/posix_extra.o build/regex.o build/math.o build/wchar.o build/math_wide.o build/wctype.o build/compiler_rt.o build/cxx_runtime.o build/cpp_smoke.o

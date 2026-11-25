@@ -79,9 +79,10 @@ loader (`__oct_*`). Perilaku:
 Executable statis memakai TLS statis untuk `errno`
 (`-DOCTAGRAM_TLS_ERRNO`). Shared libc belum memakai ELF TLS: ia menyediakan
 `__errno_location()` dan `__h_errno_location()` dengan tabel state per-TID,
-sementara free-list allocator dilindungi spin lock. Ini memberi isolasi state
-error antar-thread tanpa mengklaim dukungan TLS shared-object. TLS umum pada
-shared object tetap belum didukung: loader belum mengalokasikan blok TLS per
+dan menyimpan locale aktif per-TID pada tabel yang sama; free-list allocator
+dilindungi spin lock. Ini memberi isolasi state error dan locale antar-thread
+tanpa mengklaim dukungan TLS shared-object. TLS umum pada shared object tetap
+belum didukung: loader belum mengalokasikan blok TLS per
 objek atau menangani relokasi `TPOFF`/`DTPMOD`.
 
 ## Batasan

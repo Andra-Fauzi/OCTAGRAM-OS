@@ -7049,6 +7049,20 @@ void free(void *pointer)
     oct_allocator_lock_release();
 }
 
+size_t malloc_usable_size(void *pointer)
+{
+    if (pointer == NULL) {
+        return 0;
+    }
+    /*
+     * The allocator stores the payload size in the header that precedes every
+     * returned pointer; aligned blocks keep their own header, so this is the
+     * size the caller can actually use.
+     */
+    AllocationHeader *header = (AllocationHeader *)pointer - 1;
+    return header->size;
+}
+
 int posix_memalign(void **result, size_t alignment, size_t size)
 {
     if (result == NULL || alignment < sizeof(void *) ||

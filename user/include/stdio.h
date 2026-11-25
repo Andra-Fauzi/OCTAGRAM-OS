@@ -83,6 +83,8 @@ int vsnprintf(char *buffer, size_t size, const char *format, va_list arguments);
 /* GNU extensions used by libc++'s locale and chrono formatting. */
 int asprintf(char **result, const char *format, ...);
 int vasprintf(char **result, const char *format, va_list arguments);
+ssize_t getline(char **line, size_t *capacity, FILE *stream);
+ssize_t getdelim(char **line, size_t *capacity, int delimiter, FILE *stream);
 int snprintf(char *buffer, size_t size, const char *format, ...);
 int vsprintf(char *buffer, const char *format, va_list arguments);
 int sprintf(char *buffer, const char *format, ...);

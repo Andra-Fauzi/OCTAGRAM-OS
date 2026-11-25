@@ -40,6 +40,15 @@ int strerror_r(int error, char *buffer, size_t length);
 char *strerror(int error);
 char *strsignal(int signal_number);
 
+/* BSD/GNU extensions used by LLVM, rustc and ordinary ported code. */
+void *memmem(const void *haystack, size_t haystack_length, const void *needle,
+             size_t needle_length);
+char *strsep(char **string_pointer, const char *delimiters);
+size_t strlcpy(char *destination, const char *source, size_t size);
+size_t strlcat(char *destination, const char *source, size_t size);
+size_t strnlen(const char *text, size_t maximum);
+void explicit_bzero(void *buffer, size_t length);
+
 
 #ifdef __cplusplus
 }

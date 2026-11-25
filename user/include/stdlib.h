@@ -100,6 +100,11 @@ int remove(const char *path);
 void qsort(void *base, size_t count, size_t size,
            int (*compare)(const void *, const void *));
 int abs(int value);
+void *reallocarray(void *pointer, size_t count, size_t size);
+void qsort_r(void *base, size_t count, size_t size,
+             int (*compare)(const void *, const void *, void *), void *argument);
+char *mkdtemp(char *path_template);
+size_t malloc_usable_size(void *pointer);
 int system(const char *command);
 
 #ifdef __cplusplus

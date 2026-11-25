@@ -2741,3 +2741,36 @@ Dua batasan yang ditemukan dan didokumentasikan di probe, bukan disembunyikan:
 1,66 MB, tanpa undefined symbol) dan arsip libc++ dibangun ulang penuh setelah
 `__config_site` berubah. QEMU belum dijalankan di workspace ini; statusnya
 host-built, bukan guest-tested.
+
+## 99. Kelengkapan POSIX/GNU untuk libc (25 November 2026)
+
+Toolchain berbasis LLVM/rustc memakai sekumpulan fungsi libc yang belum ada di
+OCTAGRAM. Ronde ini menambahkannya dalam `user/posix_extra.c` (satu translation
+unit baru, ditautkan ke semua ELF lewat Makefile) plus beberapa entri di
+`runtime.c`.
+
+**`posix_extra.c`:**
+
+| Kelompok | Fungsi |
+| --- | --- |
+| string BSD/GNU | `memmem`, `strsep`, `strlcpy`, `strlcat`, `strnlen`, `explicit_bzero` |
+| alokasi/sortir | `reallocarray` (dengan pemeriksaan overflow), `qsort_r` (quicksort median-of-three + insertion sort, argumen komparator) |
+| pencocokan pola | `fnmatch` penuh: `*`, `?`, `[a-z]`, `[!…]`, escape `\`, flag `FNM_PATHNAME`/`FNM_NOESCAPE`/`FNM_PERIOD`, plus `<fnmatch.h>` baru |
+| glob | `glob`/`globfree` + `<glob.h>` baru: ekspansi per komponen direktori memakai `opendir`/`stat`/`fnmatch`, `GLOB_NOSORT`, `GLOB_MARK`, `GLOB_NOCHECK`, `GLOB_DOOFFS`, `GLOB_APPEND` |
+| input baris | `getline`/`getdelim` di atas `getc`, buffer tumbuh 2× |
+| direktori sementara | `mkdtemp` (kandidat dari jam + counter, `mkdir` atomik sebagai penentu unik, retry pada `EEXIST`) |
+| proses | `sched_getaffinity`/`sched_setaffinity` + `cpu_set_t`/`CPU_SET`/`CPU_ISSET`/`CPU_COUNT` di `<sched.h>` (satu CPU online, ditolak bila CPU 0 dimask) |
+| info sistem | `sysinfo` + `<sys/sysinfo.h>` (`uptime` dan `procs` nyata; field memori 0 = tidak diketahui, bukan karangan) |
+| auxv | `getauxval` + `<sys/auxv.h>` (`ENOENT`, karena vektor aux belum ditangkap `crt0`) |
+
+**`runtime.c`:** `malloc_usable_size`, membaca `size` dari `AllocationHeader`
+yang mendahului setiap pointer.
+
+Batas yang jujur: `glob` tidak mendukung `~`, brace expansion, maupun
+`GLOB_ERR`; komponen pola dibatasi 255 byte; `sysinfo` tidak melaporkan RAM
+karena kernel belum punya syscall untuk itu; `getauxval` selalu `ENOENT`.
+
+**Validasi:** `make -C user build/libcxx_format_smoke.elf`,
+`build/octagram-cargo.elf`, `build/libcxx_container_smoke.elf`, dan
+`build/libcxx_smoke.elf` semuanya lulus (exit 0, tanpa error/undefined
+symbol). QEMU belum dijalankan di workspace ini untuk probe ini.

@@ -35,7 +35,10 @@ public:
 };
 _LIBCPP_DIAGNOSTIC_POP
 
-_LIBCPP_NORETURN inline _LIBCPP_HIDE_FROM_ABI void __throw_format_error(const char* __s) {
+// OCTAGRAM: GCC rejects the constexpr format-string validator when this
+// diagnostic helper is not constexpr, even on paths it never evaluates.
+_LIBCPP_NORETURN _LIBCPP_CONSTEXPR_SINCE_CXX20 inline _LIBCPP_HIDE_FROM_ABI
+void __throw_format_error(const char* __s) {
 #  ifndef _LIBCPP_HAS_NO_EXCEPTIONS
   throw format_error(__s);
 #  else

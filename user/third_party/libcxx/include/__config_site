@@ -16,3 +16,8 @@
 // so libc++ should use it for std::chrono::steady_clock instead of failing the
 // "Monotonic clock not implemented" gate in src/chrono.cpp.
 #define _LIBCPP_HAS_CLOCK_GETTIME
+
+// std::basic_osyncstream, <tzdb> and stop_token are marked experimental in
+// this libc++ snapshot; they are complete enough for the native toolchain and
+// the container probe exercises osyncstream, so enable them.
+#define _LIBCPP_ENABLE_EXPERIMENTAL 1

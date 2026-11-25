@@ -2697,3 +2697,47 @@ mendapat lock setelah reader habis.
 **Validasi:** `make -C user build/libcxx_container_smoke.elf` lulus (ELF64
 statis, 912 KB, tanpa undefined symbol). QEMU belum dijalankan di workspace
 ini; statusnya host-built, bukan guest-tested.
+
+## 98. `std::format`, `std::print`, dan konfigurasi libc++ (25 November 2026)
+
+Ronde ini menutup jalur diagnostik/format yang dipakai front end compiler:
+`<format>`, `<print>`, `<expected>`, `<syncstream>`, dan `<mdspan>`.
+
+Perubahan konfigurasi libc++ (`include/__config_site`):
+
+- **`_LIBCPP_ENABLE_EXPERIMENTAL`** diaktifkan. Tanpa flag ini libc++
+  menyembunyikan `basic_osyncstream`, `<tzdb>`, `stop_token`, dan backend PSTL
+  di balik `_LIBCPP_HAS_NO_EXPERIMENTAL_SYNCSTREAM` dan kerabatnya, sehingga
+  `std::osyncstream` hanya berupa deklarasi tanpa definisi.
+- **`__format/format_error.h` dipatch lokal**: `__throw_format_error` sekarang
+  `constexpr` (C++20+). GCC menolak validator format string consteval libc++
+  ketika helper diagnostik itu bukan constexpr, walau jalur tersebut tidak
+  pernah dievaluasi. Komentar patch ada di header.
+- **Makefile**: `LIBCXX_HEADERS` (hasil `find` atas seluruh header vendored,
+  termasuk `__config_site`) menjadi dependensi objek libc++, sehingga
+  perubahan konfigurasi benar-benar membangun ulang arsip. Tanpa ini arsip
+  tetap memakai objek lama setelah `__config_site` berubah.
+- **`src/print.cpp` dikompilasi sebagai C++23** (satu-satunya objek arsip yang
+  bukan C++20) karena `std::print`/`std::println` hanya dideklarasikan di
+  C++23; probe juga dibangun dengan `-std=c++23`.
+
+Probe guest baru `examples/libcxx_format_smoke.cpp` →
+`/bin/libcxx-format-smoke` memeriksa 27 format string: integer (desimal, hex
+dengan prefiks, oktal, biner, nol-fill, fill/align, flag gabungan), float
+(`f`, `e`, `g`, presisi umum), string (align, presisi, escape brace),
+`format_to` ke buffer mentah dan `back_inserter`, `formatted_size`,
+`vformat` + `make_format_args`, `std::print`/`println` ke fd 1,
+`std::expected` (value/error/transform/and_then), `std::osyncstream` dari dua
+thread, dan `std::mdspan` dua dimensi.
+
+Dua batasan yang ditemukan dan didokumentasikan di probe, bukan disembunyikan:
+
+- formatter buatan pengguna harus `template <class Context> format(...)`,
+  karena libc++ menguji `__formattable` dengan `basic_format_context<char*, char>`;
+- `std::format("v{}", CustomType)` masih ditolak validator consteval libc++
+  18 di GCC 13, jadi jalur formatter kustom diuji lewat `std::vformat`.
+
+**Validasi:** `make -C user build/libcxx_format_smoke.elf` lulus (ELF64 statis,
+1,66 MB, tanpa undefined symbol) dan arsip libc++ dibangun ulang penuh setelah
+`__config_site` berubah. QEMU belum dijalankan di workspace ini; statusnya
+host-built, bukan guest-tested.

@@ -24,6 +24,9 @@ CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
 PROGRAMS := sh hello file_demo runtime_demo tty_demo argv_demo spawn_demo pipe_demo env_demo posix_demo stdio_demo posix_spawn_demo file_api_demo path_api_demo at_api_demo execve_demo fork_demo time_demo mmap_demo scanf_demo tls_demo thread_demo thread_tsd_demo fb_demo syscall_compat_demo account_demo socket_msg_demo netdb_demo dns_demo cxa_atexit_demo credential_demo robust_mutex_demo
 BINARIES := $(addprefix build/,$(addsuffix .elf,$(PROGRAMS)))
 HEADERS := $(wildcard include/*.h include/sys/*.h include/netinet/*.h)
+# Vendored libc++ headers, including __config_site. Without this dependency the
+# archive keeps objects compiled against an older configuration.
+LIBCXX_HEADERS := $(shell find third_party/libcxx/include -name '*.h' -o -name '*.inc' 2>/dev/null)
 TCC_SOURCES := tcc libtcc tccpp tccgen tccdbg tccelf tccasm tccrun \
 	x86_64-gen x86_64-link i386-asm
 TCC_OBJECTS := $(addprefix build/tcc_,$(addsuffix .o,$(TCC_SOURCES)))
@@ -68,7 +71,7 @@ LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 .PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test compiler-rt-test cpp-header-test libcxx-header-check dynamic
 CPP_SMOKE := build/cpp_smoke.elf
 
-all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(LIBCXX_IOSTREAM_SMOKE) $(LIBCXX_THREAD_SMOKE) $(LIBCXX_FS_SMOKE) $(LIBCXX_CONTAINER_SMOKE) $(OCTAGRAM_CARGO) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
+all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(LIBCXX_IOSTREAM_SMOKE) $(LIBCXX_THREAD_SMOKE) $(LIBCXX_FS_SMOKE) $(LIBCXX_CONTAINER_SMOKE) $(LIBCXX_FORMAT_SMOKE) $(OCTAGRAM_CARGO) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
 
@@ -236,7 +239,8 @@ LIBCXX_OBJECTS := \
 	build/libcxx/functional.o \
 	build/libcxx/bind.o \
 	build/libcxx/atomic.o \
-	build/libcxx/memory_resource.o
+	build/libcxx/memory_resource.o \
+	build/libcxx/print.o
 LIBCXX_STRING_SMOKE := build/libcxx_string_smoke.elf
 LIBCXX_IOSTREAM_SMOKE := build/libcxx_iostream_smoke.elf
 LIBCXX_THREAD_SMOKE := build/libcxx_thread_smoke.elf
@@ -245,6 +249,7 @@ LIBCXX_FS_SMOKE := build/libcxx_fs_smoke.elf
 # offline and invokes rustc. Not upstream Cargo (see user/cargo/main.cpp).
 OCTAGRAM_CARGO := build/octagram-cargo.elf
 LIBCXX_CONTAINER_SMOKE := build/libcxx_container_smoke.elf
+LIBCXX_FORMAT_SMOKE := build/libcxx_format_smoke.elf
 
 # Only the translation units that back the features exercised by the guest
 # probe are compiled so far. std::iostream (locale/ios/fstream), std::thread,
@@ -255,7 +260,13 @@ LIBCXX_CONTAINER_SMOKE := build/libcxx_container_smoke.elf
 # "impossible size" branches inside basic_string.
 LIBCXX_LIB_FLAGS := $(filter-out -Werror,$(LIBCXX_CXXFLAGS)) -std=$(LIBCXX_STD)
 
-build/libcxx/%.o: $(LIBCXX_SRC)/%.cpp $(HEADERS) | build
+# std::print/std::println are C++23-only declarations, so print.cpp must be
+# compiled as C++23 even though the rest of the archive is C++20.
+build/libcxx/print.o: $(LIBCXX_SRC)/print.cpp $(HEADERS) $(LIBCXX_HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CXX) $(LIBCXX_LIB_FLAGS) -std=c++23 -c -o $@ $<
+
+build/libcxx/%.o: $(LIBCXX_SRC)/%.cpp $(HEADERS) $(LIBCXX_HEADERS) | build
 	@mkdir -p $(dir $@)
 	$(CXX) $(LIBCXX_LIB_FLAGS) -c -o $@ $<
 
@@ -322,6 +333,18 @@ $(LIBCXX_CONTAINER_SMOKE): build/libcxx_container_smoke.o build/libcxx_runtime.o
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
 		build/libcxx_container_smoke.o $(LIBCXX_ARCHIVE)
+
+build/libcxx_format_smoke.o: examples/libcxx_format_smoke.cpp $(HEADERS) | build
+	$(CXX) $(LIBCXX_CXXFLAGS) -std=c++23 -c -o $@ $<
+
+$(LIBCXX_FORMAT_SMOKE): build/libcxx_format_smoke.o build/libcxx_runtime.o \
+		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o \
+		build/setjmp.o $(LIBCXX_ARCHIVE) linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/compiler_rt.o \
+		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
+		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
+		build/libcxx_format_smoke.o $(LIBCXX_ARCHIVE)
 
 build/octagram_cargo.o: cargo/main.cpp $(HEADERS) | build
 	$(CXX) $(LIBCXX_CXXFLAGS) -std=$(LIBCXX_STD) -c -o $@ $<

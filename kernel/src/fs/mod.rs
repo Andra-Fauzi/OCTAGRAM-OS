@@ -49,6 +49,8 @@ const LIBCXX_FS_SMOKE_ELF: &[u8] =
     include_bytes!("../../../user/build/libcxx_fs_smoke.elf");
 const LIBCXX_CONTAINER_SMOKE_ELF: &[u8] =
     include_bytes!("../../../user/build/libcxx_container_smoke.elf");
+const LIBCXX_FORMAT_SMOKE_ELF: &[u8] =
+    include_bytes!("../../../user/build/libcxx_format_smoke.elf");
 const OCTAGRAM_CARGO_ELF: &[u8] = include_bytes!("../../../user/build/octagram-cargo.elf");
 const CARGO_DEMO_MANIFEST: &[u8] = include_bytes!("../../../user/cargo/demo/Cargo.toml");
 const CARGO_DEMO_LOCK: &[u8] = include_bytes!("../../../user/cargo/demo/Cargo.lock");
@@ -1057,6 +1059,12 @@ pub fn init() {
             &mut vfs,
             "/bin/libcxx-container-smoke",
             LIBCXX_CONTAINER_SMOKE_ELF,
+            0o755,
+        );
+        seed_file(
+            &mut vfs,
+            "/bin/libcxx-format-smoke",
+            LIBCXX_FORMAT_SMOKE_ELF,
             0o755,
         );
         seed_file(&mut vfs, "/bin/octagram-cargo", OCTAGRAM_CARGO_ELF, 0o755);

@@ -434,6 +434,22 @@ def main():
         return 1
     print("LIBCXX-CONTAINER-PASS")
 
+    # std::format/std::print: compile-time-checked format strings into
+    # std::string, format_to, vformat, numeric/float/string specifiers,
+    # std::print/std::println on fd 1, std::expected, std::osyncstream and
+    # mdspan.
+    format_offset = len(serial_text())
+    send_line("/bin/libcxx-format-smoke")
+    if not wait_for_after("LIBCXX-FORMAT-PASS", format_offset, 90):
+        print("LIBCXX-FORMAT-FAIL: guest probe did not pass")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("LIBCXX-FORMAT-FAIL: shell did not return")
+        print(serial_text()[-6000:])
+        return 1
+    print("LIBCXX-FORMAT-PASS")
+
     # M4.4 groundwork: the Cargo-side driver parses Cargo.toml/Cargo.lock
     # offline, resolves path dependencies into a build order, and reports
     # metadata. It does not claim to be upstream Cargo, and it is not asked to

@@ -5,6 +5,7 @@ on:
     branches:
       - feature/native-self-hosting
       - feature/native-self-hosting-testing-3
+      - feature/native-self-hosting-testing-4
     paths:
       - "user/rust/**"
       - "user/crt0.S"

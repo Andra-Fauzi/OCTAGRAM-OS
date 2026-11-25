@@ -76,7 +76,6 @@ LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 .PHONY: all clean rust sysroot scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test compiler-rt-test cpp-header-test libcxx-header-check dynamic
 CPP_SMOKE := build/cpp_smoke.elf
 
-all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(LIBCXX_IOSTREAM_SMOKE) $(LIBCXX_THREAD_SMOKE) $(LIBCXX_FS_SMOKE) $(LIBCXX_CONTAINER_SMOKE) $(LIBCXX_FORMAT_SMOKE) $(OCTAGRAM_CARGO) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
 
@@ -261,6 +260,10 @@ LIBCXX_FS_SMOKE := build/libcxx_fs_smoke.elf
 OCTAGRAM_CARGO := build/octagram-cargo.elf
 LIBCXX_CONTAINER_SMOKE := build/libcxx_container_smoke.elf
 LIBCXX_FORMAT_SMOKE := build/libcxx_format_smoke.elf
+
+# Keep this aggregate rule after every prerequisite variable assignment: GNU Make
+# expands prerequisite lists immediately when parsing the rule.
+all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(LIBCXX_IOSTREAM_SMOKE) $(LIBCXX_THREAD_SMOKE) $(LIBCXX_FS_SMOKE) $(LIBCXX_CONTAINER_SMOKE) $(LIBCXX_FORMAT_SMOKE) $(OCTAGRAM_CARGO) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 # Only the translation units that back the features exercised by the guest
 # probe are compiled so far. std::iostream (locale/ios/fstream), std::thread,

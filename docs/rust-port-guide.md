@@ -37,6 +37,8 @@ dipanggil dari shell, bukan cross-build dari host.
 | `std::fstream` (`ofstream`/`ifstream`) | dibangun di host; guest menunggu QEMU | probe thread/fstream yang sama |
 | `std::filesystem` (path, iterator, ops; `space()` ENOSYS) | dibangun di host; guest menunggu QEMU | `build/libcxx_fs_smoke.elf`, marker `LIBCXX-FS-SUITE-PASS` |
 | `octagram-cargo` (driver Cargo offline: plan/build/check/metadata) | dibangun di host; marker guest sudah dipasang | `build/octagram-cargo.elf`, marker `OCTAGRAM-CARGO-PASS` |
+| Container & utilitas (`map`/`set`/`unordered_*`/`valarray`/`bitset`/`variant`/`optional`/`any`/`shared_mutex`) | dibangun di host; marker guest sudah dipasang | `build/libcxx_container_smoke.elf`, marker `LIBCXX-CONTAINER-PASS` |
+| `pthread_rwlock_*`, `pthread_mutex_timedlock`, `pthread_cond_clockwait` | dibangun di host | dipakai `std::shared_mutex`/`shared_timed_mutex` |
 | `std::random`, `std::regex`, `std::chrono` | dibangun di host; guest menunggu QEMU | probe fs yang sama |
 | POSIX `stat` timespec, `S_ISBLK/FIFO/SOCK`, `_PC_*`, `sendfile` | terbukti di host | `include/sys/stat.h`, `include/unistd.h`, `runtime.c` |
 | libLLVM untuk host OCTAGRAM | **belum** | — |
@@ -236,6 +238,7 @@ serial. Marker yang harus muncul:
 | `LIBCXX-THREAD-PASS` | `std::thread`, mutex/condvar, promise/future, dan `std::fstream` berjalan di guest |
 | `LIBCXX-FS-PASS` | `std::filesystem`, `std::random`, `std::regex`, dan `std::chrono` berjalan di guest |
 | `OCTAGRAM-CARGO-PASS` | `octagram-cargo plan --locked` dan `metadata` membaca workspace demo di guest |
+| `LIBCXX-CONTAINER-PASS` | container asosiatif, `valarray`, `bitset`, tipe kosakata C++17, `std::function`, `std::atomic`, dan `std::shared_mutex` berjalan di guest |
 | `RUST-NATIVE-LD-PASS` | object `rustc` ditautkan `ld` native lalu dijalankan |
 | `SYSCALL-TEST: PASS` | suite kompatibilitas syscall |
 

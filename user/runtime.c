@@ -10939,3 +10939,299 @@ done:
     }
     return (ssize_t)copied;
 }
+
+/* ---- Reader/writer locks ------------------------------------------------ */
+/*
+ * libc++'s std::shared_mutex/std::shared_timed_mutex are built on these. The
+ * implementation is deliberately simple: one futex mutex protects the state
+ * and one futex condition variable fans out wakeups. Readers wait while a
+ * writer is active; writers wait for the lock to drain. With
+ * PTHREAD_RWLOCK_PREFER_WRITER_NP, new readers also queue behind waiting
+ * writers so a read-heavy workload cannot starve a writer.
+ */
+int pthread_rwlock_init(pthread_rwlock_t *lock,
+                        const pthread_rwlockattr_t *attributes)
+{
+    if (lock == NULL) {
+        return EINVAL;
+    }
+    int result = pthread_mutex_init(&lock->mutex, NULL);
+    if (result != 0) {
+        return result;
+    }
+    result = pthread_cond_init(&lock->gate, NULL);
+    if (result != 0) {
+        pthread_mutex_destroy(&lock->mutex);
+        return result;
+    }
+    lock->readers = 0;
+    lock->writers = 0;
+    lock->writer_active = 0;
+    lock->prefer_writer = attributes == NULL ? 0 : attributes->kind !=
+                                                       PTHREAD_RWLOCK_PREFER_READER_NP;
+    return 0;
+}
+
+int pthread_rwlock_destroy(pthread_rwlock_t *lock)
+{
+    if (lock == NULL) {
+        return EINVAL;
+    }
+    pthread_cond_destroy(&lock->gate);
+    return pthread_mutex_destroy(&lock->mutex);
+}
+
+int pthread_rwlock_rdlock(pthread_rwlock_t *lock)
+{
+    if (lock == NULL) {
+        return EINVAL;
+    }
+    int result = pthread_mutex_lock(&lock->mutex);
+    if (result != 0) {
+        return result;
+    }
+    while (lock->writer_active || (lock->prefer_writer && lock->writers > 0)) {
+        pthread_cond_wait(&lock->gate, &lock->mutex);
+    }
+    lock->readers++;
+    pthread_mutex_unlock(&lock->mutex);
+    return 0;
+}
+
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *lock)
+{
+    if (lock == NULL) {
+        return EINVAL;
+    }
+    int result = pthread_mutex_lock(&lock->mutex);
+    if (result != 0) {
+        return result;
+    }
+    if (lock->writer_active || (lock->prefer_writer && lock->writers > 0)) {
+        pthread_mutex_unlock(&lock->mutex);
+        return EBUSY;
+    }
+    lock->readers++;
+    pthread_mutex_unlock(&lock->mutex);
+    return 0;
+}
+
+int pthread_rwlock_timedrdlock(pthread_rwlock_t *lock,
+                               const struct timespec *absolute_time)
+{
+    if (lock == NULL || absolute_time == NULL) {
+        return EINVAL;
+    }
+    int result = pthread_mutex_lock(&lock->mutex);
+    if (result != 0) {
+        return result;
+    }
+    while (lock->writer_active || (lock->prefer_writer && lock->writers > 0)) {
+        result = pthread_cond_timedwait(&lock->gate, &lock->mutex, absolute_time);
+        if (result == ETIMEDOUT) {
+            pthread_mutex_unlock(&lock->mutex);
+            return ETIMEDOUT;
+        }
+    }
+    lock->readers++;
+    pthread_mutex_unlock(&lock->mutex);
+    return 0;
+}
+
+int pthread_rwlock_wrlock(pthread_rwlock_t *lock)
+{
+    if (lock == NULL) {
+        return EINVAL;
+    }
+    int result = pthread_mutex_lock(&lock->mutex);
+    if (result != 0) {
+        return result;
+    }
+    lock->writers++;
+    while (lock->writer_active || lock->readers > 0) {
+        pthread_cond_wait(&lock->gate, &lock->mutex);
+    }
+    lock->writers--;
+    lock->writer_active = 1;
+    pthread_mutex_unlock(&lock->mutex);
+    return 0;
+}
+
+int pthread_rwlock_trywrlock(pthread_rwlock_t *lock)
+{
+    if (lock == NULL) {
+        return EINVAL;
+    }
+    int result = pthread_mutex_lock(&lock->mutex);
+    if (result != 0) {
+        return result;
+    }
+    if (lock->writer_active || lock->readers > 0) {
+        pthread_mutex_unlock(&lock->mutex);
+        return EBUSY;
+    }
+    lock->writer_active = 1;
+    pthread_mutex_unlock(&lock->mutex);
+    return 0;
+}
+
+int pthread_rwlock_timedwrlock(pthread_rwlock_t *lock,
+                               const struct timespec *absolute_time)
+{
+    if (lock == NULL || absolute_time == NULL) {
+        return EINVAL;
+    }
+    int result = pthread_mutex_lock(&lock->mutex);
+    if (result != 0) {
+        return result;
+    }
+    lock->writers++;
+    while (lock->writer_active || lock->readers > 0) {
+        result = pthread_cond_timedwait(&lock->gate, &lock->mutex, absolute_time);
+        if (result == ETIMEDOUT) {
+            lock->writers--;
+            pthread_mutex_unlock(&lock->mutex);
+            return ETIMEDOUT;
+        }
+    }
+    lock->writers--;
+    lock->writer_active = 1;
+    pthread_mutex_unlock(&lock->mutex);
+    return 0;
+}
+
+int pthread_rwlock_unlock(pthread_rwlock_t *lock)
+{
+    if (lock == NULL) {
+        return EINVAL;
+    }
+    int result = pthread_mutex_lock(&lock->mutex);
+    if (result != 0) {
+        return result;
+    }
+    if (lock->writer_active != 0) {
+        lock->writer_active = 0;
+        pthread_cond_broadcast(&lock->gate);
+    } else if (lock->readers > 0) {
+        lock->readers--;
+        if (lock->readers == 0) {
+            pthread_cond_broadcast(&lock->gate);
+        }
+    } else {
+        pthread_mutex_unlock(&lock->mutex);
+        return EPERM;
+    }
+    pthread_mutex_unlock(&lock->mutex);
+    return 0;
+}
+
+int pthread_rwlockattr_init(pthread_rwlockattr_t *attributes)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    attributes->kind = PTHREAD_RWLOCK_PREFER_READER_NP;
+    return 0;
+}
+
+int pthread_rwlockattr_destroy(pthread_rwlockattr_t *attributes)
+{
+    return attributes == NULL ? EINVAL : 0;
+}
+
+int pthread_rwlockattr_setkind_np(pthread_rwlockattr_t *attributes, int kind)
+{
+    if (attributes == NULL) {
+        return EINVAL;
+    }
+    if (kind != PTHREAD_RWLOCK_PREFER_READER_NP &&
+        kind != PTHREAD_RWLOCK_PREFER_WRITER_NP &&
+        kind != PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP) {
+        return EINVAL;
+    }
+    attributes->kind = kind;
+    return 0;
+}
+
+int pthread_rwlockattr_getkind_np(const pthread_rwlockattr_t *attributes,
+                                  int *kind)
+{
+    if (attributes == NULL || kind == NULL) {
+        return EINVAL;
+    }
+    *kind = attributes->kind;
+    return 0;
+}
+
+/* ---- Timed locking ------------------------------------------------------ */
+/*
+ * The kernel exposes a futex, not a per-object wait queue, so timeout support
+ * is a bounded retry loop rather than a native absolute-time wait.
+ */
+int pthread_mutex_timedlock(pthread_mutex_t *mutex,
+                            const struct timespec *absolute_time)
+{
+    if (mutex == NULL || absolute_time == NULL) {
+        return EINVAL;
+    }
+    uint64_t deadline;
+    int conversion = oct_absolute_milliseconds(absolute_time, &deadline);
+    if (conversion != 0) {
+        return conversion;
+    }
+    for (;;) {
+        int result = pthread_mutex_trylock(mutex);
+        if (result == 0) {
+            return 0;
+        }
+        if (result != EBUSY) {
+            return result;
+        }
+        if (oct_realtime_milliseconds() >= deadline) {
+            return ETIMEDOUT;
+        }
+        struct timespec nap;
+        nap.tv_sec = 0;
+        nap.tv_nsec = 1000000; /* 1 ms */
+        nanosleep(&nap, NULL);
+    }
+}
+
+int pthread_cond_clockwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                           clockid_t clock,
+                           const struct timespec *absolute_time)
+{
+    if (cond == NULL || mutex == NULL || absolute_time == NULL) {
+        return EINVAL;
+    }
+    if (clock == CLOCK_REALTIME) {
+        return pthread_cond_timedwait(cond, mutex, absolute_time);
+    }
+    if (clock != CLOCK_MONOTONIC) {
+        /*
+         * CLOCK_PROCESS_CPUTIME_ID and CLOCK_THREAD_CPUTIME_ID are not
+         * meaningful as wait deadlines; report that instead of pretending.
+         */
+        return ENOTSUP;
+    }
+    struct timespec monotonic_now;
+    if (clock_gettime(CLOCK_MONOTONIC, &monotonic_now) != 0) {
+        return EINVAL;
+    }
+    int64_t remaining_ns = (int64_t)(absolute_time->tv_sec - monotonic_now.tv_sec) *
+                               1000000000 +
+                           (int64_t)(absolute_time->tv_nsec - monotonic_now.tv_nsec);
+    if (remaining_ns <= 0) {
+        return ETIMEDOUT;
+    }
+    struct timespec realtime_now;
+    if (clock_gettime(CLOCK_REALTIME, &realtime_now) != 0) {
+        return EINVAL;
+    }
+    int64_t deadline_ns =
+        (int64_t)realtime_now.tv_sec * 1000000000 + realtime_now.tv_nsec + remaining_ns;
+    struct timespec converted;
+    converted.tv_sec = (time_t)(deadline_ns / 1000000000);
+    converted.tv_nsec = (long)(deadline_ns % 1000000000);
+    return pthread_cond_timedwait(cond, mutex, &converted);
+}

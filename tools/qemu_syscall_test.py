@@ -419,6 +419,21 @@ def main():
         return 1
     print("LIBCXX-FS-PASS")
 
+    # Containers and shared locking: ordered/unordered associative containers,
+    # valarray, bitset, the C++17 vocabulary types, std::function, std::atomic,
+    # and std::shared_mutex on top of the pthread_rwlock implementation.
+    container_offset = len(serial_text())
+    send_line("/bin/libcxx-container-smoke")
+    if not wait_for_after("LIBCXX-CONTAINER-PASS", container_offset, 90):
+        print("LIBCXX-CONTAINER-FAIL: guest probe did not pass")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("LIBCXX-CONTAINER-FAIL: shell did not return")
+        print(serial_text()[-6000:])
+        return 1
+    print("LIBCXX-CONTAINER-PASS")
+
     # M4.4 groundwork: the Cargo-side driver parses Cargo.toml/Cargo.lock
     # offline, resolves path dependencies into a build order, and reports
     # metadata. It does not claim to be upstream Cargo, and it is not asked to

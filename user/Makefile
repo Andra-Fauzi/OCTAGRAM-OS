@@ -68,7 +68,7 @@ LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 .PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test compiler-rt-test cpp-header-test libcxx-header-check dynamic
 CPP_SMOKE := build/cpp_smoke.elf
 
-all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(LIBCXX_IOSTREAM_SMOKE) $(LIBCXX_THREAD_SMOKE) $(LIBCXX_FS_SMOKE) $(OCTAGRAM_CARGO) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
+all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(LIBCXX_IOSTREAM_SMOKE) $(LIBCXX_THREAD_SMOKE) $(LIBCXX_FS_SMOKE) $(LIBCXX_CONTAINER_SMOKE) $(OCTAGRAM_CARGO) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
 
@@ -222,7 +222,21 @@ LIBCXX_OBJECTS := \
 	build/libcxx/filesystem/operations.o \
 	build/libcxx/filesystem/filesystem_clock.o \
 	build/libcxx/filesystem/filesystem_error.o \
-	build/libcxx/filesystem/int128_builtins.o
+	build/libcxx/filesystem/int128_builtins.o \
+	build/libcxx/hash.o \
+	build/libcxx/typeinfo.o \
+	build/libcxx/valarray.o \
+	build/libcxx/strstream.o \
+	build/libcxx/shared_mutex.o \
+	build/libcxx/barrier.o \
+	build/libcxx/condition_variable_destructor.o \
+	build/libcxx/any.o \
+	build/libcxx/optional.o \
+	build/libcxx/variant.o \
+	build/libcxx/functional.o \
+	build/libcxx/bind.o \
+	build/libcxx/atomic.o \
+	build/libcxx/memory_resource.o
 LIBCXX_STRING_SMOKE := build/libcxx_string_smoke.elf
 LIBCXX_IOSTREAM_SMOKE := build/libcxx_iostream_smoke.elf
 LIBCXX_THREAD_SMOKE := build/libcxx_thread_smoke.elf
@@ -230,6 +244,7 @@ LIBCXX_FS_SMOKE := build/libcxx_fs_smoke.elf
 # Cargo bootstrap driver: a C++ program that resolves Cargo.toml/Cargo.lock
 # offline and invokes rustc. Not upstream Cargo (see user/cargo/main.cpp).
 OCTAGRAM_CARGO := build/octagram-cargo.elf
+LIBCXX_CONTAINER_SMOKE := build/libcxx_container_smoke.elf
 
 # Only the translation units that back the features exercised by the guest
 # probe are compiled so far. std::iostream (locale/ios/fstream), std::thread,
@@ -295,6 +310,18 @@ $(LIBCXX_FS_SMOKE): build/libcxx_fs_smoke.o build/libcxx_runtime.o \
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
 		build/libcxx_fs_smoke.o $(LIBCXX_ARCHIVE)
+
+build/libcxx_container_smoke.o: examples/libcxx_container_smoke.cpp $(HEADERS) | build
+	$(CXX) $(LIBCXX_CXXFLAGS) -std=$(LIBCXX_STD) -c -o $@ $<
+
+$(LIBCXX_CONTAINER_SMOKE): build/libcxx_container_smoke.o build/libcxx_runtime.o \
+		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o \
+		build/setjmp.o $(LIBCXX_ARCHIVE) linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/compiler_rt.o \
+		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
+		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
+		build/libcxx_container_smoke.o $(LIBCXX_ARCHIVE)
 
 build/octagram_cargo.o: cargo/main.cpp $(HEADERS) | build
 	$(CXX) $(LIBCXX_CXXFLAGS) -std=$(LIBCXX_STD) -c -o $@ $<

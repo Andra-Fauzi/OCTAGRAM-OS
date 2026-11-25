@@ -2651,3 +2651,49 @@ di guest karena belum ada `rustc`; itu gate M4.3.4/M4.4.
 **Validasi:** `make -C user build/octagram-cargo.elf` lulus (ELF64 statis,
 1,05 MB, tanpa undefined symbol). Eksekusi QEMU belum dijalankan di workspace
 ini, jadi statusnya host-built, bukan guest-tested.
+
+## 97. Container, utilitas, dan `pthread_rwlock` (25 November 2026)
+
+libc++ yang bisa dipakai compiler butuh lebih dari string/iostream: front end
+LLVM dan rustc memakai map, unordered_map, bitset, variant, function, dan
+shared_mutex. Ronde ini menambah 15 translation unit ke `build/libc++.a`:
+
+`hash.cpp`, `typeinfo.cpp`, `valarray.cpp`, `strstream.cpp`,
+`shared_mutex.cpp`, `barrier.cpp`, `condition_variable_destructor.cpp`,
+`any.cpp`, `optional.cpp`, `variant.cpp`, `functional.cpp`, `bind.cpp`,
+`atomic.cpp`, `memory_resource.cpp`.
+
+Dukungan libc yang ikut ditulis:
+
+- **`pthread_rwlock_*` lengkap** di `runtime.c`: `init`/`destroy`/`rdlock`/
+  `tryrdlock`/`timedrdlock`/`wrlock`/`trywrlock`/`timedwrlock`/`unlock`, plus
+  `pthread_rwlockattr_*` dengan kind `PREFER_READER_NP`/`PREFER_WRITER_NP`/
+  `PREFER_WRITER_NONRECURSIVE_NP`. Implementasinya satu futex mutex + satu
+  futex condvar sebagai kanal wakeup; reader menunggu saat writer aktif,
+  writer menunggu sampai reader habis, dan mode prefer-writer menahan reader
+  baru agar tidak ada starvation.
+- **`pthread_mutex_timedlock`** (retry `trylock` + `nanosleep` 1 ms, batas
+  absolut, `ETIMEDOUT` jujur) dan **`pthread_cond_clockwait`** (konversi
+  deadline `CLOCK_MONOTONIC` → `CLOCK_REALTIME`; clock CPU mengembalikan
+  `ENOTSUP`, bukan menunggu tanpa arti).
+- **`include/linux/futex.h`** baru: konstanta operasi futex yang dibutuhkan
+  `atomic.cpp` (`FUTEX_WAIT`/`WAKE`/`WAIT_BITSET`/`WAKE_BITSET`, flag
+  `PRIVATE`, `CLOCK_REALTIME`, `FUTEX_BITSET_MATCH_ANY`). Syscall `futex`
+  sendiri sudah ada di kernel, jadi hanya konstanta yang kurang.
+- **`include/sys/syscall.h`** sekarang `extern "C"`, sehingga `syscall()`
+  tidak lagi bertabrakan linkage dengan deklarasi di `<unistd.h>` saat
+  dikompilasi sebagai C++.
+
+Probe guest baru `examples/libcxx_container_smoke.cpp` →
+`/bin/libcxx-container-smoke` memeriksa: `std::map`/`set`/`multimap` (urutan
+dan `lower_bound`), `unordered_map`/`unordered_set` dengan lebih dari satu
+bucket (bukti `hash.cpp` benar-benar dipakai), `deque`/`list`/`forward_list`,
+`valarray` (scale, `shift`, dot), `bitset` (count, flip, bitwise),
+`optional`/`variant`/`visit`/`tuple`/`string_view`/`span`,
+`function`/`bind`/`shared_ptr`/`weak_ptr`/`unique_ptr`/`atomic`, dan
+`std::shared_mutex`: dua reader bersamaan ditolak untuk writer, lalu writer
+mendapat lock setelah reader habis.
+
+**Validasi:** `make -C user build/libcxx_container_smoke.elf` lulus (ELF64
+statis, 912 KB, tanpa undefined symbol). QEMU belum dijalankan di workspace
+ini; statusnya host-built, bukan guest-tested.

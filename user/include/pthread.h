@@ -42,6 +42,28 @@ typedef struct {
     int type;
 } pthread_mutexattr_t;
 
+/* Reader/writer lock built from a futex mutex plus one futex condition
+ * variable. `gate` is broadcast on every transition that can let a waiter
+ * proceed, so readers and writers share a single wakeup channel. */
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t gate;
+    unsigned int readers; /* active readers */
+    unsigned int writers; /* writers waiting for the lock */
+    int writer_active;
+    int prefer_writer;
+} pthread_rwlock_t;
+
+typedef struct {
+    int kind;
+} pthread_rwlockattr_t;
+
+#define PTHREAD_RWLOCK_INITIALIZER \
+    { { { 0 }, 0, 0, 0 }, { 0 }, 0, 0, 0, 0 }
+#define PTHREAD_RWLOCK_PREFER_READER_NP 0
+#define PTHREAD_RWLOCK_PREFER_WRITER_NP 1
+#define PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP 2
+
 #define PTHREAD_MUTEX_INITIALIZER {{0}, 0, 0, 0}
 #define PTHREAD_ONCE_INIT {0}
 #define PTHREAD_COND_INITIALIZER {0}
@@ -96,6 +118,30 @@ int pthread_condattr_init(pthread_condattr_t *attributes);
 int pthread_condattr_destroy(pthread_condattr_t *attributes);
 int pthread_condattr_setclock(pthread_condattr_t *attributes, clockid_t clock);
 int pthread_detach(pthread_t thread);
+
+int pthread_mutex_timedlock(pthread_mutex_t *mutex,
+                            const struct timespec *absolute_time);
+int pthread_cond_clockwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                           clockid_t clock,
+                           const struct timespec *absolute_time);
+
+int pthread_rwlock_init(pthread_rwlock_t *lock,
+                        const pthread_rwlockattr_t *attributes);
+int pthread_rwlock_destroy(pthread_rwlock_t *lock);
+int pthread_rwlock_rdlock(pthread_rwlock_t *lock);
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *lock);
+int pthread_rwlock_timedrdlock(pthread_rwlock_t *lock,
+                               const struct timespec *absolute_time);
+int pthread_rwlock_wrlock(pthread_rwlock_t *lock);
+int pthread_rwlock_trywrlock(pthread_rwlock_t *lock);
+int pthread_rwlock_timedwrlock(pthread_rwlock_t *lock,
+                               const struct timespec *absolute_time);
+int pthread_rwlock_unlock(pthread_rwlock_t *lock);
+int pthread_rwlockattr_init(pthread_rwlockattr_t *attributes);
+int pthread_rwlockattr_destroy(pthread_rwlockattr_t *attributes);
+int pthread_rwlockattr_setkind_np(pthread_rwlockattr_t *attributes, int kind);
+int pthread_rwlockattr_getkind_np(const pthread_rwlockattr_t *attributes,
+                                  int *kind);
 int pthread_attr_init(pthread_attr_t *attributes);
 int pthread_attr_destroy(pthread_attr_t *attributes);
 int pthread_attr_setdetachstate(pthread_attr_t *attributes, int state);

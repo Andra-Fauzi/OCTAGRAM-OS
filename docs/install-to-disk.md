@@ -130,6 +130,11 @@ pada root EXT2, dan `/toolchain/bin` sudah ada di PATH shell OCTAGRAM, jadi
 setelah boot `rustc --version` dan `cargo build --offline` bisa langsung
 dijalankan. Tanpa opsi ini root tetap dibuat dan `/toolchain/bin` kosong.
 
+Toolchain sebaiknya dihasilkan lewat `tools/stage_octagram_toolchain.sh`, yang
+menolak binary non-ELF atau `std` host yang hilang dan menulis
+`/toolchain/toolchain.json` (commit Rust, versi LLVM, ukuran binary). Ringkasan
+pemakaiannya juga tersedia di guest sebagai `/home/octagram/RUST.md`.
+
 Ganti `/dev/sdX` dengan **whole disk** yang benar, bukan partisi. Script host
 membuat ESP FAT32 dan root EXT2. Kernel mendeteksi marker root EXT2 tersebut.
 

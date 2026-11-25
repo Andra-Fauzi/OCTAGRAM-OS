@@ -10101,7 +10101,7 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, ElfError> {
 mod tests {
     use alloc::collections::VecDeque;
     use super::{
-        EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPERM,
+        EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPROTOTYPE, EPERM,
         CAP_NETWORK, CAP_VFS_WRITE, CAP_SYS_ADMIN, device_access_allowed, EPIPE, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
         ProcessWait, capability_present, is_poll_wait, robust_word_after_exit,
         FUTEX_OWNER_DIED, FUTEX_WAITERS,

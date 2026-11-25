@@ -2770,7 +2770,19 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         save_current_thread_pointer();
         save_current_user_fpu();
     }
-    let next_frame = handle_timer_inner(frame);
+
+    // Signals sent to a runnable CPU-bound process cannot wait for its next
+    // syscall: it may spend arbitrarily long in user code without entering the
+    // kernel. Deliver pending signals on timer entry as well, before taking the
+    // scheduler lock in handle_timer_inner. Fatal signals can then terminate
+    // the current task and safely switch to its parent (or another runnable
+    // task) without recursively acquiring USER_SCHEDULER.
+    let next_frame = if from_user {
+        deliver_pending_signal(frame).unwrap_or_else(|| handle_timer_inner(frame))
+    } else {
+        handle_timer_inner(frame)
+    };
+
     if from_user {
         restore_user_context(next_frame);
     }

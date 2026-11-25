@@ -251,7 +251,7 @@ Sampai revisi ini, program C++ hanya memakai **header** libc++ 18.1.8; isi
 library (`libcxx/src`) belum dikompilasi, sehingga `std::string`,
 `std::sort`, dan `std::mutex` masih gagal di link. Source `src/` kini
 di-vendor di `user/third_party/libcxx/src` dan `user/Makefile` membangun
-`build/libc++.a` dari dua puluh dua translation unit:
+`build/libc++.a` dari tiga puluh dua translation unit:
 
 | Objek | Alasan |
 | --- | --- |
@@ -269,6 +269,12 @@ di-vendor di `user/third_party/libcxx/src` dan `user/Makefile` membangun
 | `fstream.cpp` | `basic_filebuf`, `ofstream`/`ifstream`/`fstream` di atas VFS |
 | `thread.cpp` | `std::thread`, `__thread_struct`, TLS per thread |
 | `future.cpp` | `promise`/`future`/`packaged_task`, `__assoc_sub_state` |
+| `random.cpp`, `regex.cpp`, `chrono.cpp` | `<random>`, `<regex>`, dan jam system/steady |
+| `filesystem/path.cpp` | `path` parsing, `lexically_normal`, iterasi komponen |
+| `filesystem/directory_entry.cpp`, `directory_iterator.cpp` | `directory_entry` dan iterator direktori |
+| `filesystem/operations.cpp` | `create_directories`, `copy_file`, `remove_all`, `space` |
+| `filesystem/filesystem_clock.cpp`, `filesystem_error.cpp` | `file_time_type` dan `filesystem_error` |
+| `filesystem/int128_builtins.cpp` | helper `__divti3`/`__udivti3` untuk operasi uintmax |
 
 Keputusan build:
 
@@ -352,7 +358,33 @@ Lapisan thread/future/file-stream ikut serta:
   `/fstream-probe.txt` dengan `std::ofstream`/`std::ifstream` (termasuk
   `std::getline` dan `operator>>`).
 
-Belum termasuk: `filesystem`, `random`, `regex`, `chrono` formatting.
+Lapisan filesystem/random/regex/chrono ikut serta. Celah libc yang muncul dan
+diperbaiki:
+
+- `struct stat` sekarang memakai `struct timespec st_atim/st_mtim/st_ctim`
+  dengan alias `st_atime`/`st_mtime`/`st_ctime` (dan `*_nsec`), karena
+  `filesystem/time_utils.h` membaca `st_mtim` langsung. Kernel hanya mencatat
+  detik, jadi nsec selalu 0.
+- Makro `S_ISBLK`/`S_ISFIFO`/`S_ISSOCK` ditambahkan ke `<sys/stat.h>`, dan
+  `<sys/stat.h>`/`<sys/time.h>` sekarang dibungkus `extern "C"` — tanpa itu
+  `operations.cpp` menghasilkan simbol C++ termangle dan tidak bisa ditautkan
+  dengan implementasi C.
+- `pathconf`/`fpathconf` mengembalikan batas nyata (`_PC_PATH_MAX` 4096,
+  `_PC_NAME_MAX` 255) dan `_PC_*` dideklarasikan di `<unistd.h>`.
+- `sendfile` diimplementasikan sebagai loop `pread/read`+`write` (dipakai
+  `std::filesystem::copy_file`).
+- `statvfs`/`fstatvfs` dan `utimes`/`utimensat`/`futimens` melaporkan `ENOSYS`:
+  kernel belum punya syscall kapasitas filesystem maupun set-timestamp, jadi
+  `space()` dan `last_write_time(path, time)` gagal secara jujur.
+
+Probe `user/examples/libcxx_fs_smoke.cpp` dijalankan sebagai
+`/bin/libcxx-fs-smoke`.
+
+`chrono.cpp` butuh `_LIBCPP_HAS_CLOCK_GETTIME`; flag itu sekarang ada di
+`user/third_party/libcxx/include/__config_site`.
+
+Belum termasuk: `locale` message catalog aktif, `fstream` wide, dan
+`std::filesystem::space` yang masih ENOSYS.
 
 ## 7. Risiko dan mitigasi
 

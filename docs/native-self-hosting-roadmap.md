@@ -2561,6 +2561,18 @@ membangun `user/build/libc++.a`:
   `/bin/libcxx-thread-smoke`: empat thread dengan mutex/condvar, isolasi
   `thread_local`, promise/future, atomic, serta `ofstream`/`ifstream` ke
   `/fstream-probe.txt`; marker `LIBCXX-THREAD-SUITE-PASS` diperiksa harness.
+- Probe keempat `build/libcxx_fs_smoke.elf` (`/bin/libcxx-fs-smoke`) menguji
+  `std::filesystem` (create_directories, file_size, directory_iterator,
+  remove_all, lexically_normal), `std::random` (mt19937 deterministik),
+  `std::regex` (match groups + search), dan `std::chrono`; marker
+  `LIBCXX-FS-SUITE-PASS`.
+- Celah libc yang ditutup untuk filesystem/chrono: `struct stat` dengan
+  `st_atim`/`st_mtim`/`st_ctim` (+ alias `st_mtime`), makro
+  `S_ISBLK`/`S_ISFIFO`/`S_ISSOCK`, pembungkus `extern "C"` di
+  `<sys/stat.h>`/`<sys/time.h>`, konstanta `_PC_*` beserta nilai nyata dari
+  `pathconf`/`fpathconf`, `sendfile` berbasis read/write, `statvfs`/`utimes`
+  yang jujur melaporkan `ENOSYS`, dan `_LIBCPP_HAS_CLOCK_GETTIME` di
+  `__config_site`.
 - Untuk rantai iostream ditambahkan `<langinfo.h>` dan `nl_langinfo`
   (C locale), kelas `_l` wide (`isw*_l`, `tow*_l`, `wcscoll_l`,
   `wcsxfrm_l`), serta wide stdio (`fgetwc`, `getwc`, `fputwc`, `putwc`,
@@ -2592,8 +2604,9 @@ membangun `user/build/libc++.a`:
   workspace ini, statusnya tetap **terbukti di host**, bukan guest-tested.
 
 Batas yang masih berlaku: `std::iostream` (locale/ios/fstream), `std::thread`,
-`std::filesystem`, `random`, `regex`, dan `chrono` formatting belum masuk
-arsip.
+`std::filesystem::space()` dan `last_write_time(path, time)` sengaja gagal
+(ENOSYS) karena kernel belum punya syscall kapasitas filesystem atau
+set-timestamp.
 Untuk `<charconv>`, hanya integer `to_chars`/`from_chars` dan floating
 `to_chars` yang tersedia: libc++ 18 tidak punya floating-point
 `std::from_chars`. Native `rustc` dan Cargo tetap belum ada, dan M4.3/M4.4

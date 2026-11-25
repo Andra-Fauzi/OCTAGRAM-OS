@@ -45,6 +45,8 @@ const LIBCXX_IOSTREAM_SMOKE_ELF: &[u8] =
     include_bytes!("../../../user/build/libcxx_iostream_smoke.elf");
 const LIBCXX_THREAD_SMOKE_ELF: &[u8] =
     include_bytes!("../../../user/build/libcxx_thread_smoke.elf");
+const LIBCXX_FS_SMOKE_ELF: &[u8] =
+    include_bytes!("../../../user/build/libcxx_fs_smoke.elf");
 const SH_ELF: &[u8] = include_bytes!("../../../user/build/sh.elf");
 const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
 const FILE_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/file_api_demo.elf");
@@ -1033,6 +1035,12 @@ pub fn init() {
             &mut vfs,
             "/bin/libcxx-thread-smoke",
             LIBCXX_THREAD_SMOKE_ELF,
+            0o755,
+        );
+        seed_file(
+            &mut vfs,
+            "/bin/libcxx-fs-smoke",
+            LIBCXX_FS_SMOKE_ELF,
             0o755,
         );
         seed_file(&mut vfs, "/bin/tcc", TCC_ELF, 0o755);

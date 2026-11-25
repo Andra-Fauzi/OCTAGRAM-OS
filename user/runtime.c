@@ -32,6 +32,7 @@
 #include <signal.h>
 #include <sys/select.h>
 #include <sys/file.h>
+#include <sys/statvfs.h>
 #include <sys/time.h>
 #include <sys/utsname.h>
 #include <sys/epoll.h>
@@ -8726,19 +8727,49 @@ int ttyname_r(int fd, char *buffer, size_t size)
     return 0;
 }
 
+/* OCTAGRAM has a single flat namespace per mount with 256-byte names and a
+ * 4096-byte path limit, so pathconf answers with constants. libc++'s
+ * <filesystem> asks for _PC_PATH_MAX to size rename/open buffers. */
 long fpathconf(int fd, int name)
 {
     (void)fd;
-    (void)name;
-    errno = 0;
-    return -1;
+    switch (name) {
+    case _PC_LINK_MAX:
+        return 1;
+    case _PC_MAX_CANON:
+    case _PC_MAX_INPUT:
+        return 1024;
+    case _PC_NAME_MAX:
+        return 255;
+    case _PC_PATH_MAX:
+        return 4096;
+    case _PC_PIPE_BUF:
+        return 4096;
+    case _PC_CHOWN_RESTRICTED:
+        return 1;
+    case _PC_NO_TRUNC:
+    case _PC_VDISABLE:
+        return 0;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
 }
 
 long pathconf(const char *path, int name)
 {
     (void)path;
-    (void)name;
-    errno = 0;
+    return fpathconf(0, name);
+}
+
+/* The kernel records mtime when a file is written but has no syscall to set
+ * timestamps, so utimes reports ENOSYS instead of pretending the update
+ * happened. */
+int utimes(const char *path, const struct timeval times[2])
+{
+    (void)path;
+    (void)times;
+    errno = ENOSYS;
     return -1;
 }
 
@@ -10826,4 +10857,85 @@ char *nl_langinfo(nl_item item)
         return unknown;
     }
     return items[item - CODESET];
+}
+
+/*
+ * statvfs/fstatvfs: OCTAGRAM has no filesystem-capacity syscall, so these
+ * report ENOSYS instead of inventing numbers. libc++ only uses them for
+ * std::filesystem::space(), which then throws/returns "not implemented"
+ * rather than a misleading free-space figure. Everything else in
+ * <filesystem> (paths, directory iteration, metadata, remove/rename) uses
+ * the ordinary stat/open/unlink syscalls.
+ */
+int statvfs(const char *path, struct statvfs *buffer)
+{
+    (void)path;
+    (void)buffer;
+    errno = ENOSYS;
+    return -1;
+}
+
+int fstatvfs(int descriptor, struct statvfs *buffer)
+{
+    (void)descriptor;
+    (void)buffer;
+    errno = ENOSYS;
+    return -1;
+}
+
+/*
+ * sendfile: copy `count` bytes from in_fd to out_fd, starting at in_fd's
+ * current offset or at *offset when one is supplied (which is then advanced).
+ * OCTAGRAM has no kernel sendfile, so this is a bounded read/write loop with
+ * a small stack buffer. It stops at EOF and returns the number of bytes
+ * copied, like the Linux call. std::filesystem::copy_file uses it.
+ */
+ssize_t sendfile(int out_fd, int in_fd, off_t *offset, size_t count)
+{
+    char buffer[4096];
+    size_t copied = 0;
+    off_t position = offset != NULL ? *offset : 0;
+
+    while (copied < count) {
+        size_t chunk = count - copied;
+        if (chunk > sizeof buffer) {
+            chunk = sizeof buffer;
+        }
+        ssize_t got;
+        if (offset != NULL) {
+            got = pread(in_fd, buffer, chunk, position);
+        } else {
+            got = read(in_fd, buffer, chunk);
+        }
+        if (got < 0) {
+            if (copied > 0) {
+                break;
+            }
+            return -1;
+        }
+        if (got == 0) {
+            break;
+        }
+        size_t written = 0;
+        while (written < (size_t)got) {
+            ssize_t put = write(out_fd, buffer + written, (size_t)got - written);
+            if (put <= 0) {
+                if (copied == 0) {
+                    return -1;
+                }
+                goto done;
+            }
+            written += (size_t)put;
+        }
+        if (offset != NULL) {
+            position += got;
+        }
+        copied += (size_t)got;
+    }
+
+done:
+    if (offset != NULL) {
+        *offset = position;
+    }
+    return (ssize_t)copied;
 }

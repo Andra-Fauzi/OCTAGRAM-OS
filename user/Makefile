@@ -68,7 +68,7 @@ LDSO_OBJECTS := build/ldso_start.o build/ldso_transfer.o build/ldso_loader.o
 .PHONY: all clean rust scanf-test cxa-test resolv-test ipv6-test stdint-test math-header-test overflow-test math-test wait-status-test wctype-test compiler-rt-test cpp-header-test libcxx-header-check dynamic
 CPP_SMOKE := build/cpp_smoke.elf
 
-all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(LIBCXX_IOSTREAM_SMOKE) $(LIBCXX_THREAD_SMOKE) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
+all: $(BINARIES) $(CPP_SMOKE) $(LIBCXX_SMOKE) $(LIBCXX_STRING_SMOKE) $(LIBCXX_IOSTREAM_SMOKE) $(LIBCXX_THREAD_SMOKE) $(LIBCXX_FS_SMOKE) $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC) $(LDSO_ELF) $(DYNAMIC_DEMO) $(COPY_DEMO) $(VERSIONED_DEMO) $(DLOPEN_DEMO) $(ASLR_DEMO)
 
 tcc: $(TCC_ELF) $(TCC_LIBTCC1) $(TCC_LIBC)
 
@@ -212,10 +212,21 @@ LIBCXX_OBJECTS := \
 	build/libcxx/memory.o \
 	build/libcxx/fstream.o \
 	build/libcxx/thread.o \
-	build/libcxx/future.o
+	build/libcxx/future.o \
+	build/libcxx/random.o \
+	build/libcxx/chrono.o \
+	build/libcxx/regex.o \
+	build/libcxx/filesystem/path.o \
+	build/libcxx/filesystem/directory_entry.o \
+	build/libcxx/filesystem/directory_iterator.o \
+	build/libcxx/filesystem/operations.o \
+	build/libcxx/filesystem/filesystem_clock.o \
+	build/libcxx/filesystem/filesystem_error.o \
+	build/libcxx/filesystem/int128_builtins.o
 LIBCXX_STRING_SMOKE := build/libcxx_string_smoke.elf
 LIBCXX_IOSTREAM_SMOKE := build/libcxx_iostream_smoke.elf
 LIBCXX_THREAD_SMOKE := build/libcxx_thread_smoke.elf
+LIBCXX_FS_SMOKE := build/libcxx_fs_smoke.elf
 
 # Only the translation units that back the features exercised by the guest
 # probe are compiled so far. std::iostream (locale/ios/fstream), std::thread,
@@ -226,7 +237,7 @@ LIBCXX_THREAD_SMOKE := build/libcxx_thread_smoke.elf
 # "impossible size" branches inside basic_string.
 LIBCXX_LIB_FLAGS := $(filter-out -Werror,$(LIBCXX_CXXFLAGS)) -std=$(LIBCXX_STD)
 
-build/libcxx/%.o: $(LIBCXX_SRC)/%.cpp | build
+build/libcxx/%.o: $(LIBCXX_SRC)/%.cpp $(HEADERS) | build
 	@mkdir -p $(dir $@)
 	$(CXX) $(LIBCXX_LIB_FLAGS) -c -o $@ $<
 
@@ -269,6 +280,18 @@ $(LIBCXX_THREAD_SMOKE): build/libcxx_thread_smoke.o build/libcxx_runtime.o \
 		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
 		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
 		build/libcxx_thread_smoke.o $(LIBCXX_ARCHIVE)
+
+build/libcxx_fs_smoke.o: examples/libcxx_fs_smoke.cpp $(HEADERS) | build
+	$(CXX) $(LIBCXX_CXXFLAGS) -std=$(LIBCXX_STD) -c -o $@ $<
+
+$(LIBCXX_FS_SMOKE): build/libcxx_fs_smoke.o build/libcxx_runtime.o \
+		build/cxx_runtime.o build/wctype.o build/wchar.o build/math_wide.o \
+		build/math.o build/compiler_rt.o build/crt0.o build/runtime.o \
+		build/setjmp.o $(LIBCXX_ARCHIVE) linker.ld
+	$(LD) $(LDFLAGS) -o $@ build/crt0.o build/runtime.o build/compiler_rt.o \
+		build/math.o build/math_wide.o build/wchar.o build/wctype.o \
+		build/setjmp.o build/cxx_runtime.o build/libcxx_runtime.o \
+		build/libcxx_fs_smoke.o $(LIBCXX_ARCHIVE)
 
 build/libcxx_runtime.o: libcxx_runtime.cpp $(HEADERS) | build
 	$(CXX) $(LIBCXX_CXXFLAGS) -c -o $@ $<

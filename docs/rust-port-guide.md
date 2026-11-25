@@ -35,7 +35,9 @@ dipanggil dari shell, bukan cross-build dari host.
 | wide stdio (`fgetwc`/`fputwc`/`ungetwc`) | terbukti di host | `user/wchar.c` |
 | `std::thread`, `std::mutex`/condvar, `std::promise`/`future` | dibangun di host; guest menunggu QEMU | `build/libcxx_thread_smoke.elf`, marker `LIBCXX-THREAD-SUITE-PASS` |
 | `std::fstream` (`ofstream`/`ifstream`) | dibangun di host; guest menunggu QEMU | probe thread/fstream yang sama |
-| `std::filesystem`, `random` | **belum** | — |
+| `std::filesystem` (path, iterator, ops; `space()` ENOSYS) | dibangun di host; guest menunggu QEMU | `build/libcxx_fs_smoke.elf`, marker `LIBCXX-FS-SUITE-PASS` |
+| `std::random`, `std::regex`, `std::chrono` | dibangun di host; guest menunggu QEMU | probe fs yang sama |
+| POSIX `stat` timespec, `S_ISBLK/FIFO/SOCK`, `_PC_*`, `sendfile` | terbukti di host | `include/sys/stat.h`, `include/unistd.h`, `runtime.c` |
 | libLLVM untuk host OCTAGRAM | **belum** | — |
 | `rustc` native (`rustc --version` di guest) | **belum** | — |
 | `cargo` native | **belum** | — |
@@ -152,12 +154,14 @@ make -C user build/libcxx_string_smoke.elf   # probe string/vector/sort/mutex
 `libc++.a` dikompilasi dari `user/third_party/libcxx/src` dengan flag
 freestanding yang sama seperti header probe, tetapi `-std=c++20` karena
 `src/algorithm.cpp` menginstansiasi internal `std::ranges` yang hanya
-dideklarasikan libc++ untuk C++20 ke atas. Dua puluh dua translation unit
+dideklarasikan libc++ untuk C++20 ke atas. Tiga puluh dua translation unit
 masuk arsip: `string`, `vector`, `algorithm`, `stdexcept`, `mutex`,
 `mutex_destructor`, `error_category`, `system_error`, `charconv`, tiga
 implementasi ryu (`d2fixed`, `d2s`, `f2s`), rantai iostream (`locale`, `ios`,
 `ios.instantiations`, `iostream`, `ostream`), `call_once`, `memory`,
-`fstream`, `thread`, dan `future`.
+`fstream`, `thread`, `future`, `random`, `chrono`, `regex`, serta tujuh objek
+`filesystem/*` (`path`, `directory_entry`, `directory_iterator`, `operations`,
+`filesystem_clock`, `filesystem_error`, `int128_builtins`).
 
 `std::exception_ptr` di `libc++abi` tidak tersedia; `user/libcxx_runtime.cpp`
 mendefinisikan anggota `exception_ptr` (pointer selalu null karena
@@ -228,6 +232,7 @@ serial. Marker yang harus muncul:
 | `LIBCXX-LIBRARY-PASS` | `std::string`/`std::vector`/`std::sort`/`std::mutex`/`<charconv>`/`to_wstring` dari `libc++.a` berjalan di guest |
 | `LIBCXX-IOSTREAM-PASS` | `std::cout`, `ostringstream`/`istringstream`, dan facet locale dari `libc++.a` berjalan di guest |
 | `LIBCXX-THREAD-PASS` | `std::thread`, mutex/condvar, promise/future, dan `std::fstream` berjalan di guest |
+| `LIBCXX-FS-PASS` | `std::filesystem`, `std::random`, `std::regex`, dan `std::chrono` berjalan di guest |
 | `RUST-NATIVE-LD-PASS` | object `rustc` ditautkan `ld` native lalu dijalankan |
 | `SYSCALL-TEST: PASS` | suite kompatibilitas syscall |
 
@@ -273,7 +278,7 @@ Ikuti urutan ini supaya klaim tetap bisa dipertanggungjawabkan:
 
 | Tahap | Isi | Gate |
 | --- | --- | --- |
-| M4.3.2 (lanjutan) | perluas `libc++.a`: filesystem, `random`, `regex`/`chrono` | verifikasi guest iostream/thread di QEMU |
+| M4.3.2 (lanjutan) | verifikasi guest semua probe di QEMU; lalu M4.3.3 libLLVM | marker `LIBCXX-*` di CI |
 | M4.3.3 | libLLVM statis untuk host OCTAGRAM | satu tool LLVM berjalan di guest |
 | M4.3.4 | bootstrap `rustc` host OCTAGRAM + sysroot, linker `ld` native | `rustc --version` dan kompilasi `no_std` dari shell |
 | M4.3.5 | perluasan relokasi linker untuk `librustc_driver`/`std` | binary `std` hasil `rustc` native berjalan |

@@ -402,6 +402,23 @@ def main():
         return 1
     print("LIBCXX-THREAD-PASS")
 
+    # M4.3.2: filesystem, random, regex, and chrono.
+    fs_offset = len(serial_text())
+    send_line("run /bin/libcxx-fs-smoke")
+    if not wait_for_after("LIBCXX-FS-SUITE-PASS", fs_offset, 60):
+        print("LIBCXX-FS-FAIL: filesystem probe did not emit its marker")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("program exited with status 0", fs_offset, 30):
+        print("LIBCXX-FS-FAIL: filesystem probe did not exit with status 0")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("LIBCXX-FS-FAIL: shell did not return after the filesystem probe")
+        print(serial_text()[-6000:])
+        return 1
+    print("LIBCXX-FS-PASS")
+
     # M4.3.0: the object emitted by rustc for x86_64-unknown-octagram is linked
     # by the guest's own `ld` and the result runs, so the native linker is
     # proven against real rustc relocation and section-symbol output.

@@ -2,6 +2,12 @@
 #define OCTAGRAM_SYS_STAT_H
 
 #include <sys/types.h>
+#include <time.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 #define S_IFMT  0170000
 #define S_IFIFO 0010000
@@ -33,20 +39,32 @@ struct stat {
     nlink_t st_nlink;
     uid_t st_uid;
     gid_t st_gid;
-    time_t st_atime;
-    time_t st_mtime;
-    time_t st_ctime;
     blksize_t st_blksize;
     blkcnt_t st_blocks;
-    time_t st_atime_nsec;
-    time_t st_mtime_nsec;
-    time_t st_ctime_nsec;
+    /* POSIX timespec members. The st_atime/st_mtime/st_ctime and
+     * st_*time_nsec spellings below are the traditional glibc aliases into
+     * them, so existing OCTAGRAM code keeps compiling while libc++'s
+     * <filesystem> can read st_mtim/st_atim/st_ctim directly. The kernel only
+     * records whole seconds of modification time, so the nsec fields stay 0. */
+    struct timespec st_atim;
+    struct timespec st_mtim;
+    struct timespec st_ctim;
 };
+
+#define st_atime st_atim.tv_sec
+#define st_mtime st_mtim.tv_sec
+#define st_ctime st_ctim.tv_sec
+#define st_atime_nsec st_atim.tv_nsec
+#define st_mtime_nsec st_mtim.tv_nsec
+#define st_ctime_nsec st_ctim.tv_nsec
 
 #define S_ISCHR(mode) (((mode) & S_IFMT) == S_IFCHR)
 #define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)
 #define S_ISLNK(mode) (((mode) & S_IFMT) == S_IFLNK)
 #define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
+#define S_ISBLK(mode) (((mode) & S_IFMT) == S_IFBLK)
+#define S_ISFIFO(mode) (((mode) & S_IFMT) == S_IFIFO)
+#define S_ISSOCK(mode) (((mode) & S_IFMT) == S_IFSOCK)
 
 int chmod(const char *path, mode_t mode);
 int mkdir(const char *path, mode_t mode);
@@ -57,5 +75,13 @@ int fstatat(int dirfd, const char *path, struct stat *result, int flags);
 int fchmod(int fd, mode_t mode);
 int mkdirat(int dirfd, const char *path, mode_t mode);
 mode_t umask(mode_t mask);
+
+/* utimensat/futimens are declared in <unistd.h>; OCTAGRAM has no timestamp
+ * syscall, so they report ENOSYS rather than doing nothing silently. */
+
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

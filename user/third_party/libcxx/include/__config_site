@@ -12,3 +12,7 @@
 #define _LIBCPP_HARDENING_MODE _LIBCPP_HARDENING_MODE_NONE
 #define _LIBCPP_PSTL_CPU_BACKEND_SERIAL 1
 #define _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE
+// OCTAGRAM provides clock_gettime() (syscall 50) for REALTIME and MONOTONIC,
+// so libc++ should use it for std::chrono::steady_clock instead of failing the
+// "Monotonic clock not implemented" gate in src/chrono.cpp.
+#define _LIBCPP_HAS_CLOCK_GETTIME

@@ -23,10 +23,14 @@ What is compiled so far: `string`, `vector`, `algorithm`, `stdexcept`,
 `mutex`, `mutex_destructor`, `error_category`, `system_error`, `charconv`,
 `ryu/{d2fixed,d2s,f2s}`, the iostream chain (`locale`, `ios`,
 `ios.instantiations`, `iostream`, `ostream`), `call_once`/`memory`,
-`fstream`, `thread`, and `future`.
-The rest of `src/` is vendored so later stages can widen the archive without
-another download: `filesystem`, `random`, `regex`, and `chrono` still depend
-on libc facilities OCTAGRAM does not provide yet.
+`fstream`, `thread`, `future`, `random`, `regex`, `chrono`, and seven
+`filesystem/*` objects. The rest of `src/` is vendored so later stages can
+widen the archive without another download (`iostream` locales beyond the C
+locale, `stacktrace`, `pstl`).
+
+`std::filesystem::space()` and `last_write_time(path, time)` need filesystem
+capacity and timestamp syscalls that the kernel does not have yet, so
+`statvfs`/`utimes` report `ENOSYS` instead of inventing values.
 
 `std::exception_ptr` normally comes from libc++abi; this port defines its
 members in `user/libcxx_runtime.cpp` (the pointer is always null because

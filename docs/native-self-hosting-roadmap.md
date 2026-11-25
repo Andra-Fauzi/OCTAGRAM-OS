@@ -2929,3 +2929,56 @@ dicatat sebagai batasan, bukan diklaim berfungsi.
 **Validasi:** `make build/posix_search_demo.elf build/memstream_demo.elf
 build/libcxx_format_smoke.elf -j6` → `exit=0`, tanpa error/undefined symbol.
 Probe belum dijalankan di QEMU dari workspace ini.
+
+## 103. `popen`, `hsearch`, `mkostemp`, `arc4random`, `mmap64` (25 November 2026)
+
+Driver build perlu menjalankan perintah shell, menyimpan tabel simbol, membuat
+file sementara bersufiks, dan mengambil angka acak sungguhan. Ronde ini menutup
+celah tersebut — semuanya di `user/posix_extra.c` kecuali keluarga
+`mkostemp` yang menumpang pada `mkstemp` yang sudah ada.
+
+**`popen`/`pclose` (`<stdio.h>`):**
+
+- `pipe2(O_CLOEXEC)` lalu `fork`; anak memindahkan ujung pipa ke
+  `STDOUT_FILENO` (mode `r`) atau `STDIN_FILENO` (mode `w`) dengan `dup2`,
+  mengeksekusi `/bin/sh -c` lewat `execvp`, dan `_exit(127)` bila gagal.
+- Parent menutup ujung yang tidak dipakai lalu membungkus deskriptornya dengan
+  `fdopen`, sehingga `fgets`/`fputs` bekerja seperti file biasa.
+- `pclose` harus menemukan pid dari pointer `FILE *`, dan API tidak punya jalur
+  lain untuk itu; asosiasinya disimpan di tabel statis 16 slot (batas tetap,
+  tanpa alokasi). Bila tabel penuh, `popen` gagal dengan `EMFILE` dan anak tetap
+  ditutup rapi. `pclose` menutup stream, lalu `waitpid` dengan retry `EINTR`,
+  dan mengembalikan **status wait mentah** (bukan kode keluar hasil ekstraksi).
+
+**`<search.h>`: `hsearch`:** tabel hash rantai dengan hash FNV-1a, `hcreate`
+menyediakan kapasitas awal, `hsearch_lookup` menumbuhkan tabel (dobel) saat
+beban mencapai 50%, `FIND`/`ENTER` sesuai POSIX, dan varian reentran
+`hcreate_r`/`hsearch_r`/`hdestroy_r` menyimpan tabel di struct pemanggil. Key
+dipinjam: `hdestroy` membebaskan bucket dan node, **bukan** string milik
+pemanggil (sama seperti glibc).
+
+**Keluarga `mkstemp` (`<stdlib.h>`):** `mkstemp` di `user/runtime.c` dipecah
+menjadi `create_temporary_file(template, suffix_length, extra_flags)`, lalu
+`mkostemp` (flag tambahan seperti `O_CLOEXEC`), `mkstemps` (sufiks tetap), dan
+`mkostemps` (keduanya) dibangun di atasnya. Enam `X` tetap harus berada tepat
+sebelum sufiks; sufiks negatif ditolak `EINVAL`.
+
+**`arc4random` (`<stdlib.h>`):** `arc4random_buf` mengisi buffer dari
+`getrandom`, mengulang pada `EINTR`, dan memakai splitmix64 (state di-seed dari
+`CLOCK_MONOTONIC` + pid) hanya bila syscall tidak tersedia — komentar di kode
+menyebut fallback itu lebih lemah daripada pool kernel. `arc4random_uniform`
+menolak ekor bias sebelum modulo.
+
+**`mmap64` (`<sys/mman.h>`):** alias LFS untuk `mmap`, karena `off_t`
+OCTAGRAM sudah 64-bit.
+
+**Probe guest:** `user/examples/toolchain_demo.c` → `/bin/toolchain-demo`,
+marker `TOOLCHAIN-PASS`: `popen` baca (`echo` builtin shell) dan tulis
+(`cat > file`), penolakan mode tidak valid, `hsearch` dengan pertumbuhan tabel
++ `hsearch_r`, `mkstemps`/`mkostemp`/`mkostemps` (sufiks terjaga, `O_CLOEXEC`,
+sufiks negatif ditolak), perbedaan dua buffer `arc4random_buf` dan batas
+`arc4random_uniform`, serta `mmap64`+`munmap`.
+
+**Validasi:** `make build/toolchain_demo.elf build/posix_search_demo.elf
+build/memstream_demo.elf -j6` → `exit=0`, tanpa error/undefined symbol. Probe
+belum dijalankan di QEMU dari workspace ini.

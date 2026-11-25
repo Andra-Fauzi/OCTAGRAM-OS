@@ -32,6 +32,30 @@ struct qelem {
 void insque(void *element, void *predecessor);
 void remque(void *element);
 
+/* Hash table. Keys are borrowed: hdestroy frees the table, not the strings.
+ * hcreate/hsearch/hdestroy use one process-wide table; the _r variants keep the
+ * table in the caller's struct and are safe to use side by side. */
+typedef struct entry {
+    char *key;
+    void *data;
+} ENTRY;
+
+typedef enum { FIND, ENTER } ACTION;
+
+struct hsearch_data {
+    size_t capacity;
+    size_t count;
+    struct hsearch_node **buckets;
+};
+
+int hcreate(size_t element_count);
+void hdestroy(void);
+ENTRY *hsearch(ENTRY item, ACTION action);
+int hcreate_r(size_t element_count, struct hsearch_data *table);
+void hdestroy_r(struct hsearch_data *table);
+int hsearch_r(ENTRY item, ACTION action, ENTRY **result,
+              struct hsearch_data *table);
+
 #ifdef __cplusplus
 }
 #endif

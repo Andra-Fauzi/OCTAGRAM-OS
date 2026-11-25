@@ -21,7 +21,7 @@ CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Werror -ffreestanding -fno-builtin \
 	-march=x86-64 -mtune=generic -mno-avx -mno-avx2 -mno-avx512f \
 	-mno-mmx -msse2 -fno-exceptions -fno-rtti -fno-threadsafe-statics \
 	-nostdinc++ -Iinclude
-PROGRAMS := sh hello file_demo runtime_demo tty_demo argv_demo spawn_demo pipe_demo env_demo posix_demo stdio_demo memstream_demo posix_search_demo posix_spawn_demo file_api_demo path_api_demo at_api_demo execve_demo fork_demo time_demo mmap_demo scanf_demo tls_demo thread_demo thread_tsd_demo fb_demo syscall_compat_demo account_demo socket_msg_demo netdb_demo dns_demo cxa_atexit_demo credential_demo robust_mutex_demo
+PROGRAMS := sh hello file_demo runtime_demo tty_demo argv_demo spawn_demo pipe_demo env_demo posix_demo stdio_demo memstream_demo posix_search_demo toolchain_demo posix_spawn_demo file_api_demo path_api_demo at_api_demo execve_demo fork_demo time_demo mmap_demo scanf_demo tls_demo thread_demo thread_tsd_demo fb_demo syscall_compat_demo account_demo socket_msg_demo netdb_demo dns_demo cxa_atexit_demo credential_demo robust_mutex_demo
 BINARIES := $(addprefix build/,$(addsuffix .elf,$(PROGRAMS)))
 HEADERS := $(wildcard include/*.h include/sys/*.h include/netinet/*.h)
 # Vendored libc++ headers, including __config_site. Without this dependency the

@@ -3,6 +3,7 @@
 
 #include <locale.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifndef MB_CUR_MAX
 #define MB_CUR_MAX 4
@@ -104,12 +105,24 @@ void *reallocarray(void *pointer, size_t count, size_t size);
 void qsort_r(void *base, size_t count, size_t size,
              int (*compare)(const void *, const void *, void *), void *argument);
 char *mkdtemp(char *path_template);
+
+/* mkstemp variants: extra open flags (mkostemp) and a preserved suffix
+ * (mkstemps/mkostemps), both GNU extensions used by toolchains. */
+int mkostemp(char *template, int flags);
+int mkstemps(char *template, int suffix_length);
+int mkostemps(char *template, int suffix_length, int flags);
 size_t malloc_usable_size(void *pointer);
 int system(const char *command);
 
 /* Splits a comma-separated option string against a NULL-terminated token list.
  * Returns the token index, or -1 for an unknown option. */
 int getsubopt(char **option_pointer, char *const *tokens, char **value_pointer);
+
+/* BSD random API. Buffers are filled from getrandom, with a documented
+ * splitmix64 fallback when the kernel call is unavailable. */
+void arc4random_buf(void *buffer, size_t length);
+uint32_t arc4random(void);
+uint32_t arc4random_uniform(uint32_t upper_bound);
 
 #ifdef __cplusplus
 }

@@ -481,6 +481,20 @@ def main():
         return 1
     print("POSIX-SEARCH-PASS")
 
+    # Process, table and temporary-file layer: popen/pclose, hsearch, the
+    # mkostemp/mkstemps family, arc4random and mmap64.
+    toolchain_offset = len(serial_text())
+    send_line("/bin/toolchain-demo")
+    if not wait_for_after("TOOLCHAIN-PASS", toolchain_offset, 60):
+        print("TOOLCHAIN-FAIL: guest probe did not pass")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("TOOLCHAIN-FAIL: shell did not return")
+        print(serial_text()[-6000:])
+        return 1
+    print("TOOLCHAIN-PASS")
+
     # M4.4 groundwork: the Cargo-side driver parses Cargo.toml/Cargo.lock
     # offline, resolves path dependencies into a build order, and reports
     # metadata. It does not claim to be upstream Cargo, and it is not asked to

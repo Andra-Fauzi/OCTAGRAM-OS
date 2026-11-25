@@ -85,6 +85,11 @@ int vsnprintf(char *buffer, size_t size, const char *format, va_list arguments);
 FILE *open_memstream(char **buffer, size_t *size);
 FILE *fmemopen(void *buffer, size_t size, const char *mode);
 
+/* Run a shell command with its stdin or stdout on a stream. pclose returns the
+ * raw wait status of the child. */
+FILE *popen(const char *command, const char *mode);
+int pclose(FILE *stream);
+
 /* Formatted output to a raw descriptor. */
 int dprintf(int fd, const char *format, ...);
 int vdprintf(int fd, const char *format, va_list arguments);

@@ -3732,8 +3732,12 @@ int unsetenv(const char *name)
 /*
  * Create a unique temporary file. O_EXCL is enforced by the kernel while
  * holding the VFS lock, so a pre-existing path cannot be overwritten.
+ *
+ * `suffix_length` trailing characters are preserved verbatim (that is what
+ * mkstemps/mkostemps add), and `extra_flags` are passed to open (mkostemp).
  */
-int mkstemp(char *template)
+static int create_temporary_file(char *template, size_t suffix_length,
+                                 int extra_flags)
 {
     static uint64_t sequence;
     static const char alphabet[] = "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -3743,11 +3747,11 @@ int mkstemp(char *template)
     }
 
     size_t length = strlen(template);
-    if (length < 6) {
+    if (length < 6 + suffix_length) {
         errno = EINVAL;
         return -1;
     }
-    char *suffix = template + length - 6;
+    char *suffix = template + length - suffix_length - 6;
     for (size_t i = 0; i < 6; ++i) {
         if (suffix[i] != 'X') {
             errno = EINVAL;
@@ -3769,7 +3773,7 @@ int mkstemp(char *template)
             suffix[i] = alphabet[value % 36u];
             value /= 36u;
         }
-        int fd = open(template, O_RDWR | O_CREAT | O_EXCL, 0600);
+        int fd = open(template, O_RDWR | O_CREAT | O_EXCL | extra_flags, 0600);
         if (fd >= 0) {
             return fd;
         }
@@ -3780,6 +3784,36 @@ int mkstemp(char *template)
 
     errno = EEXIST;
     return -1;
+}
+
+int mkstemp(char *template)
+{
+    return create_temporary_file(template, 0, 0);
+}
+
+/* GNU mkostemp: mkstemp with extra open flags such as O_CLOEXEC/O_APPEND. */
+int mkostemp(char *template, int flags)
+{
+    return create_temporary_file(template, 0, flags);
+}
+
+/* GNU mkstemps: the last `suffix_length` characters are a fixed suffix. */
+int mkstemps(char *template, int suffix_length)
+{
+    if (suffix_length < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return create_temporary_file(template, (size_t)suffix_length, 0);
+}
+
+int mkostemps(char *template, int suffix_length, int flags)
+{
+    if (suffix_length < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return create_temporary_file(template, (size_t)suffix_length, flags);
 }
 
 /* POSIX tmpfile: unlink the unique file while its descriptor remains open. */

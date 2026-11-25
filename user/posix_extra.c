@@ -30,8 +30,10 @@
 #include <string.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #include <wordexp.h>
@@ -2385,4 +2387,393 @@ int ftw(const char *path, int (*function)(const char *, const struct stat *, int
         nftw(path, ftw_bridge, descriptors, FTW_DEPTH | FTW_PHYS);
     ftw_function = NULL;
     return result;
+}
+
+/* ---- popen/pclose ------------------------------------------------------- */
+
+/* pclose has to recover the child from the stream pointer, and the API has no
+ * other channel for it, so the association lives in this fixed table. The
+ * table is small on purpose: a tool that runs hundreds of simultaneous
+ * pipelines is not the target, and a fixed bound keeps this allocation-free. */
+#define POPEN_SLOTS 16
+
+struct popen_child {
+    FILE *stream;
+    pid_t child;
+    int active;
+};
+
+static struct popen_child popen_children[POPEN_SLOTS];
+
+FILE *popen(const char *command, const char *mode)
+{
+    if (command == NULL || mode == NULL ||
+        (mode[0] != 'r' && mode[0] != 'w') ||
+        (mode[1] != '\0' && !(mode[1] == 'e' && mode[2] == '\0'))) {
+        errno = EINVAL;
+        return NULL;
+    }
+    const int reading = mode[0] == 'r';
+
+    int descriptors[2];
+    if (pipe2(descriptors, O_CLOEXEC) < 0) {
+        return NULL;
+    }
+
+    const pid_t child = fork();
+    if (child < 0) {
+        const int error = errno;
+        close(descriptors[0]);
+        close(descriptors[1]);
+        errno = error;
+        return NULL;
+    }
+
+    if (child == 0) {
+        /* switch the pipe end onto the child's stdio, then run the shell. */
+        if (reading) {
+            close(descriptors[0]);
+            if (dup2(descriptors[1], STDOUT_FILENO) < 0) {
+                _exit(127);
+            }
+        } else {
+            close(descriptors[1]);
+            if (dup2(descriptors[0], STDIN_FILENO) < 0) {
+                _exit(127);
+            }
+        }
+        char *const arguments[] = {"sh", "-c", (char *)(uintptr_t)command, NULL};
+        execvp("/bin/sh", arguments);
+        _exit(127);
+    }
+
+    const int parent_descriptor = reading ? descriptors[0] : descriptors[1];
+    close(reading ? descriptors[1] : descriptors[0]);
+
+    FILE *stream = fdopen(parent_descriptor, reading ? "r" : "w");
+    if (stream == NULL) {
+        const int error = errno;
+        close(parent_descriptor);
+        errno = error;
+        return NULL;
+    }
+
+    for (size_t slot = 0; slot < POPEN_SLOTS; ++slot) {
+        if (popen_children[slot].active == 0) {
+            popen_children[slot].stream = stream;
+            popen_children[slot].child = child;
+            popen_children[slot].active = 1;
+            return stream;
+        }
+    }
+
+    fclose(stream);
+    errno = EMFILE;
+    return NULL;
+}
+
+int pclose(FILE *stream)
+{
+    if (stream == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    size_t slot = POPEN_SLOTS;
+    for (size_t index = 0; index < POPEN_SLOTS; ++index) {
+        if (popen_children[index].active != 0 &&
+            popen_children[index].stream == stream) {
+            slot = index;
+            break;
+        }
+    }
+    if (slot == POPEN_SLOTS) {
+        errno = ECHILD;
+        return -1;
+    }
+
+    const pid_t child = popen_children[slot].child;
+    popen_children[slot].active = 0;
+    popen_children[slot].stream = NULL;
+    fclose(stream);
+
+    int status = 0;
+    for (;;) {
+        const pid_t waited = waitpid(child, &status, 0);
+        if (waited == child) {
+            return status;
+        }
+        if (waited < 0 && errno == EINTR) {
+            continue;
+        }
+        return -1;
+    }
+}
+
+/* ---- arc4random --------------------------------------------------------- */
+
+/* The kernel's getrandom is the source. When it is unavailable the state falls
+ * back to a splitmix64 stream seeded from the clock and pid: weaker than the
+ * kernel pool, but never a repeating constant, and the fallback is documented
+ * here rather than silently pretending to be cryptographic. */
+static uint64_t arc4random_fallback_state;
+
+static uint64_t arc4random_next(void)
+{
+    uint64_t state = __atomic_load_n(&arc4random_fallback_state, __ATOMIC_RELAXED);
+    if (state == 0) {
+        struct timespec now;
+        memset(&now, 0, sizeof(now));
+        (void)clock_gettime(CLOCK_MONOTONIC, &now);
+        state = ((uint64_t)(uint32_t)getpid() << 32) ^ (uint64_t)now.tv_nsec ^
+                ((uint64_t)now.tv_sec * UINT64_C(0x2545f4914f6cdd1d));
+        if (state == 0) {
+            state = UINT64_C(0x9e3779b97f4a7c15);
+        }
+    }
+    state += UINT64_C(0x9e3779b97f4a7c15);
+    uint64_t mixed = state;
+    mixed = (mixed ^ (mixed >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    mixed = (mixed ^ (mixed >> 27)) * UINT64_C(0x94d049bb133111eb);
+    mixed ^= mixed >> 31;
+    __atomic_store_n(&arc4random_fallback_state, state, __ATOMIC_RELAXED);
+    return mixed;
+}
+
+void arc4random_buf(void *buffer, size_t length)
+{
+    if (buffer == NULL || length == 0) {
+        return;
+    }
+    unsigned char *bytes = buffer;
+    size_t filled = 0;
+    while (filled < length) {
+        const ssize_t got = getrandom(bytes + filled, length - filled, 0);
+        if (got > 0) {
+            filled += (size_t)got;
+            continue;
+        }
+        if (got < 0 && errno == EINTR) {
+            continue;
+        }
+        const uint64_t value = arc4random_next();
+        for (size_t index = 0; index < 8 && filled < length; ++index) {
+            bytes[filled++] = (unsigned char)(value >> (8 * index));
+        }
+    }
+}
+
+uint32_t arc4random(void)
+{
+    uint32_t value = 0;
+    arc4random_buf(&value, sizeof(value));
+    return value;
+}
+
+uint32_t arc4random_uniform(uint32_t upper_bound)
+{
+    if (upper_bound < 2) {
+        return 0;
+    }
+    /* Reject the biased head of the range, then take the modulo. */
+    const uint32_t minimum = (uint32_t)(-upper_bound) % upper_bound;
+    for (;;) {
+        const uint32_t value = arc4random();
+        if (value >= minimum) {
+            return value % upper_bound;
+        }
+    }
+}
+
+/* ---- hsearch ------------------------------------------------------------ */
+
+/* struct hsearch_data comes from <search.h>; only the node layout is private. */
+struct hsearch_node {
+    ENTRY entry;
+    struct hsearch_node *next;
+};
+
+/* Chained hash table. Keys are borrowed: hdestroy frees the buckets and nodes
+ * but not the caller's key strings, which is what glibc does as well. */
+static struct hsearch_data global_hsearch_table;
+static int global_hsearch_active;
+
+static uint64_t hsearch_hash(const char *key)
+{
+    uint64_t hash = UINT64_C(0xcbf29ce484222325);
+    for (const unsigned char *cursor = (const unsigned char *)key;
+         *cursor != '\0'; ++cursor) {
+        hash ^= *cursor;
+        hash *= UINT64_C(0x100000001b3);
+    }
+    return hash;
+}
+
+static void hsearch_table_release(struct hsearch_data *table)
+{
+    if (table->buckets == NULL) {
+        return;
+    }
+    for (size_t slot = 0; slot < table->capacity; ++slot) {
+        struct hsearch_node *node = table->buckets[slot];
+        while (node != NULL) {
+            struct hsearch_node *next = node->next;
+            free(node);
+            node = next;
+        }
+    }
+    free(table->buckets);
+    table->buckets = NULL;
+    table->capacity = 0;
+    table->count = 0;
+}
+
+static int hsearch_table_grow(struct hsearch_data *table)
+{
+    const size_t capacity = table->capacity != 0 ? table->capacity * 2 : 16;
+    struct hsearch_node **buckets = calloc(capacity, sizeof(*buckets));
+    if (buckets == NULL) {
+        return -1;
+    }
+    for (size_t slot = 0; slot < table->capacity; ++slot) {
+        struct hsearch_node *node = table->buckets[slot];
+        while (node != NULL) {
+            struct hsearch_node *next = node->next;
+            const size_t target =
+                (size_t)(hsearch_hash(node->entry.key) & (capacity - 1));
+            node->next = buckets[target];
+            buckets[target] = node;
+            node = next;
+        }
+    }
+    free(table->buckets);
+    table->buckets = buckets;
+    table->capacity = capacity;
+    return 0;
+}
+
+static ENTRY *hsearch_lookup(struct hsearch_data *table, ENTRY item,
+                            ACTION action)
+{
+    if (table->capacity == 0 && hsearch_table_grow(table) < 0) {
+        return NULL;
+    }
+    for (;;) {
+        const size_t slot =
+            (size_t)(hsearch_hash(item.key) & (table->capacity - 1));
+        for (struct hsearch_node *node = table->buckets[slot]; node != NULL;
+             node = node->next) {
+            if (strcmp(node->entry.key, item.key) == 0) {
+                return &node->entry;
+            }
+        }
+        if (action == FIND) {
+            return NULL;
+        }
+        if (table->count * 2 >= table->capacity && hsearch_table_grow(table) < 0) {
+            return NULL;
+        }
+        struct hsearch_node *node = malloc(sizeof(*node));
+        if (node == NULL) {
+            return NULL;
+        }
+        node->entry = item;
+        node->next = table->buckets[slot];
+        table->buckets[slot] = node;
+        table->count++;
+        return &node->entry;
+    }
+}
+
+int hcreate(size_t element_count)
+{
+    if (global_hsearch_active != 0) {
+        return 0;
+    }
+    memset(&global_hsearch_table, 0, sizeof(global_hsearch_table));
+    if (element_count > SIZE_MAX / 2) {
+        errno = ENOMEM;
+        return 0;
+    }
+    while (global_hsearch_table.capacity < element_count * 2) {
+        if (hsearch_table_grow(&global_hsearch_table) < 0) {
+            hsearch_table_release(&global_hsearch_table);
+            errno = ENOMEM;
+            return 0;
+        }
+    }
+    global_hsearch_active = 1;
+    return 1;
+}
+
+void hdestroy(void)
+{
+    hsearch_table_release(&global_hsearch_table);
+    global_hsearch_active = 0;
+}
+
+ENTRY *hsearch(ENTRY item, ACTION action)
+{
+    if (item.key == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (global_hsearch_active == 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    return hsearch_lookup(&global_hsearch_table, item, action);
+}
+
+int hcreate_r(size_t element_count, struct hsearch_data *table)
+{
+    if (table == NULL) {
+        errno = EINVAL;
+        return 0;
+    }
+    memset(table, 0, sizeof(*table));
+    while (table->capacity < element_count * 2) {
+        if (hsearch_table_grow(table) < 0) {
+            hsearch_table_release(table);
+            errno = ENOMEM;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+void hdestroy_r(struct hsearch_data *table)
+{
+    if (table != NULL) {
+        hsearch_table_release(table);
+    }
+}
+
+int hsearch_r(ENTRY item, ACTION action, ENTRY **result,
+              struct hsearch_data *table)
+{
+    if (table == NULL || result == NULL) {
+        errno = EINVAL;
+        return 0;
+    }
+    *result = NULL;
+    if (item.key == NULL) {
+        errno = EINVAL;
+        return 0;
+    }
+    ENTRY *found = hsearch_lookup(table, item, action);
+    if (found == NULL) {
+        return 0;
+    }
+    *result = found;
+    return 1;
+}
+
+/* ---- mmap64 ------------------------------------------------------------- */
+
+/* OCTAGRAM's off_t is already 64-bit, so mmap64 is the same call. It exists for
+ * code that selects the LFS name at compile time. */
+void *mmap64(void *address, size_t length, int protection, int flags,
+             int file_descriptor, off_t offset)
+{
+    return mmap(address, length, protection, flags, file_descriptor, offset);
 }

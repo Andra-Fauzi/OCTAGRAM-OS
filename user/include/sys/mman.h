@@ -32,6 +32,9 @@
 
 void *mmap(void *address, size_t length, int protection, int flags,
            int file_descriptor, off_t offset);
+/* LFS alias: off_t is already 64-bit on OCTAGRAM. */
+void *mmap64(void *address, size_t length, int protection, int flags,
+             int file_descriptor, off_t offset);
 int munmap(void *address, size_t length);
 int mprotect(void *address, size_t length, int protection);
 int msync(void *address, size_t length, int flags);

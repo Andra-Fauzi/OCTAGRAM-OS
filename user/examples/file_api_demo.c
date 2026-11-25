@@ -48,15 +48,22 @@ int main(void)
         unlink(path);
         return 33;
     }
-    if (fchmod(fd, 01000) != -1) {
+    /* Special permission bits are currently discarded by the kernel. */
+    if (fchmod(fd, 01000) != 0) {
         close(fd);
         unlink(path);
         return 34;
     }
-    if (errno != EINVAL) {
+    /* Values that cannot be represented by the kernel's u16 mode are invalid. */
+    if (fchmod(fd, 0x10000) != -1) {
         close(fd);
         unlink(path);
         return 35;
+    }
+    if (errno != EINVAL) {
+        close(fd);
+        unlink(path);
+        return 36;
     }
     if (access(path, R_OK | W_OK) != 0) {
         int error = errno;

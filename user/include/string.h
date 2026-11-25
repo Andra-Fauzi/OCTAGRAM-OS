@@ -48,6 +48,7 @@ size_t strlcpy(char *destination, const char *source, size_t size);
 size_t strlcat(char *destination, const char *source, size_t size);
 size_t strnlen(const char *text, size_t maximum);
 void explicit_bzero(void *buffer, size_t length);
+int strverscmp(const char *left, const char *right);
 
 
 #ifdef __cplusplus

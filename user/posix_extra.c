@@ -11,16 +11,21 @@
  */
 
 #include <dirent.h>
+#include <err.h>
 #include <errno.h>
+#include <error.h>
 #include <fnmatch.h>
+#include <getopt.h>
 #include <glob.h>
 #include <sched.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/auxv.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
 #include <time.h>
@@ -724,4 +729,497 @@ unsigned long getauxval(unsigned long type)
      */
     errno = ENOENT;
     return 0;
+}
+
+/* ---- getopt / getopt_long ----------------------------------------------- */
+
+char *optarg;
+int optind = 1;
+int optopt;
+int opterr = 1;
+int optreset;
+
+/* Index inside the current argv element; 1 means "start of a new element". */
+static int oct_getopt_position = 1;
+
+static const char *oct_program_name(void)
+{
+    if (program_invocation_short_name != NULL &&
+        program_invocation_short_name[0] != '\0') {
+        return program_invocation_short_name;
+    }
+    return "octagram";
+}
+
+static int oct_is_option(const char *argument)
+{
+    return argument[0] == '-' && argument[1] != '\0';
+}
+
+static int oct_next_option(char *const argv[], int start, int argc)
+{
+    for (int index = start; index < argc; index++) {
+        if (oct_is_option(argv[index])) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+static int oct_parse_long_option(int argc, char *const argv[],
+                                 const struct option *long_options, int *long_index,
+                                 int colon_mode, int name_offset)
+{
+    char *argument = argv[optind];
+    char *name = argument + name_offset;
+    char *equals = strchr(name, '=');
+    size_t name_length = equals != NULL ? (size_t)(equals - name) : strlen(name);
+
+    int match = -1;
+    int ambiguous = 0;
+    for (int index = 0; long_options[index].name != NULL; index++) {
+        size_t candidate_length = strlen(long_options[index].name);
+        if (candidate_length == name_length &&
+            strncmp(name, long_options[index].name, name_length) == 0) {
+            match = index;
+            ambiguous = 0;
+            break;
+        }
+        if (candidate_length > name_length &&
+            strncmp(name, long_options[index].name, name_length) == 0) {
+            if (match >= 0) {
+                ambiguous = 1;
+            } else {
+                match = index;
+            }
+        }
+    }
+
+    if (match < 0 || ambiguous) {
+        if (opterr && colon_mode == 0) {
+            if (ambiguous) {
+                fprintf(stderr, "%s: option '--%.*s' is ambiguous\n",
+                        oct_program_name(), (int)name_length, name);
+            } else {
+                fprintf(stderr, "%s: unrecognized option '--%.*s'\n",
+                        oct_program_name(), (int)name_length, name);
+            }
+        }
+        optopt = 0;
+        optind++;
+        return '?';
+    }
+
+    const struct option *option = &long_options[match];
+    if (long_index != NULL) {
+        *long_index = match;
+    }
+
+    if (equals != NULL) {
+        if (option->has_arg == no_argument) {
+            if (opterr && colon_mode == 0) {
+                fprintf(stderr, "%s: option '--%s' doesn't allow an argument\n",
+                        oct_program_name(), option->name);
+            }
+            optind++;
+            return '?';
+        }
+        optarg = equals + 1;
+        optind++;
+    } else if (option->has_arg == required_argument) {
+        if (optind + 1 >= argc) {
+            if (opterr && colon_mode == 0) {
+                fprintf(stderr, "%s: option '--%s' requires an argument\n",
+                        oct_program_name(), option->name);
+            }
+            optind++;
+            return colon_mode != 0 ? ':' : '?';
+        }
+        optarg = argv[optind + 1];
+        optind += 2;
+    } else {
+        optind++;
+    }
+
+    if (option->flag != NULL) {
+        *option->flag = option->val;
+        return 0;
+    }
+    return option->val;
+}
+
+static int oct_getopt_run(int argc, char *const argv[], const char *optstring,
+                          const struct option *long_options, int *long_index,
+                          int long_only)
+{
+    if (optreset) {
+        optreset = 0;
+        optind = 1;
+        oct_getopt_position = 1;
+    }
+    if (optind == 0) {
+        optind = 1;
+    }
+    if (argc <= 0 || argv == NULL) {
+        return -1;
+    }
+    optarg = NULL;
+
+    /* argv's elements are const-qualified in the POSIX signature, but GNU
+     * getopt permutes them; the array itself is writable by contract. */
+    char **mutable_argv = (char **)(uintptr_t)argv;
+
+    const char *specification = optstring != NULL ? optstring : "";
+    int stop_at_nonoption = 0;
+    int return_nonoptions = 0;
+    int colon_mode = 0;
+    if (*specification == '+' || *specification == '-') {
+        stop_at_nonoption = *specification == '+';
+        return_nonoptions = *specification == '-';
+        specification++;
+    }
+    if (*specification == ':') {
+        colon_mode = 1;
+        specification++;
+    }
+
+    for (;;) {
+        if (oct_getopt_position == 1) {
+            if (optind >= argc) {
+                return -1;
+            }
+            if (!oct_is_option(argv[optind])) {
+                if (stop_at_nonoption) {
+                    return -1;
+                }
+                if (return_nonoptions) {
+                    optarg = argv[optind++];
+                    return 1;
+                }
+                /* GNU default: permute, so options after operands still parse. */
+                int next = oct_next_option(argv, optind + 1, argc);
+                if (next < 0) {
+                    return -1;
+                }
+                char *moved = argv[next];
+                memmove(&mutable_argv[optind + 1], &mutable_argv[optind],
+                        (size_t)(next - optind) * sizeof(char *));
+                mutable_argv[optind] = moved;
+            }
+
+            if (strcmp(argv[optind], "--") == 0) {
+                optind++;
+                return -1;
+            }
+
+            if (long_options != NULL) {
+                if (argv[optind][1] == '-') {
+                    return oct_parse_long_option(argc, argv, long_options,
+                                                 long_index, colon_mode, 2);
+                }
+                if (long_only != 0) {
+                    /* getopt_long_only: "-name" may be a long option. Only
+                     * take that path when the text actually names an option;
+                     * otherwise fall back to short-option parsing. */
+                    char *probe = argv[optind] + 1;
+                    char *equals = strchr(probe, '=');
+                    size_t probe_length =
+                        equals != NULL ? (size_t)(equals - probe) : strlen(probe);
+                    int matches = 0;
+                    for (int index = 0; long_options[index].name != NULL; index++) {
+                        if (strlen(long_options[index].name) >= probe_length &&
+                            strncmp(probe, long_options[index].name, probe_length) == 0) {
+                            matches++;
+                        }
+                    }
+                    if (matches == 1) {
+                        return oct_parse_long_option(argc, argv, long_options,
+                                                     long_index, colon_mode, 1);
+                    }
+                }
+            }
+        }
+
+        const char *element = argv[optind];
+        char option = element[oct_getopt_position];
+        const char *found = NULL;
+        for (const char *cursor = specification; *cursor != '\0'; cursor++) {
+            if (*cursor == ':' ) {
+                continue;
+            }
+            if (*cursor == option) {
+                found = cursor;
+                break;
+            }
+        }
+
+        if (found == NULL) {
+            optopt = (unsigned char)option;
+            if (opterr && colon_mode == 0) {
+                fprintf(stderr, "%s: invalid option -- '%c'\n", oct_program_name(),
+                        option);
+            }
+            oct_getopt_position++;
+            if (element[oct_getopt_position] == '\0') {
+                oct_getopt_position = 1;
+                optind++;
+            }
+            return '?';
+        }
+
+        int takes_argument = found[1] == ':';
+        if (!takes_argument) {
+            oct_getopt_position++;
+            if (element[oct_getopt_position] == '\0') {
+                oct_getopt_position = 1;
+                optind++;
+            }
+            return (unsigned char)option;
+        }
+
+        if (element[oct_getopt_position + 1] != '\0') {
+            optarg = (char *)element + oct_getopt_position + 1;
+            oct_getopt_position = 1;
+            optind++;
+            return (unsigned char)option;
+        }
+        if (optind + 1 < argc) {
+            optarg = argv[optind + 1];
+            oct_getopt_position = 1;
+            optind += 2;
+            return (unsigned char)option;
+        }
+
+        optopt = (unsigned char)option;
+        oct_getopt_position = 1;
+        optind++;
+        if (opterr && colon_mode == 0) {
+            fprintf(stderr, "%s: option requires an argument -- '%c'\n",
+                    oct_program_name(), option);
+        }
+        return colon_mode != 0 ? ':' : '?';
+    }
+}
+
+int getopt(int argc, char *const argv[], const char *optstring)
+{
+    return oct_getopt_run(argc, argv, optstring, NULL, NULL, 0);
+}
+
+int getopt_long(int argc, char *const argv[], const char *optstring,
+                const struct option *long_options, int *long_index)
+{
+    return oct_getopt_run(argc, argv, optstring, long_options, long_index, 0);
+}
+
+int getopt_long_only(int argc, char *const argv[], const char *optstring,
+                     const struct option *long_options, int *long_index)
+{
+    return oct_getopt_run(argc, argv, optstring, long_options, long_index, 1);
+}
+
+/* ---- GNU error() and BSD err.h ------------------------------------------ */
+
+unsigned int error_message_count;
+int error_one_per_line;
+char *program_invocation_name = (char *)"";
+char *program_invocation_short_name = (char *)"";
+
+static void oct_diagnostic(int error_number, const char *file_name,
+                           unsigned int line_number, const char *format,
+                           va_list arguments)
+{
+    fprintf(stderr, "%s: ", oct_program_name());
+    if (format != NULL) {
+        vfprintf(stderr, format, arguments);
+    }
+    if (error_number != 0) {
+        fprintf(stderr, ": %s", strerror(error_number));
+    }
+    if (file_name != NULL) {
+        fprintf(stderr, ": %s:%u", file_name, line_number);
+    }
+    fputc('\n', stderr);
+    fflush(stderr);
+}
+
+void error(int status, int error_number, const char *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    oct_diagnostic(error_number, NULL, 0, format, arguments);
+    va_end(arguments);
+    error_message_count++;
+    if (status != 0) {
+        exit(status);
+    }
+}
+
+void error_at_line(int status, int error_number, const char *file_name,
+                   unsigned int line_number, const char *format, ...)
+{
+    static const char *last_file;
+    static unsigned int last_line;
+    if (error_one_per_line && last_file != NULL && last_line == line_number &&
+        strcmp(last_file, file_name) == 0) {
+        return;
+    }
+    last_file = file_name;
+    last_line = line_number;
+
+    va_list arguments;
+    va_start(arguments, format);
+    oct_diagnostic(error_number, file_name, line_number, format, arguments);
+    va_end(arguments);
+    error_message_count++;
+    if (status != 0) {
+        exit(status);
+    }
+}
+
+void vwarnx(const char *format, va_list arguments)
+{
+    oct_diagnostic(0, NULL, 0, format, arguments);
+}
+
+void vwarn(const char *format, va_list arguments)
+{
+    oct_diagnostic(errno, NULL, 0, format, arguments);
+}
+
+void warnx(const char *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    oct_diagnostic(0, NULL, 0, format, arguments);
+    va_end(arguments);
+}
+
+void warn(const char *format, ...)
+{
+    va_list arguments;
+    int saved = errno;
+    va_start(arguments, format);
+    oct_diagnostic(saved, NULL, 0, format, arguments);
+    va_end(arguments);
+}
+
+void verrx(int status, const char *format, va_list arguments)
+{
+    oct_diagnostic(0, NULL, 0, format, arguments);
+    exit(status);
+}
+
+void errx(int status, const char *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    oct_diagnostic(0, NULL, 0, format, arguments);
+    va_end(arguments);
+    exit(status);
+}
+
+void verr(int status, const char *format, va_list arguments)
+{
+    int saved = errno;
+    oct_diagnostic(saved, NULL, 0, format, arguments);
+    exit(status);
+}
+
+void err(int status, const char *format, ...)
+{
+    va_list arguments;
+    int saved = errno;
+    va_start(arguments, format);
+    oct_diagnostic(saved, NULL, 0, format, arguments);
+    va_end(arguments);
+    exit(status);
+}
+
+/* ---- Version-aware comparison ------------------------------------------ */
+
+int strverscmp(const char *left, const char *right)
+{
+    /*
+     * Compare runs of digits as numbers so "file10" sorts after "file9", and
+     * order equal numeric runs by their leading zeros ("01" before "1"), which
+     * is the behaviour strverscmp is used for. Non-digit bytes compare by
+     * unsigned value.
+     */
+    const unsigned char *l = (const unsigned char *)left;
+    const unsigned char *r = (const unsigned char *)right;
+
+    while (*l != '\0' && *r != '\0') {
+        if (*l >= '0' && *l <= '9' && *r >= '0' && *r <= '9') {
+            const unsigned char *l_end = l;
+            const unsigned char *r_end = r;
+            while (*l_end >= '0' && *l_end <= '9') {
+                l_end++;
+            }
+            while (*r_end >= '0' && *r_end <= '9') {
+                r_end++;
+            }
+            const unsigned char *l_digits = l;
+            const unsigned char *r_digits = r;
+            while (l_digits < l_end && *l_digits == '0') {
+                l_digits++;
+            }
+            while (r_digits < r_end && *r_digits == '0') {
+                r_digits++;
+            }
+            size_t l_length = (size_t)(l_end - l_digits);
+            size_t r_length = (size_t)(r_end - r_digits);
+            if (l_length != r_length) {
+                return l_length < r_length ? -1 : 1;
+            }
+            int ordering = memcmp(l_digits, r_digits, l_length);
+            if (ordering != 0) {
+                return ordering < 0 ? -1 : 1;
+            }
+            size_t l_zeros = (size_t)(l_digits - l);
+            size_t r_zeros = (size_t)(r_digits - r);
+            if (l_zeros != r_zeros) {
+                return l_zeros < r_zeros ? -1 : 1;
+            }
+            l = l_end;
+            r = r_end;
+            continue;
+        }
+        if (*l != *r) {
+            return *l < *r ? -1 : 1;
+        }
+        l++;
+        r++;
+    }
+    if (*l == *r) {
+        return 0;
+    }
+    return *l == '\0' ? -1 : 1;
+}
+
+/* ---- Memory advice ------------------------------------------------------ */
+
+int madvise(void *address, size_t length, int advice)
+{
+    (void)address;
+    (void)length;
+    (void)advice;
+    /*
+     * The kernel has no madvise equivalent: mappings are anonymous and the
+     * page tables are managed by the kernel's own allocator. Report ENOSYS so
+     * callers keep their fallback behaviour instead of assuming a hint was
+     * applied.
+     */
+    errno = ENOSYS;
+    return -1;
+}
+
+void *mremap(void *old_address, size_t old_size, size_t new_size, int flags, ...)
+{
+    (void)old_address;
+    (void)old_size;
+    (void)new_size;
+    (void)flags;
+    errno = ENOSYS;
+    return MAP_FAILED;
 }

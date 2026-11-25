@@ -2774,3 +2774,43 @@ karena kernel belum punya syscall untuk itu; `getauxval` selalu `ENOENT`.
 `build/octagram-cargo.elf`, `build/libcxx_container_smoke.elf`, dan
 `build/libcxx_smoke.elf` semuanya lulus (exit 0, tanpa error/undefined
 symbol). QEMU belum dijalankan di workspace ini untuk probe ini.
+
+## 100. CLI dan diagnostik: getopt, error(), err.h (25 November 2026)
+
+Program C pada umumnya—termasuk front end compiler dan alat bantu build—memakai
+`getopt_long` untuk argumen dan `error()`/`err()` untuk diagnostik. Ketiganya
+belum ada di OCTAGRAM; ronde ini menambahkannya ke `user/posix_extra.c` beserta
+tiga header baru.
+
+**`<getopt.h>` + implementasi:**
+
+- `getopt`, `getopt_long`, `getopt_long_only` dengan global `optarg`, `optind`,
+  `optopt`, `opterr`, plus `optreset` (BSD) untuk memulai ulang.
+- Semantik GNU: permutasi argumen sehingga opsi setelah operand tetap diproses
+  (memindahkan blok lewat `memmove`), `--` sebagai terminator, `+` untuk
+  berhenti di operand pertama, `-` untuk mengembalikan operand sebagai opsi 1,
+  dan `:` di awal `optstring` untuk mode tanpa pesan error.
+- Opsi panjang: `--name=value`, `--name value`, prefiks unik (ambigu → `'?'`),
+  `no_argument`/`required_argument`/`optional_argument`, serta `flag`/`val`
+  seperti glibc. Detail perilaku salah pakai dilaporkan ke `stderr` dengan
+  `opterr` dan `program_invocation_short_name`.
+
+**`<error.h>`:** `error`/`error_at_line` dengan status keluar, `errno` →
+`strerror`, prefiks nama program, `error_message_count`, dan
+`error_one_per_line` (menekan pesan berulang untuk file:baris yang sama).
+Global `program_invocation_name`/`program_invocation_short_name` disediakan
+dengan nilai kosong sampai pemanggil mengisinya.
+
+**`<err.h>`:** `err`, `errx`, `warn`, `warnx` dan varian `v*`. Varian `err*`
+keluar dengan status yang diberikan; `errno` disimpan sebelum `va_start` agar
+`warn`/`err` tidak kehilangan kode error karena `fprintf` di dalamnya.
+
+**Tambahan kecil:** `strverscmp` (run digit dibandingkan sebagai angka, dengan
+urutan jumlah nol di depan sehingga `f2 < f10`), `madvise` dan `mremap`
+(mengembalikan `ENOSYS` karena kernel belum punya padanannya — bukan angka
+palsu), dengan deklarasi di `<string.h>` dan `<sys/mman.h>`.
+
+**Validasi:** `build/octagram-cargo.elf` dan 5 probe (`libcxx_format`,
+`libcxx_container`, `libcxx_thread`, `libcxx_fs`, `cpp_smoke`) dibangun ulang
+dan ditautkan tanpa error/undefined symbol (`exit=0`). Belum dijalankan di
+QEMU.

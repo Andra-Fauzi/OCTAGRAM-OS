@@ -41,5 +41,7 @@ int munlock(const void *address, size_t length);
 int mlockall(int flags);
 int munlockall(void);
 int posix_madvise(void *address, size_t length, int advice);
+int madvise(void *address, size_t length, int advice);
+void *mremap(void *old_address, size_t old_size, size_t new_size, int flags, ...);
 
 #endif

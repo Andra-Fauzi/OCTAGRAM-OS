@@ -91,6 +91,20 @@ if [ ! -e "$1" ]; then
 fi
 host_std=$1
 
+# The guest's freestanding programs build for `--target x86_64-unknown-none`;
+# without that core, only host-target builds work, so warn instead of failing.
+target_std_json=null
+target_std_dir=$output_dir/lib/rustlib/$target/lib
+set +e
+set -- "$target_std_dir"/libcore-*.rlib
+set -e
+if [ -e "$1" ]; then
+    target_std_json="\"$(basename "$1")\""
+else
+    echo "stage_octagram_toolchain: warning: core for $target is missing;" >&2
+    echo "stage_octagram_toolchain:          rustc --target $target will not work" >&2
+fi
+
 rustc_size=$(wc -c < "$output_dir/bin/rustc" | tr -d ' ')
 cargo_size=0
 if [ "$cargo_present" -eq 1 ]; then
@@ -106,6 +120,7 @@ cat > "$output_dir/toolchain.json" <<EOF
   "rustc_bytes": $rustc_size,
   "cargo_bytes": $cargo_size,
   "host_std": "$(basename "$host_std")",
+  "target_std": $target_std_json,
   "install_path": "/toolchain"
 }
 EOF

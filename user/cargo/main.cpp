@@ -802,6 +802,10 @@ fs::path resolved_target_directory(const Workspace& workspace, const Options& op
     if (options.target_directory_explicit) {
         return options.target_directory;
     }
+    const char* from_environment = std::getenv("CARGO_TARGET_DIR");
+    if (from_environment != nullptr && from_environment[0] != '\0') {
+        return from_environment;
+    }
     return workspace.root_manifest().directory / "target";
 }
 

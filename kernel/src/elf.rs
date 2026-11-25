@@ -10061,7 +10061,7 @@ mod tests {
         FUTEX_OWNER_DIED, FUTEX_WAITERS,
         effective_priority_target, priority_change_allowed, priority_target_matches,
         SCHED_OTHER, ElfError, select_tls_base, selector_returns_to_user, slot_is_resumable,
-        MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
+        MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MAP_STACK, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
         PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_INITIAL_PAGES, STACK_MAX_PAGES,
         STACK_RANDOM_PAGES, MAX_ARGUMENTS,
         STACK_TOP, SYSCALL_MMAP, SYSCALL_MUNMAP, UserDescriptor, signal_stack_top, stack_layout,

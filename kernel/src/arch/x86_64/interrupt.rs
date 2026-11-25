@@ -216,6 +216,12 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                         options(nomem, nostack, preserves_flags)
                     );
                 }
+                // The user stack starts small and grows on demand; a write
+                // just below the current stack is a growth request, not a bug.
+                if crate::elf::grow_user_stack(fault_address, frame.error_code) {
+                    // The page is mapped now: retry the faulting instruction.
+                    return frame as *mut InterruptFrame;
+                }
                 // The faulting RIP is in a mapped user executable page. Capture
                 // its first bytes and saved GPRs so guest faults can be decoded
                 // from serial output without guessing at TLS/loader behavior.

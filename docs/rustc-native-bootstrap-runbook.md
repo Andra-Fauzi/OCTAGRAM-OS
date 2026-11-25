@@ -237,10 +237,20 @@ yang disediakan di atas.
   diukur sebelum dinyatakan layak. Allocator guest mengambil blok ≥64 KiB
   langsung lewat `mmap`, jadi alokasi besar tidak bergantung pada `brk`.
 - **Batas proses di kernel.** Agar `rustc`/`cargo` bisa dijalankan dari shell,
-  `kernel/src/elf.rs` menaikkan stack user menjadi 4 MiB (dari 256 KiB),
-  argumen menjadi 256 entri / 64 KiB, environment 128 entri / 32 KiB, dan
-  deskriptor per proses 64 (dari 16). Stack dialokasikan eager per halaman,
-  jadi ini juga biaya RAM per proses; nilai ini konstanta kompromi, bukan hasil
+  `kernel/src/elf.rs` memakai stack 256 KiB saat exec yang tumbuh sesuai page
+  fault sampai 4 MiB (`STACK_INITIAL_PAGES`/`STACK_MAX_PAGES`,
+  `grow_user_stack`). Hanya write fault di jendela stack yang di-reserve yang
+  memetakan halaman baru; fetch fault dan protection fault tetap mematikan
+  proses, dan satu halaman di bawah batas tumbuh tetap tidak dipetakan sebagai
+  guard. Argumen 256 entri / 64 KiB, environment 128 entri / 32 KiB, dan
+  deskriptor per proses 64. Angka-angka ini konstanta kompromi, bukan hasil
   pengukuran dengan `rustc` sungguhan.
+- **Audit deskriptor userspace.** libc tidak menyimpan tabel fd sendiri (nomor
+  dari `open` langsung nomor kernel), `FD_SETSIZE` 1024 sehingga `select`/
+  `poll` muat 64 fd, dan `FILE` stdio dialokasikan lewat `malloc` tanpa pool
+  tetap. Yang tidak konsisten sudah diperbaiki: `limits.h` kini memakai
+  `OPEN_MAX` 64, `ARG_MAX` 64 KiB, `CHILD_MAX` 64 (mengikuti kernel), dan
+  `getrlimit(RLIMIT_NOFILE)` melaporkan 64 alih-alih `RLIM_INFINITY` supaya
+  program tidak menyiapkan tabel fd yang tidak bisa dipenuhi kernel.
 - **Belum ada CI.** Job bootstrap belum ditambahkan; artefak `sysroot.json`
   dan `llvm-config --version` harus dicatat saat job itu dibuat.

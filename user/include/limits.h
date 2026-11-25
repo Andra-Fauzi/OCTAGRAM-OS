@@ -23,9 +23,13 @@
 
 #define PATH_MAX 4096
 #define NAME_MAX 255
-#define OPEN_MAX 1024
-#define ARG_MAX 131072
-#define CHILD_MAX 256
+/* These mirror the kernel's per-process limits in kernel/src/elf.rs
+ * (MAX_OPEN_FILES, MAX_ARGUMENT_BYTES, MAX_SCHEDULED_PROCESSES). A descriptor
+ * table or allocation sized from a larger value would be rejected by the
+ * kernel at the first syscall past the real limit. */
+#define OPEN_MAX 64
+#define ARG_MAX 65536
+#define CHILD_MAX 64
 #define NGROUPS_MAX 65536
 #define PIPE_BUF 4096
 #define HOST_NAME_MAX 255

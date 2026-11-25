@@ -2,6 +2,7 @@
  * Run as `/bin/syscall-compat-demo` from the OCTAGRAM shell. */
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <octagram.h>
 #include <poll.h>
 #include <pthread.h>
@@ -234,7 +235,7 @@ int main(void)
     printf("     time=%lld\n", (long long)now.tv_sec);
 
     check(sysconf(_SC_PAGESIZE) == 4096, "sysconf(_SC_PAGESIZE)");
-    check(sysconf(_SC_OPEN_MAX) == 16, "sysconf(_SC_OPEN_MAX)");
+    check(sysconf(_SC_OPEN_MAX) == OPEN_MAX, "sysconf(_SC_OPEN_MAX)");
     check(sysconf(9999) == -1, "sysconf(unknown) == -1");
 
     struct timespec mono1;

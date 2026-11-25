@@ -22,13 +22,13 @@ use crate::memory::{
 const ELF_HEADER_SIZE: usize = 64;
 const PROGRAM_HEADER_SIZE: usize = 56;
 const MAX_PROGRAM_HEADERS: usize = 128;
-// 4 MiB mirrors what a compiler needs: rustc and LLVM recurse deeply while
-// lowering and optimising, and 256 KiB (the previous value, itself raised from
-// 32 KiB after Command::output faulted) is far too small to run `rustc` at all.
-// Every page is backed eagerly by a frame, so this is also a per-process memory
-// cost; 4 MiB is the compromise between rustc's stack use and running many
-// small commands from the shell.
-const STACK_PAGES: u64 = 1024;
+// Pages mapped eagerly at exec: argv/envp plus the first frames. The rest of
+// the stack is mapped on demand by `grow_user_stack` when a write faults, so
+// running `rustc` does not cost every `ls` in the shell the same memory.
+const STACK_INITIAL_PAGES: u64 = 64;
+// Fault-driven growth stops here (4 MiB, about what rustc and LLVM need while
+// recursing through lowering and optimisation).
+const STACK_MAX_PAGES: u64 = 1024;
 /// Jumlah halaman entropi untuk menggeser puncak stack user per eksekusi.
 const STACK_RANDOM_PAGES: u64 = 64;
 // Cargo invokes rustc with long argument lists (dozens of -L/--extern/-C flags
@@ -40,7 +40,7 @@ const MAX_ENVIRONMENT_VARIABLES: usize = 128;
 const MAX_ENVIRONMENT_BYTES: usize = 32 * 1024;
 const STACK_TOP: u64 = paging::USER_ADDRESS_MAX;
 const MMAP_START: u64 = 0x1_0000_0000;
-const MMAP_END: u64 = STACK_TOP - (STACK_PAGES + STACK_RANDOM_PAGES + 1) * PAGE_SIZE;
+const MMAP_END: u64 = STACK_TOP - (STACK_MAX_PAGES + STACK_RANDOM_PAGES + 1) * PAGE_SIZE;
 const MAX_USER_PATH: usize = 256;
 const MAX_SYSCALL_IO: usize = 4096;
 // cargo keeps pipes open to its rustc children and rustc opens inputs, outputs
@@ -372,6 +372,8 @@ struct PollFd {
 }
 
 const RLIM_INFINITY: u64 = u64::MAX;
+/// `RLIMIT_NOFILE` as exported by `user/include/sys/resource.h`.
+const RLIMIT_NOFILE: u64 = 7;
 
 #[repr(C)]
 struct Rlimit {
@@ -1237,6 +1239,11 @@ pub struct LoadedElf {
 }
 
 struct UserMemory {
+    /// Highest stack address of this process; argv/envp sit just below it.
+    stack_top: u64,
+    /// Lowest address the stack may grow to after a page fault. The page below
+    /// it stays unmapped so an over-deep stack still faults.
+    stack_limit: u64,
     mmap_cursor: Mutex<u64>,
     mapped_pages: Mutex<Vec<u64>>,
     mmap_pages: Mutex<Vec<MappingPage>>,
@@ -1752,6 +1759,8 @@ impl LoadedElf {
             user_stack: self.user_stack,
             environment: try_clone_strings(&self.environment)?,
             memory: Arc::new(UserMemory {
+                stack_top: self.memory.stack_top,
+                stack_limit: self.memory.stack_limit,
                 mmap_cursor: Mutex::new(mmap_cursor),
                 mapped_pages: Mutex::new(mapped_pages),
                 mmap_pages: Mutex::new(mmap_pages),
@@ -1809,9 +1818,9 @@ pub fn load_with_args_and_environment(
         return Err(ElfError::InvalidHeader);
     }
 
-    let (stack_top, stack_start, guard_start) = stack_layout(next_random_u64())?;
+    let (stack_top, stack_start, stack_limit) = stack_layout(next_random_u64())?;
 
-    let mut total_pages = STACK_PAGES;
+    let mut total_pages = STACK_INITIAL_PAGES;
     let mmap_entropy = (next_random_u64() % 128) * PAGE_SIZE;
     let mut mmap_cursor = MMAP_START
         .checked_add(mmap_entropy)
@@ -1839,7 +1848,7 @@ pub fn load_with_args_and_environment(
         let start = page_start(segment.virtual_address);
         let end = page_end(segment.virtual_address, segment.memory_size)?;
         mmap_cursor = mmap_cursor.max(end);
-        if start < stack_top && guard_start < end {
+        if start < stack_top && stack_limit < end {
             return Err(ElfError::AddressRange);
         }
         total_pages = total_pages
@@ -1893,7 +1902,7 @@ pub fn load_with_args_and_environment(
             map_elf_segments(&parsed.segments, interpreter_bytes, &mut mapped_pages)?;
         }
 
-        for page_index in 0..STACK_PAGES {
+        for page_index in 0..STACK_INITIAL_PAGES {
             map_zeroed_page(
                 stack_start + page_index * PAGE_SIZE,
                 paging::flags::USER | paging::flags::WRITABLE | paging::flags::NO_EXECUTE,
@@ -1922,7 +1931,7 @@ pub fn load_with_args_and_environment(
         ];
         let (user_stack, initial_stack) = build_initial_stack(
             stack_start,
-            STACK_PAGES * PAGE_SIZE,
+            STACK_INITIAL_PAGES * PAGE_SIZE,
             arguments,
             environment,
             &auxv,
@@ -1939,6 +1948,8 @@ pub fn load_with_args_and_environment(
                 user_stack,
                 environment: process_environment,
                 memory: Arc::new(UserMemory {
+                    stack_top,
+                    stack_limit,
                     mmap_cursor: Mutex::new(mmap_cursor),
                     mapped_pages: Mutex::new(mapped_pages),
                     mmap_pages: Mutex::new(Vec::new()),
@@ -2437,12 +2448,12 @@ fn initialize_fork_frame(frame: &InterruptFrame, stack_top: u64) -> usize {
 fn stack_layout(random: u64) -> Result<(u64, u64, u64), ElfError> {
     let stack_top = STACK_TOP.saturating_sub((random % STACK_RANDOM_PAGES) * PAGE_SIZE);
     let stack_start = stack_top
-        .checked_sub(STACK_PAGES * PAGE_SIZE)
+        .checked_sub(STACK_INITIAL_PAGES * PAGE_SIZE)
         .ok_or(ElfError::AddressRange)?;
-    let guard_start = stack_start
-        .checked_sub(PAGE_SIZE)
+    let stack_limit = stack_top
+        .checked_sub(STACK_MAX_PAGES * PAGE_SIZE)
         .ok_or(ElfError::AddressRange)?;
-    Ok((stack_top, stack_start, guard_start))
+    Ok((stack_top, stack_start, stack_limit))
 }
 
 fn build_initial_stack(
@@ -3157,6 +3168,32 @@ fn current_user_memory() -> Result<Arc<UserMemory>, i32> {
         .filter(|_| scheduler.active)
         .map(|process| Arc::clone(&process.image.memory))
         .ok_or(EINTR)
+}
+
+/// Map one more stack page when a user write faults inside the reserved stack
+/// range. Returns true when the fault was resolved and the faulting instruction
+/// should be retried.
+pub fn grow_user_stack(fault_address: u64, error_code: u64) -> bool {
+    const PAGE_PRESENT: u64 = 1 << 0;
+    const INSTRUCTION_FETCH: u64 = 1 << 4;
+    // A present page means a protection fault, and a fetch fault is not a stack
+    // write: neither of those is growth.
+    if error_code & PAGE_PRESENT != 0 || error_code & INSTRUCTION_FETCH != 0 {
+        return false;
+    }
+    let Ok(memory) = current_user_memory() else {
+        return false;
+    };
+    let page = fault_address & !(PAGE_SIZE - 1);
+    if page < memory.stack_limit || page >= memory.stack_top {
+        return false;
+    }
+    let mut mapped_pages = memory.mapped_pages.lock();
+    if mapped_pages.iter().any(|mapped| *mapped == page) {
+        return false;
+    }
+    let flags = paging::flags::USER | paging::flags::WRITABLE | paging::flags::NO_EXECUTE;
+    map_zeroed_page(page, flags, &mut mapped_pages).is_ok()
 }
 
 fn syscall_execve(frame: &mut InterruptFrame) -> *mut InterruptFrame {
@@ -9072,9 +9109,16 @@ fn syscall_rlimit(syscall: u64, resource: u64, addr: u64) -> Result<u64, i32> {
     if addr == 0 { return Err(EFAULT); }
     paging::validate_user_range(addr, core::mem::size_of::<Rlimit>(), true)
         .map_err(|_| EFAULT)?;
-    let rl = Rlimit { rlim_cur: RLIM_INFINITY, rlim_max: RLIM_INFINITY };
+    // Report the descriptor limit the kernel actually enforces; a program that
+    // sizes a table from RLIM_INFINITY would allocate absurdly and then fail on
+    // the first descriptor past MAX_OPEN_FILES.
+    let rl = if resource == RLIMIT_NOFILE {
+        let limit = MAX_OPEN_FILES as u64;
+        Rlimit { rlim_cur: limit, rlim_max: limit }
+    } else {
+        Rlimit { rlim_cur: RLIM_INFINITY, rlim_max: RLIM_INFINITY }
+    };
     unsafe { (addr as *mut Rlimit).write_unaligned(rl) };
-    let _ = resource;
     Ok(0)
 }
 

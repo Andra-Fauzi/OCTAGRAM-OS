@@ -39,7 +39,7 @@ TCC_CONFIG := third_party/tinycc/config.h
 TCC_CONFIG_TEMPLATE := third_party/tinycc/config.h.octagram
 TCC_ELF := build/tcc.elf
 TCC_CFLAGS := $(CFLAGS) -w -DONE_SOURCE=0 -DCONFIG_TCC_STATIC \
-	-DTARGETOS_OCTAGRAM -Ithird_party/tinycc -Ithird_party/tinycc/include \
+	-DOCTAGRAM_CHAIN_HOST_FEATURES -DTARGETOS_OCTAGRAM -Ithird_party/tinycc -Ithird_party/tinycc/include \
 	-DCONFIG_SYSROOT=\"\" -DCONFIG_TCCDIR=\"/lib/tcc\" \
 	-DCONFIG_TCC_CRTPREFIX=\"/lib/tcc\" -DCONFIG_TCC_LIBPATHS=\"{B}\" \
 	-DCONFIG_TCC_SYSINCLUDEPATHS=\"/include\"
@@ -52,7 +52,7 @@ TCC_SUPPORT_ASSEMBLY := atomic alloca alloca-bt
 TCC_SUPPORT_OBJECTS := $(addprefix build/tcc_support_,$(addsuffix .o,$(TCC_SUPPORT_SOURCES))) \
 	$(addprefix build/tcc_support_,$(addsuffix .o,$(TCC_SUPPORT_ASSEMBLY)))
 TCC_SUPPORT_CFLAGS := $(CFLAGS) -fPIC -fno-omit-frame-pointer \
-	-w -Wno-error -Wno-unused-function -Wno-unused-variable \
+	-DOCTAGRAM_CHAIN_HOST_FEATURES -w -Wno-error -Wno-unused-function -Wno-unused-variable \
 	-Ithird_party/tinycc
 TCC_LIBTCC1 := build/libtcc1.a
 TCC_LIBC := build/libc.a

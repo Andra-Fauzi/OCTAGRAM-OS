@@ -75,9 +75,16 @@ def main() -> int:
         raise SystemExit(f"missing target definition source: {TARGET_SOURCE}")
 
     if not arguments.allow_unpinned:
-        actual = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=root, text=True
-        ).strip()
+        try:
+            actual = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            raise SystemExit(
+                f"{root} is not a git checkout, so the pinned revision cannot be "
+                f"verified; re-clone rust-lang/rust at {EXPECTED_COMMIT}, or pass "
+                "--allow-unpinned after checking the anchors yourself"
+            ) from None
         if actual != EXPECTED_COMMIT:
             raise SystemExit(
                 f"wrong upstream Rust revision: {actual} (expected {EXPECTED_COMMIT}); "

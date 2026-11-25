@@ -45,8 +45,8 @@ compiler/rustc_target/src/spec/mod.rs   Os::Octagram + supported_targets!
 
 Isinya mengikuti `user/rust/targets/x86_64-unknown-octagram.json`:
 
-- basis `X86_64UnknownNone` (atau `X86_64UnknownLinuxGnu` tanpa `env`) untuk
-  data layout dan fitur `+sse,+sse2`;
+- `llvm_target` dan data layout ditulis eksplisit (tidak mewarisi base struct),
+  dengan fitur `+sse,+sse2`;
 - `target_family: unix`, `os: "octagram"`, `env: ""`;
 - `linker_flavor: Gnu`, `linker: Some("x86_64-octagram-gcc")` supaya rustc
   memakai driver di `user/toolchain/bin` (bukan `ld.lld` yang tidak diport);
@@ -60,7 +60,26 @@ JSON spec yang sekarang dipakai `-Z build-std=core,alloc` tetap dipertahankan
 untuk build target dari host; keduanya harus dijaga sinkron. Aplikator
 memverifikasi revisi upstream (`342d744…`), memakai anchor unik untuk setiap
 sisipan, dan idempoten, sehingga aman dijalankan ulang setelah kegagalan
-sebagian. Skrip bootstrap memanggilnya otomatis pada langkah 3.
+sebagian. Skrip bootstrap memanggilnya otomatis pada langkah 3. Pada commit ini
+`supported_targets!` sendiri yang membangkitkan `mod targets { pub(crate) mod
+$module; }`, jadi tidak perlu baris `mod` terpisah untuk target baru.
+
+Aplikator dan definisi target sudah dicocokkan dengan isi upstream pada commit
+pin, tanpa checkout penuh:
+
+- `spec/mod.rs` diambil dari GitHub ke checkout sementara, skrip dijalankan dua
+  kali; diff-nya hanya dua baris
+  (`("x86_64-unknown-octagram", x86_64_unknown_octagram),` dan
+  `Octagram = "octagram",`), dan jalan kedua melaporkan "already registered";
+- `Target` di commit itu punya 6 field dan keenamnya diisi, `TargetMetadata`
+  4 dari 4 field, serta varian yang dipakai (`RelroLevel::None`,
+  `RelocModel::Static`, `CodeModel::Small`, `TlsModel::InitialExec`,
+  `FramePointer::Always`, `PanicStrategy::Abort`, `Arch::X86_64`) tersedia;
+- direktori yang bukan repo git sekarang ditolak dengan pesan jelas, bukan
+  traceback `git rev-parse`.
+
+Yang belum diverifikasi: kompilasi `rustc_target` sebenarnya, karena itu butuh
+checkout penuh dan stage0 toolchain.
 
 `python3 tools/check_octagram_rust_target_sync.py` membandingkan kedua spec
 secara statis (tanpa rustc): ia menurunkan nilai ABI dari JSON lalu memastikan

@@ -451,3 +451,29 @@ Batas yang masih berlaku dan harus disebut apa adanya:
   di-link bersama `libc.a` guest.
 - `pthread_getattr_np` sengaja mengembalikan `ENOTSUP` (guest belum
   mengekspos batas stack thread), dan `waitid` hanya mendukung bentuk `P_PID`.
+
+#### Artefak yang dihasilkan
+
+`readelf` pada hasil `tools/build_octagram_std_probe.sh`:
+
+```
+Type:                 EXEC (Executable file)
+Entry point address:  0x400000        -> `_start` (crt0 guest)
+LOAD  0x1000  0x400000               (teks/rodata)
+LOAD  0x18d000 0x58c000              (data/bss)
+TLS   0x18d020 0x58c020              ,  `main` = 0x40e150
+```
+
+Jadi `linker.ld` + `crt0.o` benar-benar dipakai: entry ada di `_start`, dan
+segmen `PT_TLS` terbentuk sehingga probe TLS (`RUST_TLS_PROBE`) punya image
+nyata, bukan header kosong.
+
+#### Kenapa flag link tidak ada di `user/rust/.cargo/config.toml`
+
+Blok `[target.x86_64-unknown-octagram]` sekarang hanya memuat flag codegen
+(`relocation-model`, `no-redzone`, `target-feature`). Argumen link
+(`-T user/linker.ld`, `user/build/crt0.o`, `-L .../libc.a`) harus berupa path
+absolut karena rustc menafsirkan `link-arg` relatif terhadap direktori
+pemanggilan — untuk cargo itu direktori package, bukan root repo. Skrip probe
+memberikannya lewat `CARGO_ENCODED_RUSTFLAGS`, satu-satunya variabel yang
+**menggantikan** flag config alih-alih menambahkannya.

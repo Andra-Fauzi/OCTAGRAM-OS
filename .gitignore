@@ -4,6 +4,8 @@
 *.hdd
 /user/build/
 /user/rust/build/
+# Copy of linker.ld made by user/rust/Makefile for relative -Tlinker.ld.
+/user/rust/linker.ld
 /user/rust/target/
 /user/rust/std-probe/target/
 /user/rust/std-probe/Cargo.lock

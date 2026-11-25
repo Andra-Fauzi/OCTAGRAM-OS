@@ -23,7 +23,7 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-#if __has_builtin(__make_signed)
+#if __has_builtin(__make_signed) && defined(__clang__)
 
 template <class _Tp>
 using __make_signed_t = __make_signed(_Tp);

@@ -1,0 +1,8 @@
+[package]
+name = "demo-lib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "demo_lib"
+path = "src/lib.rs"

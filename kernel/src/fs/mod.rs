@@ -47,6 +47,14 @@ const LIBCXX_THREAD_SMOKE_ELF: &[u8] =
     include_bytes!("../../../user/build/libcxx_thread_smoke.elf");
 const LIBCXX_FS_SMOKE_ELF: &[u8] =
     include_bytes!("../../../user/build/libcxx_fs_smoke.elf");
+const OCTAGRAM_CARGO_ELF: &[u8] = include_bytes!("../../../user/build/octagram-cargo.elf");
+const CARGO_DEMO_MANIFEST: &[u8] = include_bytes!("../../../user/cargo/demo/Cargo.toml");
+const CARGO_DEMO_LOCK: &[u8] = include_bytes!("../../../user/cargo/demo/Cargo.lock");
+const CARGO_DEMO_MAIN: &[u8] = include_bytes!("../../../user/cargo/demo/src/main.rs");
+const CARGO_DEMO_LIB_MANIFEST: &[u8] =
+    include_bytes!("../../../user/cargo/demo/demo-lib/Cargo.toml");
+const CARGO_DEMO_LIB_SOURCE: &[u8] =
+    include_bytes!("../../../user/cargo/demo/demo-lib/src/lib.rs");
 const SH_ELF: &[u8] = include_bytes!("../../../user/build/sh.elf");
 const TCC_ELF: &[u8] = include_bytes!("../../../user/build/tcc.elf");
 const FILE_API_DEMO_ELF: &[u8] = include_bytes!("../../../user/build/file_api_demo.elf");
@@ -1043,6 +1051,29 @@ pub fn init() {
             LIBCXX_FS_SMOKE_ELF,
             0o755,
         );
+        seed_file(&mut vfs, "/bin/octagram-cargo", OCTAGRAM_CARGO_ELF, 0o755);
+        // A tiny Cargo workspace for `octagram-cargo plan` to resolve. It is
+        // not compiled: the probe only exercises manifest/lock parsing, path
+        // dependency ordering, and metadata output.
+        ensure_seed_directory(&mut vfs, "/cargo-demo");
+        ensure_seed_directory(&mut vfs, "/cargo-demo/src");
+        ensure_seed_directory(&mut vfs, "/cargo-demo/demo-lib");
+        ensure_seed_directory(&mut vfs, "/cargo-demo/demo-lib/src");
+        seed_file(&mut vfs, "/cargo-demo/Cargo.toml", CARGO_DEMO_MANIFEST, 0o644);
+        seed_file(&mut vfs, "/cargo-demo/Cargo.lock", CARGO_DEMO_LOCK, 0o644);
+        seed_file(&mut vfs, "/cargo-demo/src/main.rs", CARGO_DEMO_MAIN, 0o644);
+        seed_file(
+            &mut vfs,
+            "/cargo-demo/demo-lib/Cargo.toml",
+            CARGO_DEMO_LIB_MANIFEST,
+            0o644,
+        );
+        seed_file(
+            &mut vfs,
+            "/cargo-demo/demo-lib/src/lib.rs",
+            CARGO_DEMO_LIB_SOURCE,
+            0o644,
+        );
         seed_file(&mut vfs, "/bin/tcc", TCC_ELF, 0o755);
         seed_file(&mut vfs, "/bin/file-api-demo", FILE_API_DEMO_ELF, 0o755);
         seed_file(&mut vfs, "/bin/posix_spawn_demo", POSIX_SPAWN_DEMO_ELF, 0o755);
@@ -1157,6 +1188,16 @@ pub fn init() {
         }
         Mutex::new(vfs)
     });
+}
+
+fn ensure_seed_directory(vfs: &mut Vfs, path: &str) {
+    match vfs.metadata(path) {
+        Ok(_) => return,
+        Err(FsError::NotFound) => {}
+        Err(error) => panic!("checking boot directory {path} failed: {error:?}"),
+    }
+    vfs.create_dir(path)
+        .unwrap_or_else(|error| panic!("creating boot directory {path} failed: {error:?}"));
 }
 
 fn seed_file(vfs: &mut Vfs, path: &str, contents: &[u8], permissions: u16) {

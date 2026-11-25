@@ -419,6 +419,37 @@ def main():
         return 1
     print("LIBCXX-FS-PASS")
 
+    # M4.4 groundwork: the Cargo-side driver parses Cargo.toml/Cargo.lock
+    # offline, resolves path dependencies into a build order, and reports
+    # metadata. It does not claim to be upstream Cargo, and it is not asked to
+    # build here because no rustc exists in the guest yet.
+    cargo_offset = len(serial_text())
+    send_line("octagram-cargo --locked plan --manifest-path /cargo-demo/Cargo.toml")
+    if not wait_for_after("demo-lib 0.1.0", cargo_offset, 30):
+        print("OCTAGRAM-CARGO-FAIL: plan did not list the path dependency")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_for_after("demo-app 0.1.0", cargo_offset, 30):
+        print("OCTAGRAM-CARGO-FAIL: plan did not list the root package")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("OCTAGRAM-CARGO-FAIL: shell did not return after plan")
+        print(serial_text()[-6000:])
+        return 1
+
+    metadata_offset = len(serial_text())
+    send_line("octagram-cargo metadata --manifest-path /cargo-demo/Cargo.toml")
+    if not wait_for_after("\"name\": \"demo_lib\"", metadata_offset, 30):
+        print("OCTAGRAM-CARGO-FAIL: metadata did not describe the lib target")
+        print(serial_text()[-6000:])
+        return 1
+    if not wait_prompt(30):
+        print("OCTAGRAM-CARGO-FAIL: shell did not return after metadata")
+        print(serial_text()[-6000:])
+        return 1
+    print("OCTAGRAM-CARGO-PASS")
+
     # M4.3.0: the object emitted by rustc for x86_64-unknown-octagram is linked
     # by the guest's own `ld` and the result runs, so the native linker is
     # proven against real rustc relocation and section-symbol output.

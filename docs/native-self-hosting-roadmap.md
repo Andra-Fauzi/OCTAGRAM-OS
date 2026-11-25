@@ -2611,3 +2611,43 @@ Untuk `<charconv>`, hanya integer `to_chars`/`from_chars` dan floating
 `to_chars` yang tersedia: libc++ 18 tidak punya floating-point
 `std::from_chars`. Native `rustc` dan Cargo tetap belum ada, dan M4.3/M4.4
 tidak boleh ditandai selesai hanya karena `libc++.a` terbangun.
+
+## 96. `octagram-cargo`: driver Cargo offline native (25 November 2026)
+
+Setelah libc++ cukup lengkap (filesystem, thread, future, iostream, charconv),
+sisi Cargo dari M4.4 kini punya implementasi native dalam C++:
+`user/cargo/main.cpp` → `/bin/octagram-cargo`. Ini **bukan** Cargo upstream dan
+tidak mengklaim gate M4.4; Cargo upstream tetap harus dibangun untuk
+`x86_64-unknown-octagram` setelah `rustc` native ada.
+
+Yang diimplementasikan:
+
+- pembaca TOML kecil untuk `[package]`, `[workspace] members`, `[lib]`,
+  `[[bin]]`, dan tabel dependency (string maupun inline table),
+- resolver path dependency rekursif dengan deteksi siklus dan urutan build
+  topologis,
+- pembaca `Cargo.lock` serta validasi `--locked`,
+- fingerprint mtime (`.rs` terbaru di `src/` dan `Cargo.toml` terhadap output)
+  sehingga build berikutnya melewati target yang sudah segar,
+- pemanggilan `rustc` eksternal (`$RUSTC`, `$OCTAGRAM_RUSTC`, atau `rustc` di
+  PATH, sehingga `/toolchain/bin/rustc` otomatis terpakai) dengan argumen
+  Cargo-compatible: `--crate-name`, `--edition`, `--crate-type`,
+  `-C opt-level`, `-C panic=abort`, `--target` (default
+  `x86_64-unknown-octagram`, bisa dioverride `OCTAGRAM_RUST_TARGET`),
+  `--extern` untuk dependency yang menghasilkan rlib, dan `-L dependency=…`,
+- perintah `plan`, `build`, `check`, `clean`, `metadata`, `version`.
+
+Batas yang dinyatakan eksplisit di `user/cargo/README.md`: offline/path-only
+(registry dan git ditolak, bukan diabaikan), tanpa resolusi fitur, tanpa build
+script/proc-macro, dan fingerprint berbasis mtime, bukan hash Cargo.
+
+Wiring guest: kernel menanam driver sebagai `/bin/octagram-cargo` beserta
+workspace demo `/cargo-demo` (`Cargo.toml`, `Cargo.lock`, `src/main.rs`,
+`demo-lib/…`). Harness QEMU menjalankan
+`octagram-cargo --locked plan --manifest-path /cargo-demo/Cargo.toml` lalu
+`metadata`, dan mencetak `OCTAGRAM-CARGO-PASS`. Build sendiri tidak dijalankan
+di guest karena belum ada `rustc`; itu gate M4.3.4/M4.4.
+
+**Validasi:** `make -C user build/octagram-cargo.elf` lulus (ELF64 statis,
+1,05 MB, tanpa undefined symbol). Eksekusi QEMU belum dijalankan di workspace
+ini, jadi statusnya host-built, bukan guest-tested.

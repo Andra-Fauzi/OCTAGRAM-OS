@@ -36,6 +36,7 @@ dipanggil dari shell, bukan cross-build dari host.
 | `std::thread`, `std::mutex`/condvar, `std::promise`/`future` | dibangun di host; guest menunggu QEMU | `build/libcxx_thread_smoke.elf`, marker `LIBCXX-THREAD-SUITE-PASS` |
 | `std::fstream` (`ofstream`/`ifstream`) | dibangun di host; guest menunggu QEMU | probe thread/fstream yang sama |
 | `std::filesystem` (path, iterator, ops; `space()` ENOSYS) | dibangun di host; guest menunggu QEMU | `build/libcxx_fs_smoke.elf`, marker `LIBCXX-FS-SUITE-PASS` |
+| `octagram-cargo` (driver Cargo offline: plan/build/check/metadata) | dibangun di host; marker guest sudah dipasang | `build/octagram-cargo.elf`, marker `OCTAGRAM-CARGO-PASS` |
 | `std::random`, `std::regex`, `std::chrono` | dibangun di host; guest menunggu QEMU | probe fs yang sama |
 | POSIX `stat` timespec, `S_ISBLK/FIFO/SOCK`, `_PC_*`, `sendfile` | terbukti di host | `include/sys/stat.h`, `include/unistd.h`, `runtime.c` |
 | libLLVM untuk host OCTAGRAM | **belum** | — |
@@ -149,6 +150,7 @@ make -C user compiler-rt-test                # helper 128-bit vs pembagi libgcc
 make -C user cpp-header-test                 # semua header publik sebagai C dan C++
 make -C user build/libc++.a                  # pustaka libc++ hasil kompilasi
 make -C user build/libcxx_string_smoke.elf   # probe string/vector/sort/mutex
+make -C user build/octagram-cargo.elf        # driver Cargo bootstrap (bukan Cargo upstream)
 ```
 
 `libc++.a` dikompilasi dari `user/third_party/libcxx/src` dengan flag
@@ -233,6 +235,7 @@ serial. Marker yang harus muncul:
 | `LIBCXX-IOSTREAM-PASS` | `std::cout`, `ostringstream`/`istringstream`, dan facet locale dari `libc++.a` berjalan di guest |
 | `LIBCXX-THREAD-PASS` | `std::thread`, mutex/condvar, promise/future, dan `std::fstream` berjalan di guest |
 | `LIBCXX-FS-PASS` | `std::filesystem`, `std::random`, `std::regex`, dan `std::chrono` berjalan di guest |
+| `OCTAGRAM-CARGO-PASS` | `octagram-cargo plan --locked` dan `metadata` membaca workspace demo di guest |
 | `RUST-NATIVE-LD-PASS` | object `rustc` ditautkan `ld` native lalu dijalankan |
 | `SYSCALL-TEST: PASS` | suite kompatibilitas syscall |
 
@@ -278,7 +281,8 @@ Ikuti urutan ini supaya klaim tetap bisa dipertanggungjawabkan:
 
 | Tahap | Isi | Gate |
 | --- | --- | --- |
-| M4.3.2 (lanjutan) | verifikasi guest semua probe di QEMU; lalu M4.3.3 libLLVM | marker `LIBCXX-*` di CI |
+| M4.3.3 | libLLVM statis untuk host OCTAGRAM | satu tool LLVM berjalan di guest |
+| M4.4 (persiapan) | `octagram-cargo` driver offline selesai di C++; menunggu `rustc` native | `octagram-cargo build` memanggil `rustc` guest |
 | M4.3.3 | libLLVM statis untuk host OCTAGRAM | satu tool LLVM berjalan di guest |
 | M4.3.4 | bootstrap `rustc` host OCTAGRAM + sysroot, linker `ld` native | `rustc --version` dan kompilasi `no_std` dari shell |
 | M4.3.5 | perluasan relokasi linker untuk `librustc_driver`/`std` | binary `std` hasil `rustc` native berjalan |

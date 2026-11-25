@@ -11779,7 +11779,9 @@ fn syscall_sigaltstack(new_stack: u64, old_stack: u64) -> Result<u64, i32> {
             return Err(EPERM);
         }
         let flags = request.flags as u64;
-        if flags & !((SS_ONSTACK_FLAG | SS_DISABLE_FLAG) as u64) != 0 || request.padding != 0 {
+        // `stack_t` has 4 bytes of ABI padding between `ss_flags` and `ss_size`.
+        // C callers (including Rust libc) are not required to initialize padding.
+        if flags & !((SS_ONSTACK_FLAG | SS_DISABLE_FLAG) as u64) != 0 {
             return Err(EINVAL);
         }
         if request.flags & SS_DISABLE_FLAG != 0 {

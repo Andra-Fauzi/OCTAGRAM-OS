@@ -10060,7 +10060,7 @@ mod tests {
         effective_priority_target, priority_change_allowed, priority_target_matches,
         SCHED_OTHER, ElfError, select_tls_base, selector_returns_to_user, slot_is_resumable,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
-        PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_MAX_PAGES as STACK_PAGES,
+        PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_INITIAL_PAGES, STACK_MAX_PAGES,
         STACK_RANDOM_PAGES, MAX_ARGUMENTS,
         STACK_TOP, SYSCALL_MMAP, SYSCALL_MUNMAP, UserDescriptor, signal_stack_top, stack_layout,
         MappingPage, UserDirent, WAIT_ANY_PID, apply_creation_mode, apply_load_bias,
@@ -10107,11 +10107,14 @@ mod tests {
     fn stack_layout_is_randomized_and_clear_of_the_mmap_region() {
         let mut tops = Vec::new();
         for pages in 0..STACK_RANDOM_PAGES {
-            let (top, start, guard) = stack_layout(pages).expect("stack layout");
+            let (top, start, limit) = stack_layout(pages).expect("stack layout");
             assert_eq!(top, STACK_TOP - pages * PAGE_SIZE);
-            assert_eq!(top - start, STACK_PAGES * PAGE_SIZE);
-            assert_eq!(start - guard, PAGE_SIZE);
-            assert!(guard > MMAP_END, "stack guard {guard:#x} menimpa mmap");
+            // Only the initial part of the stack is mapped up front; the rest
+            // is grown on demand down to `limit`.
+            assert_eq!(top - start, STACK_INITIAL_PAGES * PAGE_SIZE);
+            assert_eq!(top - limit, STACK_MAX_PAGES * PAGE_SIZE);
+            assert!(start > limit);
+            assert!(limit > MMAP_END, "stack limit {limit:#x} menimpa mmap");
             tops.push(top);
         }
         tops.sort_unstable();

@@ -240,29 +240,25 @@ fi
 cd "$rust_checkout"
 ./x.py build --stage 2 --host "$HOST" compiler/rustc src/tools/cargo -j "$jobs"
 
-bin_dir=$rust_checkout/build/$HOST/stage2/bin
-if [ ! -x "$bin_dir/rustc" ]; then
-    echo "bootstrap_rustc_octagram: error: bootstrap produced no $bin_dir/rustc" >&2
+stage_root=$rust_checkout/build/$HOST/stage2
+if [ ! -x "$stage_root/bin/rustc" ]; then
+    echo "bootstrap_rustc_octagram: error: bootstrap produced no $stage_root/bin/rustc" >&2
     exit 1
 fi
 
-mkdir -p "$stage_dir/bin" "$stage_dir/lib"
-cp "$bin_dir/rustc" "$stage_dir/bin/rustc"
-if [ -x "$bin_dir/cargo" ]; then
-    cp "$bin_dir/cargo" "$stage_dir/bin/cargo"
-else
-    echo "bootstrap_rustc_octagram: warning: no cargo binary was produced" >&2
-fi
-
-# lib/rustlib holds core/alloc/std for every target. It must travel with rustc:
-# legend: rustc looks for the sysroot relative to its own path.
-if [ -d "$rust_checkout/build/$HOST/stage2/lib/rustlib" ]; then
-    mkdir -p "$stage_dir/lib/rustlib"
-    cp -R "$rust_checkout/build/$HOST/stage2/lib/rustlib/." "$stage_dir/lib/rustlib/"
-fi
+# Staging validates the result: ELF binaries, a host std rlib, and a manifest
+# the installer/packaging steps can audit. It refuses a host toolchain or a
+# compiler without its sysroot instead of letting it reach an image.
+llvm_version=$("$llvm_config" --version 2>/dev/null || echo unknown)
+"$repo_root/tools/stage_octagram_toolchain.sh" \
+    --source "$stage_root" \
+    --output "$stage_dir" \
+    --host "$HOST" \
+    --target "$TARGET" \
+    --rust-commit "$RUST_PIN" \
+    --llvm-version "$llvm_version"
 
 echo
-echo "staged OCTAGRAM toolchain at $stage_dir"
 ls -l "$stage_dir/bin"
 echo
 echo "These are OCTAGRAM ELFs and cannot run on this host. Copy the tree into"

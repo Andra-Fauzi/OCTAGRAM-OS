@@ -114,8 +114,15 @@ Konfigurasi penting di `config.toml` yang dihasilkan:
 | `rust.channel` | `nightly` | bootstrap butuh nightly |
 | `llvm.download-ci-llvm` | `false` | LLVM harus benar-benar target OCTAGRAM |
 
-Hasil stage 2 berada di `build/<host>/stage2/bin/{rustc,cargo}` dan disalin
-skrip ke `build/toolchain/octagram-toolchain/` beserta `lib/rustlib`.
+Hasil stage 2 berada di `build/<host>/stage2/bin/{rustc,cargo}` dan disalin oleh
+`tools/stage_octagram_toolchain.sh` ke `build/toolchain/octagram-toolchain/`
+beserta `lib/rustlib`. Staging itu menolak hasil yang tidak layak dipasang:
+
+- `rustc`/`cargo` wajib ELF (bukan binary host yang salah salin);
+- `lib/rustlib/<host>/lib/libstd-*.rlib` wajib ada, karena compiler tanpa `std`
+  host tidak bisa membangun apa pun;
+- `toolchain.json` mencatat host, target, commit Rust, versi LLVM, ukuran binary,
+  nama std, dan `install_path` `/toolchain` — berguna untuk audit dan rollback.
 
 ## 5. Memasang ke guest
 

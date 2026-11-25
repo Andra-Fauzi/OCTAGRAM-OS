@@ -106,7 +106,9 @@ jobs:
         run: make -C user/rust all
 
       - name: Build user programs
-        run: make -C user
+        # The default Make target is an individual object; the kernel embeds
+        # the complete userland smoke-test set with include_bytes!.
+        run: make -C user all
 
       - name: Build upstream Rust std executable for OCTAGRAM
         env:

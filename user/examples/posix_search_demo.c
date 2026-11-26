@@ -406,14 +406,27 @@ static void test_fts(void)
     check(stream != NULL, "fts_open with two roots");
     if (stream != NULL) {
         int roots_seen = 0;
+        int bin_root_seen = 0;
+        int dev_root_seen = 0;
         while ((entry = fts_read(stream)) != NULL) {
-            if (entry->fts_level == 0) {
+            /*
+             * A root directory is returned twice by FTS: first as FTS_D
+             * before descent and later as FTS_DP after its children. Count
+             * only its initial visit, not the post-order notification.
+             */
+            if (entry->fts_level == 0 && entry->fts_info != FTS_DP) {
                 roots_seen++;
-                printf("fts root: %s info=%u errno=%d\\n", entry->fts_path,
+                if (strcmp(entry->fts_path, "/bin") == 0) {
+                    bin_root_seen = 1;
+                } else if (strcmp(entry->fts_path, "/dev") == 0) {
+                    dev_root_seen = 1;
+                }
+                printf("fts root: %s info=%u errno=%d\n", entry->fts_path,
                        (unsigned)entry->fts_info, entry->fts_errno);
             }
         }
-        check(roots_seen == 2, "both roots visited");
+        check(roots_seen == 2 && bin_root_seen && dev_root_seen,
+              "both roots visited");
         fts_close(stream);
     }
 

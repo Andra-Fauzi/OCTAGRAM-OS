@@ -159,7 +159,7 @@
       "symbol": "fcntl",
       "header": "user/include/fcntl.h",
       "status": "implemented",
-      "notes": "F_DUPFD/F_DUPFD_CLOEXEC (OCTAGRAM value 5 and Linux-compatible value 1030), F_GETFD/F_SETFD, per-descriptor FD_CLOEXEC, and file status flags; Rust std probe covers clone, clear/restore, plain duplication, and dup3(O_CLOEXEC)"
+      "notes": "F_DUPFD/F_DUPFD_CLOEXEC (Linux-compatible value 1030; the kernel still accepts the legacy value 5), F_GETFD/F_SETFD, per-descriptor FD_CLOEXEC, and file status flags; Rust std probe covers clone, clear/restore, plain duplication, and dup3(O_CLOEXEC)"
     },
     {
       "symbol": "poll",

@@ -455,7 +455,9 @@ pub const IPV6_DROP_MEMBERSHIP: c_int = 21;
 pub const EXIT_SUCCESS: c_int = 0;
 pub const EXIT_FAILURE: c_int = 1;
 pub const EAI_SYSTEM: c_int = -11;
-pub const F_DUPFD_CLOEXEC: c_int = 5;
+// Linux-compatible value. 5 is F_GETLK, and the libc fcntl wrapper treats 5
+// as a struct flock pointer argument.
+pub const F_DUPFD_CLOEXEC: c_int = 1030;
 pub const F_GETFD: c_int = 1;
 pub const F_SETFD: c_int = 2;
 pub const F_GETFL: c_int = 3;

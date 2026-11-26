@@ -24,7 +24,10 @@ extern "C" {
 #define AT_REMOVEDIR OCT_AT_REMOVEDIR
 
 #define F_DUPFD 0
-#define F_DUPFD_CLOEXEC 5
+/* Linux-compatible value. The kernel still accepts the legacy OCTAGRAM value 5
+ * for older binaries, but it must not be used here: 5 is F_GETLK below, so the
+ * libc fcntl wrapper would read the argument as a struct flock pointer. */
+#define F_DUPFD_CLOEXEC 1030
 #define O_DIRECTORY 00200000
 
 /* Reserves space for [offset, offset+length). Returns 0 or an error number

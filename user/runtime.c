@@ -4708,7 +4708,7 @@ int fcntl(int fd, int command, ...)
 
     uint64_t argument = 0;
     if (command == F_DUPFD || command == F_DUPFD_CLOEXEC ||
-        command == 1030 || command == F_SETFD || command == F_SETFL) {
+        command == F_SETFD || command == F_SETFL) {
         va_list arguments;
         va_start(arguments, command);
         argument = (uint64_t)(unsigned int)va_arg(arguments, int);

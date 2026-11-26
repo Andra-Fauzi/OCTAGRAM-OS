@@ -2230,8 +2230,12 @@ fn run_loaded_processes(
     if stacks.try_reserve_exact(images.len()).is_err() {
         return fail_after_unload(images, ElfError::OutOfMemory);
     }
-    stacks.push(None);
-    for _ in 1..images.len() {
+    // Every user task needs a private ring-0 interrupt stack. The first
+    // process must not borrow GDT's USER_KERNEL_STACK: that stack is also used
+    // by run_loaded_processes as its scheduler continuation. Sharing it lets
+    // a timer/syscall frame overwrite the suspended scheduler or parent frame
+    // when another thread yields back to the kernel.
+    for _ in 0..images.len() {
         match ProcessKernelStack::new() {
             Ok(stack) => stacks.push(Some(stack)),
             Err(error) => return fail_after_unload(images, error),
@@ -2248,10 +2252,9 @@ fn run_loaded_processes(
     {
         let kernel_stack_top = kernel_stack
             .as_ref()
-            .map_or_else(gdt::user_kernel_stack_top, ProcessKernelStack::top);
-        let frame_pointer = kernel_stack
-            .as_ref()
-            .map_or(0, |stack| initialize_user_frame(&image, stack.top()));
+            .expect("every scheduled process owns a kernel stack")
+            .top();
+        let frame_pointer = initialize_user_frame(&image, kernel_stack_top);
         processes.push(ScheduledProcess {
             image,
             state,
@@ -2304,18 +2307,17 @@ fn run_loaded_processes(
         }
     }
 
-    let (entry, user_stack) = {
-        let scheduler = USER_SCHEDULER.lock();
-        let first = &scheduler.processes[0].image;
-        (first.entry, first.user_stack)
-    };
+    let first_frame = USER_SCHEDULER.lock().processes[0].frame_pointer;
     let mut first_entry = true;
     loop {
         if first_entry {
-            thread_pointer::write(0);
-            restore_current_user_fpu();
-            let _last_status = unsafe { gdt::enter_user_mode(entry, user_stack) };
             first_entry = false;
+            // load_task_state above has already installed the first process's
+            // private RSP0 and TLS base. Enter through the same saved-frame path
+            // used for every later task so the global kernel continuation stack
+            // remains separate from user interrupt frames.
+            restore_current_user_fpu();
+            let _last_status = unsafe { gdt::resume_user_frame(first_frame as *mut u8) };
         } else {
             if let Some(first) = USER_SCHEDULER.lock().processes.first() {
                 unsafe { first.image.memory.address_space.activate_kernel() };

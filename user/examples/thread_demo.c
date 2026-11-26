@@ -116,18 +116,27 @@ int main(void)
         || configured_stack_size != 96u * 1024u) {
         return 1;
     }
+    puts("THREAD-DEMO: create");
     if (pthread_create(&threads[0], &attributes, worker, &arguments[0]) != 0
         || pthread_create(&threads[1], &attributes, worker, &arguments[1]) != 0) {
+        puts("THREAD-DEMO: create failed");
         return 1;
     }
 
     (void)pthread_attr_destroy(&attributes);
     void *first_result = NULL;
     void *second_result = NULL;
-    if (pthread_join(threads[0], &first_result) != 0
-        || pthread_join(threads[1], &second_result) != 0) {
+    puts("THREAD-DEMO: join");
+    if (pthread_join(threads[0], &first_result) != 0) {
+        puts("THREAD-DEMO: join first failed");
         return 2;
     }
+    puts("THREAD-DEMO: joined first");
+    if (pthread_join(threads[1], &second_result) != 0) {
+        puts("THREAD-DEMO: join second failed");
+        return 2;
+    }
+    puts("THREAD-DEMO: joined second");
     if (first_result != (void *)(uintptr_t)7
         || second_result != (void *)(uintptr_t)11
         || shared_counter != 2000

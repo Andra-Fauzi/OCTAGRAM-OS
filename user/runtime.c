@@ -6067,18 +6067,33 @@ size_t fwrite(const void *buffer, size_t size, size_t count, FILE *stream)
 
     size_t requested = size * count;
     if (stream_is_memory(stream)) {
+        /* fmemopen has a fixed caller-owned buffer. A write may consume the
+         * final byte of that buffer; unlike open_memstream it must not reserve
+         * an extra byte for a terminator. Also avoid subtracting when a prior
+         * seek placed the position beyond the fixed buffer. */
         const size_t room = stream->memory_owns_buffer
                                 ? SIZE_MAX
-                                : stream->memory_capacity - stream->memory_position;
+                                : (stream->memory_position < stream->memory_capacity
+                                       ? stream->memory_capacity - stream->memory_position
+                                       : 0);
         const size_t chunk = requested < room ? requested : room;
         if (chunk != 0) {
-            if (memory_stream_reserve(stream,
-                                      stream->memory_position + chunk + 1) < 0) {
+            if (stream->memory_position > SIZE_MAX - chunk) {
+                stream_failure(stream, EOVERFLOW);
+                return 0;
+            }
+            const size_t end = stream->memory_position + chunk;
+            /* open_memstream owns its allocation and needs one additional
+             * byte for the NUL terminator. fmemopen must stay within the
+             * caller-provided capacity and does not reserve that byte. */
+            const size_t needed = end + (stream->memory_owns_buffer ? 1u : 0u);
+            if (needed < end ||
+                memory_stream_reserve(stream, needed) < 0) {
                 stream->flags |= STREAM_ERROR;
                 return 0;
             }
             memcpy(stream->memory_buffer + stream->memory_position, buffer, chunk);
-            stream->memory_position += chunk;
+            stream->memory_position = end;
             if (stream->memory_position > stream->memory_length) {
                 stream->memory_length = stream->memory_position;
             }

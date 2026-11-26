@@ -14,6 +14,7 @@ userspace OCTAGRAM yang sama dengan yang dipakai kernel image.
 | `bin/x86_64-octagram-g++` | wrapper C++ (`CMAKE_CXX_COMPILER`), `-fno-exceptions -fno-rtti` |
 | `bin/x86_64-octagram-ld` | `ld` host dengan `-m elf_x86_64 -static -nostdlib -T octagram.ld` |
 | `octagram-toolchain.cmake` | CMake toolchain file untuk build libLLVM (M4.3.3) |
+| `octagram-project-include.cmake` | menyetel flag platform `UNIX` setelah `project()`; LLVM memakainya untuk mengaktifkan `LLVM_ON_UNIX` |
 
 ## Sysroot
 
@@ -63,5 +64,15 @@ rustc -C linker=user/toolchain/bin/x86_64-octagram-gcc ...
   argumen berisi `crt0.o` atau `-nostartfiles`.
 - Header freestanding GCC (`stdarg.h`, `stddef.h`) tetap dari instalasi host,
   semua header lain dari sysroot agar header glibc tidak pernah terpakai.
+- Flag ABI diulang **setelah** argumen pemanggil: `-fno-pie -fno-pic` dan
+  `-DOCTAGRAM_TLS_ERRNO`. Tanpa itu, `-fPIC` dari CMake membuat objek memakai
+  model TLS global-dynamic (`__tls_get_addr`, tidak ada di libc), dan `errno`
+  akan terlihat sebagai variabel non-TLS sementara `libc.a` mendefinisikannya
+  sebagai TLS; keduanya gagal saat link dengan pesan
+  "TLS reference ... mismatches non-TLS reference".
+- Nama library Unix standar (`libm.a`, `librt.a`, `libdl.a`, `libpthread.a`)
+  ada di sysroot sebagai arsip **kosong**. Semua simbolnya berasal dari
+  `libc.a`, yang selalu ditautkan driver; kalau arsip itu tidak ada, `-lm` akan
+  mengambil `libm.a` glibc host dan link gagal.
 - Belum ada `libsupc++`, exception, atau RTTI. Kode C++ target harus
   `-fno-exceptions -fno-rtti`, sama seperti `CXXFLAGS` di `user/Makefile`.

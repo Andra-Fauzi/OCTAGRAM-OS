@@ -35,6 +35,7 @@
 #include <sys/select.h>
 #include <sys/file.h>
 #include <sys/statvfs.h>
+#include <sys/vfs.h>
 #include <sys/time.h>
 #include <sys/utsname.h>
 #include <sys/epoll.h>
@@ -4684,8 +4685,27 @@ int dup(int fd)
     return (int)posix_result(oct_dup(fd));
 }
 
+/* fcntl() advisory locking on top of the kernel's whole-file flock.
+ *
+ * The kernel implements flock (per open file description) but no POSIX
+ * byte-range locks, so the whole-file form of F_GETLK/F_SETLK/F_SETLKW is
+ * translated onto flock(); that is the form LLVM's lock files use
+ * (l_whence = SEEK_SET, l_start = 0, l_len = 0). Other ranges report EINVAL
+ * instead of pretending to lock. Lock ownership follows the open file
+ * description, not the process, which is the documented approximation.
+ */
+static int octagram_fcntl_lock(int fd, int command, struct flock *lock);
+
 int fcntl(int fd, int command, ...)
 {
+    if (command == F_GETLK || command == F_SETLK || command == F_SETLKW) {
+        va_list lock_arguments;
+        va_start(lock_arguments, command);
+        struct flock *lock = va_arg(lock_arguments, struct flock *);
+        va_end(lock_arguments);
+        return octagram_fcntl_lock(fd, command, lock);
+    }
+
     uint64_t argument = 0;
     if (command == F_DUPFD || command == F_DUPFD_CLOEXEC ||
         command == 1030 || command == F_SETFD || command == F_SETFL) {
@@ -4700,6 +4720,54 @@ int fcntl(int fd, int command, ...)
 int flock(int fd, int operation)
 {
     return (int)posix_result(oct_flock(fd, operation));
+}
+
+static int octagram_fcntl_lock(int fd, int command, struct flock *lock)
+{
+    if (lock == NULL) {
+        errno = EFAULT;
+        return -1;
+    }
+    if (lock->l_whence != SEEK_SET || lock->l_start != 0 || lock->l_len != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (command == F_GETLK) {
+        /* Probe with a non-blocking exclusive lock, then release it again. */
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+            (void)flock(fd, LOCK_UN);
+            lock->l_type = F_UNLCK;
+            lock->l_pid = 0;
+            return 0;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            lock->l_type = F_WRLCK;
+            lock->l_pid = 0;
+            return 0;
+        }
+        return -1;
+    }
+
+    int operation;
+    switch (lock->l_type) {
+    case F_RDLCK:
+        operation = LOCK_SH;
+        break;
+    case F_WRLCK:
+        operation = LOCK_EX;
+        break;
+    case F_UNLCK:
+        operation = LOCK_UN;
+        break;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+    if (command == F_SETLK) {
+        operation |= LOCK_NB;
+    }
+    return flock(fd, operation);
 }
 
 int ftruncate(int fd, off_t length)
@@ -11876,6 +11944,28 @@ int statvfs(const char *path, struct statvfs *buffer)
 }
 
 int fstatvfs(int descriptor, struct statvfs *buffer)
+{
+    (void)descriptor;
+    (void)buffer;
+    errno = ENOSYS;
+    return -1;
+}
+
+/*
+ * statfs/fstatfs: the Linux-shaped counterpart of statvfs above. LLVM's
+ * Unix/Path.inc is compiled against the __linux__ branch and calls these, so
+ * they must exist to link; they report ENOSYS for the same reason (no
+ * filesystem-capacity syscall).
+ */
+int statfs(const char *path, struct statfs *buffer)
+{
+    (void)path;
+    (void)buffer;
+    errno = ENOSYS;
+    return -1;
+}
+
+int fstatfs(int descriptor, struct statfs *buffer)
 {
     (void)descriptor;
     (void)buffer;

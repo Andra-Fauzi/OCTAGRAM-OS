@@ -36,6 +36,26 @@ int posix_fallocate(int descriptor, off_t offset, off_t length);
 #define F_SETFL 4
 #define FD_CLOEXEC 1
 
+/* POSIX advisory locks. The kernel implements the whole-file flock syscall,
+ * not byte-range locks, so libc maps the whole-file form of these commands
+ * (l_whence = SEEK_SET, l_start = 0, l_len = 0) onto flock; LLVM's
+ * lib/Support/Unix/Path.inc uses exactly that form for its lock files. */
+#define F_GETLK 5
+#define F_SETLK 6
+#define F_SETLKW 7
+
+#define F_RDLCK 0
+#define F_WRLCK 1
+#define F_UNLCK 2
+
+struct flock {
+    short l_type;
+    short l_whence;
+    off_t l_start;
+    off_t l_len;
+    pid_t l_pid;
+};
+
 int open(const char *path, int flags, ...);
 int openat(int dirfd, const char *path, int flags, ...);
 int fcntl(int fd, int command, ...);

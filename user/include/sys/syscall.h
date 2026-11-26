@@ -8,6 +8,11 @@
 #define SYS_mmap 9
 #define SYS_munmap 11
 #define SYS_futex 202
+/* Used by LLVM's Unix/Signals.inc to re-raise a fatal signal with its
+ * original siginfo. The kernel has no implementation yet, so the call reports
+ * ENOSYS and the signal is simply not re-raised; it is on the crash-reporting
+ * path, not the normal execution path. */
+#define SYS_rt_tgsigqueueinfo 297
 
 #ifdef __cplusplus
 extern "C" {

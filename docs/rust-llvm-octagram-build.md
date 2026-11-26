@@ -190,3 +190,42 @@ Gate §5 (menjalankan `llvm-config`, `llc`, `rustc --version`, dan
 menyalin toolchain ke root persisten, dan runner tidak punya guest OCTAGRAM.
 Hasil CI yang lulus berarti artefak berhasil dibangun untuk ABI target, bukan
 bahwa toolchain sudah berjalan di QEMU.
+
+## 8. Temuan audit build LLVM di host
+
+Audit ini menjalankan configure CMake dan build sebagian LLVM 21.1.0 dengan
+toolchain OCTAGRAM sungguhan (bukan hanya membaca skrip). Hasil yang terbukti:
+`LLVMSupport`, `LLVMTableGen`, dan `LLVMCore` ter-archive, dan `bin/llvm-min-tblgen`
+ter-link sebagai ELF64 `ET_EXEC` statis x86-64 tanpa `PT_INTERP`. `tablegen`
+host dibangun otomatis sebagai sub-build `NATIVE/` dengan compiler host, jadi
+cross-build tidak pernah mencoba mengeksekusi binary target.
+
+Gap yang ditemukan dan diperbaiki:
+
+| Gejala | Akar masalah | Perbaikan |
+| --- | --- | --- |
+| `endian.h: No such file` | sysroot tidak punya `<endian.h>`/`<machine/endian.h>` | header baru dengan`__BYTE_ORDER` dan `htole*`/`be*toh` |
+| `basic_file_status has no member getSize` | `CMAKE_SYSTEM_NAME Generic` membuat LLVM `LLVM_ON_UNIX=0` dan membuang semua implementasi Unix | `user/toolchain/octagram-project-include.cmake` menyetel `UNIX` setelah `project()` (via `CMAKE_PROJECT_INCLUDE`) |
+| `EX_IOERR not available` | tidak ada `<sysexits.h>` | header baru + re-detect `HAVE_SYSEXITS_H` |
+| `jmp_buf declared using unnamed type` | `setjmp.h` memakai struct anonim tanpa `extern "C"` | struct bertag `__octagram_jmp_buf` + `extern "C"` |
+| `unknown type name size_t` (regex) | `sys/types.h` tidak menyediakan `size_t` | `#include <stddef.h>` |
+| `sys/vfs.h` / `F_WRLCK` / `struct flock` | header Linux-shaped belum lengkap | `<sys/vfs.h>` + `statfs`/`fstatfs` (ENOSYS seperti `statvfs`), `struct flock` + `F_*LCK` di `<fcntl.h>`, pemetaan lock ke `flock` kernel |
+| `rlim_t`, `ru_maxrss`, `_POSIX_ARG_MAX` | `sys/resource.h` dan `limits.h` kurang lengkap | `rlim_t`, layout `rusage` Linux, makro `_POSIX_*` |
+| `void (*)(int, void*, void*)` vs `siginfo_t*` | tipe `sa_sigaction` salah | tipe POSIX di `<signal.h>` |
+| `SYS_rt_tgsigqueueinfo` | `sys/syscall.h` hanya berisi sebagian nomor | nomor syscall ditambahkan (kernel menjawab ENOSYS) |
+| `cpuid.h: No such file` | header bawaan GCC tidak ada di sysroot (`-nostdinc`) | `user/include/cpuid.h` kompatibel GCC |
+| `TLS reference ... mismatches non-TLS reference` | driver tidak mendefinisikan `OCTAGRAM_TLS_ERRNO`, jadi objek melihat `errno` non-TLS | driver menambahkan `-DOCTAGRAM_TLS_ERRNO` |
+| TLS GD vs local-exec | CMake menambahkan `-fPIC` setelah flag driver | driver mengulang `-fno-pie -fno-pic` setelah argumen pemanggil |
+| `-lm` mengambil libm glibc host | sysroot tidak punya nama library Unix standar | staging membuat `libm.a`/`librt.a`/`libdl.a`/`libpthread.a` kosong (simbol berasal dari `libc.a` yang selalu ditautkan driver) |
+
+Invariant yang harus dijaga saat mengubah driver atau sysroot:
+
+- objek target **tidak boleh** PIC: TLS OCTAGRAM hanya local-exec, dan objek
+  PIC akan memanggil `__tls_get_addr` yang tidak ada di libc;
+- `errno` **harus** dilihat sebagai TLS (`OCTAGRAM_TLS_ERRNO`) agar tipe
+  referensinya sama dengan `libc.a`/`libc++.a`;
+- `CMAKE_SYSTEM_NAME` tetap `Generic` (supaya `CMAKE_CROSSCOMPILING` benar),
+  sedangkan flag `UNIX` disetel ulang setelah `project()`;
+- header yang disertakan LLVM dari C++ wajib punya `extern "C"` dan tipe
+  bernama, karena `tools/check_cpp_headers.py` hanya menguji header secara
+  terpisah, bukan seluruh rantai include.

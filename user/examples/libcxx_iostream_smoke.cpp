@@ -6,6 +6,7 @@
 // than the string/charconv probe. Markers are printed with std::printf so a
 // partial failure still names its stage in the serial log.
 
+#include <clocale>
 #include <cstdio>
 #include <iomanip>
 #include <iostream>
@@ -34,12 +35,22 @@ int main() {
     }
     std::printf("LIBCXX-ISTRINGSTREAM-PASS\n");
 
-    // Locale facets: numpunct/ctype/moneypunct come from the C locale strings
-    // that nl_langinfo() and localeconv() provide.
+    // Locale facets. libc++'s classic numpunct is hardcoded in
+    // src/locale.cpp (numpunct<char>::numpunct: decimal_point '.',
+    // thousands_sep ','), so it does not mirror lconv's empty thousands_sep;
+    // the C-locale strings are only consulted for *_byname facets. Assert
+    // libc++'s own contract here and cross-check the C locale data that the
+    // OCTAGRAM libc serves through localeconv().
     std::locale classic;
     const std::numpunct<char>& punctuation = std::use_facet<std::numpunct<char>>(classic);
-    if (punctuation.decimal_point() != '.' || punctuation.thousands_sep() != '\0') {
+    const lconv* c_locale = std::localeconv();
+    if (punctuation.decimal_point() != '.' || punctuation.thousands_sep() != ',' ||
+        !punctuation.grouping().empty()) {
         std::printf("LIBCXX-IOSTREAM-FAIL: numpunct\n");
+        return 1;
+    }
+    if (!c_locale || c_locale->decimal_point[0] != '.') {
+        std::printf("LIBCXX-IOSTREAM-FAIL: localeconv\n");
         return 1;
     }
     const std::ctype<char>& characters = std::use_facet<std::ctype<char>>(classic);

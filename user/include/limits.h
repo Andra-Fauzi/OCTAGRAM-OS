@@ -36,4 +36,16 @@
 #define LOGIN_NAME_MAX 256
 #define SSIZE_MAX LONG_MAX
 
+/* POSIX minimum-limit names. Portable code uses them when sysconf() is not
+ * available, so they report this platform's real ceiling rather than the
+ * POSIX floor; LLVM's Unix/Program.inc falls back to _POSIX_ARG_MAX. */
+#define _POSIX_ARG_MAX ARG_MAX
+#define _POSIX_CHILD_MAX CHILD_MAX
+#define _POSIX_OPEN_MAX OPEN_MAX
+#define _POSIX_NAME_MAX NAME_MAX
+#define _POSIX_PATH_MAX PATH_MAX
+#define _POSIX_PIPE_BUF PIPE_BUF
+#define _POSIX_HOST_NAME_MAX HOST_NAME_MAX
+#define _POSIX_LOGIN_NAME_MAX LOGIN_NAME_MAX
+
 #endif

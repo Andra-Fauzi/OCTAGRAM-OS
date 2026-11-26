@@ -64,7 +64,7 @@ gcc_include=$("$host_cc" -print-file-name=include)
 flags="-ffreestanding -fno-builtin -fno-stack-protector -fno-pie -fno-pic \
 -mno-red-zone -mcmodel=small -march=x86-64 -mtune=generic -mno-avx -mno-avx2 \
 -mno-avx512f -mno-mmx -msse2 -fno-omit-frame-pointer \
--fno-asynchronous-unwind-tables -nostdinc"
+-fno-asynchronous-unwind-tables -nostdinc -DOCTAGRAM_TLS_ERRNO"
 
 # GCC's own freestanding headers are for C only. C++ must see libc++'s
 # <stddef.h>/<stdarg.h> wrappers first, otherwise libc++'s consistency checks
@@ -91,9 +91,17 @@ for argument in "$@"; do
     esac
 done
 
+# OCTAGRAM has no dynamic linking and its TLS is local-exec only, so the ABI
+# flags must win over anything the build system appends. CMake adds -fPIC for
+# its static libraries, and objects built that way reference errno through the
+# general-dynamic TLS model (a __tls_get_addr call the libc does not have),
+# which then fails to link against libc.a's local-exec definition. Repeating
+# them after "$@" keeps the last flag authoritative.
+abi_flags="-fno-pie -fno-pic"
+
 if [ "$linking" -eq 0 ]; then
-    # shellcheck disable=SC2086 # flags is intentionally word-split.
-    exec "$host_cc" $flags "$@"
+    # shellcheck disable=SC2086 # flags and abi_flags are intentionally word-split.
+    exec "$host_cc" $flags "$@" $abi_flags
 fi
 
 # Start files: rustc and CMake expect the linker driver to supply them. A
@@ -114,6 +122,6 @@ if [ "$startfiles" -eq 1 ]; then
     set -- "$sysroot/usr/lib/crt0.o" "$@"
 fi
 
-# shellcheck disable=SC2086 # flags and libs are intentionally word-split.
+# shellcheck disable=SC2086 # flags, abi_flags and libs are intentionally word-split.
 exec "$host_cc" $flags -nostdlib -static -Wl,-T,"$linker_script" \
-    -Wl,--build-id=none "$@" -L"$sysroot/usr/lib" $libs
+    -Wl,--build-id=none "$@" $abi_flags -L"$sysroot/usr/lib" $libs

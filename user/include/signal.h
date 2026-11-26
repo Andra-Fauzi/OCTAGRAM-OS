@@ -93,7 +93,10 @@ typedef struct {
 struct sigaction {
     union {
         sighandler_t sa_handler;
-        void (*sa_sigaction)(int, void *, void *);
+        /* POSIX type: the information-carrying handler receives siginfo_t,
+         * not void*. LLVM installs such handlers and passes them to
+         * sigaction(), so the declared type has to match. */
+        void (*sa_sigaction)(int, siginfo_t *, void *);
     };
     sigset_t sa_mask;
     int sa_flags;

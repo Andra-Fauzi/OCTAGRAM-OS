@@ -30,6 +30,17 @@ endif()
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
+# OCTAGRAM userspace is a Unix ABI target (rustc calls it target_family
+# "unix"), but CMAKE_SYSTEM_NAME must stay Generic: it has to differ from the
+# build host so CMake keeps CMAKE_CROSSCOMPILING true and never tries to run a
+# target binary. The UNIX platform flag therefore cannot be set here (CMake's
+# CMakeSystemSpecificInitialize unsets it for Generic systems); the module
+# installed below re-establishes it after project(). See
+# octagram-project-include.cmake for why LLVM needs it.
+set(CMAKE_PROJECT_INCLUDE
+    "${CMAKE_CURRENT_LIST_DIR}/octagram-project-include.cmake"
+    CACHE FILEPATH "OCTAGRAM post-project platform flags")
+
 set(CMAKE_C_COMPILER "${OCTAGRAM_TOOLCHAIN_DIR}/bin/x86_64-octagram-gcc")
 set(CMAKE_CXX_COMPILER "${OCTAGRAM_TOOLCHAIN_DIR}/bin/x86_64-octagram-g++")
 

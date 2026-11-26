@@ -44,6 +44,13 @@ REQUIRED_ARTEFACTS = {
 
 OPTIONAL_ARTEFACTS = ["libtcc1.a"]
 
+# Unix library names that CMake/LLVM and rustc ask the linker for. Their
+# symbols all live in libc.a, so the sysroot exposes them as identical copies.
+SYSTEM_LIBRARY_ALIASES = ("libm.a", "librt.a", "libdl.a", "libpthread.a")
+
+# A valid, member-less `ar` archive: the global header and nothing else.
+EMPTY_AR_ARCHIVE = b"!<arch>\n"
+
 # libc++ ships headers without a suffix (string, vector, __config, __memory/...), so
 # the trees are copied whole instead of being filtered by extension.
 PRESERVED_SUFFIXES = None
@@ -147,6 +154,18 @@ def main() -> int:
         if (build_dir / name).is_file():
             shutil.copy2(build_dir / name, lib_dir / name)
             record(lib_dir / name, "optional support archive")
+
+    # CMake and rustc link with the conventional Unix system library names.
+    # Every one of those symbols lives in libc.a, which the compiler driver
+    # always links, so the sysroot only needs the names to exist: otherwise
+    # `-lm`/`-lrt`/`-ldl` fall through to the build host's static glibc archives
+    # and the link fails with "errno: TLS reference in /usr/lib/.../libm.a
+    # mismatches non-TLS reference". They are deliberately empty archives, not
+    # copies of libc.a, so no member is pulled in twice through two names.
+    for alias in SYSTEM_LIBRARY_ALIASES:
+        empty_archive = lib_dir / alias
+        empty_archive.write_bytes(EMPTY_AR_ARCHIVE)
+        record(empty_archive, "empty archive; symbols come from libc.a")
 
     shutil.copy2(user_dir / "linker.ld", lib_dir / "octagram.ld")
     record(lib_dir / "octagram.ld", "static ET_EXEC linker script")

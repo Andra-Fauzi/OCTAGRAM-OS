@@ -156,6 +156,12 @@ jobs:
           test -s "$sysroot/usr/lib/libc.a"
           test -s "$sysroot/usr/lib/libcxxrt.a"
           test -s "$sysroot/usr/lib/crt0.o"
+          # Conventional Unix library names. Without them CMake links `-lm`
+          # against the build host's static glibc and the link fails on a TLS
+          # model mismatch.
+          for alias in libm.a librt.a libdl.a libpthread.a; do
+            test -s "$sysroot/usr/lib/$alias" || { echo "missing $alias"; exit 1; }
+          done
           python3 - <<'PY'
           import json
           from pathlib import Path

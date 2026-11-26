@@ -1,8 +1,11 @@
 #ifndef OCTAGRAM_SYS_TYPES_H
 #define OCTAGRAM_SYS_TYPES_H
 
+#include <stddef.h>
 #include <stdint.h>
 
+/* POSIX requires sys/types.h to provide size_t as well; portable code relies on
+ * that (LLVM's bundled BSD regex uses size_t after including only this header). */
 typedef int64_t off_t;
 typedef int64_t ssize_t;
 typedef int32_t pid_t;

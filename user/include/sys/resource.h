@@ -27,6 +27,10 @@ extern "C" {
 #define RLIMIT_RTTIME 15
 #define RLIM_INFINITY ((uint64_t)-1)
 
+/* Resource limit type. glibc uses unsigned long on x86-64, so the struct below
+ * keeps the same ABI while portable code that names rlim_t still compiles. */
+typedef uint64_t rlim_t;
+
 /* Prioritas nice: makin kecil nilainya, makin tinggi prioritasnya. */
 #define PRIO_PROCESS 0
 #define PRIO_PGRP 1
@@ -37,13 +41,31 @@ extern "C" {
 #define RUSAGE_THREAD 1
 
 struct rlimit {
-    uint64_t rlim_cur;
-    uint64_t rlim_max;
+    rlim_t rlim_cur;
+    rlim_t rlim_max;
 };
 
+/* Linux x86-64 layout. The kernel fills the two time values and libc zeroes
+ * the rest, so the additional accounting counters read as "not measured"
+ * instead of leaving fields out that portable code (LLVM's Process.inc reads
+ * ru_maxrss) expects to exist. */
 struct rusage {
     struct timeval ru_utime;
     struct timeval ru_stime;
+    long ru_maxrss;
+    long ru_ixrss;
+    long ru_idrss;
+    long ru_isrss;
+    long ru_minflt;
+    long ru_majflt;
+    long ru_nswap;
+    long ru_inblock;
+    long ru_oublock;
+    long ru_msgsnd;
+    long ru_msgrcv;
+    long ru_nsignals;
+    long ru_nvcsw;
+    long ru_nivcsw;
 };
 
 int getrlimit(int resource, struct rlimit *limit);

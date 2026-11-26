@@ -120,7 +120,11 @@ void check_valarray_and_bitset()
     check(doubled.sum() == 20.0, "valarray scale+sum");
     check(values.max() == 4.0 && values.min() == 1.0, "valarray min/max");
     std::valarray<double> shifted = values.shift(1);
-    check(shifted[0] == 0.0 && shifted[1] == 1.0, "valarray shift");
+    // A positive valarray shift moves elements toward index zero, then
+    // zero-fills the vacated tail: {2, 3, 4, 0}.
+    check(shifted[0] == 2.0 && shifted[1] == 3.0 &&
+              shifted[2] == 4.0 && shifted[3] == 0.0,
+          "valarray shift");
     double dot = (values * values).sum();
     check(dot == 30.0, "valarray dot");
 

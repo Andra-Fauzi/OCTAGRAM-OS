@@ -2783,9 +2783,12 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         handle_timer_inner(frame)
     };
 
-    if from_user {
-        restore_user_context(next_frame);
-    }
+    // The timer can interrupt a kernel-mode continuation (for example, a
+    // syscall that blocked) and the scheduler can still select a different
+    // task whose saved frame returns directly to ring 3. Restore context based
+    // on the frame we are about to iret to, not on the interrupt's origin.
+    // restore_user_context is a no-op for a kernel-mode return frame.
+    restore_user_context(next_frame);
     next_frame
 }
 

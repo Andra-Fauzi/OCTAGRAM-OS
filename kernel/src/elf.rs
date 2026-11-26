@@ -4217,13 +4217,13 @@ fn block_current_on_wait(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut 
     let mut active_process = USER_PROCESS.lock();
     let saved_task_state = save_task_state(&mut scheduler, &mut active_process);
     let Some(next) = schedule_next(&mut scheduler) else {
-        if saved_task_state {
-            core::mem::swap(&mut *active_process, &mut scheduler.processes[current].state);
-        }
-        scheduler.processes[current].waiting_for = None;
-        frame.stack_frame.instruction_pointer = retry_address + 2;
         if let ProcessWait::ConsoleInput(terminal) = wait {
             // Tidak ada proses lain: baca console secara blocking di kernel.
+            if saved_task_state {
+                core::mem::swap(&mut *active_process, &mut scheduler.processes[current].state);
+            }
+            scheduler.processes[current].waiting_for = None;
+            frame.stack_frame.instruction_pointer = retry_address + 2;
             drop(active_process);
             drop(scheduler);
             let address = frame.rsi;
@@ -4244,8 +4244,26 @@ fn block_current_on_wait(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut 
             };
             return frame_pointer;
         }
-        frame.rax = (-(EDEADLK as i64)) as u64;
-        return frame_pointer;
+
+        // No user task is runnable right now, but that does not mean this wait
+        // is impossible: another task may be sleeping, awaiting a signal, or
+        // waiting for an event that will make it runnable. Keep this task's
+        // saved state and wait reason in the scheduler instead of returning a
+        // spurious EDEADLK to read/poll/socket callers.
+        drop(active_process);
+        drop(scheduler);
+        loop {
+            sleep_milliseconds(1);
+            let mut scheduler = USER_SCHEDULER.lock();
+            let Some(next) = schedule_next(&mut scheduler) else {
+                continue;
+            };
+            let mut active_process = USER_PROCESS.lock();
+            match load_task_state(&mut scheduler, &mut active_process, next) {
+                Some(next_frame) => return next_frame,
+                None => continue,
+            }
+        }
     };
     match load_task_state(&mut scheduler, &mut active_process, next) {
         Some(next_frame) => next_frame,

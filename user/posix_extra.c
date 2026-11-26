@@ -2035,7 +2035,12 @@ static int wordexp_word_finish(struct wordexp_fields *fields,
             return -1;
         }
         for (size_t index = 0; index < matches.gl_pathc; ++index) {
-            char *copy = strdup(matches.gl_pathv[index]);
+            /*
+             * glob() reserves gl_offs leading NULL entries in gl_pathv.
+             * Iterate over the actual pathname slots, not the reserved
+             * offset area (which is NULL for this call).
+             */
+            char *copy = strdup(matches.gl_pathv[matches.gl_offs + index]);
             if (copy == NULL || wordexp_fields_push(fields, copy) < 0) {
                 free(copy);
                 globfree(&matches);

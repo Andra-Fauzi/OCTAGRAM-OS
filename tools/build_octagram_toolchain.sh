@@ -22,8 +22,9 @@
 # Host requirements: build-essential, cmake, ninja-build, curl, python3, git,
 # and a Rust nightly stage0 toolchain with rust-src.
 #
-# Status: orchestration only. None of these steps has been executed end to end
-# in CI; see docs/rust-llvm-octagram-build.md and
+# Status: orchestration only. .github/workflows/octagram-native-toolchain.yml
+# runs the same three steps as separate jobs, but a full end-to-end pass has
+# not been recorded yet; see docs/rust-llvm-octagram-build.md and
 # docs/rustc-native-bootstrap-runbook.md for the gates each step must pass.
 
 set -eu

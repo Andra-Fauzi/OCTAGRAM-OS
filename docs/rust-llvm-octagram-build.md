@@ -154,5 +154,39 @@ lihat [rustc-native-bootstrap-runbook.md](rustc-native-bootstrap-runbook.md) §5
 - **Relokasi.** Jika `librustc_driver` menghasilkan relokasi di luar cakupan
   linker native (`kernel/src/toolchain.rs`), fallback dokumen adalah memport
   LLD (opsi B di [rust-m4-3-backend-plan.md](rust-m4-3-backend-plan.md)).
-- **Belum ada CI job.** Skrip ini belum dipanggil workflow mana pun karena
-  durasi build dan kebutuhan artefak sysroot belum diputuskan.
+- **CI belum pernah menjalankan build penuh.** Workflow menyediakan job-nya
+  (lihat §7), tetapi build libLLVM dan bootstrap rustc belum tercatat pernah
+  selesai di runner GitHub; job beratnya berjalan lewat `workflow_dispatch`.
+
+## 7. CI
+
+Workflow `.github/workflows/octagram-native-toolchain.yml` menjalankan tiga
+langkah di atas sebagai tiga job berurutan, dengan artefak di antaranya:
+
+| Job | Perintah inti | Artefak |
+| --- | --- | --- |
+| `preflight` | `make -C user sysroot`, `check_octagram_runtime_probes.sh`, `check_octagram_rust_target.py` | `octagram-sysroot` |
+| `llvm` | `tools/build_llvm_octagram.sh --llvm-version ... --jobs ...` | `octagram-llvm-<versi>` |
+| `rustc-cargo` | `tools/bootstrap_rustc_octagram.sh --llvm-prefix ... --libc-checkout upstream-libc --build` | `octagram-toolchain` |
+
+Push dan pull request hanya menjalankan `preflight`; job `llvm` dan
+`rustc-cargo` hanya berjalan lewat `workflow_dispatch` karena durasinya jam-an.
+Input dispatch: `llvm_version`, `jobs`, `build_llvm` (matikan untuk memakai
+cache libLLVM), dan `rustc_mode` (`full`, `prepare-only`, atau `skip`).
+
+Verifikasi di CI bersifat statis karena binary hasilnya adalah ELF OCTAGRAM yang
+tidak bisa dijalankan di runner:
+
+- setiap `bin/llvm-config`, `llc`, `llvm-nm`, `rustc`, dan `cargo` harus ELF64
+  x86-64 `ET_EXEC` tanpa `PT_INTERP` dan tanpa `PT_DYNAMIC`;
+- `lib/libLLVM*.a` harus ada, dan `rustc` harus membawa `lib/rustlib` dengan
+  `std` untuk `x86_64-unknown-octagram` (`stage_octagram_toolchain.sh` yang
+  menolak toolchain host);
+- cache `actions/cache` menyimpan tarball sumber LLVM dan direktori install
+  libLLVM, sehingga `build_llvm=false` dapat memakai hasil sebelumnya.
+
+Gate §5 (menjalankan `llvm-config`, `llc`, `rustc --version`, dan
+`cargo run --offline` di guest) tetap manual: belum ada langkah image yang
+menyalin toolchain ke root persisten, dan runner tidak punya guest OCTAGRAM.
+Hasil CI yang lulus berarti artefak berhasil dibangun untuk ABI target, bukan
+bahwa toolchain sudah berjalan di QEMU.

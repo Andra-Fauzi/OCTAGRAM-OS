@@ -50,7 +50,7 @@ def wait_for_after(text, offset, timeout):
 def wait_for_exact_line_after(expected, offset, timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        output = serial_text()[offset:].replace("\\r\\n", "\\n")
+        output = serial_text()[offset:].replace("\r\n", "\n")
         if expected in output.splitlines():
             return True
         time.sleep(0.5)

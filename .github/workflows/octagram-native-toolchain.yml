@@ -61,9 +61,7 @@ on:
       - "patches/libc/**"
       - "patches/rust-std/**"
       - "patches/rust-libc/**"
-      - "user/Makefile"
-      - "user/toolchain/**"
-      - "user/third_party/libcxx/**"
+      - "user/**"
       - ".github/workflows/octagram-native-toolchain.yml"
   pull_request:
     paths:
@@ -83,9 +81,7 @@ on:
       - "patches/libc/**"
       - "patches/rust-std/**"
       - "patches/rust-libc/**"
-      - "user/Makefile"
-      - "user/toolchain/**"
-      - "user/third_party/libcxx/**"
+      - "user/**"
       - ".github/workflows/octagram-native-toolchain.yml"
 
 concurrency:
@@ -250,7 +246,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
-          key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile') }}
+          key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile', 'user/include/**', 'user/*.c', 'user/third_party/libcxx/**') }}
 
       - name: Require cached libLLVM when build_llvm is off
         # The build_llvm input exists only for workflow_dispatch. On push,

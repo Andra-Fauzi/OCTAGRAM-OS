@@ -3543,8 +3543,21 @@ FTSENT *fts_read(FTS *stream)
     if (stream->depth > 0) {
         struct fts_frame *frame = &stream->frames[stream->depth - 1];
         if (frame->listed == 0 && fts_frame_materialize(stream, frame) < 0) {
-            stream->finished = 1;
-            return NULL;
+            /*
+             * A failure while reading one directory must not terminate the
+             * entire multi-root traversal. Report the directory that could
+             * not be read, release its frame, and let the next fts_read()
+             * continue with its parent siblings or the next root.
+             */
+            const int saved_error = errno != 0 ? errno : EIO;
+            FTSENT *directory = frame->entry;
+            directory->fts_info = saved_error == ENOMEM ? FTS_ERR : FTS_DNR;
+            directory->fts_errno = saved_error;
+            fts_frame_release(frame);
+            stream->depth--;
+            stream->current = directory;
+            errno = saved_error;
+            return directory;
         }
         if (frame->index < frame->count) {
             FTSENT *entry = frame->children[frame->index++];

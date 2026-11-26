@@ -53,6 +53,20 @@ set(CMAKE_RANLIB "${OCTAGRAM_HOST_RANLIB}" CACHE FILEPATH "")
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 set(CMAKE_CROSSCOMPILING_EMULATOR "" CACHE STRING "" FORCE)
 
+# OCTAGRAM's pthread entry points live in libc.a; there is no separate
+# libpthreads archive. FindThreads cannot discover that safely through
+# STATIC_LIBRARY try-compiles: its pthread_create link probe may fail on
+# unsupported optional pthread APIs, and its later check_library_exists()
+# probes can report -lpthreads as present because unresolved symbols are
+# allowed in a static archive. Preseed the platform result so CMake does not
+# generate the invalid -lpthreads dependency in target link commands.
+set(CMAKE_HAVE_LIBC_PTHREAD 1 CACHE INTERNAL
+    "OCTAGRAM provides its pthread ABI through libc.a" FORCE)
+set(CMAKE_THREAD_LIBS_INIT "" CACHE STRING
+    "OCTAGRAM has no separate pthread link library" FORCE)
+set(CMAKE_USE_PTHREADS_INIT 1 CACHE BOOL
+    "OCTAGRAM uses the POSIX pthread ABI" FORCE)
+
 set(CMAKE_FIND_ROOT_PATH "${OCTAGRAM_SYSROOT}")
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)

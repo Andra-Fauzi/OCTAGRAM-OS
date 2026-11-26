@@ -3727,10 +3727,28 @@ fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         break;
     }
 
-    if let Some(next) = schedule_next(&mut scheduler) {
+    // Keep a compact scheduler trace around thread exit. This is useful for
+    // catching a lost parent context when the final worker becomes runnable/
+    // exits, without changing the scheduling decision itself.
+    let next = schedule_next(&mut scheduler);
+    if let Some(next) = next {
+        crate::println!(
+            "[thread-debug] exit select from_tid={} to_tid={} index={} target_active={} waiter={}",
+            tid,
+            scheduler.processes[next].tid,
+            next,
+            scheduler.processes[next].state.active,
+            scheduler.processes[next].waiting_for.is_some()
+        );
         if let Some(next_frame) = switch_task(&mut scheduler, &mut active_process, next) {
             return next_frame;
         }
+        crate::println!(
+            "[thread-debug] exit switch refused from_tid={} to_tid={} index={}",
+            tid, scheduler.processes[next].tid, next
+        );
+    } else {
+        crate::println!("[thread-debug] exit found no runnable task tid={}", tid);
     }
 
     scheduler.active = scheduler

@@ -381,11 +381,23 @@ static void test_path_parts(void)
 
 int main(void)
 {
+    puts("POSIX-SEARCH-STAGE: tsearch");
+    fflush(stdout);
     test_tsearch();
+    puts("POSIX-SEARCH-STAGE: scandir");
+    fflush(stdout);
     test_scandir();
+    puts("POSIX-SEARCH-STAGE: wordexp");
+    fflush(stdout);
     test_wordexp();
+    puts("POSIX-SEARCH-STAGE: nftw");
+    fflush(stdout);
     test_nftw();
+    puts("POSIX-SEARCH-STAGE: fts");
+    fflush(stdout);
     test_fts();
+    puts("POSIX-SEARCH-STAGE: path-parts");
+    fflush(stdout);
     test_path_parts();
 
     if (failures != 0) {

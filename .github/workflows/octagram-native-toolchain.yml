@@ -51,6 +51,7 @@ on:
       - "tools/stage_octagram_toolchain.sh"
       - "tools/stage_octagram_sysroot.py"
       - "tools/check_octagram_runtime_probes.sh"
+      - "tools/check_octagram_cmake_threads.sh"
       - "tools/check_octagram_rust_target_sync.py"
       - "tools/apply_rust_octagram_host_target.py"
       - "tools/apply_rust_libc_octagram.py"
@@ -128,7 +129,8 @@ jobs:
                         tools/bootstrap_rustc_octagram.sh \
                         tools/stage_octagram_toolchain.sh \
                         tools/check_octagram_llvm_config.sh \
-                        tools/check_octagram_runtime_probes.sh; do
+                        tools/check_octagram_runtime_probes.sh \
+                        tools/check_octagram_cmake_threads.sh; do
             sh -n "$script"
             sh "$script" --help >/dev/null
             echo "PASS sh -n + --help: $script"
@@ -182,6 +184,10 @@ jobs:
         # F_DUPFD_CLOEXEC once shared 5 with F_GETLK, which sent duplicate calls
         # into the struct flock pointer path. The guest syscall test caught it.
         run: python3 tools/check_octagram_fcntl_commands.py
+
+      - name: Check target CMake pthread detection
+        # FindThreads must use OCTAGRAM libc.a, not invent a -lpthreads library.
+        run: sh tools/check_octagram_cmake_threads.sh
 
       - name: Check the host-runnable llvm-config (fixture, no LLVM build)
         # bootstrap executes llvm-config on the build machine, so this verifies

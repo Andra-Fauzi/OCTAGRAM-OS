@@ -2732,19 +2732,26 @@ static ENTRY *hsearch_lookup(struct hsearch_data *table, ENTRY item,
         return NULL;
     }
     for (;;) {
-        const size_t slot =
+        size_t slot =
             (size_t)(hsearch_hash(item.key) & (table->capacity - 1));
         for (struct hsearch_node *node = table->buckets[slot]; node != NULL;
              node = node->next) {
             if (strcmp(node->entry.key, item.key) == 0) {
+                /* ENTER of an existing key returns the original entry; it
+                 * must not replace the caller-owned data pointer. */
                 return &node->entry;
             }
         }
         if (action == FIND) {
             return NULL;
         }
-        if (table->count * 2 >= table->capacity && hsearch_table_grow(table) < 0) {
-            return NULL;
+        if (table->count * 2 >= table->capacity) {
+            if (hsearch_table_grow(table) < 0) {
+                return NULL;
+            }
+            /* Rehashing changes the bucket mask. Never insert using the slot
+             * calculated from the old capacity. */
+            slot = (size_t)(hsearch_hash(item.key) & (table->capacity - 1));
         }
         struct hsearch_node *node = malloc(sizeof(*node));
         if (node == NULL) {
@@ -2805,6 +2812,10 @@ int hcreate_r(size_t element_count, struct hsearch_data *table)
         return 0;
     }
     memset(table, 0, sizeof(*table));
+    if (element_count > SIZE_MAX / 2) {
+        errno = ENOMEM;
+        return 0;
+    }
     while (table->capacity < element_count * 2) {
         if (hsearch_table_grow(table) < 0) {
             hsearch_table_release(table);
@@ -3845,12 +3856,15 @@ int getpagesize(void)
 
 void *memalign(size_t alignment, size_t size)
 {
-    if (alignment < sizeof(void *)) {
-        alignment = sizeof(void *);
-    }
-    if ((alignment & (alignment - 1)) != 0) {
+    /* Validate the caller's value before normalizing small, valid powers of
+     * two to the allocator's minimum pointer alignment. Otherwise 3 would be
+     * silently rounded up and accepted. */
+    if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
         errno = EINVAL;
         return NULL;
+    }
+    if (alignment < sizeof(void *)) {
+        alignment = sizeof(void *);
     }
     void *pointer = NULL;
     const int status = posix_memalign(&pointer, alignment, size);
@@ -3919,10 +3933,23 @@ void malloc_stats(void)
 struct octagram_named_semaphore {
     char name[64];
     sem_t semaphore;
+    size_t references;
     int active;
+    int linked;
 };
 
 static struct octagram_named_semaphore octagram_named_semaphores[SEMAPHORE_NAMED_SLOTS];
+
+static void octagram_named_semaphore_release(struct octagram_named_semaphore *entry)
+{
+    if (entry->active == 0 || entry->linked != 0 || entry->references != 0) {
+        return;
+    }
+    if (sem_destroy(&entry->semaphore) == 0) {
+        entry->name[0] = '\0';
+        entry->active = 0;
+    }
+}
 
 sem_t *sem_open(const char *name, int flags, ...)
 {
@@ -3942,11 +3969,17 @@ sem_t *sem_open(const char *name, int flags, ...)
 
     for (size_t slot = 0; slot < SEMAPHORE_NAMED_SLOTS; ++slot) {
         struct octagram_named_semaphore *entry = &octagram_named_semaphores[slot];
-        if (entry->active != 0 && strcmp(entry->name, name) == 0) {
-            if ((flags & O_EXCL) != 0) {
+        if (entry->active != 0 && entry->linked != 0 &&
+            strcmp(entry->name, name) == 0) {
+            if ((flags & O_CREAT) != 0 && (flags & O_EXCL) != 0) {
                 errno = EEXIST;
                 return SEM_FAILED;
             }
+            if (entry->references == SIZE_MAX) {
+                errno = EOVERFLOW;
+                return SEM_FAILED;
+            }
+            ++entry->references;
             return &entry->semaphore;
         }
     }
@@ -3954,19 +3987,24 @@ sem_t *sem_open(const char *name, int flags, ...)
         errno = ENOENT;
         return SEM_FAILED;
     }
+
+    const size_t length = strlen(name);
+    if (length + 1 > sizeof(octagram_named_semaphores[0].name)) {
+        errno = ENAMETOOLONG;
+        return SEM_FAILED;
+    }
     for (size_t slot = 0; slot < SEMAPHORE_NAMED_SLOTS; ++slot) {
         struct octagram_named_semaphore *entry = &octagram_named_semaphores[slot];
         if (entry->active != 0) {
             continue;
         }
-        const size_t length = strlen(name);
-        if (length + 1 > sizeof(entry->name)) {
-            errno = ENAMETOOLONG;
+        if (sem_init(&entry->semaphore, 0, value) != 0) {
             return SEM_FAILED;
         }
         memcpy(entry->name, name, length + 1);
-        (void)sem_init(&entry->semaphore, 0, value);
+        entry->references = 1;
         entry->active = 1;
+        entry->linked = 1;
         return &entry->semaphore;
     }
     errno = ENFILE;
@@ -3980,9 +4018,14 @@ int sem_close(sem_t *semaphore)
         return -1;
     }
     for (size_t slot = 0; slot < SEMAPHORE_NAMED_SLOTS; ++slot) {
-        if (octagram_named_semaphores[slot].active != 0 &&
-            &octagram_named_semaphores[slot].semaphore == semaphore) {
-            octagram_named_semaphores[slot].active = 0;
+        struct octagram_named_semaphore *entry = &octagram_named_semaphores[slot];
+        if (entry->active != 0 && &entry->semaphore == semaphore) {
+            if (entry->references == 0) {
+                errno = EINVAL;
+                return -1;
+            }
+            --entry->references;
+            octagram_named_semaphore_release(entry);
             return 0;
         }
     }
@@ -3993,14 +4036,16 @@ int sem_close(sem_t *semaphore)
 
 int sem_unlink(const char *name)
 {
-    if (name == NULL) {
+    if (name == NULL || name[0] == '\0') {
         errno = EINVAL;
         return -1;
     }
     for (size_t slot = 0; slot < SEMAPHORE_NAMED_SLOTS; ++slot) {
         struct octagram_named_semaphore *entry = &octagram_named_semaphores[slot];
-        if (entry->active != 0 && strcmp(entry->name, name) == 0) {
-            entry->active = 0;
+        if (entry->active != 0 && entry->linked != 0 &&
+            strcmp(entry->name, name) == 0) {
+            entry->linked = 0;
+            octagram_named_semaphore_release(entry);
             return 0;
         }
     }

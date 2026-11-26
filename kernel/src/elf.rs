@@ -5140,6 +5140,9 @@ fn load_task_state(
         report_task_switch_violation("load", scheduler, active, next);
         return None;
     }
+    // Capture TLS before swapping: after the swap, the slot contains the
+    // task we just left, not the task being resumed.
+    let thread_pointer_value = task_tls_base(&scheduler.processes[next]);
     let frame_pointer = scheduler.processes[next].frame_pointer as *mut InterruptFrame;
     core::mem::swap(active, &mut scheduler.processes[next].state);
     scheduler.current = next;
@@ -5148,6 +5151,11 @@ fn load_task_state(
         gdt::set_ring0_stack_top(process.kernel_stack_top);
         process.image.memory.address_space.activate();
     }
+    // Install FS_BASE at the scheduler's single task-load boundary. Do not
+    // rely only on the outer interrupt epilogue: some paths resume a freshly
+    // created thread through a saved frame, and its first TLS access must
+    // already see the thread-specific pointer.
+    thread_pointer::write(thread_pointer_value);
     Some(frame_pointer)
 }
 

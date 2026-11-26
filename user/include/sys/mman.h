@@ -34,6 +34,11 @@ extern "C" {
 
 #define MAP_FAILED ((void *)-1)
 
+/* POSIX shared-memory object API. The current kernel has no named shared-memory
+ * object namespace yet; libc returns ENOSYS until that backend is implemented. */
+int shm_open(const char *name, int flags, mode_t mode);
+int shm_unlink(const char *name);
+
 void *mmap(void *address, size_t length, int protection, int flags,
            int file_descriptor, off_t offset);
 /* LFS alias: off_t is already 64-bit on OCTAGRAM. */

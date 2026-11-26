@@ -15,6 +15,8 @@ KEY_NAMES = {
     "\n": "ret",
     "'": "apostrophe",
     ">": "shift-dot",
+    "|": "shift-backslash",
+    "\\": "backslash",
     ";": "semicolon",
 }
 
@@ -40,6 +42,16 @@ def wait_for_after(text, offset, timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if text in serial_text()[offset:]:
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def wait_for_exact_line_after(expected, offset, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        output = serial_text()[offset:].replace("\\r\\n", "\\n")
+        if expected in output.splitlines():
             return True
         time.sleep(0.5)
     return False
@@ -138,8 +150,8 @@ def main():
 
     shell_offset = len(serial_text())
     send_line("run /bin/sh -c 'echo SH-PIPE-PASS | cat'")
-    if not wait_for_after("SH-PIPE-PASS", shell_offset, 30):
-        print("SH-PIPE-FAIL: pipeline did not pass stdin to cat")
+    if not wait_for_exact_line_after("SH-PIPE-PASS", shell_offset, 30):
+        print("SH-PIPE-FAIL: expected an exact marker line from echo | cat")
         print(serial_text()[-4000:])
         return 1
     if not wait_for_after("program exited with status 0", shell_offset, 30):

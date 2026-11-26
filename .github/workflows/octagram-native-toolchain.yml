@@ -48,6 +48,7 @@ on:
     paths:
       - "tools/build_llvm_octagram.sh"
       - "tools/bootstrap_rustc_octagram.sh"
+      - "tools/octagram_llvm_config.py"
       - "tools/build_octagram_toolchain.sh"
       - "tools/stage_octagram_toolchain.sh"
       - "tools/stage_octagram_sysroot.py"
@@ -69,6 +70,7 @@ on:
     paths:
       - "tools/build_llvm_octagram.sh"
       - "tools/bootstrap_rustc_octagram.sh"
+      - "tools/octagram_llvm_config.py"
       - "tools/build_octagram_toolchain.sh"
       - "tools/stage_octagram_toolchain.sh"
       - "tools/stage_octagram_sysroot.py"
@@ -231,7 +233,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
-          key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'user/toolchain/**', 'user/Makefile') }}
+          key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile') }}
 
       - name: Require cached libLLVM when build_llvm is off
         if: inputs.build_llvm == false && steps.llvm-cache.outputs.cache-hit != 'true'

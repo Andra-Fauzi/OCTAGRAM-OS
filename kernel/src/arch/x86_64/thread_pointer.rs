@@ -27,6 +27,14 @@ pub fn write(value: u64) {
     let low = value as u32;
     let high = (value >> 32) as u32;
     unsafe {
+        // Make FS a null selector before programming the base. If FS still holds
+        // a ring-0 data selector, iretq to ring 3 nullifies it and QEMU's TCG
+        // clears the cached base too. With a null selector, iretq leaves it alone.
+        asm!(
+            "mov fs, {selector:x}",
+            selector = in(reg) 0u16,
+            options(nomem, nostack, preserves_flags)
+        );
         asm!(
             "wrmsr",
             in("ecx") IA32_FS_BASE,

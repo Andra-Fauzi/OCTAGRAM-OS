@@ -153,6 +153,15 @@ pub unsafe fn load_gdt() {
 pub unsafe fn enter_user_mode(entry: u64, user_stack: u64) -> u64 {
     unsafe {
         set_ring0_stack(user_kernel_stack_top());
+        // The scheduler loop writes FS_BASE=0 right before this call, but task 0 is
+        // already loaded into USER_PROCESS with its loader-provided TLS. No interrupt
+        // epilogue runs before the first user instruction, so install it here.
+        let (_pid, _tid, _is_thread, active, anchor, thread_pointer, _fs) =
+            crate::elf::current_user_tls_debug();
+        let base = if thread_pointer != 0 { thread_pointer } else { anchor };
+        if active && base != 0 {
+            crate::arch::x86_64::thread_pointer::write(base);
+        }
         enter_user(entry, user_stack)
     }
 }

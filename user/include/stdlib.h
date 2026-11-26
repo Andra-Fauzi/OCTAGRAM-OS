@@ -12,6 +12,14 @@
 #define MB_LEN_MAX 4
 #endif
 
+/* C99 7.20: termination status values for exit()/_Exit(). */
+#ifndef EXIT_SUCCESS
+#define EXIT_SUCCESS 0
+#endif
+#ifndef EXIT_FAILURE
+#define EXIT_FAILURE 1
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -414,12 +414,18 @@ static int oct_glob_in_directory(const char *directory, const char *component,
     int status = 0;
     struct dirent *entry;
     while ((entry = readdir(stream)) != NULL) {
+        puts("OCT-GLOB: directory entry read");
+        fflush(stdout);
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
+        puts("OCT-GLOB: dot check passed");
+        fflush(stdout);
         if (fnmatch(component, entry->d_name, 0) != 0) {
             continue;
         }
+        puts("OCT-GLOB: fnmatch passed");
+        fflush(stdout);
         size_t length = strlen(directory) + strlen(entry->d_name) + 3;
         char *child = malloc(length);
         if (child == NULL) {
@@ -431,7 +437,11 @@ static int oct_glob_in_directory(const char *directory, const char *component,
         } else {
             snprintf(child, length, "%s/%s", directory, entry->d_name);
         }
+        puts("OCT-GLOB: recurse");
+        fflush(stdout);
         status = oct_glob_walk(child, rest, result);
+        puts("OCT-GLOB: recurse returned");
+        fflush(stdout);
         free(child);
         if (status != 0) {
             break;
@@ -525,7 +535,11 @@ int glob(const char *pattern, int flags, int (*error_function)(const char *, int
         prefix[0] = '\0';
     }
 
+    puts("OCT-GLOB: walk begin");
+    fflush(stdout);
     status = oct_glob_walk(prefix, pattern_start, result);
+    puts("OCT-GLOB: walk returned");
+    fflush(stdout);
     free(prefix);
     if (status != 0) {
         oct_glob_free_entries(result, existing);
@@ -544,8 +558,12 @@ int glob(const char *pattern, int flags, int (*error_function)(const char *, int
     }
 
     if ((flags & GLOB_NOSORT) == 0) {
+        puts("OCT-GLOB: qsort begin");
+        fflush(stdout);
         qsort(result->gl_pathv + existing, result->gl_pathc - existing,
               sizeof(char *), oct_glob_compare);
+        puts("OCT-GLOB: qsort returned");
+        fflush(stdout);
     }
 
     size_t slots = (result->gl_pathc + result->gl_offs + 1) * sizeof(char *);
@@ -2006,7 +2024,12 @@ static int wordexp_word_finish(struct wordexp_fields *fields,
     if (word->glob != 0) {
         glob_t matches;
         memset(&matches, 0, sizeof(matches));
-        if (glob(word->text, GLOB_NOCHECK, NULL, &matches) != 0) {
+        puts("OCT-WORDEXP: glob begin");
+        fflush(stdout);
+        int glob_status = glob(word->text, GLOB_NOCHECK, NULL, &matches);
+        puts("OCT-WORDEXP: glob returned");
+        fflush(stdout);
+        if (glob_status != 0) {
             wordexp_word_release(word);
             *error = WRDE_NOSPACE;
             return -1;

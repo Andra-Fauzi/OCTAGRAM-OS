@@ -2851,7 +2851,7 @@ fn handle_timer_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     let mut active_process = USER_PROCESS.lock();
     match switch_task(&mut scheduler, &mut active_process, next) {
         Some(next_frame) => next_frame,
-        None => keep_running_after_switch_refusal(&mut scheduler, frame_pointer),
+        None => keep_running_after_switch_refusal(&mut scheduler, &mut active_process, frame_pointer),
     }
 }
 
@@ -3569,7 +3569,7 @@ fn syscall_thread_join(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     };
     match load_task_state(&mut scheduler, &mut active_process, next) {
         Some(next_frame) => next_frame,
-        None => keep_running_after_switch_refusal(&mut scheduler, frame_pointer),
+        None => keep_running_after_switch_refusal(&mut scheduler, &mut active_process, frame_pointer),
     }
 }
 
@@ -4129,7 +4129,7 @@ fn syscall_waitpid(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     };
     match load_task_state(&mut scheduler, &mut active_process, next) {
         Some(next_frame) => next_frame,
-        None => keep_running_after_switch_refusal(&mut scheduler, frame_pointer),
+        None => keep_running_after_switch_refusal(&mut scheduler, &mut active_process, frame_pointer),
     }
 }
 
@@ -4267,7 +4267,7 @@ fn block_current_on_wait(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut 
     };
     match load_task_state(&mut scheduler, &mut active_process, next) {
         Some(next_frame) => next_frame,
-        None => keep_running_after_switch_refusal(&mut scheduler, frame_pointer),
+        None => keep_running_after_switch_refusal(&mut scheduler, &mut active_process, frame_pointer),
     }
 }
 
@@ -4516,7 +4516,7 @@ fn block_current_on_poll(frame: &mut InterruptFrame, deadline: u64) -> *mut Inte
     };
     match load_task_state(&mut scheduler, &mut active_process, next) {
         Some(next_frame) => next_frame,
-        None => keep_running_after_switch_refusal(&mut scheduler, frame_pointer),
+        None => keep_running_after_switch_refusal(&mut scheduler, &mut active_process, frame_pointer),
     }
 }
 
@@ -5187,7 +5187,7 @@ fn switch_task(
         None => {
             if saved {
                 let current = scheduler.current;
-                core::mem::swap(active, &mut scheduler.processes[current].state);
+                restore_saved_task_state(active, &mut scheduler.processes[current].state);
             }
             None
         }
@@ -5196,12 +5196,25 @@ fn switch_task(
 
 /// Switch ditolak karena invariant: lanjutkan task sekarang dan lepaskan
 /// penantian yang sempat dicatat pemanggil agar task itu bisa dijadwalkan lagi.
+fn restore_saved_task_state(active: &mut UserProcess, saved: &mut UserProcess) -> bool {
+    if active.active || !saved.active {
+        return false;
+    }
+    core::mem::swap(active, saved);
+    true
+}
+
 fn keep_running_after_switch_refusal(
     scheduler: &mut UserScheduler,
+    active: &mut UserProcess,
     frame_pointer: *mut InterruptFrame,
 ) -> *mut InterruptFrame {
     let current = scheduler.current;
+    // Some syscall paths save the current task before trying to load its
+    // successor. If that load is rejected, put the saved task back into the
+    // live slot before returning its original ring-3 frame.
     if let Some(process) = scheduler.processes.get_mut(current) {
+        restore_saved_task_state(active, &mut process.state);
         process.waiting_for = None;
         process.wait_deadline = None;
     }
@@ -10343,7 +10356,7 @@ mod tests {
     use super::{
         EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPROTOTYPE, EPERM,
         CAP_NETWORK, CAP_VFS_WRITE, CAP_SYS_ADMIN, device_access_allowed, EPIPE, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
-        ProcessWait, UserProcess, capability_present, is_poll_wait, robust_word_after_exit,
+        ProcessWait, UserProcess, restore_saved_task_state, capability_present, is_poll_wait, robust_word_after_exit,
         FUTEX_OWNER_DIED, FUTEX_WAITERS,
         effective_priority_target, priority_change_allowed, priority_target_matches,
         SCHED_OTHER, ElfError, select_tls_base, user_process_tls_base, selector_returns_to_user, slot_is_resumable,
@@ -10367,6 +10380,34 @@ mod tests {
         FBIOGET_VSCREENINFO, FbFixScreeninfo, FbVarScreeninfo, SYSCALL_IOCTL, Winsize,
     };
     use crate::fs::{self, DirectoryEntry, FsError, Metadata};
+
+    #[test]
+    fn failed_task_switch_restores_the_saved_current_task() {
+        let mut active = UserProcess::new();
+        let mut saved = UserProcess::new();
+        saved.active = true;
+        saved.thread_pointer = 0x1000_a3420;
+        saved.tls_anchor = 0x1000_a3420;
+
+        assert!(restore_saved_task_state(&mut active, &mut saved));
+        assert!(active.active);
+        assert!(!saved.active);
+        assert_eq!(active.thread_pointer, 0x1000_a3420);
+    }
+
+    #[test]
+    fn failed_task_switch_does_not_overwrite_an_active_task() {
+        let mut active = UserProcess::new();
+        let mut saved = UserProcess::new();
+        active.active = true;
+        active.thread_pointer = 0x1000_a3420;
+        saved.active = true;
+        saved.thread_pointer = 0x2000_b3420;
+
+        assert!(!restore_saved_task_state(&mut active, &mut saved));
+        assert_eq!(active.thread_pointer, 0x1000_a3420);
+        assert_eq!(saved.thread_pointer, 0x2000_b3420);
+    }
 
     #[test]
     fn tls_restore_keeps_a_valid_base_during_inactive_scheduler_handoff() {

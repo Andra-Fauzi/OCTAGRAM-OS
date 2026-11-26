@@ -1572,6 +1572,10 @@ struct UserProcess {
     signal_handlers: Vec<SignalAction>,
     interrupted: bool,
     interrupt_signal: u64,
+    /// Whether the signal that woke this task had SA_RESTART when queued.
+    /// Kept after delivery so a preempted waiter can distinguish EINTR from
+    /// the retry path when its original syscall instruction is resumed.
+    interrupt_restart: bool,
     restart_number: Option<u64>,
     poll_deadline: Option<u64>,
     /// Stack alternatif untuk handler ber-`SA_ONSTACK` (0 = tidak ada).
@@ -1603,6 +1607,7 @@ impl UserProcess {
             signal_handlers: Vec::new(),
             interrupted: false,
             interrupt_signal: 0,
+            interrupt_restart: false,
             restart_number: None,
             poll_deadline: None,
             alternate_stack: 0,
@@ -4969,6 +4974,7 @@ fn new_user_process(
         signal_handlers: Vec::new(),
         interrupted: false,
         interrupt_signal: 0,
+        interrupt_restart: false,
         restart_number: None,
         poll_deadline: None,
         alternate_stack: 0,
@@ -5022,6 +5028,7 @@ fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProces
         signal_handlers: parent.signal_handlers.clone(),
         interrupted: false,
         interrupt_signal: 0,
+        interrupt_restart: false,
         restart_number: None,
         poll_deadline: None,
         alternate_stack: parent.alternate_stack,
@@ -12125,15 +12132,49 @@ fn take_interrupted_syscall(number: u64) -> bool {
         return false;
     }
     ensure_signal_table(&mut process);
-    process.interrupted = false;
-    process.interrupt_signal = 0;
+
+    // A timer interrupt may deliver the signal after this task has been
+    // woken but before it retries the syscall instruction. In that ordering
+    // the handler clears pending_signals first; the retry must still observe
+    // the saved interruption instead of blocking on the same operation again.
+    if process.interrupted {
+        let signal = process.interrupt_signal;
+        let restart = process.interrupt_restart;
+        process.interrupted = false;
+        process.interrupt_signal = 0;
+        process.interrupt_restart = false;
+
+        if signal == 0 || signal >= SIGNAL_TABLE_LENGTH as u64 {
+            return false;
+        }
+        let bit = 1u64 << (signal - 1);
+        let still_pending = process.pending_signals & !process.blocked_signals & bit != 0;
+        if signal_default_ignored(signal) {
+            return false;
+        }
+        if !still_pending {
+            // The handler has already run while the waiter was descheduled.
+            // SA_RESTART means retry the operation; otherwise report EINTR.
+            return !restart;
+        }
+
+        let action = process.signal_handlers[signal as usize];
+        if action.handler == 1 {
+            return false;
+        }
+        if action.handler > 1 && action.flags & SA_RESTART_FLAG != 0 {
+            process.restart_number = Some(number);
+        }
+        return true;
+    }
+
     let pending = process.pending_signals & !process.blocked_signals;
     if pending == 0 {
         return false;
     }
     let signal = pending.trailing_zeros() as u64 + 1;
     let action = process.signal_handlers[signal as usize];
-    if action.handler == 1 {
+    if action.handler == 1 || signal_default_ignored(signal) {
         return false;
     }
     if action.handler > 1 && action.flags & SA_RESTART_FLAG != 0 {
@@ -12240,13 +12281,16 @@ fn syscall_kill(pid: u64, signal: u64) -> Result<u64, i32> {
         }
         ensure_signal_table(&mut process.state);
         process.state.pending_signals |= bit;
+        let action = process.state.signal_handlers[signal as usize];
         let deliverable = process.state.blocked_signals & bit == 0
-            && process.state.signal_handlers[signal as usize].handler != 1;
+            && action.handler != 1;
         if deliverable && process.waiting_for.is_some() {
             process.waiting_for = None;
             process.wait_deadline = None;
             process.state.interrupted = true;
             process.state.interrupt_signal = signal;
+            process.state.interrupt_restart =
+                action.handler > 1 && action.flags & SA_RESTART_FLAG != 0;
             woke_blocked_thread = true;
         }
     }

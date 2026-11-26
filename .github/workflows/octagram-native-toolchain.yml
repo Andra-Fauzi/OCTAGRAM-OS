@@ -247,14 +247,17 @@ jobs:
           key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile') }}
 
       - name: Require cached libLLVM when build_llvm is off
-        if: inputs.build_llvm == false && steps.llvm-cache.outputs.cache-hit != 'true'
+        # The build_llvm input exists only for workflow_dispatch. On push,
+        # inputs.build_llvm is unset (not an instruction to disable the build).
+        if: github.event_name == 'workflow_dispatch' && inputs.build_llvm == false && steps.llvm-cache.outputs.cache-hit != 'true'
         run: |
           echo "build_llvm=false tetapi tidak ada libLLVM $LLVM_VERSION di cache." >&2
           echo "Jalankan workflow dengan build_llvm=true sekali untuk mengisinya." >&2
           exit 1
 
       - name: Build libLLVM
-        if: (github.event_name != 'workflow_dispatch' || inputs.build_llvm) && steps.llvm-cache.outputs.cache-hit != 'true'
+        # Push always builds LLVM; manual runs may explicitly reuse a cache.
+        if: (github.event_name != 'workflow_dispatch' || inputs.build_llvm == true) && steps.llvm-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           tools/build_llvm_octagram.sh \

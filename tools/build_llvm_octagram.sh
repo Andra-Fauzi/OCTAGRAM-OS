@@ -171,6 +171,10 @@ cmake_arguments="
 -DLLVM_INCLUDE_DOCS=OFF
 -DLLVM_INCLUDE_UTILS=OFF
 -DLLVM_BUILD_TOOLS=ON
+# llvm-exegesis is a benchmarking utility, not part of the OCTAGRAM
+# compiler/linker toolchain. It requires host tracing APIs (sys/ptrace.h)
+# that the target sysroot intentionally does not provide.
+-DLLVM_TOOL_LLVM_EXEGESIS_BUILD=OFF
 -DLLVM_INSTALL_UTILS=OFF
 -DLLVM_OPTIMIZED_TABLEGEN=ON
 -DLLVM_BUILD_EXTERNAL_COMPILER_RT=OFF

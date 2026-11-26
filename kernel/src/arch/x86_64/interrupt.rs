@@ -221,6 +221,8 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                 // restoration below before the CPU resumes ring 3.
                 if crate::elf::grow_user_stack(fault_address, frame.error_code) {
                     frame as *mut InterruptFrame
+                } else if repair_lost_thread_pointer(frame.error_code) {
+                    frame as *mut InterruptFrame
                 } else {
                     // The faulting RIP is in a mapped user executable page.
                     // Capture its first bytes and saved GPRs so guest faults can
@@ -323,6 +325,35 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
     // the assembly stub reaches iretq. The helper is a no-op for ring-0 frames.
     crate::elf::restore_user_context(return_frame);
     return_frame
+}
+
+static TLS_REPAIR_REPORTED: AtomicBool = AtomicBool::new(false);
+static TLS_REPAIR_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// A not-present user fault while FS_BASE is 0 but the running task owns a TLS
+/// base means the CPU lost FS across a context handoff (the task's own state is
+/// intact). Reinstall the base and let the instruction retry. Bounded so a
+/// persistent mismatch still ends in the normal fault report.
+fn repair_lost_thread_pointer(error_code: u64) -> bool {
+    if error_code & 1 != 0 || TLS_REPAIR_COUNT.load(Ordering::Relaxed) >= 10_000 {
+        return false;
+    }
+    let (pid, tid, is_thread, active, _anchor, tls, fs) =
+        crate::elf::current_user_tls_debug();
+    if !active || fs != 0 || tls == 0 {
+        return false;
+    }
+    crate::arch::x86_64::thread_pointer::write(tls);
+    if crate::arch::x86_64::thread_pointer::read() != tls {
+        return false;
+    }
+    TLS_REPAIR_COUNT.fetch_add(1, Ordering::Relaxed);
+    if !TLS_REPAIR_REPORTED.swap(true, Ordering::AcqRel) {
+        crate::println!(
+            "[tls] FS_BASE was 0 for pid={pid} tid={tid} is_thread={is_thread}; restored {tls:#x}"
+        );
+    }
+    true
 }
 
 interrupt_stub!(divide_error_stub, 0, no_error_code);

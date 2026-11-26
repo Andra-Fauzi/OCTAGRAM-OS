@@ -3725,7 +3725,7 @@ int pthread_getname_np(pthread_t thread, char *name, size_t length)
  */
 static int octagram_valid_shm_name(const char *name)
 {
-    return name != NULL && name[0] == '/' && name[1] != '\\0' &&
+    return name != NULL && name[0] == '/' && name[1] != '\0' &&
            strchr(name + 1, '/') == NULL;
 }
 

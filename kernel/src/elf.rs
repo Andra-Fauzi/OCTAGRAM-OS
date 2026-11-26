@@ -2693,6 +2693,8 @@ fn handle_syscall_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         SYSCALL_THREAD_EXIT => syscall_thread_exit(frame),
         SYSCALL_THREAD_JOIN => syscall_thread_join(frame),
         SYSCALL_THREAD_DETACH => syscall_thread_detach(frame),
+        SYSCALL_NANOSLEEP => syscall_nanosleep_frame(frame),
+        SYSCALL_CLOCK_NANOSLEEP => syscall_clock_nanosleep_frame(frame),
         SYSCALL_FUTEX => syscall_futex(frame),
         SYSCALL_FLOCK => syscall_flock_frame(frame),
         SYSCALL_SIGRETURN => syscall_sigreturn(frame),
@@ -3186,7 +3188,6 @@ fn dispatch_syscall(
         SYSCALL_UNAME => syscall_uname(arg1),
         SYSCALL_BRK => syscall_brk(arg1),
         SYSCALL_GETTIMEOFDAY => syscall_gettimeofday(arg1),
-        SYSCALL_NANOSLEEP => syscall_nanosleep(arg1),
         SYSCALL_KILL => syscall_kill(arg1, arg2),
         SYSCALL_SIGACTION => syscall_sigaction(arg1, arg2, arg3),
         SYSCALL_SIGALTSTACK => syscall_sigaltstack(arg1, arg2),
@@ -3211,7 +3212,6 @@ fn dispatch_syscall(
         SYSCALL_EPOLL_CTL => syscall_epoll_ctl(arg1, arg2, arg3, arg4),
         SYSCALL_EPOLL_WAIT => syscall_epoll_wait(arg1, arg2, arg3, arg4),
         SYSCALL_SOCKETPAIR => syscall_socketpair(arg1, arg2, arg3, arg4),
-        SYSCALL_CLOCK_NANOSLEEP => syscall_clock_nanosleep(arg1, arg2, arg3, arg4),
         SYSCALL_GETPGRP => syscall_getpgrp(),
         SYSCALL_SETPGRP => syscall_setpgrp(arg1, arg2),
         SYSCALL_GETSID => syscall_getsid(arg1),
@@ -4253,6 +4253,50 @@ fn block_current_on_wait(frame: &mut InterruptFrame, wait: ProcessWait) -> *mut 
     }
 }
 
+/// Block the current user task until a monotonic sleep deadline. The syscall
+/// instruction is retried after wake so signal delivery can still produce EINTR.
+fn block_current_until(frame: &mut InterruptFrame, deadline: u64) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
+    let Some(retry_address) = frame.stack_frame.instruction_pointer.checked_sub(2) else {
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
+    };
+    let mut scheduler = USER_SCHEDULER.lock();
+    let current = scheduler.current;
+    {
+        let process = USER_PROCESS.lock();
+        if !scheduler.active || !process.active || current >= scheduler.processes.len() {
+            frame.rax = (-(EINTR as i64)) as u64;
+            return frame_pointer;
+        }
+    }
+    scheduler.processes[current].frame_pointer = frame_pointer as usize;
+    scheduler.processes[current].waiting_for = Some(ProcessWait::Sleep);
+    scheduler.processes[current].wait_deadline = Some(deadline);
+    frame.stack_frame.instruction_pointer = retry_address;
+
+    let mut active_process = USER_PROCESS.lock();
+    if let Some(next) = schedule_next(&mut scheduler) {
+        if let Some(next_frame) = switch_task(&mut scheduler, &mut active_process, next) {
+            return next_frame;
+        }
+    }
+
+    // No other task can run. Fall back to an interruptible kernel delay, then
+    // return from the original syscall without retrying it.
+    scheduler.processes[current].waiting_for = None;
+    scheduler.processes[current].wait_deadline = None;
+    frame.stack_frame.instruction_pointer = retry_address + 2;
+    frame.rax = 0;
+    drop(active_process);
+    drop(scheduler);
+    let remaining = deadline.saturating_sub(crate::arch::x86_64::monotonic_milliseconds());
+    if remaining != 0 {
+        sleep_milliseconds(remaining.min(60_000));
+    }
+    frame_pointer
+}
+
 fn expire_futex_timeouts(scheduler: &mut UserScheduler) {
     let now = crate::arch::x86_64::monotonic_milliseconds();
     for process in &mut scheduler.processes {
@@ -4268,7 +4312,10 @@ fn expire_futex_timeouts(scheduler: &mut UserScheduler) {
                 process.state.wait_result = Some(ETIMEDOUT);
             }
             Some(ProcessWait::PollWait) => process.waiting_for = None,
-            Some(ProcessWait::Sleep) => process.waiting_for = None,
+            Some(ProcessWait::Sleep) => {
+                process.waiting_for = None;
+                process.state.wait_result = Some(0);
+            }
             _ => {}
         }
         process.wait_deadline = None;
@@ -4376,26 +4423,25 @@ fn block_current_on_futex(
         }
     }
 
-    let Some(deadline) = deadline else {
-        scheduler.processes[current].waiting_for = None;
-        scheduler.processes[current].wait_deadline = None;
-        frame.stack_frame.instruction_pointer = retry_address + 2;
-        frame.rax = (-(EDEADLK as i64)) as u64;
-        return frame_pointer;
-    };
-    // Tidak ada thread siap. State proses sengaja tidak di-swap keluar, jadi
-    // USER_PROCESS selalu memegang state yang hidup selama tidur. Bangun tiap
-    // 1 ms untuk memeriksa deadline dan menjadwalkan thread yang menjadi siap.
+    // No runnable task may exist while another thread is sleeping. Keep the
+    // current waiter blocked and idle until a wake, signal, deadline, or newly
+    // runnable task appears; returning EDEADLK here breaks ordinary futex use.
     drop(active_process);
     drop(scheduler);
     loop {
         sleep_milliseconds(1);
         let mut scheduler = USER_SCHEDULER.lock();
         let now = crate::arch::x86_64::monotonic_milliseconds();
-        if now >= deadline || scheduler.processes[current].waiting_for.is_none() {
-            let timed_out = now >= deadline;
-            scheduler.processes[current].waiting_for = None;
-            scheduler.processes[current].wait_deadline = None;
+        let timed_out = deadline.is_some_and(|deadline| now >= deadline);
+        let released = scheduler
+            .processes
+            .get(current)
+            .is_none_or(|process| process.waiting_for.is_none());
+        if timed_out || released {
+            if let Some(process) = scheduler.processes.get_mut(current) {
+                process.waiting_for = None;
+                process.wait_deadline = None;
+            }
             drop(scheduler);
             if timed_out {
                 frame.stack_frame.instruction_pointer = retry_address + 2;
@@ -4411,9 +4457,7 @@ fn block_current_on_futex(
         let mut active = USER_PROCESS.lock();
         match switch_task(&mut scheduler, &mut active, next) {
             Some(next_frame) => return next_frame,
-            None => {
-                continue;
-            }
+            None => continue,
         }
     }
 }
@@ -8304,29 +8348,45 @@ fn syscall_gettimeofday(address: u64) -> Result<u64, i32> {
     Ok(0)
 }
 
-fn syscall_nanosleep(req: u64) -> Result<u64, i32> {
+fn syscall_nanosleep_frame(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
     if take_interrupted_syscall(SYSCALL_NANOSLEEP) {
-        return Err(EINTR);
+        USER_PROCESS.lock().wait_result = None;
+        frame.rax = (-(EINTR as i64)) as u64;
+        return frame_pointer;
     }
-    if req == 0 {
-        return Err(EFAULT);
+    if let Some(result) = USER_PROCESS.lock().wait_result.take() {
+        frame.rax = if result == 0 {
+            0
+        } else {
+            (-(result as i64)) as u64
+        };
+        return frame_pointer;
     }
-    paging::validate_user_range(req, core::mem::size_of::<UserTimespec>(), false)
-        .map_err(|_| EFAULT)?;
-    let ts = unsafe { (req as *const UserTimespec).read_unaligned() };
-    if ts.seconds < 0 || ts.nanoseconds < 0 || ts.nanoseconds >= 1_000_000_000 {
-        return Err(EINVAL);
+    let request = frame.rdi;
+    if request == 0 {
+        frame.rax = (-(EFAULT as i64)) as u64;
+        return frame_pointer;
     }
-    let requested = (ts.seconds as u64)
-        .saturating_mul(1000)
-        .saturating_add((ts.nanoseconds / 1_000_000) as u64);
-    // Tidur berjalan di kernel dan belum scheduler-aware, jadi totalnya dibatasi
-    // satu menit agar satu proses tidak membekukan proses lain terlalu lama.
-    let milliseconds = requested.min(60_000);
-    if milliseconds > 0 {
-        crate::arch::x86_64::delay_milliseconds(milliseconds as u32);
+    if paging::validate_user_range(request, core::mem::size_of::<UserTimespec>(), false).is_err() {
+        frame.rax = (-(EFAULT as i64)) as u64;
+        return frame_pointer;
     }
-    Ok(0)
+    let ts = unsafe { (request as *const UserTimespec).read_unaligned() };
+    let milliseconds = match timespec_to_milliseconds(&ts) {
+        Ok(value) => value.min(60_000),
+        Err(errno) => {
+            frame.rax = (-(errno as i64)) as u64;
+            return frame_pointer;
+        }
+    };
+    if milliseconds == 0 {
+        frame.rax = 0;
+        return frame_pointer;
+    }
+    let deadline = crate::arch::x86_64::monotonic_milliseconds()
+        .saturating_add(milliseconds);
+    block_current_until(frame, deadline)
 }
 
 const POLLIN: i16 = 0x0001;
@@ -11843,24 +11903,54 @@ fn syscall_socketpair(domain: u64, socket_type: u64, protocol: u64, addresses: u
     Ok(0)
 }
 
-fn syscall_clock_nanosleep(clock_id: u64, flags: u64, request: u64, remain: u64) -> Result<u64, i32> {
+fn syscall_clock_nanosleep_frame(frame: &mut InterruptFrame) -> *mut InterruptFrame {
+    let frame_pointer = frame as *mut InterruptFrame;
     if take_interrupted_syscall(SYSCALL_CLOCK_NANOSLEEP) {
-        return Err(EINTR);
+        USER_PROCESS.lock().wait_result = None;
+        frame.rax = (-(EINTR as i64)) as u64;
+        return frame_pointer;
     }
+    if let Some(result) = USER_PROCESS.lock().wait_result.take() {
+        frame.rax = if result == 0 {
+            0
+        } else {
+            (-(result as i64)) as u64
+        };
+        return frame_pointer;
+    }
+    let clock_id = frame.rdi;
+    let flags = frame.rsi;
+    let request = frame.rdx;
+    let remain = frame.r10;
     if clock_id != 0 && clock_id != 1 && clock_id != 7 {
-        return Err(EINVAL);
+        frame.rax = (-(EINVAL as i64)) as u64;
+        return frame_pointer;
     }
     if request == 0 {
-        return Err(EFAULT);
+        frame.rax = (-(EFAULT as i64)) as u64;
+        return frame_pointer;
     }
-    paging::validate_user_range(request, core::mem::size_of::<UserTimespec>(), false)
-        .map_err(|_| EFAULT)?;
+    if paging::validate_user_range(request, core::mem::size_of::<UserTimespec>(), false).is_err() {
+        frame.rax = (-(EFAULT as i64)) as u64;
+        return frame_pointer;
+    }
     let ts = unsafe { (request as *const UserTimespec).read_unaligned() };
-    let requested = timespec_to_milliseconds(&ts)?;
+    let requested = match timespec_to_milliseconds(&ts) {
+        Ok(value) => value,
+        Err(errno) => {
+            frame.rax = (-(errno as i64)) as u64;
+            return frame_pointer;
+        }
+    };
     let milliseconds = if flags & TIMER_ABSTIME != 0 {
         let now = if clock_id == 0 {
-            (crate::drivers::rtc::unix_seconds().map_err(|_| EIO)? as u64)
-                .saturating_mul(1000)
+            match crate::drivers::rtc::unix_seconds() {
+                Ok(seconds) => (seconds as u64).saturating_mul(1000),
+                Err(_) => {
+                    frame.rax = (-(EIO as i64)) as u64;
+                    return frame_pointer;
+                }
+            }
         } else {
             crate::arch::x86_64::monotonic_milliseconds()
         };
@@ -11869,12 +11959,20 @@ fn syscall_clock_nanosleep(clock_id: u64, flags: u64, request: u64, remain: u64)
         requested
     };
     if remain != 0 {
-        paging::validate_user_range(remain, core::mem::size_of::<UserTimespec>(), true)
-            .map_err(|_| EFAULT)?;
+        if paging::validate_user_range(remain, core::mem::size_of::<UserTimespec>(), true).is_err() {
+            frame.rax = (-(EFAULT as i64)) as u64;
+            return frame_pointer;
+        }
         unsafe { (remain as *mut UserTimespec).write_unaligned(milliseconds_to_timespec(0)) };
     }
-    sleep_milliseconds(milliseconds.min(60_000));
-    Ok(0)
+    let milliseconds = milliseconds.min(60_000);
+    if milliseconds == 0 {
+        frame.rax = 0;
+        return frame_pointer;
+    }
+    let deadline = crate::arch::x86_64::monotonic_milliseconds()
+        .saturating_add(milliseconds);
+    block_current_until(frame, deadline)
 }
 
 // ==== signal delivery ====

@@ -409,6 +409,8 @@ static void test_fts(void)
         while ((entry = fts_read(stream)) != NULL) {
             if (entry->fts_level == 0) {
                 roots_seen++;
+                printf("fts root: %s info=%u errno=%d\\n", entry->fts_path,
+                       (unsigned)entry->fts_info, entry->fts_errno);
             }
         }
         check(roots_seen == 2, "both roots visited");

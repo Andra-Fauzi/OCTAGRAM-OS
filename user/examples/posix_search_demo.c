@@ -148,6 +148,7 @@ static void test_wordexp(void)
 
     wordexp_t words;
     memset(&words, 0, sizeof(words));
+    printf("POSIX-WORDEXP-CALL-1\n"); fflush(stdout);
     check(wordexp("alpha 'two words' \"$POSIX_SEARCH_VALUE\"", &words, 0) == 0,
           "wordexp succeeded");
     check(words.we_wordc == 3, "wordexp field count");
@@ -156,36 +157,60 @@ static void test_wordexp(void)
         check(strcmp(words.we_wordv[1], "two words") == 0, "single quotes kept");
         check(strcmp(words.we_wordv[2], "expanded") == 0, "double quote expanded");
     }
+    printf("POSIX-WORDFREE-CALL-1\n"); fflush(stdout);
     wordfree(&words);
     check(words.we_wordv == NULL && words.we_wordc == 0, "wordfree clears");
 
+    printf("POSIX-WORDEXP-CALL-2\n"); fflush(stdout);
+
     check(wordexp("", &words, 0) == 0 && words.we_wordc == 0,
           "empty input yields no fields");
+    printf("POSIX-WORDFREE-CALL-2\n"); fflush(stdout);
     wordfree(&words);
+
+    printf("POSIX-WORDEXP-CALL-3\n"); fflush(stdout);
 
     check(wordexp("\"\"", &words, 0) == 0 && words.we_wordc == 1 &&
               words.we_wordv[0][0] == '\0',
           "quoted empty field is kept");
+    printf("POSIX-WORDFREE-CALL-3\n"); fflush(stdout);
     wordfree(&words);
+
+    printf("POSIX-WORDEXP-CALL-4\n"); fflush(stdout);
 
     check(wordexp("$UNSET_FOR_THE_PROBE", &words, 0) == 0 && words.we_wordc == 0,
           "undefined variable expands to nothing");
+    printf("POSIX-WORDFREE-CALL-4\n"); fflush(stdout);
     wordfree(&words);
+
+    printf("POSIX-WORDEXP-CALL-5\n"); fflush(stdout);
 
     check(wordexp("$UNSET_FOR_THE_PROBE", &words, WRDE_UNDEF) == WRDE_BADVAL,
           "WRDE_UNDEF rejects an undefined variable");
+    printf("POSIX-WORDFREE-CALL-5\n"); fflush(stdout);
     wordfree(&words);
+
+    printf("POSIX-WORDEXP-CALL-6\n"); fflush(stdout);
 
     check(wordexp("`echo hi`", &words, WRDE_NOCMD) == WRDE_CMDSUB,
           "WRDE_NOCMD reports command substitution");
+    printf("POSIX-WORDFREE-CALL-6\n"); fflush(stdout);
     wordfree(&words);
+
+    printf("POSIX-WORDEXP-CALL-7\n"); fflush(stdout);
 
     check(wordexp("'unterminated", &words, 0) == WRDE_SYNTAX,
           "unterminated quote is a syntax error");
+    printf("POSIX-WORDFREE-CALL-7\n"); fflush(stdout);
     wordfree(&words);
 
+    printf("POSIX-WORDEXP-CALL-8\n"); fflush(stdout);
+
     check(wordexp("a;b", &words, 0) == WRDE_BADCHAR, "metacharacter rejected");
+    printf("POSIX-WORDFREE-CALL-8\n"); fflush(stdout);
     wordfree(&words);
+
+    printf("POSIX-WORDEXP-CALL-9\n"); fflush(stdout);
 
     check(wordexp("/bin/sh*", &words, 0) == 0 && words.we_wordc >= 1,
           "glob expanded to at least the pattern itself");
@@ -193,20 +218,24 @@ static void test_wordexp(void)
         check(strcmp(words.we_wordv[0], "/bin/sh") == 0,
               "glob matched the seeded shell");
     }
+    printf("POSIX-WORDFREE-CALL-9\n"); fflush(stdout);
     wordfree(&words);
 
     /* WRDE_DOOFFS reserves leading slots, WRDE_APPEND adds behind them. */
     memset(&words, 0, sizeof(words));
     words.we_offs = 2;
+    printf("POSIX-WORDEXP-CALL-10\n"); fflush(stdout);
     check(wordexp("one", &words, WRDE_DOOFFS) == 0, "WRDE_DOOFFS first pass");
     check(words.we_wordc == 1 && words.we_wordv[0] == NULL &&
               words.we_wordv[1] == NULL && strcmp(words.we_wordv[2], "one") == 0,
           "offset slots stay NULL");
+    printf("POSIX-WORDEXP-CALL-11\n"); fflush(stdout);
     check(wordexp("two", &words, WRDE_DOOFFS | WRDE_APPEND) == 0,
           "WRDE_APPEND second pass");
     check(words.we_wordc == 2 && strcmp(words.we_wordv[2], "one") == 0 &&
               strcmp(words.we_wordv[3], "two") == 0,
           "append keeps earlier words");
+    printf("POSIX-WORDFREE-CALL-10\n"); fflush(stdout);
     wordfree(&words);
 }
 

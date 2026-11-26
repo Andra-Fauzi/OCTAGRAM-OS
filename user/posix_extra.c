@@ -1982,8 +1982,25 @@ static int wordexp_word_finish(struct wordexp_fields *fields,
         return 0;
     }
     if (word->text == NULL) {
-        wordexp_word_release(word);
-        return 0;
+        /*
+         * An explicitly quoted empty word (for example, "" or '') is still
+         * one field.  It has no appended bytes, so the builder has not
+         * allocated storage yet; materialize the terminating NUL before
+         * transferring ownership to the result array.
+         */
+        if (word->length == 0 && word->quoted != 0) {
+            word->text = malloc(1);
+            if (word->text == NULL) {
+                wordexp_word_release(word);
+                *error = WRDE_NOSPACE;
+                return -1;
+            }
+            word->text[0] = '\0';
+            word->capacity = 1;
+        } else {
+            wordexp_word_release(word);
+            return 0;
+        }
     }
 
     if (word->glob != 0) {

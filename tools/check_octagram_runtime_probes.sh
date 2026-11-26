@@ -14,6 +14,21 @@
 
 set -eu
 
+# Help is intentionally side-effect free: CI calls this script with --help
+# while validating shell entry points, before the sysroot has been built.
+case ${1:-} in
+    -h|--help)
+        sed -n '2,14p' "$0"
+        exit 0
+        ;;
+    '') ;;
+    *)
+        echo "check_octagram_runtime_probes: unknown argument '$1'" >&2
+        exit 2
+        ;;
+esac
+
+
 script=$0
 case $script in
     */*) tools_dir=$(cd "$(dirname "$script")" && pwd) ;;

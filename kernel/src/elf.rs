@@ -2751,6 +2751,12 @@ fn yield_user_to_kernel(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         frame.rax = (-(EINTR as i64)) as u64;
         return frame_pointer;
     }
+    if scheduler.processes[current].is_thread {
+        crate::println!(
+            "[thread-debug] yield tid={}",
+            scheduler.processes[current].tid
+        );
+    }
     scheduler.processes[current].resume_context = Some(UserResumeContext {
         accumulator: 0,
         stack_frame: frame.stack_frame,
@@ -2846,6 +2852,16 @@ fn handle_timer_inner(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     };
     if next == current {
         return frame_pointer;
+    }
+    static THREAD_SWITCH_TRACE_COUNT: AtomicU64 = AtomicU64::new(0);
+    if (scheduler.processes[current].is_thread || scheduler.processes[next].is_thread)
+        && THREAD_SWITCH_TRACE_COUNT.fetch_add(1, Ordering::Relaxed) < 8
+    {
+        crate::println!(
+            "[thread-debug] timer switch tid {} -> {}",
+            scheduler.processes[current].tid,
+            scheduler.processes[next].tid
+        );
     }
 
     let mut active_process = USER_PROCESS.lock();
@@ -3459,6 +3475,10 @@ fn syscall_thread_create(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         runtime: TaskRuntime::default(),
         reaped: false,
     });
+    crate::println!(
+        "[thread-debug] create tid={} entry={:#x} stack={:#x} tp={:#x}",
+        tid, entry, stack_top, thread_pointer
+    );
     frame.rax = tid;
     frame_pointer
 }
@@ -3556,6 +3576,10 @@ fn syscall_thread_join(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     scheduler.processes[current].frame_pointer = frame_pointer as usize;
     scheduler.processes[current].waiting_for = Some(ProcessWait::Thread(target_tid));
     scheduler.processes[current].wait_status_pointer = result_pointer;
+    crate::println!(
+        "[thread-debug] join wait caller_tid={} target_tid={}",
+        scheduler.processes[current].tid, target_tid
+    );
     let mut active_process = USER_PROCESS.lock();
     let saved_task_state = save_task_state(&mut scheduler, &mut active_process);
     let Some(next) = schedule_next(&mut scheduler) else {
@@ -3635,6 +3659,10 @@ fn syscall_thread_exit(frame: &mut InterruptFrame) -> *mut InterruptFrame {
     }
 
     let tid = scheduler.processes[current].tid;
+    crate::println!(
+        "[thread-debug] exit tid={} result={:#x}",
+        tid, frame.rdi
+    );
     let memory = Arc::clone(&scheduler.processes[current].image.memory);
     if let Some((base, length)) = scheduler.processes[current].thread_mapping.take()
         && let Err(error) = unmap_mapping_range(&mut memory.mmap_pages.lock(), base, length)

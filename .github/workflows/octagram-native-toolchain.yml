@@ -7,9 +7,10 @@ name: OCTAGRAM native toolchain (LLVM, rustc, cargo)
 #   2. libLLVM        static libLLVM for x86_64-unknown-octagram (M4.3.3)
 #   3. rustc + cargo  bootstrap --host x86_64-unknown-octagram (M4.3.4)
 #
-# Push/PR runs only the preflight job: it builds the sysroot, links the runtime
-# probes, and checks that the Rust target spec still matches the patches. The
-# LLVM and rustc builds take hours and only run through workflow_dispatch.
+# Pushes to the dedicated native-self-hosting branch run the complete build:
+# sysroot -> static target libLLVM -> stage-2 native rustc + upstream Cargo.
+# Pull requests run preflight only; the expensive full build can also be started
+# manually with workflow_dispatch.
 #
 # Every produced binary is an OCTAGRAM ELF (static ET_EXEC, OCTAGRAM libc), so
 # it cannot be executed on the runner. Verification here is static only:
@@ -41,9 +42,6 @@ on:
         default: full
   push:
     branches:
-      - trunk
-      - feature/native-self-hosting
-      - feature/native-self-hosting-testing-3
       - feature/native-self-hosting-testing-4
     paths:
       - "tools/build_llvm_octagram.sh"
@@ -204,7 +202,7 @@ jobs:
   llvm:
     name: libLLVM ${{ inputs.llvm_version || '21.1.0' }} (x86_64-unknown-octagram)
     needs: preflight
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:
@@ -256,7 +254,7 @@ jobs:
           exit 1
 
       - name: Build libLLVM
-        if: inputs.build_llvm && steps.llvm-cache.outputs.cache-hit != 'true'
+        if: (github.event_name != 'workflow_dispatch' || inputs.build_llvm) && steps.llvm-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           tools/build_llvm_octagram.sh \
@@ -332,12 +330,12 @@ jobs:
     name: rustc + cargo for x86_64-unknown-octagram
     needs: [preflight, llvm]
     if: >-
-      github.event_name == 'workflow_dispatch' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       (inputs.rustc_mode || 'full') != 'skip'
     runs-on: ubuntu-latest
-    # The full bootstrap (stage2 rustc + cargo for the OCTAGRAM host) does not
-    # fit a 6-hour public runner for every change; keep the ceiling explicit so
-    # a hung x.py fails instead of being cancelled by GitHub.
+    # The full bootstrap (stage2 rustc + upstream Cargo for the OCTAGRAM host)
+    # is expensive; it runs on pushes to this dedicated branch and manually.
+    # Keep the ceiling explicit so a hung x.py fails rather than timing out.
     timeout-minutes: 355
     env:
       LLVM_VERSION: ${{ inputs.llvm_version || '21.1.0' }}

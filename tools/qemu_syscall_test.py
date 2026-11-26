@@ -185,6 +185,9 @@ def main():
     guest_tests = (
         ("/bin/mmap-demo", "mmap POSIX demo: PASS", "M4-ABI-MMAP"),
         ("/bin/tls-demo", "static TLS initialized", "M4-ABI-TLS"),
+        # Run POSIX search before the heavier thread stress test so an unrelated
+        # thread failure cannot hide the FTS/glob/wordexp regression results.
+        ("/bin/posix-search-demo", "POSIX-SEARCH-PASS", "POSIX-SEARCH"),
         ("/bin/thread-demo", "preemptive threads, TLS, SSE context, and detached pthreads passed", "M4-ABI-THREADS"),
         (
             "/bin/rust-hello-octagram",
@@ -478,22 +481,6 @@ def main():
         print(serial_text()[-6000:])
         return 1
     print("MEMSTREAM-PASS")
-
-    # Search, traversal and word expansion: tsearch/twalk, scandir/alphasort,
-    # wordexp/wordfree (quoting, $VAR, glob, error codes), nftw/ftw and the two
-    # basename forms. These are what a ported build tool uses instead of a
-    # shell to expand a command line and walk a source tree.
-    search_offset = len(serial_text())
-    send_line("/bin/posix-search-demo")
-    if not wait_for_after("POSIX-SEARCH-PASS", search_offset, 60):
-        print("POSIX-SEARCH-FAIL: guest probe did not pass")
-        print(serial_text()[-6000:])
-        return 1
-    if not wait_prompt(30):
-        print("POSIX-SEARCH-FAIL: shell did not return")
-        print(serial_text()[-6000:])
-        return 1
-    print("POSIX-SEARCH-PASS")
 
     # Process, table and temporary-file layer: popen/pclose, hsearch, the
     # mkostemp/mkstemps family, arc4random and mmap64.

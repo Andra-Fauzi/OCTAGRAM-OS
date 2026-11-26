@@ -5006,7 +5006,7 @@ fn fork_clone_process_state(parent: &UserProcess, pid: u64) -> Result<UserProces
 /// diagnostics. This is deliberately called only after a fault, not in the
 /// scheduler hot path.
 
-pub fn current_user_tls_debug() -> (u64, u64, bool, u64, u64, u64) {
+pub fn current_user_tls_debug() -> (u64, u64, bool, bool, u64, u64, u64) {
     let scheduler = USER_SCHEDULER.lock();
     let process = USER_PROCESS.lock();
     let Some(task) = scheduler.processes.get(scheduler.current) else {
@@ -5014,6 +5014,7 @@ pub fn current_user_tls_debug() -> (u64, u64, bool, u64, u64, u64) {
             0,
             0,
             false,
+            process.active,
             0,
             process.thread_pointer,
             thread_pointer::read(),
@@ -5023,6 +5024,7 @@ pub fn current_user_tls_debug() -> (u64, u64, bool, u64, u64, u64) {
         task.pid,
         task.tid,
         task.is_thread,
+        process.active,
         process.tls_anchor,
         process.thread_pointer,
         thread_pointer::read(),
@@ -5057,6 +5059,18 @@ fn select_tls_base(saved: u64, anchor: u64, cleared: bool) -> u64 {
     } else {
         saved
     }
+}
+
+/// Resolve FS_BASE from the TLS state itself. UserProcess.active is scheduler
+/// bookkeeping; it must not erase a still-valid TLS identity during a scheduler
+/// handoff. An explicitly cleared thread pointer is represented by tls_cleared,
+/// while a process with no TLS has both pointer fields set to 0.
+fn user_process_tls_base(process: &UserProcess) -> u64 {
+    select_tls_base(
+        process.thread_pointer,
+        process.tls_anchor,
+        process.tls_cleared,
+    )
 }
 
 /// Pelanggaran invariant perpindahan task dilaporkan sekali, tetapi switch-nya
@@ -5245,19 +5259,10 @@ fn restore_current_thread_pointer() {
     // Tidak perlu USER_SCHEDULER: base TLS hanya hidup di USER_PROCESS. Mengunci
     // scheduler di sini menambah risiko deadlock pada jalur interrupt.
     let process = USER_PROCESS.lock();
-    // Selama task berjalan, state hidupnya ada di USER_PROCESS, bukan di slot
-    // `scheduler.processes[current]` (slot berisi state task lain yang sedang
-    // ditukar keluar). Jadi base diambil dari USER_PROCESS, dan hanya jatuh ke
-    // base awal bila base tersimpan hilang.
-    let value = if !process.active {
-        0
-    } else {
-        select_tls_base(
-            process.thread_pointer,
-            process.tls_anchor,
-            process.tls_cleared,
-        )
-    };
+    // active is not a TLS-validity bit. During the ring-3/ring-0 scheduler
+    // handoff, the live TLS fields can remain populated while that bookkeeping
+    // bit is temporarily false. Only tls_cleared may authorize a zero base.
+    let value = user_process_tls_base(&process);
     drop(process);
     thread_pointer::write(value);
 }
@@ -10338,10 +10343,10 @@ mod tests {
     use super::{
         EACCES, EAGAIN, EEXIST, EILSEQ, EINTR, EINVAL, ENOENT, ENOSYS, EPROTOTYPE, EPERM,
         CAP_NETWORK, CAP_VFS_WRITE, CAP_SYS_ADMIN, device_access_allowed, EPIPE, PRIO_PGRP, PRIO_PROCESS, PRIO_USER,
-        ProcessWait, capability_present, is_poll_wait, robust_word_after_exit,
+        ProcessWait, UserProcess, capability_present, is_poll_wait, robust_word_after_exit,
         FUTEX_OWNER_DIED, FUTEX_WAITERS,
         effective_priority_target, priority_change_allowed, priority_target_matches,
-        SCHED_OTHER, ElfError, select_tls_base, selector_returns_to_user, slot_is_resumable,
+        SCHED_OTHER, ElfError, select_tls_base, user_process_tls_base, selector_returns_to_user, slot_is_resumable,
         socketpair_type_info, SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET,
         MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, MAP_STACK, MMAP_END, MMAP_START, NodeType, PIPE_CAPACITY,
         PAGE_SIZE, PROT_EXEC, PROT_READ, PROT_WRITE, Pipe, STACK_INITIAL_PAGES, STACK_MAX_PAGES,
@@ -10362,6 +10367,25 @@ mod tests {
         FBIOGET_VSCREENINFO, FbFixScreeninfo, FbVarScreeninfo, SYSCALL_IOCTL, Winsize,
     };
     use crate::fs::{self, DirectoryEntry, FsError, Metadata};
+
+    #[test]
+    fn tls_restore_keeps_a_valid_base_during_inactive_scheduler_handoff() {
+        let mut process = UserProcess::new();
+        process.active = false;
+        process.thread_pointer = 0x1000_a3420;
+        process.tls_anchor = 0x1000_a3420;
+        assert_eq!(user_process_tls_base(&process), 0x1000_a3420);
+    }
+
+    #[test]
+    fn tls_restore_honors_an_explicitly_cleared_thread_pointer() {
+        let mut process = UserProcess::new();
+        process.active = true;
+        process.thread_pointer = 0;
+        process.tls_anchor = 0x1000_a3420;
+        process.tls_cleared = true;
+        assert_eq!(user_process_tls_base(&process), 0);
+    }
 
     #[test]
     fn futex_wake_matches_only_intersecting_bitsets() {

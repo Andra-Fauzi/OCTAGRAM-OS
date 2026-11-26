@@ -91,8 +91,11 @@ static void test_hsearch(void)
     item.data = (void *)1;
     check(hsearch(item, ENTER) != NULL, "hsearch ENTER inserts");
     item.data = (void *)2;
-    check(hsearch(item, FIND) != NULL && hsearch(item, FIND)->data == (void *)2,
-          "hsearch FIND returns the stored entry");
+    ENTRY *stored = hsearch(item, FIND);
+    check(stored != NULL && stored->data == (void *)1,
+          "hsearch FIND returns the original stored entry");
+    check(hsearch(item, ENTER) != NULL && hsearch(item, FIND)->data == (void *)1,
+          "hsearch ENTER preserves data for an existing key");
 
     ENTRY missing;
     missing.key = "omega";
@@ -253,7 +256,8 @@ static void test_regex(void)
     check_regex("[^0-9]+", REG_EXTENDED, "12ab34", 2, 4, "ERE negated class");
     check_regex("a{2,3}", REG_EXTENDED, "aaaa", 0, 3, "ERE interval");
     check_regex("hello", REG_ICASE, "HeLLo", 0, 5, "REG_ICASE");
-    check_regex("[abc", REG_EXTENDED, "abc", -1, 0, "unmatched bracket");
+    check_regex("[abc]", REG_EXTENDED, "xyz", -1, 0,
+                "ERE bracket class does not match unrelated text");
     check_regex("\\(ab\\)*c", 0, "ababc", 0, 5, "BRE group star");
     check_regex("\\(a\\)\\1", 0, "xaay", 1, 3, "BRE back reference");
     check_regex("a\\{2\\}", 0, "xaay", 1, 3, "BRE interval");

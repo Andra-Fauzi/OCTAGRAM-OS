@@ -129,6 +129,7 @@ jobs:
                         tools/build_llvm_octagram.sh \
                         tools/bootstrap_rustc_octagram.sh \
                         tools/stage_octagram_toolchain.sh \
+                        tools/check_octagram_llvm_config.sh \
                         tools/check_octagram_runtime_probes.sh; do
             sh -n "$script"
             sh "$script" --help >/dev/null
@@ -178,6 +179,18 @@ jobs:
 
       - name: Link OCTAGRAM runtime probes (gates the LLVM build)
         run: tools/check_octagram_runtime_probes.sh
+
+      - name: Check fcntl command numbers are distinct
+        # F_DUPFD_CLOEXEC once shared 5 with F_GETLK, which sent duplicate calls
+        # into the struct flock pointer path. The guest syscall test caught it.
+        run: python3 tools/check_octagram_fcntl_commands.py
+
+      - name: Check the host-runnable llvm-config (fixture, no LLVM build)
+        # bootstrap executes llvm-config on the build machine, so this verifies
+        # the generated script and the preflight that consumes it before any
+        # multi-hour LLVM job runs. The same check runs against a real LLVM
+        # component manifest in octagram-llvm-config.yml.
+        run: tools/check_octagram_llvm_config.sh
 
       - name: Upload sysroot for the toolchain jobs
         uses: actions/upload-artifact@v4

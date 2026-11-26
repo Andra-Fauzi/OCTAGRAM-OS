@@ -30,6 +30,7 @@
 #     --stage-dir DIR       where rustc/cargo are collected after the build
 #     --jobs N              bootstrap parallelism
 #     --build               also run x.py build (default: prepare only)
+#     --check               validate the inputs, print the pass marker, exit
 #     --clean               remove the bootstrap build directory first
 #
 # Status: scaffolding. Not executed in this workspace: it needs a Rust nightly
@@ -59,6 +60,7 @@ target_llvm_config=
 stage_dir=$build_root/octagram-toolchain
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 run_build=0
+check_only=0
 clean=0
 
 while [ $# -gt 0 ]; do
@@ -71,6 +73,7 @@ while [ $# -gt 0 ]; do
         --stage-dir) stage_dir=$2; shift 2 ;;
         --jobs) jobs=$2; shift 2 ;;
         --build) run_build=1; shift ;;
+        --check) check_only=1; shift ;;
         --clean) clean=1; shift ;;
         -h|--help)
             sed -n '2,43p' "$0"
@@ -172,6 +175,16 @@ linker=$repo_root/user/toolchain/bin/x86_64-octagram-gcc
 if [ ! -x "$linker" ]; then
     echo "bootstrap_rustc_octagram: error: missing linker driver $linker" >&2
     exit 1
+fi
+
+# --check stops here: every input has been validated (sysroot, linker, and both
+# llvm-config binaries), so CI can test the preflight without a Rust toolchain
+# or network access to the rust checkout.
+if [ "$check_only" -eq 1 ]; then
+    echo "  host llvm:   $host_llvm_config ($host_llvm_version)"
+    echo "  target llvm: $target_llvm_config ($target_llvm_reported)"
+    echo "OCTAGRAM-BOOTSTRAP-PREFLIGHT-PASS"
+    exit 0
 fi
 
 # 1. Rust checkout ---------------------------------------------------------

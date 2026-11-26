@@ -171,6 +171,25 @@ langkah di atas sebagai tiga job berurutan, dengan artefak di antaranya:
 
 Push dan pull request hanya menjalankan `preflight`; job `llvm` dan
 `rustc-cargo` hanya berjalan lewat `workflow_dispatch` karena durasinya jam-an.
+
+### Workflow cepat: `octagram-llvm-config.yml`
+
+Jalur `llvm-config` punya workflow sendiri supaya bisa diuji tanpa menunggu build
+LLVM:
+
+| Job | Isi | Durasi |
+| --- | --- | --- |
+| `fixture` | parse (`py_compile`, `sh -n`), pemeriksaan wiring (generator dipanggil build script, bootstrap memakai wrapper dan `--host-llvm-config`, nomor perintah `fcntl` tidak bertabrakan), lalu `tools/check_octagram_llvm_config.sh` | detik |
+| `real-llvm` | unduh source LLVM, **configure saja** (tanpa build), lalu jalankan pemeriksaan yang sama dengan `--build-dir` ke manifest komponen sungguhan | beberapa menit |
+
+`tools/check_octagram_llvm_config.sh` menguji: `--version`/`--host-target`,
+`--components`, arsip yang belum ada dilaporkan `missing:` + exit 1, `--link-shared`
+ditolak, tidak ada library duplikat, library daun (`-lLLVMDemangle`) di akhir,
+`--libnames`/`--libfiles`, serta empat kasus preflight bootstrap (tanpa wrapper,
+versi beda, wrapper tidak bisa dijalankan, tanpa `llvm-config` host). Untuk
+fixture, urutan persisnya ikut diassert. Semuanya bebas jaringan dan tanpa
+Rust toolchain: bootstrap mendapat flag `--check` yang berhenti setelah semua
+input tervalidasi dan mencetak `OCTAGRAM-BOOTSTRAP-PREFLIGHT-PASS`.
 Input dispatch: `llvm_version`, `jobs`, `build_llvm` (matikan untuk memakai
 cache libLLVM), dan `rustc_mode` (`full`, `prepare-only`, atau `skip`).
 

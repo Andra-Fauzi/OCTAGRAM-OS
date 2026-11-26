@@ -1,0 +1,144 @@
+name: OCTAGRAM llvm-config
+
+# Fast, self-contained tests for the host-runnable llvm-config that the rustc
+# bootstrap needs (tools/octagram_llvm_config.py). They do not build LLVM:
+# configuring the source tree is enough, because the generator only reads the
+# files configure produces (BuildVariables.inc, LibraryDependencies.inc and
+# llvm-config.h). The full LLVM build stays in octagram-native-toolchain.yml.
+
+on:
+  push:
+    branches:
+      - trunk
+      - feature/native-self-hosting
+      - feature/native-self-hosting-testing-3
+      - feature/native-self-hosting-testing-4
+    paths:
+      - "tools/octagram_llvm_config.py"
+      - "tools/check_octagram_llvm_config.sh"
+      - "tools/toolchain-probes/llvm-config-fixture/**"
+      - "tools/bootstrap_rustc_octagram.sh"
+      - "tools/build_llvm_octagram.sh"
+      - ".github/workflows/octagram-llvm-config.yml"
+  pull_request:
+    paths:
+      - "tools/octagram_llvm_config.py"
+      - "tools/check_octagram_llvm_config.sh"
+      - "tools/toolchain-probes/llvm-config-fixture/**"
+      - "tools/bootstrap_rustc_octagram.sh"
+      - "tools/build_llvm_octagram.sh"
+      - ".github/workflows/octagram-llvm-config.yml"
+  workflow_dispatch:
+    inputs:
+      llvm_version:
+        description: "LLVM version to read component data from"
+        required: false
+        default: "21.1.0"
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    name: llvm-config (fixture)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install python3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3
+
+      - name: Parse checks
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/octagram_llvm_config.py
+          sh -n tools/check_octagram_llvm_config.sh
+          sh -n tools/bootstrap_rustc_octagram.sh
+          sh -n tools/build_llvm_octagram.sh
+          echo "PARSE-PASS"
+
+      - name: Wiring checks
+        # These greps catch the regression that motivated the generator: the
+        # bootstrap must never point a target at a binary it cannot execute.
+        run: |
+          set -euo pipefail
+          grep -q 'octagram_llvm_config.py' tools/build_llvm_octagram.sh \
+            || { echo "FAIL: build_llvm_octagram.sh no longer generates octagram-llvm-config"; exit 1; }
+          grep -q 'octagram-llvm-config' tools/bootstrap_rustc_octagram.sh \
+            || { echo "FAIL: bootstrap_rustc_octagram.sh does not use octagram-llvm-config"; exit 1; }
+          grep -q -- '--host-llvm-config' tools/bootstrap_rustc_octagram.sh \
+            || { echo "FAIL: bootstrap_rustc_octagram.sh has no --host-llvm-config"; exit 1; }
+          python3 tools/check_octagram_fcntl_commands.py
+          echo "WIRING-PASS"
+
+      - name: Run the llvm-config check (fixture)
+        run: tools/check_octagram_llvm_config.sh
+
+  real-llvm:
+    name: llvm-config (LLVM ${{ inputs.llvm_version || '21.1.0' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      LLVM_VERSION: ${{ inputs.llvm_version || '21.1.0' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build python3 curl ca-certificates
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+
+      - name: Restore LLVM source tarball
+        uses: actions/cache@v4
+        with:
+          path: build/llvm-config-test/llvm-project-${{ env.LLVM_VERSION }}.src.tar.xz
+          key: octagram-llvm-config-src-${{ env.LLVM_VERSION }}
+
+      - name: Download and extract LLVM source
+        run: |
+          set -euo pipefail
+          work=build/llvm-config-test
+          mkdir -p "$work"
+          tarball="$work/llvm-project-$LLVM_VERSION.src.tar.xz"
+          if [ ! -f "$tarball" ]; then
+            url="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src.tar.xz"
+            curl -fL --retry 3 -o "$tarball.part" "$url"
+            mv "$tarball.part" "$tarball"
+          fi
+          tar -xJf "$tarball" -C "$work"
+          test -f "$work/llvm-project-$LLVM_VERSION.src/llvm/CMakeLists.txt"
+
+      - name: Configure LLVM (no build)
+        run: |
+          set -euo pipefail
+          work=build/llvm-config-test
+          cmake -S "$work/llvm-project-$LLVM_VERSION.src/llvm" -B "$work/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD=X86 \
+            -DLLVM_ENABLE_PROJECTS= \
+            -DLLVM_ENABLE_RUNTIMES= \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF
+          test -f "$work/build/tools/llvm-config/LibraryDependencies.inc" \
+            || { echo "FAIL: configure produced no LibraryDependencies.inc"; exit 1; }
+
+      - name: Run the llvm-config check against the real component manifest
+        run: |
+          tools/check_octagram_llvm_config.sh --build-dir build/llvm-config-test/build

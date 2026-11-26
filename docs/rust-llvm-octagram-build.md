@@ -218,33 +218,54 @@ Gap yang ditemukan dan diperbaiki:
 | TLS GD vs local-exec | CMake menambahkan `-fPIC` setelah flag driver | driver mengulang `-fno-pie -fno-pic` setelah argumen pemanggil |
 | `-lm` mengambil libm glibc host | sysroot tidak punya nama library Unix standar | staging membuat `libm.a`/`librt.a`/`libdl.a`/`libpthread.a` kosong (simbol berasal dari `libc.a` yang selalu ditautkan driver) |
 
-### Blocker M4.3.4: `llvm-config` harus bisa dieksekusi di mesin build
+### `llvm-config` yang bisa dieksekusi di mesin build
 
-`bootstrap_rustc_octagram.sh` sekarang menolak berjalan tanpa `llvm-config` host
-yang bisa dieksekusi: bootstrap menjalankan `llvm-config` (untuk `--libs`,
-`--system-libs`, `--cxxflags`, `--version`) saat membangun compiler untuk
-platform build, sedangkan `bin/llvm-config` hasil cross-build adalah ELF
-OCTAGRAM. Konfigurasi lama menaruh ELF itu di `[target.x86_64-unknown-linux-gnu]`,
+`bootstrap_rustc_octagram.sh` menjalankan `llvm-config` (untuk `--libs`,
+`--system-libs`, `--cxxflags`, `--version`) di mesin build, sedangkan
+`bin/llvm-config` hasil cross-build adalah ELF OCTAGRAM yang hanya bisa berjalan
+di guest. Konfigurasi lama menaruh ELF itu di `[target.x86_64-unknown-linux-gnu]`,
 sehingga `x.py` berhenti dengan `could not execute llvm-config` sebelum
-kompilasi dimulai. Perbaikan yang sudah masuk:
+kompilasi dimulai. Sekarang ada dua llvm-config, satu untuk tiap platform:
 
-- `--host-llvm-config PATH` (atau `HOST_LLVM_CONFIG`, atau `llvm-config` di
-  `PATH`) wajib ada dan versi major-nya harus sama dengan sysroot LLVM target
-  (dibaca dari `include/llvm/Config/llvm-config.h`);
-- `[target.x86_64-unknown-linux-gnu]` memakai binary host tersebut, bukan ELF
-  target.
+| Konfigurasi | Binary | Sumber |
+| --- | --- | --- |
+| `[target.x86_64-unknown-linux-gnu]` | `--host-llvm-config` (atau `HOST_LLVM_CONFIG`, atau `llvm-config` di `PATH`) | LLVM 21 host, dipakai untuk compiler yang berjalan di mesin build |
+| `[target.x86_64-unknown-octagram]` | `$llvm_prefix/bin/octagram-llvm-config` (atau `--target-llvm-config`) | dibuat oleh `tools/octagram_llvm_config.py` |
 
-Sisa pekerjaan yang belum bisa diselesaikan di sini: `[target.x86_64-unknown-octagram]`
-masih menunjuk `bin/llvm-config` target, yang juga dijalankan bootstrap di mesin
-build. Yang dibutuhkan adalah `llvm-config` **host-runnable** yang melaporkan
-isi library target. Jalur yang paling murah: hasilkan skrip kecil dari
-`tools/llvm-config/LibraryDependencies.inc` (daftar library + dependensinya
-sudah tersedia di build tree) sehingga urutan `--libs` sama dengan yang
-dihasilkan `llvm-config` asli, lalu arahkan konfigurasi target ke skrip itu.
-Mengurutkan library secara alfabetis tidak cukup: arsip statis butuh urutan
-dependen-sebelum-dependensi. Job CI `rustc-cargo` juga perlu LLVM 21 untuk host
-(sekarang hanya memasang `cmake`/`ninja`), dan tanpa itu job berhenti di
-preflight baru ini.
+`tools/octagram_llvm_config.py` menulis skrip Python yang bisa dijalankan host
+dan melaporkan isi install target. Datanya diambil dari build tree LLVM sendiri:
+`tools/llvm-config/BuildVariables.inc` (versi, flag, `LLVM_SYSTEM_LIBS`),
+`tools/llvm-config/LibraryDependencies.inc` (komponen → library + dependensi),
+dan `include/llvm/Config/llvm-config.h`. Urutan library mengikuti
+`llvm-config.cpp`: telusuri komponen secara depth-first dan tambahkan library
+setelah dependensinya, lalu balik seluruh daftar sehingga dependen muncul lebih
+dulu daripada dependensi. Itu sebabnya `--libs core support` menghasilkan
+`-lLLVMCore -lLLVMRemarks … -lLLVMSupport -lLLVMDemangle`, sama seperti
+`llvm-config` asli; urutan alfabetis akan gagal saat link statis.
+
+Perilaku yang dijaga sama dengan `llvm-config` asli: `--link-shared` gagal
+karena install ini hanya statis, library yang belum dibangun dilaporkan sebagai
+`missing:` dengan exit 1 (jadi tahap yang masih build tidak mengklaim flag yang
+belum bisa dipenuhi), `--libnames`/`--libfiles` mengikuti urutan yang sama, dan
+argumen tak dikenal ditolak.
+
+Rangkaian pemakaiannya:
+
+- `tools/build_llvm_octagram.sh` menjalankan generator setelah configure lalu
+  memverifikasi hasilnya setelah install (`--version` harus sama dengan versi
+  LLVM dan `--libs` tidak boleh kosong);
+- `bootstrap_rustc_octagram.sh` mewajibkan `llvm-config` host yang major-nya
+  sama dengan LLVM target, mewajibkan wrapper target bisa dieksekusi dan
+  melaporkan versi yang sama, lalu memakai keduanya di `config.toml`;
+- job CI `rustc-cargo` memasang `llvm-<major>-dev` untuk runner (fallback ke
+  tarball rilis resmi `LLVM-<ver>-Linux-X64.tar.xz`) dan mengekspor
+  `HOST_LLVM_CONFIG`, sedangkan job `llvm` memverifikasi wrapper target karena
+  skrip itu memang bisa dijalankan di runner.
+
+Konsekuensi: mesin build butuh `python3` untuk `octagram-llvm-config` (sudah
+menjadi syarat `build_llvm_octagram.sh` dan tersedia di runner), dan runner butuh
+arsip statis `libLLVM*.a` milik LLVM host karena compiler untuk mesin build ikut
+ditautkan ke LLVM.
 
 Invariant yang harus dijaga saat mengubah driver atau sysroot:
 

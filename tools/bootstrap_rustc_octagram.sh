@@ -26,6 +26,7 @@
 #     --libc-checkout DIR   existing rust-lang/libc 0.2.191 checkout
 #     --llvm-prefix DIR     install prefix from build_llvm_octagram.sh
 #     --host-llvm-config F  llvm-config for the build machine (see below)
+#     --target-llvm-config F  llvm-config describing the OCTAGRAM library set
 #     --stage-dir DIR       where rustc/cargo are collected after the build
 #     --jobs N              bootstrap parallelism
 #     --build               also run x.py build (default: prepare only)
@@ -54,6 +55,7 @@ rust_checkout=$build_root/rust
 libc_checkout=
 llvm_prefix=
 host_llvm_config=
+target_llvm_config=
 stage_dir=$build_root/octagram-toolchain
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 run_build=0
@@ -65,6 +67,7 @@ while [ $# -gt 0 ]; do
         --libc-checkout) libc_checkout=$2; shift 2 ;;
         --llvm-prefix) llvm_prefix=$2; shift 2 ;;
         --host-llvm-config) host_llvm_config=$2; shift 2 ;;
+        --target-llvm-config) target_llvm_config=$2; shift 2 ;;
         --stage-dir) stage_dir=$2; shift 2 ;;
         --jobs) jobs=$2; shift 2 ;;
         --build) run_build=1; shift ;;
@@ -129,6 +132,33 @@ if [ -n "$target_llvm_major" ] && [ "$target_llvm_major" != "$host_llvm_major" ]
     echo "bootstrap_rustc_octagram: error: host llvm-config is $host_llvm_version," >&2
     echo "bootstrap_rustc_octagram:        target LLVM is major $target_llvm_major" >&2
     echo "bootstrap_rustc_octagram: rustc refuses a mismatched LLVM; use the same version." >&2
+    exit 1
+fi
+
+# The OCTAGRAM compiler links the cross-built static libs, so its llvm-config
+# must describe that install. build_llvm_octagram.sh writes a host-runnable
+# replacement next to the target-only binary for exactly this reason; a raw
+# bin/llvm-config cannot be queried here.
+if [ -z "$target_llvm_config" ]; then
+    target_llvm_config=$llvm_prefix/bin/octagram-llvm-config
+fi
+if [ ! -x "$target_llvm_config" ]; then
+    echo "bootstrap_rustc_octagram: error: no host-runnable llvm-config for $HOST" >&2
+    echo "bootstrap_rustc_octagram: looked for $target_llvm_config" >&2
+    echo "bootstrap_rustc_octagram: regenerate the LLVM install with" >&2
+    echo "bootstrap_rustc_octagram:   tools/build_llvm_octagram.sh (it writes" >&2
+    echo "bootstrap_rustc_octagram:   bin/octagram-llvm-config), or pass --target-llvm-config." >&2
+    exit 1
+fi
+target_llvm_reported=$("$target_llvm_config" --version 2>/dev/null || true)
+if [ -z "$target_llvm_reported" ]; then
+    echo "bootstrap_rustc_octagram: error: $target_llvm_config did not report a version" >&2
+    echo "bootstrap_rustc_octagram: it must run on the build machine, not inside OCTAGRAM" >&2
+    exit 1
+fi
+if [ "$(printf '%s' "$target_llvm_reported" | cut -d. -f1)" != "$host_llvm_major" ]; then
+    echo "bootstrap_rustc_octagram: error: target llvm-config is $target_llvm_reported," >&2
+    echo "bootstrap_rustc_octagram:        host llvm-config is $host_llvm_version" >&2
     exit 1
 fi
 
@@ -256,7 +286,7 @@ llvm-config = "$host_llvm_config"
 # executed here.
 [target.$HOST]
 linker = "$linker"
-llvm-config = "$llvm_config"
+llvm-config = "$target_llvm_config"
 crt-static = true
 
 [target.$TARGET]
@@ -270,6 +300,7 @@ echo "bootstrap prepared:"
 echo "  rust checkout: $rust_checkout"
 echo "  libLLVM:       $llvm_config"
 echo "  host llvm:     $host_llvm_config ($host_llvm_version)"
+echo "  target llvm:   $target_llvm_config ($target_llvm_reported)"
 echo "  sysroot:       $sysroot"
 echo "  linker:        $linker"
 echo "  stage dir:     $stage_dir"

@@ -66,7 +66,7 @@ install_prefix=${prefix:-$build_root/llvm-$llvm_version-octagram}
 work_dir=$build_root/llvm-$llvm_version
 cmake_build=$work_dir/build-octagram
 
-for tool in cmake ninja gcc g++ curl tar; do
+for tool in cmake ninja gcc g++ curl tar python3; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "build_llvm_octagram: error: '$tool' is required on the host" >&2
         exit 1
@@ -184,6 +184,16 @@ echo "  prefix:  $install_prefix"
 # shellcheck disable=SC2086 # cmake_arguments is a newline-separated list.
 cmake -S "$source_dir/llvm" -B "$cmake_build" $cmake_arguments
 
+# bin/llvm-config is an OCTAGRAM ELF and cannot run on the build machine, but
+# bootstrap executes llvm-config while linking rustc. Generate a host-runnable
+# replacement from the build tree's own component manifest so the reported
+# flags and library order match this install exactly.
+echo "generating host-runnable octagram-llvm-config"
+python3 "$repo_root/tools/octagram_llvm_config.py" \
+    --build-dir "$cmake_build" \
+    --prefix "$install_prefix" \
+    --output "$install_prefix/bin/octagram-llvm-config"
+
 echo "building libLLVM, llc, llvm-nm, llvm-config (-j$jobs)"
 cmake --build "$cmake_build" --target install -j "$jobs"
 
@@ -193,8 +203,28 @@ if [ ! -x "$llvm_config" ]; then
     exit 1
 fi
 
+# Runs on this machine, so it can be checked here rather than in the guest.
+host_llvm_config=$install_prefix/bin/octagram-llvm-config
+if [ ! -x "$host_llvm_config" ]; then
+    echo "build_llvm_octagram: error: no host-runnable octagram-llvm-config" >&2
+    exit 1
+fi
+reported_version=$("$host_llvm_config" --version 2>/dev/null || true)
+if [ "$reported_version" != "$llvm_version" ]; then
+    echo "build_llvm_octagram: error: octagram-llvm-config reports '$reported_version'," >&2
+    echo "build_llvm_octagram:        expected $llvm_version" >&2
+    exit 1
+fi
+library_count=$("$host_llvm_config" --libs 2>/dev/null | wc -w | tr -d ' ')
+if [ "${library_count:-0}" -eq 0 ]; then
+    echo "build_llvm_octagram: error: octagram-llvm-config reported no libraries" >&2
+    exit 1
+fi
+
 echo
 echo "libLLVM for x86_64-unknown-octagram installed at $install_prefix"
+echo "  target llvm-config:   $llvm_config (runs only inside OCTAGRAM)"
+echo "  host llvm-config:     $host_llvm_config ($reported_version, $library_count libraries)"
 "$llvm_config" --version || true
 echo "  static libs: $("$llvm_config" --libdir 2>/dev/null || echo "$install_prefix/lib")"
 echo

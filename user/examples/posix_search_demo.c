@@ -22,6 +22,7 @@
 #include <wordexp.h>
 #include <fts.h>
 #include <ftw.h>
+#include <glob.h>
 
 static int failures;
 
@@ -138,6 +139,37 @@ static void test_scandir(void)
 
     check(scandir("/definitely-not-here", &entries, NULL, NULL) == -1,
           "scandir reports a missing directory");
+}
+
+/* ---- glob --------------------------------------------------------------- */
+
+static void test_glob(void)
+{
+    glob_t paths;
+    memset(&paths, 0, sizeof(paths));
+    check(glob("/bin/sh", 0, NULL, &paths) == 0,
+          "glob without GLOB_DOOFFS succeeds");
+    check(paths.gl_offs == 0 && paths.gl_pathv != NULL &&
+              paths.gl_pathv[0] != NULL &&
+              strcmp(paths.gl_pathv[0], "/bin/sh") == 0,
+          "glob without GLOB_DOOFFS has no reserved slot");
+    const size_t first_count = paths.gl_pathc;
+    check(glob("/bin/bash", GLOB_APPEND | GLOB_NOCHECK, NULL, &paths) == 0,
+          "glob append succeeds");
+    check(paths.gl_pathc == first_count + 1 &&
+              strcmp(paths.gl_pathv[first_count], "/bin/bash") == 0,
+          "glob append preserves earlier paths");
+    globfree(&paths);
+
+    memset(&paths, 0, sizeof(paths));
+    paths.gl_offs = 2;
+    check(glob("/bin/sh", GLOB_DOOFFS, NULL, &paths) == 0,
+          "glob GLOB_DOOFFS succeeds");
+    check(paths.gl_offs == 2 && paths.gl_pathv[0] == NULL &&
+              paths.gl_pathv[1] == NULL &&
+              strcmp(paths.gl_pathv[2], "/bin/sh") == 0,
+          "glob preserves requested offset slots");
+    globfree(&paths);
 }
 
 /* ---- wordexp ------------------------------------------------------------ */
@@ -416,6 +448,9 @@ int main(void)
     puts("POSIX-SEARCH-STAGE: scandir");
     fflush(stdout);
     test_scandir();
+    puts("POSIX-SEARCH-STAGE: glob");
+    fflush(stdout);
+    test_glob();
     puts("POSIX-SEARCH-STAGE: wordexp");
     fflush(stdout);
     test_wordexp();

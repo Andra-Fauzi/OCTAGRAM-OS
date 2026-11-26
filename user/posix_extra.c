@@ -2315,6 +2315,7 @@ static int nftw_walk(const char *path, size_t path_length,
                      int flags, int depth, dev_t device)
 {
     struct stat metadata;
+    memset(&metadata, 0, sizeof(metadata));
     int status = (flags & FTW_PHYS) != 0 ? lstat(path, &metadata)
                                        : stat(path, &metadata);
     struct FTW info;
@@ -3618,6 +3619,15 @@ int fts_set(FTS *stream, FTSENT *entry, int instructions)
         if (stream->depth > 0) {
             struct fts_frame *frame = &stream->frames[stream->depth - 1];
             if (frame->entry == entry) {
+                /*
+                 * fts_read() has opened the directory but has not necessarily
+                 * materialized its children yet. Materialize first so the
+                 * skip index cannot be reset to zero by the next fts_read().
+                 */
+                if (frame->listed == 0 &&
+                    fts_frame_materialize(stream, frame) < 0) {
+                    return -1;
+                }
                 frame->index = frame->count;
             }
         }

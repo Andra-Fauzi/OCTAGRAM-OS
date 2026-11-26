@@ -175,6 +175,14 @@ cmake_arguments="
 # compiler/linker toolchain. It requires host tracing APIs (sys/ptrace.h)
 # that the target sysroot intentionally does not provide.
 -DLLVM_TOOL_LLVM_EXEGESIS_BUILD=OFF
+# The target ABI intentionally has no libgcc_eh / frame-registration runtime.
+# Keep the static compiler libraries, but skip standalone JIT executables:
+# lli, llvm-jitlink, and llvm-rtdyld pull ORC/RuntimeDyld EH-frame registration
+# and fail to link __register_frame/__deregister_frame under OCTAGRAM -nostdlib.
+# They are not required by rustc's code-generation backend or the tools below.
+-DLLVM_TOOL_LLI_BUILD=OFF
+-DLLVM_TOOL_LLVM_JITLINK_BUILD=OFF
+-DLLVM_TOOL_LLVM_RTDYLD_BUILD=OFF
 -DLLVM_INSTALL_UTILS=OFF
 -DLLVM_OPTIMIZED_TABLEGEN=ON
 -DLLVM_BUILD_EXTERNAL_COMPILER_RT=OFF

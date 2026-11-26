@@ -216,46 +216,49 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                         options(nomem, nostack, preserves_flags)
                     );
                 }
-                // The user stack starts small and grows on demand; a write
-                // just below the current stack is a growth request, not a bug.
+                // The user stack starts small and grows on demand. Even this
+                // successful retry must pass through the shared return-context
+                // restoration below before the CPU resumes ring 3.
                 if crate::elf::grow_user_stack(fault_address, frame.error_code) {
-                    // The page is mapped now: retry the faulting instruction.
-                    return frame as *mut InterruptFrame;
-                }
-                // The faulting RIP is in a mapped user executable page. Capture
-                // its first bytes and saved GPRs so guest faults can be decoded
-                // from serial output without guessing at TLS/loader behavior.
-                let rip = frame.stack_frame.instruction_pointer;
-                let mut instruction = [0u8; 8];
-                for (offset, byte) in instruction.iter_mut().enumerate() {
-                    let address = rip.saturating_add(offset as u64);
-                    if crate::memory::paging::translate(address).is_ok() {
-                        *byte = unsafe {
-                            core::ptr::read_volatile(address as *const u8)
-                        };
+                    frame as *mut InterruptFrame
+                } else {
+                    // The faulting RIP is in a mapped user executable page.
+                    // Capture its first bytes and saved GPRs so guest faults can
+                    // be decoded from serial output without guessing at TLS or
+                    // loader behavior.
+                    let rip = frame.stack_frame.instruction_pointer;
+                    let mut instruction = [0u8; 8];
+                    for (offset, byte) in instruction.iter_mut().enumerate() {
+                        let address = rip.saturating_add(offset as u64);
+                        if crate::memory::paging::translate(address).is_ok() {
+                            *byte = unsafe {
+                                core::ptr::read_volatile(address as *const u8)
+                            };
+                        }
                     }
+                    let (pid, tid, is_thread, initial_tls, process_tls, actual_fs) =
+                        crate::elf::current_user_tls_debug();
+                    crate::println!(
+                        "User page fault error_code={:#x} rip={:#x} address={:#x} fs_base={:#x} bytes={:02x?}",
+                        frame.error_code,
+                        rip,
+                        fault_address,
+                        actual_fs,
+                        instruction
+                    );
+                    crate::println!(
+                        "User fault task pid={pid} tid={tid} is_thread={is_thread} initial_tls={initial_tls:#x} process_tls={process_tls:#x} actual_fs={actual_fs:#x}"
+                    );
+                    crate::println!(
+                        "User fault regs rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rsi={:#x} rdi={:#x} rbp={:#x} rsp={:#x} r8={:#x} r9={:#x} r10={:#x} r11={:#x} r12={:#x} r13={:#x} r14={:#x} r15={:#x}",
+                        frame.rax, frame.rbx, frame.rcx, frame.rdx,
+                        frame.rsi, frame.rdi, frame.rbp,
+                        frame.stack_frame.stack_pointer,
+                        frame.r8, frame.r9, frame.r10, frame.r11,
+                        frame.r12, frame.r13, frame.r14, frame.r15
+                    );
+                    crate::elf::terminate_user(frame, u64::MAX)
                 }
-                let (pid, tid, is_thread, initial_tls, process_tls, actual_fs) =
-                    crate::elf::current_user_tls_debug();
-                crate::println!(
-                    "User page fault error_code={:#x} rip={:#x} address={:#x} fs_base={:#x} bytes={:02x?}",
-                    frame.error_code,
-                    rip,
-                    fault_address,
-                    actual_fs,
-                    instruction
-                );
-                crate::println!(
-                    "User fault task pid={pid} tid={tid} is_thread={is_thread} initial_tls={initial_tls:#x} process_tls={process_tls:#x} actual_fs={actual_fs:#x}"
-                );
-                crate::println!(
-                    "User fault regs rax={:#x} rbx={:#x} rcx={:#x} rdx={:#x} rsi={:#x} rdi={:#x} rbp={:#x} rsp={:#x} r8={:#x} r9={:#x} r10={:#x} r11={:#x} r12={:#x} r13={:#x} r14={:#x} r15={:#x}",
-                    frame.rax, frame.rbx, frame.rcx, frame.rdx,
-                    frame.rsi, frame.rdi, frame.rbp,
-                    frame.stack_frame.stack_pointer,
-                    frame.r8, frame.r9, frame.r10, frame.r11,
-                    frame.r12, frame.r13, frame.r14, frame.r15
-                );
             } else {
                 crate::println!(
                     "User exception vector={} error_code={:#x} rip={:#x} fs_base={:#x}",
@@ -264,8 +267,8 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
                     frame.stack_frame.instruction_pointer,
                     crate::arch::x86_64::thread_pointer::read()
                 );
+                crate::elf::terminate_user(frame, u64::MAX)
             }
-            crate::elf::terminate_user(frame, u64::MAX)
         }
         _ => {
             // Do not use println! here: it takes the terminal lock and writes
@@ -314,6 +317,11 @@ extern "C" fn common_interrupt_handler(frame: *mut InterruptFrame) -> *mut Inter
             }
         }
     }
+
+    // One finalization point for every interrupt vector: whichever handler
+    // selected the return frame, restore that task's TLS and FPU state before
+    // the assembly stub reaches iretq. The helper is a no-op for ring-0 frames.
+    crate::elf::restore_user_context(return_frame);
     return_frame
 }
 

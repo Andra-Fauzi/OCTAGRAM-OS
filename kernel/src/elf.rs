@@ -2678,7 +2678,6 @@ pub fn handle_syscall(frame: &mut InterruptFrame) -> *mut InterruptFrame {
             next_frame = replacement;
         }
     }
-    restore_user_context(next_frame);
     next_frame
 }
 
@@ -2783,12 +2782,8 @@ pub fn handle_timer(frame: &mut InterruptFrame) -> *mut InterruptFrame {
         handle_timer_inner(frame)
     };
 
-    // The timer can interrupt a kernel-mode continuation (for example, a
-    // syscall that blocked) and the scheduler can still select a different
-    // task whose saved frame returns directly to ring 3. Restore context based
-    // on the frame we are about to iret to, not on the interrupt's origin.
-    // restore_user_context is a no-op for a kernel-mode return frame.
-    restore_user_context(next_frame);
+    // The common interrupt epilogue restores the selected frame's TLS and FPU
+    // state once, after every vector has finished selecting its return frame.
     next_frame
 }
 
@@ -5150,7 +5145,7 @@ fn selector_returns_to_user(code_segment: u64) -> bool {
 /// Pulihkan konteks (TLS dan FPU) task yang akan menerima kendali saat `frame`
 /// di-`iretq`. Wajib dipanggil setiap kali handler bisa mengembalikan frame
 /// milik task lain.
-fn restore_user_context(frame: *mut InterruptFrame) {
+pub(crate) fn restore_user_context(frame: *mut InterruptFrame) {
     // Frame yang melanjutkan kode ring 0 (trampoline kernel) tidak boleh diberi
     // konteks user: loop scheduler memulihkan task terpilih tepat sebelum iretq
     // miliknya sendiri. USER_PROCESS saat itu bisa saja sudah berisi state task
@@ -9846,14 +9841,9 @@ fn current_cpu_milliseconds() -> u64 {
 }
 
 pub fn terminate_user(frame: &mut InterruptFrame, status: u64) -> *mut InterruptFrame {
-    let next_frame = terminate_user_inner(frame, status);
-    // `terminate_user_inner` may hand control to a different task (the parent
-    // waiting in waitpid, or the next runnable task). That task must resume
-    // with its own TLS base and FPU state; restoring only the FPU left
-    // FS_BASE pointing at the terminated task's (soon unmapped) TLS block, so
-    // the next `__thread` access in the resumed task faulted.
-    restore_user_context(next_frame);
-    next_frame
+    // The common interrupt epilogue restores TLS and FPU for whichever task
+    // `terminate_user_inner` selects, immediately before returning to ring 3.
+    terminate_user_inner(frame, status)
 }
 
 fn terminate_user_inner(frame: &mut InterruptFrame, status: u64) -> *mut InterruptFrame {

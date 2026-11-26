@@ -3716,6 +3716,41 @@ int pthread_getname_np(pthread_t thread, char *name, size_t length)
     return ENOSYS;
 }
 
+/* ---- POSIX shared memory objects --------------------------------------- */
+
+/* OCTAGRAM does not yet have a kernel-backed named shared-memory namespace.
+ * Keep the standard API linkable, but report ENOSYS rather than emulating it
+ * with ordinary files (which would not provide the required unlink/lifetime
+ * semantics across processes).
+ */
+static int octagram_valid_shm_name(const char *name)
+{
+    return name != NULL && name[0] == '/' && name[1] != '\\0' &&
+           strchr(name + 1, '/') == NULL;
+}
+
+int shm_open(const char *name, int flags, mode_t mode)
+{
+    (void)flags;
+    (void)mode;
+    if (!octagram_valid_shm_name(name)) {
+        errno = EINVAL;
+        return -1;
+    }
+    errno = ENOSYS;
+    return -1;
+}
+
+int shm_unlink(const char *name)
+{
+    if (!octagram_valid_shm_name(name)) {
+        errno = EINVAL;
+        return -1;
+    }
+    errno = ENOSYS;
+    return -1;
+}
+
 /* ---- mmap64 ------------------------------------------------------------- */
 
 /* OCTAGRAM's off_t is already 64-bit, so mmap64 is the same call. It exists for

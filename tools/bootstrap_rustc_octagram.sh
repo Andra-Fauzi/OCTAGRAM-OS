@@ -25,6 +25,7 @@
 #     --rust-checkout DIR   existing rust-lang/rust checkout
 #     --libc-checkout DIR   existing rust-lang/libc 0.2.191 checkout
 #     --llvm-prefix DIR     install prefix from build_llvm_octagram.sh
+#     --host-llvm-config F  llvm-config for the build machine (see below)
 #     --stage-dir DIR       where rustc/cargo are collected after the build
 #     --jobs N              bootstrap parallelism
 #     --build               also run x.py build (default: prepare only)
@@ -52,6 +53,7 @@ build_root=$repo_root/build/toolchain
 rust_checkout=$build_root/rust
 libc_checkout=
 llvm_prefix=
+host_llvm_config=
 stage_dir=$build_root/octagram-toolchain
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 run_build=0
@@ -62,12 +64,13 @@ while [ $# -gt 0 ]; do
         --rust-checkout) rust_checkout=$2; shift 2 ;;
         --libc-checkout) libc_checkout=$2; shift 2 ;;
         --llvm-prefix) llvm_prefix=$2; shift 2 ;;
+        --host-llvm-config) host_llvm_config=$2; shift 2 ;;
         --stage-dir) stage_dir=$2; shift 2 ;;
         --jobs) jobs=$2; shift 2 ;;
         --build) run_build=1; shift ;;
         --clean) clean=1; shift ;;
         -h|--help)
-            sed -n '2,42p' "$0"
+            sed -n '2,43p' "$0"
             exit 0
             ;;
         *)
@@ -87,6 +90,45 @@ fi
 if [ -z "$llvm_config" ] || [ ! -x "$llvm_config" ]; then
     echo "bootstrap_rustc_octagram: error: no static libLLVM install found" >&2
     echo "bootstrap_rustc_octagram: run tools/build_llvm_octagram.sh first, or pass --llvm-prefix" >&2
+    exit 1
+fi
+
+# llvm-config is executed by bootstrap on the build machine, so the copy that
+# answers for x86_64-unknown-linux-gnu must be a host binary. $llvm_config above
+# is an OCTAGRAM ELF: it only describes the target library set and cannot run
+# here, and bootstrap would stop with "could not execute llvm-config".
+if [ -z "$host_llvm_config" ]; then
+    host_llvm_config=${HOST_LLVM_CONFIG:-}
+fi
+if [ -z "$host_llvm_config" ]; then
+    for candidate in llvm-config llvm-config-21; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            host_llvm_config=$(command -v "$candidate")
+            break
+        fi
+    done
+fi
+if [ -z "$host_llvm_config" ] || [ ! -x "$host_llvm_config" ]; then
+    echo "bootstrap_rustc_octagram: error: no host-runnable llvm-config found" >&2
+    echo "bootstrap_rustc_octagram: bootstrap executes llvm-config while building the" >&2
+    echo "bootstrap_rustc_octagram: build-platform compiler; $llvm_config is an" >&2
+    echo "bootstrap_rustc_octagram: x86_64-unknown-octagram ELF and cannot run on this host." >&2
+    echo "bootstrap_rustc_octagram: install LLVM 21 for the build host, or pass" >&2
+    echo "bootstrap_rustc_octagram: --host-llvm-config <path> (must report the same version)." >&2
+    exit 1
+fi
+host_llvm_version=$("$host_llvm_config" --version 2>/dev/null || true)
+if [ -z "$host_llvm_version" ]; then
+    echo "bootstrap_rustc_octagram: error: $host_llvm_config did not report a version" >&2
+    exit 1
+fi
+target_llvm_major=$(sed -n 's/^#define LLVM_VERSION_MAJOR \([0-9]*\)$/\1/p' \
+    "$llvm_prefix/include/llvm/Config/llvm-config.h" 2>/dev/null | head -n 1)
+host_llvm_major=$(printf '%s' "$host_llvm_version" | cut -d. -f1)
+if [ -n "$target_llvm_major" ] && [ "$target_llvm_major" != "$host_llvm_major" ]; then
+    echo "bootstrap_rustc_octagram: error: host llvm-config is $host_llvm_version," >&2
+    echo "bootstrap_rustc_octagram:        target LLVM is major $target_llvm_major" >&2
+    echo "bootstrap_rustc_octagram: rustc refuses a mismatched LLVM; use the same version." >&2
     exit 1
 fi
 
@@ -205,8 +247,13 @@ download-ci-llvm = false
 link-jobs = $jobs
 
 [target.x86_64-unknown-linux-gnu]
-llvm-config = "$llvm_config"
+llvm-config = "$host_llvm_config"
 
+# The OCTAGRAM compiler links the cross-built static libLLVM. bootstrap still
+# runs this path on the build machine, so it must be a host-runnable
+# llvm-config whose output describes the OCTAGRAM library set (a wrapper around
+# the native one is the expected shape); the raw $llvm_config binary cannot be
+# executed here.
 [target.$HOST]
 linker = "$linker"
 llvm-config = "$llvm_config"
@@ -222,6 +269,7 @@ echo
 echo "bootstrap prepared:"
 echo "  rust checkout: $rust_checkout"
 echo "  libLLVM:       $llvm_config"
+echo "  host llvm:     $host_llvm_config ($host_llvm_version)"
 echo "  sysroot:       $sysroot"
 echo "  linker:        $linker"
 echo "  stage dir:     $stage_dir"

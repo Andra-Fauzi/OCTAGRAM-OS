@@ -218,6 +218,34 @@ Gap yang ditemukan dan diperbaiki:
 | TLS GD vs local-exec | CMake menambahkan `-fPIC` setelah flag driver | driver mengulang `-fno-pie -fno-pic` setelah argumen pemanggil |
 | `-lm` mengambil libm glibc host | sysroot tidak punya nama library Unix standar | staging membuat `libm.a`/`librt.a`/`libdl.a`/`libpthread.a` kosong (simbol berasal dari `libc.a` yang selalu ditautkan driver) |
 
+### Blocker M4.3.4: `llvm-config` harus bisa dieksekusi di mesin build
+
+`bootstrap_rustc_octagram.sh` sekarang menolak berjalan tanpa `llvm-config` host
+yang bisa dieksekusi: bootstrap menjalankan `llvm-config` (untuk `--libs`,
+`--system-libs`, `--cxxflags`, `--version`) saat membangun compiler untuk
+platform build, sedangkan `bin/llvm-config` hasil cross-build adalah ELF
+OCTAGRAM. Konfigurasi lama menaruh ELF itu di `[target.x86_64-unknown-linux-gnu]`,
+sehingga `x.py` berhenti dengan `could not execute llvm-config` sebelum
+kompilasi dimulai. Perbaikan yang sudah masuk:
+
+- `--host-llvm-config PATH` (atau `HOST_LLVM_CONFIG`, atau `llvm-config` di
+  `PATH`) wajib ada dan versi major-nya harus sama dengan sysroot LLVM target
+  (dibaca dari `include/llvm/Config/llvm-config.h`);
+- `[target.x86_64-unknown-linux-gnu]` memakai binary host tersebut, bukan ELF
+  target.
+
+Sisa pekerjaan yang belum bisa diselesaikan di sini: `[target.x86_64-unknown-octagram]`
+masih menunjuk `bin/llvm-config` target, yang juga dijalankan bootstrap di mesin
+build. Yang dibutuhkan adalah `llvm-config` **host-runnable** yang melaporkan
+isi library target. Jalur yang paling murah: hasilkan skrip kecil dari
+`tools/llvm-config/LibraryDependencies.inc` (daftar library + dependensinya
+sudah tersedia di build tree) sehingga urutan `--libs` sama dengan yang
+dihasilkan `llvm-config` asli, lalu arahkan konfigurasi target ke skrip itu.
+Mengurutkan library secara alfabetis tidak cukup: arsip statis butuh urutan
+dependen-sebelum-dependensi. Job CI `rustc-cargo` juga perlu LLVM 21 untuk host
+(sekarang hanya memasang `cmake`/`ninja`), dan tanpa itu job berhenti di
+preflight baru ini.
+
 Invariant yang harus dijaga saat mengubah driver atau sysroot:
 
 - objek target **tidak boleh** PIC: TLS OCTAGRAM hanya local-exec, dan objek

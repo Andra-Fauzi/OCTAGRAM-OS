@@ -402,6 +402,25 @@ static int oct_glob_compare(const void *left, const void *right)
     return strcmp(*(const char *const *)left, *(const char *const *)right);
 }
 
+static int oct_glob_restore_offsets(glob_t *result)
+{
+    const size_t slots = result->gl_pathc + result->gl_offs + 1;
+    char **grown = realloc(result->gl_pathv, slots * sizeof(char *));
+    if (grown == NULL && slots != 0) {
+        return GLOB_NOSPACE;
+    }
+    result->gl_pathv = grown;
+    if (result->gl_offs != 0 && result->gl_pathc != 0) {
+        memmove(result->gl_pathv + result->gl_offs, result->gl_pathv,
+                result->gl_pathc * sizeof(char *));
+    }
+    for (size_t index = 0; index < result->gl_offs; ++index) {
+        result->gl_pathv[index] = NULL;
+    }
+    result->gl_pathv[result->gl_offs + result->gl_pathc] = NULL;
+    return 0;
+}
+
 static int oct_glob_walk(const char *prefix, const char *pattern, glob_t *result);
 
 static int oct_glob_in_directory(const char *directory, const char *component,
@@ -414,18 +433,12 @@ static int oct_glob_in_directory(const char *directory, const char *component,
     int status = 0;
     struct dirent *entry;
     while ((entry = readdir(stream)) != NULL) {
-        puts("OCT-GLOB: directory entry read");
-        fflush(stdout);
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
-        puts("OCT-GLOB: dot check passed");
-        fflush(stdout);
         if (fnmatch(component, entry->d_name, 0) != 0) {
             continue;
         }
-        puts("OCT-GLOB: fnmatch passed");
-        fflush(stdout);
         size_t length = strlen(directory) + strlen(entry->d_name) + 3;
         char *child = malloc(length);
         if (child == NULL) {
@@ -437,11 +450,7 @@ static int oct_glob_in_directory(const char *directory, const char *component,
         } else {
             snprintf(child, length, "%s/%s", directory, entry->d_name);
         }
-        puts("OCT-GLOB: recurse");
-        fflush(stdout);
         status = oct_glob_walk(child, rest, result);
-        puts("OCT-GLOB: recurse returned");
-        fflush(stdout);
         free(child);
         if (status != 0) {
             break;
@@ -487,8 +496,6 @@ static int oct_glob_walk(const char *prefix, const char *pattern, glob_t *result
         }
         struct stat information;
         int status = 0;
-        /* An intermediate component must exist; the last one may be reported
-         * by GLOB_NOCHECK instead. */
         if (stat(child, &information) == 0) {
             status = oct_glob_walk(child, rest, result);
         } else if (rest == NULL && (result->gl_flags & GLOB_NOCHECK) != 0) {
@@ -507,13 +514,23 @@ int glob(const char *pattern, int flags, int (*error_function)(const char *, int
     if (pattern == NULL || result == NULL) {
         return GLOB_ABORTED;
     }
-    if ((flags & GLOB_APPEND) == 0) {
+
+    size_t existing = 0;
+    if ((flags & GLOB_APPEND) != 0) {
+        existing = result->gl_pathc;
+        /* Temporarily pack existing entries at index zero while appending. */
+        if (result->gl_pathv != NULL && result->gl_offs != 0 && existing != 0) {
+            memmove(result->gl_pathv, result->gl_pathv + result->gl_offs,
+                    existing * sizeof(char *));
+        }
+    } else {
+        const size_t requested_offsets =
+            (flags & GLOB_DOOFFS) != 0 ? result->gl_offs : 0;
         memset(result, 0, sizeof(*result));
-        result->gl_offs = 1;
+        result->gl_offs = requested_offsets;
     }
     result->gl_flags = flags;
 
-    size_t existing = result->gl_pathc;
     const char *pattern_start = pattern;
     char *prefix = NULL;
     int status;
@@ -535,52 +552,41 @@ int glob(const char *pattern, int flags, int (*error_function)(const char *, int
         prefix[0] = '\0';
     }
 
-    puts("OCT-GLOB: walk begin");
-    fflush(stdout);
     status = oct_glob_walk(prefix, pattern_start, result);
-    puts("OCT-GLOB: walk returned");
-    fflush(stdout);
     free(prefix);
     if (status != 0) {
         oct_glob_free_entries(result, existing);
         result->gl_pathc = existing;
+        if (oct_glob_restore_offsets(result) != 0) {
+            return GLOB_NOSPACE;
+        }
         return status;
     }
 
     if (result->gl_pathc == existing) {
         if ((flags & GLOB_NOCHECK) != 0) {
-            return oct_glob_append(result, pattern);
+            status = oct_glob_append(result, pattern);
+            if (status != 0) {
+                result->gl_pathc = existing;
+                (void)oct_glob_restore_offsets(result);
+                return status;
+            }
+        } else {
+            if (error_function != NULL) {
+                error_function(pattern, ENOENT);
+            }
+            (void)oct_glob_restore_offsets(result);
+            return GLOB_NOMATCH;
         }
-        if (error_function != NULL) {
-            error_function(pattern, ENOENT);
-        }
-        return GLOB_NOMATCH;
     }
 
-    if ((flags & GLOB_NOSORT) == 0) {
-        puts("OCT-GLOB: qsort begin");
-        fflush(stdout);
+    if ((flags & GLOB_NOSORT) == 0 && result->gl_pathc > existing + 1) {
         qsort(result->gl_pathv + existing, result->gl_pathc - existing,
               sizeof(char *), oct_glob_compare);
-        puts("OCT-GLOB: qsort returned");
-        fflush(stdout);
     }
 
-    size_t slots = (result->gl_pathc + result->gl_offs + 1) * sizeof(char *);
-    char **grown = realloc(result->gl_pathv, slots);
-    if (grown == NULL) {
-        return GLOB_NOSPACE;
-    }
-    result->gl_pathv = grown;
-    if (result->gl_offs != 0) {
-        memmove(result->gl_pathv + result->gl_offs, result->gl_pathv,
-                result->gl_pathc * sizeof(char *));
-        for (size_t index = 0; index < result->gl_offs; index++) {
-            result->gl_pathv[index] = NULL;
-        }
-    }
-    result->gl_pathv[result->gl_offs + result->gl_pathc] = NULL;
-    return 0;
+    status = oct_glob_restore_offsets(result);
+    return status;
 }
 
 void globfree(glob_t *result)

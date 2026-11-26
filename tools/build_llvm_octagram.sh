@@ -143,58 +143,61 @@ fi
 # objects, so everything is static. Threads and terminfo are off because the
 # guest's pthread/TLS surface is still being hardened; LLVM only needs them to
 # parallelise work, and a single-threaded rustc is acceptable for bootstrap.
-cmake_arguments="
--G Ninja
--DCMAKE_TOOLCHAIN_FILE=$toolchain_file
--DCMAKE_BUILD_TYPE=Release
--DCMAKE_INSTALL_PREFIX=$install_prefix
--DLLVM_TARGETS_TO_BUILD=X86
--DLLVM_ENABLE_PROJECTS=
--DLLVM_ENABLE_RUNTIMES=
--DLLVM_BUILD_LLVM_DYLIB=OFF
--DLLVM_LINK_LLVM_DYLIB=OFF
--DLLVM_BUILD_SHARED_LIBS=OFF
--DBUILD_SHARED_LIBS=OFF
--DLLVM_ENABLE_THREADS=OFF
--DLLVM_ENABLE_EH=OFF
--DLLVM_ENABLE_RTTI=OFF
--DLLVM_ENABLE_TERMINFO=OFF
--DLLVM_ENABLE_ZLIB=OFF
--DLLVM_ENABLE_ZSTD=OFF
--DLLVM_ENABLE_LIBXML2=OFF
--DLLVM_ENABLE_ASSERTIONS=OFF
--DLLVM_ENABLE_UNWIND_TABLES=OFF
--DLLVM_ENABLE_BINDINGS=OFF
--DLLVM_INCLUDE_TESTS=OFF
--DLLVM_INCLUDE_BENCHMARKS=OFF
--DLLVM_INCLUDE_EXAMPLES=OFF
--DLLVM_INCLUDE_DOCS=OFF
--DLLVM_INCLUDE_UTILS=OFF
--DLLVM_BUILD_TOOLS=ON
 # llvm-exegesis is a benchmarking utility, not part of the OCTAGRAM
 # compiler/linker toolchain. It requires host tracing APIs (sys/ptrace.h)
 # that the target sysroot intentionally does not provide.
--DLLVM_TOOL_LLVM_EXEGESIS_BUILD=OFF
+#
 # The target ABI intentionally has no libgcc_eh / frame-registration runtime.
 # Keep the static compiler libraries, but skip standalone JIT executables:
 # lli, llvm-jitlink, and llvm-rtdyld pull ORC/RuntimeDyld EH-frame registration
 # and fail to link __register_frame/__deregister_frame under OCTAGRAM -nostdlib.
 # They are not required by rustc's code-generation backend or the tools below.
--DLLVM_TOOL_LLI_BUILD=OFF
--DLLVM_TOOL_LLVM_JITLINK_BUILD=OFF
--DLLVM_TOOL_LLVM_RTDYLD_BUILD=OFF
--DLLVM_INSTALL_UTILS=OFF
--DLLVM_OPTIMIZED_TABLEGEN=ON
--DLLVM_BUILD_EXTERNAL_COMPILER_RT=OFF
--DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF
-"
+#
+# Build the argument vector directly instead of word-splitting a multiline
+# string. This keeps paths with spaces intact and prevents shell comments or
+# explanatory prose from being passed to CMake as unexpected arguments.
+set -- \
+    -G Ninja \
+    "-DCMAKE_TOOLCHAIN_FILE=$toolchain_file" \
+    -DCMAKE_BUILD_TYPE=Release \
+    "-DCMAKE_INSTALL_PREFIX=$install_prefix" \
+    -DLLVM_TARGETS_TO_BUILD=X86 \
+    -DLLVM_ENABLE_PROJECTS= \
+    -DLLVM_ENABLE_RUNTIMES= \
+    -DLLVM_BUILD_LLVM_DYLIB=OFF \
+    -DLLVM_LINK_LLVM_DYLIB=OFF \
+    -DLLVM_BUILD_SHARED_LIBS=OFF \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DLLVM_ENABLE_THREADS=OFF \
+    -DLLVM_ENABLE_EH=OFF \
+    -DLLVM_ENABLE_RTTI=OFF \
+    -DLLVM_ENABLE_TERMINFO=OFF \
+    -DLLVM_ENABLE_ZLIB=OFF \
+    -DLLVM_ENABLE_ZSTD=OFF \
+    -DLLVM_ENABLE_LIBXML2=OFF \
+    -DLLVM_ENABLE_ASSERTIONS=OFF \
+    -DLLVM_ENABLE_UNWIND_TABLES=OFF \
+    -DLLVM_ENABLE_BINDINGS=OFF \
+    -DLLVM_INCLUDE_TESTS=OFF \
+    -DLLVM_INCLUDE_BENCHMARKS=OFF \
+    -DLLVM_INCLUDE_EXAMPLES=OFF \
+    -DLLVM_INCLUDE_DOCS=OFF \
+    -DLLVM_INCLUDE_UTILS=OFF \
+    -DLLVM_BUILD_TOOLS=ON \
+    -DLLVM_TOOL_LLVM_EXEGESIS_BUILD=OFF \
+    -DLLVM_TOOL_LLI_BUILD=OFF \
+    -DLLVM_TOOL_LLVM_JITLINK_BUILD=OFF \
+    -DLLVM_TOOL_LLVM_RTDYLD_BUILD=OFF \
+    -DLLVM_INSTALL_UTILS=OFF \
+    -DLLVM_OPTIMIZED_TABLEGEN=ON \
+    -DLLVM_BUILD_EXTERNAL_COMPILER_RT=OFF \
+    -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF
 
 echo "configuring LLVM $llvm_version for x86_64-unknown-octagram"
 echo "  source:  $source_dir"
 echo "  build:   $cmake_build"
 echo "  prefix:  $install_prefix"
-# shellcheck disable=SC2086 # cmake_arguments is a newline-separated list.
-cmake -S "$source_dir/llvm" -B "$cmake_build" $cmake_arguments
+cmake -S "$source_dir/llvm" -B "$cmake_build" "$@"
 
 # bin/llvm-config is an OCTAGRAM ELF and cannot run on the build machine, but
 # bootstrap executes llvm-config while linking rustc. Generate a host-runnable

@@ -23,7 +23,11 @@ int main() {
         std::printf("LIBCXX-STRING-FAIL: append\n");
         return 1;
     }
-    if (text.find("gram") != 5) {
+    // "gram" starts at index 4 of "octagram-rust!": o(0) c(1) t(2) a(3)
+    // g(4) r(5) a(6) m(7). find returns the first matching offset, so 4 is
+    // the correct expectation; 5 was an off-by-one in this probe and made CI
+    // report a libc++ failure that did not exist.
+    if (text.find("gram") != 4) {
         std::printf("LIBCXX-STRING-FAIL: find\n");
         return 1;
     }

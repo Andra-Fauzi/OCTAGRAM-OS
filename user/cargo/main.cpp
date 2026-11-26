@@ -504,22 +504,28 @@ public:
             fail("manifest not found: " + absolute.string());
         }
         root_ = add_package(absolute);
-        const Manifest& root = packages_[root_].manifest;
-        if (!root.is_workspace_root) {
-            order_.push_back(packages_[root_].manifest);
-            return;
-        }
-        std::vector<std::string> queue = root.workspace_members;
-        if (!root.package_name.empty()) {
+        // Copy everything the root contributes before adding members:
+        // add_package() grows packages_, so a reference into it (and any
+        // iterator derived from it) would dangle on the next insert.
+        const fs::path root_directory = packages_[root_].manifest.directory;
+        const bool is_workspace_root = packages_[root_].manifest.is_workspace_root;
+        const std::string root_package_name = packages_[root_].manifest.package_name;
+        std::vector<std::string> queue = packages_[root_].manifest.workspace_members;
+        if (is_workspace_root && !root_package_name.empty()) {
             queue.push_back(".");
         }
-        for (const std::string& member : queue) {
-            fs::path member_manifest = root.directory / member / "Cargo.toml";
-            if (!fs::exists(member_manifest)) {
-                fail("workspace member without Cargo.toml: " + member);
+        if (is_workspace_root) {
+            for (const std::string& member : queue) {
+                fs::path member_manifest = root_directory / member / "Cargo.toml";
+                if (!fs::exists(member_manifest)) {
+                    fail("workspace member without Cargo.toml: " + member);
+                }
+                add_package(member_manifest);
             }
-            add_package(member_manifest);
         }
+        // A single-package project has no members to enqueue, but it still has
+        // path dependencies to resolve; returning early here made `cargo plan`
+        // list only the root package and never its dependencies.
         compute_order(root_);
     }
 
@@ -686,6 +692,8 @@ struct Options {
     bool offline = true;   // always true: no registry support
     bool locked = false;
     bool verbose = false;
+    bool help = false;
+    bool version = false;
     // `cargo run` selection: --bin NAME, plus everything after `--`.
     std::string bin;
     std::vector<std::string> run_arguments;
@@ -1111,7 +1119,9 @@ Options parse_options(const std::vector<std::string>& arguments)
         } else if (argument == "--verbose" || argument == "-v") {
             options.verbose = true;
         } else if (argument == "--help" || argument == "-h") {
-            options.cargo_arguments.push_back("--help");
+            options.help = true;
+        } else if (argument == "--version" || argument == "-V") {
+            options.version = true;
         } else if (starts_with(argument, "-")) {
             fail("unsupported option: " + argument);
         } else {
@@ -1154,15 +1164,38 @@ int run(int argc, char** argv)
         usage();
         return 2;
     }
-    std::string command = argv[1];
-    std::vector<std::string> arguments(argv + 2, argv + argc);
+    // Cargo accepts global options on either side of the subcommand, so parse
+    // the whole command line and let the first positional argument name the
+    // command. `cargo --locked plan --manifest-path ...` is valid Cargo, and it
+    // is the exact form the guest probe uses, so treating argv[1] as the
+    // command unconditionally rejected it with "unknown command: --locked".
+    std::vector<std::string> arguments(argv + 1, argv + argc);
     Options options = parse_options(arguments);
 
-    if (command == "version" || command == "--version" || command == "-V") {
+    if (options.version) {
         std::cout << "octagram-cargo " << kVersion << "\n";
         return 0;
     }
-    if (command == "help" || command == "--help" || command == "-h") {
+    if (options.help) {
+        usage();
+        return 0;
+    }
+
+    std::string command;
+    if (!options.cargo_arguments.empty()) {
+        command = options.cargo_arguments.front();
+        options.cargo_arguments.erase(options.cargo_arguments.begin());
+    }
+    if (command.empty()) {
+        usage();
+        return 2;
+    }
+
+    if (command == "version") {
+        std::cout << "octagram-cargo " << kVersion << "\n";
+        return 0;
+    }
+    if (command == "help") {
         usage();
         return 0;
     }

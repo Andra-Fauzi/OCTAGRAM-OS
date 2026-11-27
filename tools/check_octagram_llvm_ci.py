@@ -43,6 +43,7 @@ STD_PATCH = REPO / "tools" / "patch_rust_std_octagram.py"
 HOST_TARGET_PATCH = REPO / "tools" / "apply_rust_octagram_host_target.py"
 GETRANDOM_PATCH = REPO / "tools" / "patch_getrandom_octagram.py"
 ERRNO_PATCH = REPO / "tools" / "patch_errno_octagram.py"
+TEMPFILE_PATCH = REPO / "tools" / "patch_tempfile_octagram.py"
 LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
 RUNTIME = REPO / "user" / "runtime.c"
 STAGE2_DEPS_CHECK = REPO / "tools" / "check_rust_stage2_deps.sh"
@@ -87,6 +88,7 @@ def main() -> int:
     host_target_patch = HOST_TARGET_PATCH.read_text(encoding="utf-8")
     getrandom_patch = GETRANDOM_PATCH.read_text(encoding="utf-8")
     errno_patch = ERRNO_PATCH.read_text(encoding="utf-8")
+    tempfile_patch = TEMPFILE_PATCH.read_text(encoding="utf-8")
     libc_module = LIBC_MODULE.read_text(encoding="utf-8")
     runtime = RUNTIME.read_text(encoding="utf-8")
     stage2_deps_check = STAGE2_DEPS_CHECK.read_text(encoding="utf-8")
@@ -551,6 +553,40 @@ def main() -> int:
         "Rust bootstrap must fetch errno and its pinned libc dependency before x.py",
     )
 
+    # tempfile is a direct compiler dependency and pulls rustix on Unix by
+    # default. OCTAGRAM's tempfile path uses std::fs for rename/unlink instead,
+    # keeping unsupported Linux/BSD libc APIs out of this target.
+    require(
+        tempfile_patch,
+        "TEMPFILE_VERSION = \"3.23.0\"",
+        "the tempfile patcher must be pinned to the compiler's lockfile version",
+    )
+    require(
+        tempfile_patch,
+        'not(target_os = \"octagram\")',
+        "the tempfile patcher must exclude OCTAGRAM from the rustix dependency",
+    )
+    require(
+        tempfile_patch,
+        "fs.remove_file(path)",
+        "the OCTAGRAM tempfile backend must unlink through std::fs",
+    )
+    require(
+        tempfile_patch,
+        "fs.rename(old_path, new_path)",
+        "the OCTAGRAM tempfile backend must rename through std::fs",
+    )
+    require(
+        bootstrap,
+        "TEMPFILE_VERSION=3.23.0",
+        "Rust bootstrap must pin the tempfile source version",
+    )
+    require(
+        bootstrap,
+        "patch_tempfile_octagram.py",
+        "Rust bootstrap must patch tempfile before x.py",
+    )
+
     # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
     # not an unsupported-target bypass or a CPU-specific substitute.
     require(
@@ -631,9 +667,12 @@ def main() -> int:
     for needle, message in (
         ('errno = { version = "=0.3.14"', "errno check must pin 0.3.14"),
         ('getrandom = { version = "=0.3.3"', "getrandom check must pin 0.3.3"),
-        ('rustix = { version = "=1.1.5"', "rustix check must pin 1.1.5"),
         ('libc = { version = "=0.2.191"', "libc check must pin 0.2.191"),
+        ('tempfile = { version = "=3.23.0" }', "tempfile check must pin 3.23.0"),
         ("-Zbuild-std=core", "dependency check must compile against the target core"),
+        ("cargo \"+$toolchain\" tree", "dependency check must inspect the resolved OCTAGRAM dependency graph"),
+        ("^rustix v", "dependency check must reject rustix in the OCTAGRAM target graph"),
+        ("patch_tempfile_octagram.py", "dependency check must patch tempfile's Unix backend"),
         ("apply_rust_libc_octagram.py", "dependency check must apply the OCTAGRAM libc bindings"),
         ("patch_errno_octagram.py", "dependency check must patch errno's errno accessor"),
         ("patch_getrandom_octagram.py", "dependency check must patch getrandom's target backend"),
@@ -1067,6 +1106,63 @@ def main() -> int:
             fail("errno patcher did not add exactly one OCTAGRAM errno symbol mapping")
         if not (package / ".cargo-ok").is_file():
             fail("errno patcher did not preserve the registry extraction marker")
+
+    # Verify tempfile's registry patch handles Cargo's normalized manifest,
+    # removes rustix only for OCTAGRAM, and remains idempotent.
+    with tempfile.TemporaryDirectory() as temp_root:
+        registry_root = Path(temp_root) / "registry" / "src"
+        package = registry_root / "index.test" / "tempfile-3.23.0"
+        (package / "src" / "file" / "imp").mkdir(parents=True)
+        (package / "Cargo.toml").write_text(
+            """[package]
+name = "tempfile"
+version = "3.23.0"
+
+[target.'cfg(any(unix, target_os = "wasi"))'.dependencies.rustix]
+features = ["fs"]
+version = "1.0.0"
+""",
+            encoding="utf-8",
+        )
+        (package / "src" / "file" / "imp" / "unix.rs").write_text(
+            """use std::fs::{self, File, OpenOptions};
+use std::io;
+use std::path::Path;
+
+#[cfg(not(target_os = "redox"))]
+use {
+    rustix::fs::{rename, unlink},
+    std::fs::hard_link,
+};
+""",
+            encoding="utf-8",
+        )
+        patch_runs = []
+        for _ in range(2):
+            patch_runs.append(
+                subprocess.run(
+                    [sys.executable, str(TEMPFILE_PATCH), "--registry-root", str(registry_root)],
+                    cwd=REPO,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            )
+        if any(result.returncode != 0 for result in patch_runs):
+            fail(
+                "tempfile patcher fixture failed: "
+                + " | ".join(result.stdout + result.stderr for result in patch_runs)
+            )
+        patched_manifest = (package / "Cargo.toml").read_text(encoding="utf-8")
+        patched_unix = (package / "src" / "file" / "imp" / "unix.rs").read_text(encoding="utf-8")
+        if 'not(target_os = "octagram")' not in patched_manifest:
+            fail("tempfile patcher did not exclude OCTAGRAM from the rustix dependency")
+        if 'use rustix::fs::{rename, unlink};' not in patched_unix:
+            fail("tempfile patcher removed rustix for all Unix targets")
+        if "fs.rename(old_path, new_path)" not in patched_unix or "fs.remove_file(path)" not in patched_unix:
+            fail("tempfile patcher did not install the OCTAGRAM std filesystem fallbacks")
+        if not (package / ".cargo-ok").is_file():
+            fail("tempfile patcher did not preserve the Cargo registry extraction marker")
 
     if failures:
         print(f"OCTAGRAM-LLVM-CI-FAIL ({len(failures)})")

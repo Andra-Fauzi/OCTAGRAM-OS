@@ -152,7 +152,8 @@
     "accept4 is not implemented; the OCTAGRAM std port uses accept() followed by fcntl(FD_CLOEXEC) for accepted sockets.",
     "sendmsg and recvmsg transfer ordinary payloads, but ancillary control data and descriptor passing are unsupported; sendmsg returns ENOTSUP when control data is supplied.",
     "The initial upstream rust-lang/libc OCTAGRAM module compiles for the custom target, but this does not prove full std PAL runtime conformance or guest runtime symbol behavior.",
-    "The Rust std probe and a static OCTAGRAM std executable now compile and link in CI; this does not prove Rust std runtime behavior on the guest, and execution inside OCTAGRAM/QEMU remains unverified."
+    "The Rust std probe and a static OCTAGRAM std executable now compile and link in CI; this does not prove Rust std runtime behavior on the guest, and execution inside OCTAGRAM/QEMU remains unverified.",
+    "The built-in x86_64-unknown-octagram target is static-only (dynamic_linking = false), so pinned rustc rejects CrateType::Dylib and CrateType::ProcMacro. Cargo running inside OCTAGRAM therefore cannot yet build dependencies that require procedural macros; full Cargo ecosystem support needs a dynamic loader/DSO ABI or a different proc-macro execution design."
   ],
   "upstream_libc": {
     "repository": "rust-lang/libc",

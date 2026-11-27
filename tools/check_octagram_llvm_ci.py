@@ -45,6 +45,7 @@ GETRANDOM_PATCH = REPO / "tools" / "patch_getrandom_octagram.py"
 ERRNO_PATCH = REPO / "tools" / "patch_errno_octagram.py"
 TEMPFILE_PATCH = REPO / "tools" / "patch_tempfile_octagram.py"
 LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
+LIBC_PATCHER = REPO / "tools" / "apply_rust_libc_octagram.py"
 RUNTIME = REPO / "user" / "runtime.c"
 STAGE2_DEPS_CHECK = REPO / "tools" / "check_rust_stage2_deps.sh"
 GITHUB_JOB_LIMIT_MINUTES = 360
@@ -90,6 +91,7 @@ def main() -> int:
     errno_patch = ERRNO_PATCH.read_text(encoding="utf-8")
     tempfile_patch = TEMPFILE_PATCH.read_text(encoding="utf-8")
     libc_module = LIBC_MODULE.read_text(encoding="utf-8")
+    libc_patcher = LIBC_PATCHER.read_text(encoding="utf-8")
     runtime = RUNTIME.read_text(encoding="utf-8")
     stage2_deps_check = STAGE2_DEPS_CHECK.read_text(encoding="utf-8")
 
@@ -526,6 +528,44 @@ def main() -> int:
         runtime,
         "int *__errno_location(void)",
         "the OCTAGRAM runtime must export the errno accessor used by Rust crates",
+    )
+
+    # Cargo builds libc's new module tree for the target. A declaration in
+    # the legacy OCTAGRAM module is insufficient unless this patcher re-exports
+    # the symbols that std's generic Unix filesystem PAL imports.
+    for symbol in (
+        "strerror_r",
+        "unlink",
+        "unlinkat",
+        "link",
+        "linkat",
+        "rename",
+        "renameat",
+        "flock",
+        "fdopendir",
+        "opendir",
+        "closedir",
+        "readdir",
+        "openat",
+        "LOCK_SH",
+        "LOCK_EX",
+        "LOCK_NB",
+        "LOCK_UN",
+    ):
+        require(
+            libc_module,
+            f"pub fn {symbol}(" if symbol not in ("LOCK_SH", "LOCK_EX", "LOCK_NB", "LOCK_UN") else f"pub const {symbol}:",
+            f"OCTAGRAM libc module is missing {symbol}",
+        )
+        require(
+            libc_patcher,
+            symbol,
+            f"the libc target-module re-export list is missing {symbol}",
+        )
+    require(
+        stage2_deps_check,
+        "check_octagram_file_abi",
+        "the early Rust dependency check must compile-check Rust std's filesystem ABI",
     )
     require(
         errno_patch,

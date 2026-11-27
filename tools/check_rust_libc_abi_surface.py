@@ -155,7 +155,7 @@ def main() -> int:
 
     pthread = read("user/runtime.c")
     detach = re.search(
-        r"(?m)^int pthread_detach\\(pthread_t thread\\)\\s*\\{(?P<body>.*?)^\\}",
+        r"(?m)^int pthread_detach\(pthread_t thread\)\s*\{(?P<body>.*?)^\}",
         pthread,
         re.S,
     )

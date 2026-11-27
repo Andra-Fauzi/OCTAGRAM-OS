@@ -48,9 +48,17 @@ dari checkout Rust yang akan di-bootstrap, bukan dari ingatan:
 grep -m1 'LLVM_VERSION_MAJOR' build/toolchain/rust/src/llvm-project/llvm/CMakeLists.txt
 ```
 
-Versi default di `tools/build_llvm_octagram.sh` (`21.1.0`) harus diperbarui
+Versi default di `tools/build_llvm_octagram.sh` (`22.1.8`) harus diperbarui
 bersamaan. Skrip memeriksa ulang `LLVM_VERSION_MAJOR` pada source yang
 diextract dan berhenti jika tidak cocok.
+
+Batas bawahnya keras: bootstrap di checkout rust yang di-pin memanggil
+`check_llvm_version()` (`src/bootstrap/src/core/build_steps/llvm.rs`) dan
+panic `bad LLVM version: X, need >=22` kalau `llvm-config` host melaporkan major
+< 22. Karena itu `llvm-config` host dan libLLVM OCTAGRAM harus sama-sama
+major 22; versi 22.1.x resmi tersedia sebagai
+`LLVM-<versi>-Linux-X64.tar.xz` di GitHub releases llvm-project, yang dipakai
+langkah CI saat `llvm-22-dev` tidak ada di apt.
 
 Untuk build reproducible, set juga hash tarball:
 
@@ -89,7 +97,7 @@ sehingga kode C++ menautkan ke nama termangle.
 ## 3. Build
 
 ```sh
-tools/build_llvm_octagram.sh --llvm-version 21.1.0 --jobs "$(nproc)"
+tools/build_llvm_octagram.sh --llvm-version 22.1.8 --jobs "$(nproc)"
 ```
 
 Yang dijalankan skrip:
@@ -224,13 +232,23 @@ pernah dianggap selesai.
    `restore-keys: octagram-llvm-install-<versi>-`. Alasannya: mengubah bagian
    orkestrasi script (budget, sinyal, checkpoint) mengubah hash tanpa mengubah
    pustaka yang dihasilkan, dan key yang ketat membuat setiap edit seperti itu
-   membangun ulang libLLVM ~45 menit. Tree terbaru untuk versi itu dipakai
-   ulang (step verifikasi tetap berjalan), dan tree hasil fallback **tidak**
-   disimpan ulang dengan key baru, jadi key yang tepat hanya berisi hasil build
-   dari input yang tepat. Kalau perubahan benar-benar mengubah pustaka (flag
-   CMake, patch LLVM), hapus entri `octagram-llvm-install-*` di
-   Actions → Caches dulu. Arsip sumber `llvm-project-<versi>.src.tar.xz`
-   di-key hanya dengan versi, karena isinya arsip rilis upstream.
+   membangun ulang libLLVM ~45 menit.
+
+   Fallback itu tidak dipercaya begitu saja. Setiap build yang selesai menulis
+   **stempel input** ke `$prefix/.octagram-build-inputs`; isinya digest dari
+   versi LLVM, vektor flag CMake (satu sumber dengan langkah configure), path
+   toolchain file, `tools/octagram_llvm_config.py`, dan **isi sysroot**
+   (`user/build/sysroot-octagram`, atau `OCTAGRAM_SYSROOT`). Step CI
+   `Verify the restored libLLVM inputs` menjalankan
+   `build_llvm_octagram.sh --check-install-inputs`, dan kalau stempelnya tidak
+   cocok tree itu **dihapus** (begitu juga build tree-nya, supaya CMakeCache
+   lama tidak tercampur) lalu dibangun ulang. Script juga menolak memakai ulang
+   prefix lokal yang stempelnya beda, dan hanya tree yang stempelnya cocok yang
+   disimpan/tidak disimpan ulang ke cache. Jadi sysroot lama atau flag lama
+   tidak bisa diam-diam masuk ke rustc, tanpa perlu hapus cache manual.
+
+   Arsip sumber `llvm-project-<versi>.src.tar.xz` di-key hanya dengan versi,
+   karena isinya arsip rilis upstream.
 
 Kenapa resume tidak memicu rebuild penuh: source LLVM di-extract ulang dari
 tarball yang di-cache, dan `tar` memulihkan mtime dari arsip. Objek yang sudah

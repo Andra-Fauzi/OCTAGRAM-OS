@@ -23,7 +23,10 @@ on:
       llvm_version:
         description: "LLVM version to build (must match the pinned rust checkout)"
         required: false
-        default: "21.1.0"
+        # bootstrap at the pinned rust checkout panics on anything older:
+        # check_llvm_version() in src/bootstrap/src/core/build_steps/llvm.rs
+        # requires the external llvm-config to report major >= 22.
+        default: "22.1.8"
       jobs:
         description: "Parallel build jobs"
         required: false
@@ -106,7 +109,7 @@ env:
   OCTAGRAM_RUST_TOOLCHAIN: nightly-2026-11-23
   # Bumped together with the pinned rust checkout; build_llvm_octagram.sh fails
   # loudly when the extracted source disagrees with this major version.
-  OCTAGRAM_LLVM_VERSION: "21.1.0"
+  OCTAGRAM_LLVM_VERSION: "22.1.8"
   # Same pins as tools/bootstrap_rustc_octagram.sh. libc is checked out as a
   # sibling tree when apply_rust_libc_octagram.py patches the target module.
   OCTAGRAM_LIBC_PIN: ccc2ff4aaab962f7fde7b8edda7379c045b1ca12
@@ -215,7 +218,7 @@ jobs:
           retention-days: 7
 
   llvm:
-    name: libLLVM ${{ inputs.llvm_version || '21.1.0' }} (x86_64-unknown-octagram)
+    name: libLLVM ${{ inputs.llvm_version || '22.1.8' }} (x86_64-unknown-octagram)
     needs: preflight
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -225,7 +228,7 @@ jobs:
     # room for setup, cache restore and the checkpoint save.
     timeout-minutes: 350
     env:
-      LLVM_VERSION: ${{ inputs.llvm_version || '21.1.0' }}
+      LLVM_VERSION: ${{ inputs.llvm_version || '22.1.8' }}
       JOBS: ${{ inputs.jobs || '4' }}
       TIME_BUDGET: ${{ inputs.time_budget || '270' }}
     outputs:
@@ -288,13 +291,28 @@ jobs:
           restore-keys: |
             octagram-llvm-install-${{ env.LLVM_VERSION }}-
 
-      - name: Report a libLLVM cache fallback
-        # The build step below reuses a complete tree, so this run is fast, but
-        # it also does not re-save the tree under the new key: say so, because
-        # the build then silently depends on an older revision of the script.
-        if: steps.llvm-cache.outputs.cache-hit != 'true' && steps.llvm-cache.outputs.cache-matched-key != ''
+      - name: Verify the restored libLLVM inputs
+        id: llvm-install
+        # The cache fallback can hand back a tree built from an older sysroot or
+        # other flags, so a restore is not proof by itself. The build writes a
+        # stamp of its inputs into the prefix; compare it here and delete a tree
+        # that does not match, so it is rebuilt instead of linked into rustc.
         run: |
-          echo "::warning title=libLLVM from an older cache key::restored ${{ steps.llvm-cache.outputs.cache-matched-key }} instead of the key for these inputs (${{ steps.llvm-cache.outputs.cache-primary-key }}); the tree is reused and not re-saved. Delete octagram-llvm-install-* in Actions -> Caches if this change alters the produced libraries."
+          set -euo pipefail
+          prefix="build/toolchain/llvm-$LLVM_VERSION-octagram"
+          if [ ! -d "$prefix" ]; then
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+            echo "no restored libLLVM tree"
+            exit 0
+          fi
+          if tools/build_llvm_octagram.sh --check-install-inputs \
+               --llvm-version "$LLVM_VERSION" --prefix "$prefix"; then
+            echo "usable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+            echo "discarding $prefix: it was built from different inputs"
+            rm -rf "$prefix"
+          fi
 
       - name: Restore libLLVM build checkpoint
         id: llvm-build-cache
@@ -315,8 +333,7 @@ jobs:
         if: >-
           github.event_name == 'workflow_dispatch' &&
           inputs.build_llvm == false &&
-          steps.llvm-cache.outputs.cache-hit != 'true' &&
-          steps.llvm-cache.outputs.cache-matched-key == ''
+          steps.llvm-install.outputs.usable != 'true'
         run: |
           echo "build_llvm=false tetapi tidak ada libLLVM $LLVM_VERSION di cache." >&2
           echo "Jalankan workflow dengan build_llvm=true sekali untuk mengisinya." >&2
@@ -325,7 +342,7 @@ jobs:
       - name: Build libLLVM (time-budgeted, resumable)
         id: llvm-build
         # Push always builds LLVM; manual runs may explicitly reuse a cache.
-        if: (github.event_name != 'workflow_dispatch' || inputs.build_llvm == true) && steps.llvm-cache.outputs.cache-hit != 'true'
+        if: (github.event_name != 'workflow_dispatch' || inputs.build_llvm == true) && steps.llvm-install.outputs.usable != 'true'
         run: |
           set -euo pipefail
           args=(--llvm-version "$LLVM_VERSION" --jobs "$JOBS" --time-budget "$TIME_BUDGET")
@@ -455,8 +472,7 @@ jobs:
         if: >-
           success() &&
           steps.llvm-build.outputs.incomplete != 'true' &&
-          steps.llvm-cache.outputs.cache-hit != 'true' &&
-          steps.llvm-cache.outputs.cache-matched-key == ''
+          steps.llvm-install.outputs.usable != 'true'
         uses: actions/cache/save@v4
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
@@ -499,7 +515,7 @@ jobs:
     # ceiling stays under GitHub's six-hour job limit so the save always runs.
     timeout-minutes: 350
     env:
-      LLVM_VERSION: ${{ inputs.llvm_version || '21.1.0' }}
+      LLVM_VERSION: ${{ inputs.llvm_version || '22.1.8' }}
       JOBS: ${{ inputs.jobs || '4' }}
       RUSTC_MODE: ${{ inputs.rustc_mode || 'full' }}
       TIME_BUDGET: ${{ inputs.time_budget || '270' }}

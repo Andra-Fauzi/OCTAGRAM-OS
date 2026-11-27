@@ -37,7 +37,8 @@ on:
       llvm_version:
         description: "LLVM version to read component data from"
         required: false
-        default: "21.1.0"
+        # bootstrap at the pinned rust checkout requires LLVM major >= 22.
+        default: "22.1.8"
 
 permissions:
   contents: read
@@ -89,11 +90,11 @@ jobs:
         run: tools/check_octagram_llvm_config.sh
 
   real-llvm:
-    name: llvm-config (LLVM ${{ inputs.llvm_version || '21.1.0' }})
+    name: llvm-config (LLVM ${{ inputs.llvm_version || '22.1.8' }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      LLVM_VERSION: ${{ inputs.llvm_version || '21.1.0' }}
+      LLVM_VERSION: ${{ inputs.llvm_version || '22.1.8' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

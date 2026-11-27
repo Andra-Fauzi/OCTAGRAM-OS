@@ -13,7 +13,7 @@
 # Usage:
 #   tools/build_octagram_toolchain.sh [options]
 #     --jobs N             parallelism for LLVM and bootstrap
-#     --llvm-version VER   LLVM version to build (default 21.1.0)
+#     --llvm-version VER   LLVM version to build (default 22.1.8)
 #     --llvm-prefix DIR    reuse an existing libLLVM install, skip step 2
 #     --libc-checkout DIR  rust-lang/libc 0.2.191 checkout for the target module
 #     --prepare-only       stop after writing configs (no x.py build)
@@ -37,7 +37,7 @@ esac
 repo_root=$(cd "$tools_dir/.." && pwd)
 
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
-llvm_version=${LLVM_VERSION:-21.1.0}
+llvm_version=${LLVM_VERSION:-22.1.8}
 llvm_prefix=${LLVM_PREFIX:-}
 libc_checkout=${LIBC_CHECKOUT:-}
 prepare_only=0

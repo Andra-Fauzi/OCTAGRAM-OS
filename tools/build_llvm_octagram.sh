@@ -13,9 +13,10 @@
 #   make -C user sysroot
 #
 # Usage:
-#   tools/build_llvm_octagram.sh [--llvm-version 21.1.0] [--prefix DIR]
+#   tools/build_llvm_octagram.sh [--llvm-version 22.1.8] [--prefix DIR]
 #                                [--source DIR] [--jobs N] [--time-budget MIN]
 #                                [--resume] [--status] [--clean]
+#                                [--check-install-inputs]
 #
 #   --time-budget MIN  stop ninja after MIN minutes, keep the build tree and
 #                      exit 75 (EX_TEMPFAIL) with OCTAGRAM-LLVM-BUILD-INCOMPLETE.
@@ -28,6 +29,16 @@
 #                      over, so CI can report what it actually did.
 #   --status           print octagram-build-state.json and exit (1 if absent).
 #   --clean            remove the build tree and install prefix first.
+#   --check-install-inputs
+#                      compare the stamp inside the install prefix with the
+#                      inputs this run would build from; exit 1 and change
+#                      nothing when they differ.
+#
+# A complete prefix is reused only when the stamp it carries matches the current
+# inputs. The stamp covers the LLVM version, the CMake flag vector, the
+# toolchain file, tools/octagram_llvm_config.py and the sysroot contents, so a
+# tree restored from an older cache (another sysroot, other flags) is discarded
+# and rebuilt instead of being linked into rustc.
 #
 # A run is resumable by default: the CMake build tree is kept between runs, a
 # complete install prefix is reused without rebuilding, and a partial source
@@ -36,8 +47,9 @@
 # "incomplete" marker in CI is derived from.
 #
 # Pinning: rustc refuses to build against an LLVM older than the revision its
-# checkout requires. Before running, confirm the version from the Rust source
-# you will bootstrap:
+# checkout requires, and bootstrap enforces a hard floor of major 22 at the
+# pinned checkout (check_llvm_version in src/bootstrap/.../llvm.rs). Before
+# running, confirm the version from the Rust source you will bootstrap:
 #   grep -m1 LLVM_VERSION_MAJOR build/toolchain/rust/src/llvm-project/llvm/CMakeLists.txt
 # The default below must be bumped together with that checkout; there is no
 # version sniffing because a mismatch must fail loudly, not silently rebuild.
@@ -57,7 +69,7 @@ case $script in
 esac
 repo_root=$(cd "$tools_dir/.." && pwd)
 
-llvm_version=${LLVM_VERSION:-21.1.0}
+llvm_version=${LLVM_VERSION:-22.1.8}
 jobs=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
 time_budget=${OCTAGRAM_LLVM_TIME_BUDGET:-0}
 # How long the build gets to react to each signal before the next one. A budget
@@ -69,11 +81,14 @@ stop_grace_kill=15
 stop_grace_children=30
 stop_signal=
 build_root=${OCTAGRAM_TOOLCHAIN_BUILD:-$repo_root/build/toolchain}
+sysroot=${OCTAGRAM_SYSROOT:-$repo_root/user/build/sysroot-octagram}
+toolchain_file=$repo_root/user/toolchain/octagram-toolchain.cmake
 prefix=
 source_dir=
 clean=0
 resume=0
 status_only=0
+check_install_inputs=0
 
 while [ $# -gt 0 ]; do
     case $1 in
@@ -85,6 +100,7 @@ while [ $# -gt 0 ]; do
         --resume) resume=1; shift ;;
         --status) status_only=1; shift ;;
         --clean) clean=1; shift ;;
+        --check-install-inputs) check_install_inputs=1; shift ;;
         -h|--help)
             sed -n '2,/^$/p' "$0"
             exit 0
@@ -127,6 +143,7 @@ install_prefix=${prefix:-$build_root/llvm-$llvm_version-octagram}
 work_dir=$build_root/llvm-$llvm_version
 cmake_build=$work_dir/build-octagram
 state_file=$cmake_build/octagram-build-state.json
+install_stamp_file=$install_prefix/.octagram-build-inputs
 
 if [ "$status_only" -eq 1 ]; then
     if [ ! -f "$state_file" ]; then
@@ -186,6 +203,116 @@ install_complete() {
     [ -e "$1" ] || return 1
     return 0
 }
+
+# The CMake flag vector is the single source for both the configure step and
+# the build-input stamp: an orchestration-only edit (budget, signals,
+# checkpoints) cannot change the stamp, while a changed flag does.
+cmake_flags() {
+    cat <<EOF
+-G
+Ninja
+-DCMAKE_TOOLCHAIN_FILE=$toolchain_file
+-DCMAKE_BUILD_TYPE=Release
+-DCMAKE_INSTALL_PREFIX=$install_prefix
+-DLLVM_TARGETS_TO_BUILD=X86
+-DLLVM_ENABLE_PROJECTS=
+-DLLVM_ENABLE_RUNTIMES=
+-DLLVM_BUILD_LLVM_DYLIB=OFF
+-DLLVM_LINK_LLVM_DYLIB=OFF
+-DLLVM_BUILD_SHARED_LIBS=OFF
+-DBUILD_SHARED_LIBS=OFF
+-DLLVM_ENABLE_THREADS=OFF
+-DLLVM_ENABLE_EH=OFF
+-DLLVM_ENABLE_RTTI=OFF
+-DLLVM_ENABLE_TERMINFO=OFF
+-DLLVM_ENABLE_ZLIB=OFF
+-DLLVM_ENABLE_ZSTD=OFF
+-DLLVM_ENABLE_LIBXML2=OFF
+-DLLVM_ENABLE_ASSERTIONS=OFF
+-DLLVM_ENABLE_UNWIND_TABLES=OFF
+-DLLVM_ENABLE_BINDINGS=OFF
+-DLLVM_INCLUDE_TESTS=OFF
+-DLLVM_INCLUDE_BENCHMARKS=OFF
+-DLLVM_INCLUDE_EXAMPLES=OFF
+-DLLVM_INCLUDE_DOCS=OFF
+-DLLVM_INCLUDE_UTILS=OFF
+-DLLVM_BUILD_TOOLS=ON
+-DLLVM_TOOL_LLVM_EXEGESIS_BUILD=OFF
+-DLLVM_TOOL_LLI_BUILD=OFF
+-DLLVM_TOOL_LLVM_JITLINK_BUILD=OFF
+-DLLVM_TOOL_LLVM_RTDYLD_BUILD=OFF
+-DLLVM_INSTALL_UTILS=OFF
+-DLLVM_OPTIMIZED_TABLEGEN=ON
+-DLLVM_BUILD_EXTERNAL_COMPILER_RT=OFF
+-DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF
+EOF
+}
+
+file_digest() {
+    if [ ! -f "$1" ]; then
+        echo missing
+        return 0
+    fi
+    sha256sum "$1" | cut -d' ' -f1
+}
+
+# Content digest of a directory, independent of mtimes and walk order.
+tree_digest() {
+    if [ ! -d "$1" ]; then
+        echo absent
+        return 0
+    fi
+    ( cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum ) \
+        | sha256sum | cut -d' ' -f1
+}
+
+# Everything that decides what the install tree contains. The workflow restores
+# whatever libLLVM cache key it finds, so this stamp -- written into the prefix
+# by the build -- is what tells a tree built for these inputs apart from one
+# linked against an older sysroot or built with other flags.
+build_inputs_stamp() {
+    {
+        echo "llvm_version=$llvm_version"
+        echo "toolchain_file=$(file_digest "$toolchain_file")"
+        echo "llvm_config_generator=$(file_digest "$repo_root/tools/octagram_llvm_config.py")"
+        echo "sysroot=$(tree_digest "$sysroot")"
+        echo "cmake_flags:"
+        cmake_flags
+    } | sha256sum | cut -d' ' -f1
+}
+
+expected_input_stamp=$(build_inputs_stamp)
+
+installed_input_stamp() {
+    sed -n 's/^stamp=//p' "$install_stamp_file" 2>/dev/null | head -n 1
+}
+
+write_input_stamp() {
+    cat > "$install_stamp_file" <<EOF
+stamp=$expected_input_stamp
+llvm_version=$llvm_version
+toolchain_file=$toolchain_file
+sysroot=$sysroot
+updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+}
+
+# --check-install-inputs: answer the workflow's question without building.
+if [ "$check_install_inputs" -eq 1 ]; then
+    if ! install_complete; then
+        echo "build_llvm_octagram: $install_prefix is not a complete install" >&2
+        exit 1
+    fi
+    found_stamp=$(installed_input_stamp)
+    if [ "$found_stamp" = "$expected_input_stamp" ]; then
+        echo "OCTAGRAM-LLVM-INSTALL-INPUTS-MATCH: $install_prefix ($found_stamp)"
+        exit 0
+    fi
+    echo "build_llvm_octagram: $install_prefix was built from different inputs" >&2
+    echo "build_llvm_octagram:   expected stamp $expected_input_stamp" >&2
+    echo "build_llvm_octagram:   found    stamp ${found_stamp:-none}" >&2
+    exit 1
+fi
 
 # A budget stop must always end with the state file written and the tree quiet:
 # GitHub kills the job at six hours without running the checkpoint save step, so
@@ -268,7 +395,6 @@ if ! "$repo_root/tools/check_octagram_runtime_probes.sh"; then
     exit 1
 fi
 
-toolchain_file=$repo_root/user/toolchain/octagram-toolchain.cmake
 if [ ! -f "$toolchain_file" ]; then
     echo "build_llvm_octagram: error: missing $toolchain_file" >&2
     exit 1
@@ -280,20 +406,35 @@ fi
 
 mkdir -p "$work_dir"
 
+# A complete prefix is reused only when the stamp it carries names these exact
+# inputs. A tree restored from an older cache (another sysroot, another flag
+# set) is deleted together with the build tree it was produced from, because a
+# rebuild against the old CMakeCache would mix the two.
+if install_complete && [ "$clean" -eq 0 ]; then
+    found_stamp=$(installed_input_stamp)
+    if [ "$found_stamp" = "$expected_input_stamp" ]; then
+        # Rerunning after a complete build is cheap: keep the tree, re-check the
+        # wrapper, and report what was reused instead of spending hours again.
+        echo "libLLVM $llvm_version is already installed at $install_prefix"
+        write_state complete
+        reused=1
+    else
+        echo "build_llvm_octagram: $install_prefix was built from different inputs" >&2
+        echo "build_llvm_octagram:   expected stamp $expected_input_stamp" >&2
+        echo "build_llvm_octagram:   found    stamp ${found_stamp:-none}" >&2
+        echo "build_llvm_octagram: discarding the install and build trees; rebuilding" >&2
+        rm -rf "$install_prefix" "$cmake_build"
+        resume=0
+        reused=0
+    fi
+else
+    reused=0
+fi
+
 if [ "$resume" -eq 1 ] && [ ! -f "$cmake_build/CMakeCache.txt" ]; then
     echo "build_llvm_octagram: error: --resume but no configured build tree at $cmake_build" >&2
     echo "build_llvm_octagram: rerun without --resume to configure a new one" >&2
     exit 1
-fi
-
-if install_complete && [ "$clean" -eq 0 ]; then
-    # Rerunning after a complete build is cheap: keep the tree, re-check the
-    # wrapper, and report what was reused instead of spending hours again.
-    echo "libLLVM $llvm_version is already installed at $install_prefix"
-    write_state complete
-    reused=1
-else
-    reused=0
 fi
 
 if [ "$reused" -eq 0 ]; then
@@ -366,42 +507,15 @@ if [ "$reused" -eq 0 ]; then
     # Build the argument vector directly instead of word-splitting a multiline
     # string. This keeps paths with spaces intact and prevents shell comments or
     # explanatory prose from being passed to CMake as unexpected arguments.
-    set -- \
-        -G Ninja \
-        "-DCMAKE_TOOLCHAIN_FILE=$toolchain_file" \
-        -DCMAKE_BUILD_TYPE=Release \
-        "-DCMAKE_INSTALL_PREFIX=$install_prefix" \
-        -DLLVM_TARGETS_TO_BUILD=X86 \
-        -DLLVM_ENABLE_PROJECTS= \
-        -DLLVM_ENABLE_RUNTIMES= \
-        -DLLVM_BUILD_LLVM_DYLIB=OFF \
-        -DLLVM_LINK_LLVM_DYLIB=OFF \
-        -DLLVM_BUILD_SHARED_LIBS=OFF \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DLLVM_ENABLE_THREADS=OFF \
-        -DLLVM_ENABLE_EH=OFF \
-        -DLLVM_ENABLE_RTTI=OFF \
-        -DLLVM_ENABLE_TERMINFO=OFF \
-        -DLLVM_ENABLE_ZLIB=OFF \
-        -DLLVM_ENABLE_ZSTD=OFF \
-        -DLLVM_ENABLE_LIBXML2=OFF \
-        -DLLVM_ENABLE_ASSERTIONS=OFF \
-        -DLLVM_ENABLE_UNWIND_TABLES=OFF \
-        -DLLVM_ENABLE_BINDINGS=OFF \
-        -DLLVM_INCLUDE_TESTS=OFF \
-        -DLLVM_INCLUDE_BENCHMARKS=OFF \
-        -DLLVM_INCLUDE_EXAMPLES=OFF \
-        -DLLVM_INCLUDE_DOCS=OFF \
-        -DLLVM_INCLUDE_UTILS=OFF \
-        -DLLVM_BUILD_TOOLS=ON \
-        -DLLVM_TOOL_LLVM_EXEGESIS_BUILD=OFF \
-        -DLLVM_TOOL_LLI_BUILD=OFF \
-        -DLLVM_TOOL_LLVM_JITLINK_BUILD=OFF \
-        -DLLVM_TOOL_LLVM_RTDYLD_BUILD=OFF \
-        -DLLVM_INSTALL_UTILS=OFF \
-        -DLLVM_OPTIMIZED_TABLEGEN=ON \
-        -DLLVM_BUILD_EXTERNAL_COMPILER_RT=OFF \
-        -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF
+    # cmake_flags() is also what the build-input stamp hashes, so the flag set
+    # and the stamp can never drift apart. One flag per line keeps paths with
+    # spaces intact.
+    set --
+    while IFS= read -r cmake_flag; do
+        set -- "$@" "$cmake_flag"
+    done <<CMAKE_ARGUMENTS
+$(cmake_flags)
+CMAKE_ARGUMENTS
 
     if [ "$resume" -eq 1 ] && [ -f "$cmake_build/CMakeCache.txt" ]; then
         # Reconfiguring a resumed tree is wasted budget: ninja re-runs CMake on
@@ -510,6 +624,8 @@ if [ "$reused" -eq 0 ]; then
         echo "build_llvm_octagram: and lib/libLLVM*.a under $install_prefix" >&2
         exit 1
     fi
+    # The tree now provably comes from these inputs; the workflow may cache it.
+    write_input_stamp
 fi
 
 llvm_config=$install_prefix/bin/llvm-config

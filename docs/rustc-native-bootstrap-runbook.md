@@ -99,7 +99,7 @@ Persiapan saja (menulis `config.toml`, menerapkan patch, tanpa compile):
 
 ```sh
 tools/bootstrap_rustc_octagram.sh \
-  --llvm-prefix build/toolchain/llvm-21.1.0-octagram \
+  --llvm-prefix build/toolchain/llvm-22.1.8-octagram \
   --libc-checkout build/toolchain/libc
 ```
 
@@ -107,7 +107,7 @@ Build penuh:
 
 ```sh
 tools/bootstrap_rustc_octagram.sh \
-  --llvm-prefix build/toolchain/llvm-21.1.0-octagram \
+  --llvm-prefix build/toolchain/llvm-22.1.8-octagram \
   --libc-checkout build/toolchain/libc \
   --build --jobs "$(nproc)"
 ```

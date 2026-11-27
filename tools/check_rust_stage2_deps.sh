@@ -42,6 +42,30 @@ pub fn check_errno_surface() -> i32 {
 pub fn check_random_surface(buffer: &mut [u8]) -> Result<(), getrandom::Error> {
     getrandom::fill(buffer)
 }
+
+// Keep these references compile-only: they verify that libc's *new* target
+// module re-exports the exact POSIX functions used by Rust std's Unix PAL.
+pub unsafe fn check_octagram_file_abi(
+    path: *const libc::c_char,
+    other_path: *const libc::c_char,
+    fd: libc::c_int,
+    directory_fd: libc::c_int,
+) {
+    let _ = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+    let _ = unsafe { libc::flock(fd, libc::LOCK_UN) };
+    let _ = unsafe { libc::unlink(path) };
+    let _ = unsafe { libc::unlinkat(directory_fd, path, 0) };
+    let _ = unsafe { libc::link(path, other_path) };
+    let _ = unsafe { libc::linkat(directory_fd, path, directory_fd, other_path, 0) };
+    let _ = unsafe { libc::rename(path, other_path) };
+    let _ = unsafe { libc::renameat(directory_fd, path, directory_fd, other_path) };
+    let _ = unsafe { libc::openat(directory_fd, path, libc::O_RDONLY) };
+    let directory = unsafe { libc::fdopendir(fd) };
+    let _ = unsafe { libc::readdir(directory) };
+    let _ = unsafe { libc::closedir(directory) };
+    let _ = unsafe { libc::opendir(path) };
+    let _ = unsafe { libc::strerror_r(0, core::ptr::null_mut(), 0) };
+}
 EOF
 
 echo "fetching errno 0.3.14, getrandom 0.3.3, tempfile 3.23.0, and libc 0.2.191"

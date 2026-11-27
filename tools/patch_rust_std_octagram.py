@@ -145,6 +145,9 @@ OCTAGRAM_ARM_FILES = {
     "sys/io/kernel_copy/mod.rs",
     "sys/pal/unix/weak/mod.rs",
     "sys/paths/unix.rs",
+    # sys/process/mod.rs re-exports PidFd only for Linux; OCTAGRAM currently
+    # does not implement pidfd_open/pidfd_send_signal/pidfd_getfd.
+    "sys/process/mod.rs",
     "sys/process/unix/mod.rs",
     "sys/process/unix/unix.rs",
     "sys/random/mod.rs",

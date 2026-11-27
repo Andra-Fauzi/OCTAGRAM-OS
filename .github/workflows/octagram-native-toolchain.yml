@@ -70,6 +70,7 @@ on:
       - "tools/patch_rust_std_octagram.py"
       - "tools/patch_getrandom_octagram.py"
       - "tools/patch_errno_octagram.py"
+      - "tools/check_rust_stage2_deps.sh"
       - "tools/toolchain-probes/**"
       - "patches/rust/**"
       - "patches/libc/**"
@@ -93,6 +94,7 @@ on:
       - "tools/patch_rust_std_octagram.py"
       - "tools/patch_getrandom_octagram.py"
       - "tools/patch_errno_octagram.py"
+      - "tools/check_rust_stage2_deps.sh"
       - "tools/toolchain-probes/**"
       - "patches/rust/**"
       - "patches/libc/**"
@@ -160,7 +162,7 @@ jobs:
 
       - name: Install Rust nightly
         run: |
-          rustup toolchain install "$OCTAGRAM_RUST_TOOLCHAIN" --profile minimal
+          rustup toolchain install "$OCTAGRAM_RUST_TOOLCHAIN" --profile minimal --component rust-src
           rustc "+$OCTAGRAM_RUST_TOOLCHAIN" -vV
 
       - name: Validate experimental OCTAGRAM Rust host target
@@ -168,6 +170,9 @@ jobs:
           set -euo pipefail
           python3 tools/check_octagram_rust_target.py
           python3 tools/check_octagram_rust_target_sync.py
+
+      - name: Check Rust stage-2 dependency compatibility (no LLVM build)
+        run: sh tools/check_rust_stage2_deps.sh
 
       - name: Build OCTAGRAM sysroot
         run: make -C user sysroot -j "$(nproc)"

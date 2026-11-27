@@ -573,6 +573,11 @@ def main() -> int:
     )
     require(
         libc_patcher,
+        "pub use crate::unix::octagram::strerror_r;",
+        "the libc new module must re-export only the missing strerror_r API",
+    )
+    require(
+        libc_patcher,
         'unistd_import = \'#[cfg(target_os = "octagram")]\\nuse common::posix::unistd;\\n\'',
         "the libc patcher must retain the internal unistd module import after removing duplicate exports",
     )

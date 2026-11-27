@@ -40,6 +40,7 @@ WORKFLOW = REPO / ".github" / "workflows" / "octagram-native-toolchain.yml"
 BUILD = REPO / "tools" / "build_llvm_octagram.sh"
 BOOTSTRAP = REPO / "tools" / "bootstrap_rustc_octagram.sh"
 STD_PATCH = REPO / "tools" / "patch_rust_std_octagram.py"
+HOST_TARGET_PATCH = REPO / "tools" / "apply_rust_octagram_host_target.py"
 GITHUB_JOB_LIMIT_MINUTES = 360
 
 failures: list[str] = []
@@ -78,6 +79,7 @@ def main() -> int:
     build = BUILD.read_text(encoding="utf-8")
     bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
     std_patch = STD_PATCH.read_text(encoding="utf-8")
+    host_target_patch = HOST_TARGET_PATCH.read_text(encoding="utf-8")
 
     # --- the build script ---------------------------------------------------
     for flag in ("--time-budget", "--resume", "--status", "--print-build-inputs-stamp"):
@@ -297,6 +299,43 @@ def main() -> int:
         std_patch,
         'pub fn set_name(_name: &CStr)',
         "the std PAL patcher must provide the OCTAGRAM Unix thread set_name implementation",
+    )
+    # Do not enable Linux-only helpers whose consumers are intentionally not
+    # compiled for OCTAGRAM. Otherwise they trigger -D warnings or accidentally
+    # rely on Linux-only syscalls.
+    for excluded in (
+        "io/stdio.rs",
+        "sys/fs/mod.rs",
+        "sys/pal/unix/weak/mod.rs",
+        "sys/process/unix/mod.rs",
+        "sys/process/unix/unix.rs",
+    ):
+        require(
+            std_patch,
+            f'"{excluded}"',
+            f"the std PAL patcher must keep Linux-only code out of {excluded}",
+        )
+    if 'pub(in crate::sys) use cfm::CachedFileMetadata;' in std_patch:
+        fail("OCTAGRAM must use generic io::copy, not export Linux-only CachedFileMetadata")
+    require(
+        host_target_patch,
+        "expected_octagram_static_dylib",
+        "the Rust target patch must suppress only the expected static OCTAGRAM dylib warning",
+    )
+    require(
+        host_target_patch,
+        "session.opts.target_triple == \"x86_64-unknown-octagram\"",
+        "the dylib-warning exception must be limited to the OCTAGRAM target triple",
+    )
+    require(
+        host_target_patch,
+        "*crate_type == CrateType::Dylib",
+        "the dylib-warning exception must be limited to CrateType::Dylib",
+    )
+    require(
+        host_target_patch,
+        "RUST-OCTAGRAM-STATIC-DYLIB-PASS",
+        "the target patch must report that the static dylib exception was installed",
     )
 
     # --- the rustc-cargo job -----------------------------------------------

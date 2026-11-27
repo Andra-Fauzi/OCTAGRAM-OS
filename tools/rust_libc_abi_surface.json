@@ -151,9 +151,8 @@
     "pthread_getattr_np, pthread_attr_getstack, and pthread_attr_getguardsize are not implemented; the OCTAGRAM std port selects handler_none, so it does not query native stack bounds or install the upstream stack-overflow signal handler.",
     "accept4 is not implemented; the OCTAGRAM std port uses accept() followed by fcntl(FD_CLOEXEC) for accepted sockets.",
     "sendmsg and recvmsg transfer ordinary payloads, but ancillary control data and descriptor passing are unsupported; sendmsg returns ENOTSUP when control data is supplied.",
-    "The Rust std probe and a static OCTAGRAM std executable now compile and link in CI; execution of that executable inside OCTAGRAM/QEMU remains unverified.",
     "The initial upstream rust-lang/libc OCTAGRAM module compiles for the custom target, but this does not prove full std PAL runtime conformance or guest runtime symbol behavior.",
-    "The std executable now compiles and links for OCTAGRAM, but this does not prove Rust std runtime behavior on the guest; execution inside OCTAGRAM/QEMU and broader POSIX conformance remain unverified."
+    "The Rust std probe and a static OCTAGRAM std executable now compile and link in CI; this does not prove Rust std runtime behavior on the guest, and execution inside OCTAGRAM/QEMU remains unverified."
   ],
   "upstream_libc": {
     "repository": "rust-lang/libc",

@@ -200,7 +200,7 @@ remaining_budget_seconds() {
 # verifier need is there. A partially installed tree (ninja interrupted during
 # the install target) must not be mistaken for a complete one.
 install_complete() {
-    for tool in llvm-config octagram-llvm-config llc llvm-nm; do
+    for tool in llvm-config octagram-llvm-config llc llvm-nm llvm-cov; do
         [ -x "$install_prefix/bin/$tool" ] || return 1
     done
     set +e
@@ -279,6 +279,7 @@ tree_digest() {
 build_inputs_stamp() {
     {
         echo "llvm_version=$llvm_version"
+        echo "required_install_tools=llvm-config,octagram-llvm-config,llc,llvm-nm,llvm-cov"
         echo "toolchain_file=$(file_digest "$toolchain_file")"
         echo "llvm_config_generator=$(file_digest "$repo_root/tools/octagram_llvm_config.py")"
         echo "sysroot=$(tree_digest "$sysroot")"

@@ -53,11 +53,19 @@ def main() -> int:
         if actual != EXPECTED_COMMIT:
             raise SystemExit(f"wrong upstream libc revision: {actual}")
 
-    replace_once(
-        root / "build.rs",
-        '            "helenos",\n',
-        '            "helenos", "octagram",\n',
-    )
+    # libc 0.2.191 added "helenos" to this check-cfg list; 0.2.186
+    # predates that entry and ends the same list with "qurt".
+    build_rs = root / "build.rs"
+    build_source = build_rs.read_text(encoding="utf-8")
+    if '"octagram"' not in build_source:
+        if build_source.count('"helenos",') == 1:
+            build_source = build_source.replace('"helenos",', '"helenos", "octagram",', 1)
+        elif build_source.count('"qurt",') == 1:
+            build_source = build_source.replace('"qurt",', '"qurt", "octagram",', 1)
+        else:
+            raise SystemExit(f"could not identify libc target_os check-cfg list in {build_rs}")
+        build_rs.write_text(build_source, encoding="utf-8")
+
 
     unix = root / "src/unix/mod.rs"
     replace_once(
@@ -75,7 +83,40 @@ def main() -> int:
         '    } else if #[cfg(target_os = "redox")] {',
     )
     replace_once(unix, "    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_init$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_init(\n        lock: *mut crate::pthread_rwlock_t,\n        attr: *const crate::pthread_rwlockattr_t,\n    ) -> c_int;\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_destroy$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_destroy(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_rdlock$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_rdlock(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_tryrdlock$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_tryrdlock(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_wrlock$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_wrlock(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_trywrlock$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_trywrlock(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_unlock$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_unlock(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    pub fn pthread_rwlockattr_init(attr: *mut crate::pthread_rwlockattr_t) -> c_int;\n    pub fn pthread_rwlockattr_destroy(attr: *mut crate::pthread_rwlockattr_t) -> c_int;", "    #[cfg(not(target_os = \"octagram\"))]\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_init$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_init(\n        lock: *mut crate::pthread_rwlock_t,\n        attr: *const crate::pthread_rwlockattr_t,\n    ) -> c_int;\n    #[cfg(not(target_os = \"octagram\"))]\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_destroy$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_destroy(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg(not(target_os = \"octagram\"))]\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_rdlock$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_rdlock(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg(not(target_os = \"octagram\"))]\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_tryrdlock$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_tryrdlock(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg(not(target_os = \"octagram\"))]\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_wrlock$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_wrlock(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg(not(target_os = \"octagram\"))]\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_trywrlock$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_trywrlock(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg(not(target_os = \"octagram\"))]\n    #[cfg_attr(\n        all(target_os = \"macos\", target_arch = \"x86\"),\n        link_name = \"pthread_rwlock_unlock$UNIX2003\"\n    )]\n    pub fn pthread_rwlock_unlock(lock: *mut crate::pthread_rwlock_t) -> c_int;\n    #[cfg(not(target_os = \"octagram\"))]\n    pub fn pthread_rwlockattr_init(attr: *mut crate::pthread_rwlockattr_t) -> c_int;\n    #[cfg(not(target_os = \"octagram\"))]\n    pub fn pthread_rwlockattr_destroy(attr: *mut crate::pthread_rwlockattr_t) -> c_int;")
-    replace_once(unix, "    #[cfg(not(all(target_os = \"linux\", target_env = \"gnu\")))] // defined in new/glibc\n    #[cfg_attr(gnu_file_offset_bits64, link_name = \"statvfs64\")]\n    pub fn statvfs(path: *const c_char, buf: *mut crate::statvfs) -> c_int;\n    #[cfg(not(all(target_os = \"linux\", target_env = \"gnu\")))] // defined in new/glibc\n    #[cfg_attr(gnu_file_offset_bits64, link_name = \"fstatvfs64\")]\n    pub fn fstatvfs(fd: c_int, buf: *mut crate::statvfs) -> c_int;", "    #[cfg(not(target_os = \"octagram\"))]\n    #[cfg(not(all(target_os = \"linux\", target_env = \"gnu\")))] // defined in new/glibc\n    #[cfg_attr(gnu_file_offset_bits64, link_name = \"statvfs64\")]\n    pub fn statvfs(path: *const c_char, buf: *mut crate::statvfs) -> c_int;\n    #[cfg(not(target_os = \"octagram\"))]\n    #[cfg(not(all(target_os = \"linux\", target_env = \"gnu\")))] // defined in new/glibc\n    #[cfg_attr(gnu_file_offset_bits64, link_name = \"fstatvfs64\")]\n    pub fn fstatvfs(fd: c_int, buf: *mut crate::statvfs) -> c_int;")
+    statvfs_old = """    #[cfg(not(all(target_os = "linux", target_env = "gnu")))] // defined in new/glibc
+    #[cfg_attr(gnu_file_offset_bits64, link_name = "statvfs64")]
+    pub fn statvfs(path: *const c_char, buf: *mut crate::statvfs) -> c_int;
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))] // defined in new/glibc
+    #[cfg_attr(gnu_file_offset_bits64, link_name = "fstatvfs64")]
+    pub fn fstatvfs(fd: c_int, buf: *mut crate::statvfs) -> c_int;"""
+    statvfs_new = """    #[cfg(not(target_os = "octagram"))]
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))] // defined in new/glibc
+    #[cfg_attr(gnu_file_offset_bits64, link_name = "statvfs64")]
+    pub fn statvfs(path: *const c_char, buf: *mut crate::statvfs) -> c_int;
+    #[cfg(not(target_os = "octagram"))]
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))] // defined in new/glibc
+    #[cfg_attr(gnu_file_offset_bits64, link_name = "fstatvfs64")]
+    pub fn fstatvfs(fd: c_int, buf: *mut crate::statvfs) -> c_int;"""
+    statvfs_older = """    #[cfg_attr(gnu_file_offset_bits64, link_name = "statvfs64")]
+    pub fn statvfs(path: *const c_char, buf: *mut crate::statvfs) -> c_int;
+    #[cfg_attr(gnu_file_offset_bits64, link_name = "fstatvfs64")]
+    pub fn fstatvfs(fd: c_int, buf: *mut crate::statvfs) -> c_int;"""
+    statvfs_older_new = """    #[cfg(not(target_os = "octagram"))]
+    #[cfg_attr(gnu_file_offset_bits64, link_name = "statvfs64")]
+    pub fn statvfs(path: *const c_char, buf: *mut crate::statvfs) -> c_int;
+    #[cfg(not(target_os = "octagram"))]
+    #[cfg_attr(gnu_file_offset_bits64, link_name = "fstatvfs64")]
+    pub fn fstatvfs(fd: c_int, buf: *mut crate::statvfs) -> c_int;"""
+    unix_source = unix.read_text(encoding="utf-8")
+    if statvfs_new not in unix_source and statvfs_older_new not in unix_source:
+        if unix_source.count(statvfs_old) == 1:
+            unix_source = unix_source.replace(statvfs_old, statvfs_new, 1)
+        elif unix_source.count(statvfs_older) == 1:
+            unix_source = unix_source.replace(statvfs_older, statvfs_older_new, 1)
+        else:
+            raise SystemExit(f"could not find supported statvfs declarations in {unix}")
+        unix.write_text(unix_source, encoding="utf-8")
+
     replace_once(
         unix,
         '    if #[cfg(not(target_os = "aix"))] {\n'
@@ -91,11 +132,7 @@ def main() -> int:
     # module lives in the legacy tree, so make it visible from `src/new` too
     # instead of maintaining two copies of the same definitions.
     new_mod = root / "src/new/mod.rs"
-    replace_once(
-        new_mod,
-        "mod common;\n",
-        "mod common;\n"
-        "\n"
+    octagram_exports = (
         "#[cfg(target_os = \"octagram\")]\n"
         "use common::posix::unistd;\n"
         "#[cfg(target_os = \"octagram\")]\n"
@@ -113,7 +150,10 @@ def main() -> int:
         "    SO_PASSCRED, MSG_CMSG_CLOEXEC, TCP_DEFER_ACCEPT, TCP_QUICKACK, UIO_MAXIOV,\n"
         "    SYS_pidfd_open, SYS_pidfd_send_signal, CLD_EXITED, CLD_KILLED, CLD_DUMPED,\n"
         "    CLD_TRAPPED, CLD_STOPPED, CLD_CONTINUED, SOCK_NONBLOCK, F_SETFD,\n"
-        "    SIGSTKSZ, MINSIGSTKSZ, MAP_STACK, O_PATH, MSG_EOR, AT_MINSIGSTKSZ, pipe2,\n"
+        "    SIGSTKSZ, MINSIGSTKSZ, MAP_STACK, O_PATH, O_RDONLY, O_WRONLY, O_RDWR,\n"
+        "    O_ACCMODE, O_CREAT, O_TRUNC, O_APPEND, O_EXCL, O_NONBLOCK, O_CLOEXEC,\n"
+        "    O_NOFOLLOW, O_DIRECTORY, AT_FDCWD, AT_REMOVEDIR, AT_SYMLINK_NOFOLLOW,\n"
+        "    MSG_EOR, AT_MINSIGSTKSZ, pipe2,\n"
         "    preadv, pwritev, getauxval, P_PIDFD, PIDFD_SIGNAL_PROCESS_GROUP, PIDFD_GET_INFO,\n"
         "    PIDFD_INFO_EXIT, pidfd_info, waitid, accept4, pthread_attr_getstack,\n"
         "    pthread_attr_getguardsize, pthread_getattr_np, clock_nanosleep, SO_PEERCRED,\n"
@@ -123,8 +163,22 @@ def main() -> int:
         "    FUTEX_WAIT_PRIVATE, FUTEX_WAKE_PRIVATE, FUTEX_REQUEUE_PRIVATE,\n"
         "    FUTEX_CMP_REQUEUE_PRIVATE, FUTEX_WAKE_OP_PRIVATE, FUTEX_WAIT_BITSET_PRIVATE,\n"
         "    FUTEX_WAKE_BITSET_PRIVATE,\n"
-        "};\n",
+        "};\n"
     )
+    new_source = new_mod.read_text(encoding="utf-8")
+    marker = '#[cfg(target_os = "octagram")]\nuse common::posix::unistd;\n'
+    if new_source.count(marker) > 1:
+        raise SystemExit(f"duplicate OCTAGRAM libc re-export blocks in {new_mod}")
+    if marker in new_source:
+        block_start = new_source.index(marker)
+        block_end = new_source.find("};\n", block_start)
+        if block_end < 0:
+            raise SystemExit(f"incomplete OCTAGRAM libc re-export block in {new_mod}")
+        new_source = new_source[:block_start] + new_source[block_end + 3:]
+    if new_source.count("mod common;\n") != 1:
+        raise SystemExit(f"expected one common module anchor in {new_mod}")
+    new_source = new_source.replace("mod common;\n", "mod common;\n\n" + octagram_exports, 1)
+    new_mod.write_text(new_source, encoding="utf-8")
     # Cargo re-extracts a registry crate whenever this marker is missing, which
     # silently discards the edits above; keep the marker so the patched sources
     # are the ones cargo compiles.

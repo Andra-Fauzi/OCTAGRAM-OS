@@ -151,6 +151,12 @@ def main() -> int:
     unistd_import = '#[cfg(target_os = "octagram")]\nuse common::posix::unistd;\n'
     if unistd_import not in new_source:
         new_source = new_source.replace("mod common;\n", "mod common;\n\n" + unistd_import, 1)
+    strerror_export = (
+        '#[cfg(target_os = "octagram")]\n'
+        'pub use crate::unix::octagram::strerror_r;\n'
+    )
+    if strerror_export not in new_source:
+        new_source = new_source.replace(unistd_import, unistd_import + strerror_export, 1)
     new_mod.write_text(new_source, encoding="utf-8")
     # Cargo re-extracts a registry crate whenever this marker is missing, which
     # silently discards the edits above; keep the marker so the patched sources

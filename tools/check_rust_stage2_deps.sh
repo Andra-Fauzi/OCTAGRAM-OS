@@ -27,7 +27,7 @@ publish = false
 [dependencies]
 errno = { version = "=0.3.14", default-features = false }
 getrandom = { version = "=0.3.3", default-features = false }
-rustix = { version = "=1.1.5", default-features = false, features = ["fs"] }
+tempfile = { version = "=3.23.0" }
 libc = { version = "=0.2.191", default-features = false }
 EOF
 cat > "$check_root/src/lib.rs" <<'EOF'
@@ -42,7 +42,7 @@ pub fn check_random_surface(buffer: &mut [u8]) -> Result<(), getrandom::Error> {
 }
 EOF
 
-echo "fetching errno 0.3.14, getrandom 0.3.3, and libc 0.2.191"
+echo "fetching errno 0.3.14, getrandom 0.3.3, tempfile 3.23.0, and libc 0.2.191"
 CARGO_HOME=$cargo_home cargo fetch --manifest-path "$check_root/Cargo.toml"
 
 extract_crate() {
@@ -73,6 +73,7 @@ extract_crate() {
 extract_crate libc 0.2.191
 extract_crate errno 0.3.14
 extract_crate getrandom 0.3.3
+extract_crate tempfile 3.23.0
 
 for source in "$cargo_home"/registry/src/*/libc-0.2.191; do
     [ -f "$source/Cargo.toml" ] || continue
@@ -80,6 +81,7 @@ for source in "$cargo_home"/registry/src/*/libc-0.2.191; do
 done
 python3 "$repo_root/tools/patch_errno_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_getrandom_octagram.py" --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_tempfile_octagram.py" --registry-root "$cargo_home/registry/src"
 
 echo "checking patched target dependencies for x86_64-unknown-octagram"
 CARGO_HOME=$cargo_home CARGO_TARGET_DIR=$check_root/target \

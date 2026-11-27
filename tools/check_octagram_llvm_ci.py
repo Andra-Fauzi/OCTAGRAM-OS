@@ -294,7 +294,8 @@ def main() -> int:
         "rustc-cargo must not verify or publish a toolchain from an incomplete bootstrap",
     )
 
-    # A checkpoint must be restorable by prefix, and saved only when incomplete.
+    # A checkpoint must be restorable by exact-input prefix and saved after a
+    # budget stop or a safely handled external cancellation.
     restore = step_block(llvm, "Restore libLLVM build checkpoint")
     if not restore:
         fail("llvm job does not restore a build checkpoint")
@@ -333,6 +334,11 @@ def main() -> int:
             save,
             "steps.llvm-build.outcome == 'cancelled'",
             "a safely stopped LLVM build must also be saved after user cancellation",
+        )
+        require(
+            save,
+            "cancelled()",
+            "checkpoint save must run in the cancelled workflow context",
         )
 
     # The install tree is the "done" marker: it may only be saved after the

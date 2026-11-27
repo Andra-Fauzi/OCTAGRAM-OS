@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "as_of": "2026-11-22",
+  "as_of": "2026-11-27",
   "source_of_truth": [
     "user/include/sys/types.h",
     "user/include/sys/stat.h",
@@ -128,7 +128,7 @@
   "libc_translation": {
     "stat": "user/runtime.c stat/lstat/fstat/fstatat convert oct_stat into public struct stat; only st_size, st_mode, and st_mtime are populated, other fields zeroed.",
     "errno": "Syscall returns negative errno; libc wrappers translate to -1 and thread-local errno where configured.",
-    "pthread": "OCTAGRAM pthread_t is u64; pthread attributes support joinable creation and stack sizing; detach returns ENOTSUP.",
+    "pthread": "OCTAGRAM pthread_t is u64; pthread attributes support joinable creation and stack sizing; pthread_detach calls the kernel-backed oct_thread_detach syscall.",
     "time": "CLOCK_REALTIME and CLOCK_MONOTONIC are defined; monotonic/realtime precision and semantic compatibility need conformance tests.",
     "directory": "dirent record has 280-byte ABI; name is fixed 256-byte field."
   },
@@ -146,13 +146,15 @@
     "OCTAGRAM libc is not glibc or musl ABI-compatible; upstream libc module must describe OCTAGRAM's own ABI.",
     "Generic Rust Unix PAL may request libc functions or constants absent from current OCTAGRAM headers/runtime.",
     "struct stat is a translated public C structure; raw kernel oct_stat must not be confused with it.",
-    "pthread_detach returns ENOTSUP; full POSIX thread semantics are not implemented.",
-    "sendmsg and recvmsg return ENOSYS; socket API is partial.",
     "getrandom currently uses xorshift seeded from TSC and is not a cryptographic entropy guarantee.",
-    "The manifest records source-level ABI facts; it does not prove Rust std builds or runs.",
     "The initial upstream libc target module compiles for the custom target, but full Rust std linkage and runtime behavior are not yet verified.",
-    "The initial upstream rust-lang/libc OCTAGRAM module compiles for the custom target, but this does not prove Rust std PAL conformance or runtime symbol availability.",
-    "fdopendir is implemented for directory descriptors; full POSIX directory-stream semantics and error/EOF distinction still need conformance tests."
+    "fdopendir is implemented for directory descriptors; full POSIX directory-stream semantics and error/EOF distinction still need conformance tests.",
+    "pthread_getattr_np, pthread_attr_getstack, and pthread_attr_getguardsize are not implemented; the OCTAGRAM std port selects handler_none, so it does not query native stack bounds or install the upstream stack-overflow signal handler.",
+    "accept4 is not implemented; the OCTAGRAM std port uses accept() followed by fcntl(FD_CLOEXEC) for accepted sockets.",
+    "sendmsg and recvmsg transfer ordinary payloads, but ancillary control data and descriptor passing are unsupported; sendmsg returns ENOTSUP when control data is supplied.",
+    "getrandom currently uses xorshift seeded from TSC and is not a cryptographic entropy guarantee.",
+    "The Rust std probe and a static OCTAGRAM std executable now compile and link in CI; execution of that executable inside OCTAGRAM/QEMU remains unverified.",
+    "The initial upstream rust-lang/libc OCTAGRAM module compiles for the custom target, but this does not prove full std PAL runtime conformance or guest runtime symbol behavior."
   ],
   "upstream_libc": {
     "repository": "rust-lang/libc",
@@ -160,7 +162,7 @@
     "applicator": "tools/apply_rust_libc_octagram.py",
     "target_module": "patches/rust-libc/octagram/mod.rs",
     "compile_gate": "cargo +nightly -Zjson-target-spec -Zbuild-std=core check --target x86_64-unknown-octagram --no-default-features --features rustc-dep-of-std",
-    "last_verified_run": null,
+    "last_verified_run": 46011272953,
     "commit": "ccc2ff4aaab962f7fde7b8edda7379c045b1ca12",
     "version": "0.2.191",
     "reason": "This is the exact libc version declared by library/std/Cargo.toml in the pinned Rust source."

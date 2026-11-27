@@ -534,6 +534,8 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
+[workspace]
+
 [dependencies]
 libc = { version = "=$LIBC_VERSION", default-features = false }
 EOF
@@ -557,7 +559,7 @@ done
 registry_patch_count=0
 for registry_source in "$cargo_home"/registry/src/*/libc-"$LIBC_VERSION"; do
     [ -f "$registry_source/Cargo.toml" ] || continue
-    if ! grep -Eq '^version = "0\.2\.191"$' "$registry_source/Cargo.toml"; then
+    if ! grep -Eq "^version = \"$LIBC_VERSION\"$" "$registry_source/Cargo.toml"; then
         echo "bootstrap_rustc_octagram: error: unexpected libc package version in $registry_source" >&2
         exit 1
     fi

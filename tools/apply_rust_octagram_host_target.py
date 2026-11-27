@@ -100,6 +100,36 @@ def main() -> int:
     changed |= replace_once(root / SPEC_MOD, OS_ANCHOR, OS_LINE)
     changed |= replace_once(root / SPEC_MOD, REGISTRATION_ANCHOR, REGISTRATION_LINE)
 
+    # This target intentionally has no dynamic loader or shared-object ABI.
+    # rustc normally warns when Cargo's std build script requests a dylib that
+    # this static-only target cannot emit. Suppress only this expected warning
+    # for the exact OCTAGRAM triple and Dylib crate type; keep every other
+    # unsupported-output warning visible.
+    passes = root / "compiler/rustc_interface/src/passes.rs"
+    passes_source = passes.read_text(encoding="utf-8")
+    old_diagnostic = """            session.dcx().emit_warn(diagnostics::UnsupportedCrateTypeForTarget {
+                crate_type: *crate_type,
+                target_triple: &session.opts.target_triple,
+            });"""
+    new_diagnostic = """            let expected_octagram_static_dylib =
+                session.opts.target_triple == "x86_64-unknown-octagram"
+                    && *crate_type == CrateType::Dylib;
+            if !expected_octagram_static_dylib {
+                session.dcx().emit_warn(diagnostics::UnsupportedCrateTypeForTarget {
+                    crate_type: *crate_type,
+                    target_triple: &session.opts.target_triple,
+                });
+            }"""
+    if new_diagnostic not in passes_source:
+        count = passes_source.count(old_diagnostic)
+        if count != 1:
+            raise SystemExit(
+                "expected one UnsupportedCrateTypeForTarget diagnostic in "
+                f"{passes}, found {count}; refusing an unsafe compiler patch"
+            )
+        passes.write_text(passes_source.replace(old_diagnostic, new_diagnostic, 1), encoding="utf-8")
+    print("RUST-OCTAGRAM-STATIC-DYLIB-PASS: only the expected static-target dylib warning is filtered")
+
     print(
         "registered x86_64-unknown-octagram in compiler/rustc_target/src/spec/mod.rs"
         if changed

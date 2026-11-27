@@ -630,7 +630,7 @@ jobs:
           host_libdir=$("$host_config" --libdir)
           host_libs=$("$host_config" --link-static --libs)
           for lib in Polly PollyISL; do
-            if printf '%s\\n' "$host_libs" | tr ' ' '\\n' | grep -qx -- "-l$lib"; then
+            if printf '%s\n' "$host_libs" | tr ' ' '\n' | grep -qx -- "-l$lib"; then
               if [ ! -s "$host_libdir/lib$lib.a" ] && [ ! -s "$host_libdir/lib$lib.so" ]; then
                 echo "FAIL: host llvm-config requires -l$lib but $host_libdir/lib$lib.a/.so is missing" >&2
                 exit 1
@@ -638,12 +638,12 @@ jobs:
             fi
           done
           system_libs=$(OCTAGRAM_REAL_LLVM_CONFIG="$host_config" python3 tools/host_llvm_config_wrapper.py --link-static --system-libs)
-          if printf '%s\\n' "$system_libs" | grep -Eq '(^|[[:space:]])-llib[^[:space:]]*\\.so([.0-9]*)([[:space:]]|$)'; then
+          if printf '%s\n' "$system_libs" | grep -Eq '(^|[[:space:]])-llib[^[:space:]]*\\.so([.0-9]*)([[:space:]]|$)'; then
             echo "FAIL: host llvm-config adapter left an invalid -llib*.so flag:" >&2
             echo "$system_libs" >&2
             exit 1
           fi
-          if printf '%s\\n' "$system_libs" | grep -Eq '(^|[[:space:]])-lz3([[:space:]]|$)'; then
+          if printf '%s\n' "$system_libs" | grep -Eq '(^|[[:space:]])-lz3([[:space:]]|$)'; then
             z3_linker_file=$(cc -print-file-name=libz3.so)
             [ -f "$z3_linker_file" ] || { echo "FAIL: -lz3 requested but libz3-dev linker file is missing" >&2; exit 1; }
           fi

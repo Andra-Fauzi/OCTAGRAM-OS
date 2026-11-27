@@ -147,6 +147,9 @@ jobs:
             echo "PASS sh -n + --help: $script"
           done
 
+      - name: Check resumable LLVM CI contract
+        run: python3 tools/check_octagram_llvm_ci.py
+
       - name: Install Rust nightly
         run: |
           rustup toolchain install "$OCTAGRAM_RUST_TOOLCHAIN" --profile minimal
@@ -394,7 +397,7 @@ jobs:
         if: >-
           always() &&
           steps.checkpoint.outputs.present == 'true' &&
-          (steps.llvm-build.outputs.incomplete == 'true' || steps.llvm-build.outcome == 'cancelled')
+          (steps.llvm-build.outputs.incomplete == 'true' || steps.llvm-build.outcome == 'cancelled' || cancelled())
         continue-on-error: true
         uses: actions/cache/save@v4
         with:

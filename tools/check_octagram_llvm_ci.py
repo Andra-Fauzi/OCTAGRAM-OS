@@ -311,6 +311,7 @@ def main() -> int:
         "sys/process/unix/mod.rs",
         "sys/process/unix/unix.rs",
         "sys/process/unix/common.rs",
+        "os/mod.rs",
         "os/net/mod.rs",
     ):
         require(
@@ -325,7 +326,7 @@ def main() -> int:
     )
     require(
         std_patch,
-        'for relative in ("os/net/mod.rs", "sys/process/unix/common.rs")',
+        'for relative in ("os/mod.rs", "os/net/mod.rs", "sys/process/unix/common.rs")',
         "the std patcher must keep Linux networking extensions and pidfd process state Linux-only",
     )
     require(

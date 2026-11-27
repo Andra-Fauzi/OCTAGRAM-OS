@@ -569,7 +569,7 @@ for libc_version in "$LIBC_VERSION" "$LIBC_CARGO_VERSION"; do
     version_patch_count=0
     for registry_source in "$cargo_home"/registry/src/*/libc-"$libc_version"; do
         [ -f "$registry_source/Cargo.toml" ] || continue
-        if ! grep -Eq "^version = \\"$libc_version\\"$" "$registry_source/Cargo.toml"; then
+        if ! grep -Eq '^version = "'$libc_version'"$' "$registry_source/Cargo.toml"; then
             echo "bootstrap_rustc_octagram: error: unexpected libc package version in $registry_source" >&2
             exit 1
         fi

@@ -283,7 +283,8 @@ jobs:
             --jobs "$JOBS"
           # Build tree + extracted source are several GiB and are not needed
           # after install; the source tarball is kept for the next cache save.
-          rm -rf "build/toolchain/llvm-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src"
+          rm -rf "build/toolchain/llvm-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src" \
+                 "build/toolchain/llvm-$LLVM_VERSION/build-octagram"
           ccache --show-stats
 
       - name: Verify libLLVM install (static OCTAGRAM ELF)

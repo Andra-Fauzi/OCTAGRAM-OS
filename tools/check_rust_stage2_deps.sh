@@ -5,10 +5,10 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
-toolchain=\${OCTAGRAM_RUST_TOOLCHAIN:-nightly-2026-11-23}
+toolchain=${OCTAGRAM_RUST_TOOLCHAIN:-nightly-2026-11-23}
 target=$repo_root/user/rust/targets/x86_64-unknown-octagram.json
-cargo_home=\${CARGO_HOME:-$HOME/.cargo}
-check_root=\${RUNNER_TEMP:-/tmp}/octagram-stage2-dependency-check
+cargo_home=${CARGO_HOME:-$HOME/.cargo}
+check_root=${RUNNER_TEMP:-/tmp}/octagram-stage2-dependency-check
 
 [ -f "$target" ] || { echo "missing OCTAGRAM target spec: $target" >&2; exit 1; }
 command -v cargo >/dev/null 2>&1 || { echo "cargo is not installed" >&2; exit 1; }

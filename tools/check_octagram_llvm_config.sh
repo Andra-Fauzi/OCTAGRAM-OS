@@ -168,6 +168,16 @@ OCTAGRAM_SYSROOT="$stub_sysroot" "$bootstrap" --llvm-prefix "$prefix" --host-llv
 grep -q 'OCTAGRAM-BOOTSTRAP-PREFLIGHT-PASS' "$work/bootstrap.out" \
     || fail "bootstrap --check did not report success"
 
+echo "-- missing llvm-cov --"
+mv "$prefix/bin/llvm-cov" "$prefix/bin/llvm-cov.saved"
+if OCTAGRAM_SYSROOT="$stub_sysroot" "$bootstrap" --llvm-prefix "$prefix" --host-llvm-config "$host_config" --check \
+        > "$work/bootstrap.out" 2>&1; then
+    fail "bootstrap accepted an LLVM install without llvm-cov"
+fi
+grep -q 'llvm-cov is missing or not executable' "$work/bootstrap.out" \
+    || fail "bootstrap did not explain that llvm-cov is required"
+mv "$prefix/bin/llvm-cov.saved" "$prefix/bin/llvm-cov"
+
 echo "-- missing target llvm-config --"
 mv "$prefix/bin/octagram-llvm-config" "$prefix/bin/octagram-llvm-config.saved" 2>/dev/null || true
 if OCTAGRAM_SYSROOT="$stub_sysroot" "$bootstrap" --llvm-prefix "$prefix" --host-llvm-config "$host_config" --check \

@@ -154,8 +154,19 @@ def main() -> int:
         require(field in runtime, f"stat translation no longer contains: {field}")
 
     pthread = read("user/runtime.c")
-    require(re.search(r"int pthread_detach\(pthread_t thread\).*?return ENOTSUP;", pthread, re.S) is not None,
-            "pthread_detach behavior changed; update capability notes")
+    detach = re.search(
+        r"(?m)^int pthread_detach\\(pthread_t thread\\)\\s*\\{(?P<body>.*?)^\\}",
+        pthread,
+        re.S,
+    )
+    require(detach is not None, "pthread_detach implementation missing")
+    detach_body = detach.group("body")
+    require(
+        "oct_thread_detach(thread)" in detach_body
+        and "return status < 0 ? (int)-status : 0;" in detach_body
+        and "ENOTSUP" not in detach_body,
+        "pthread_detach must use the kernel detach syscall, not an ENOTSUP stub",
+    )
 
     require(re.search(
         r"DIR \*fdopendir\(int fd\).*?fstat\(fd, &metadata\).*?S_ISDIR\(metadata\.st_mode\).*?directory->fd = fd;",

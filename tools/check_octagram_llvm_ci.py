@@ -608,12 +608,12 @@ def main() -> int:
     )
     require(
         tempfile_patch,
-        "fs.remove_file(path)",
+        "fs::remove_file(path)",
         "the OCTAGRAM tempfile backend must unlink through std::fs",
     )
     require(
         tempfile_patch,
-        "fs.rename(old_path, new_path)",
+        "fs::rename(old_path, new_path)",
         "the OCTAGRAM tempfile backend must rename through std::fs",
     )
     require(

@@ -150,9 +150,80 @@ OCTAGRAM_ARM_FILES = {
     "sys/process/mod.rs",
     "sys/process/unix/mod.rs",
     "sys/process/unix/unix.rs",
+    # The shared process implementation contains Linux-only pidfd state and
+    # methods. OCTAGRAM currently uses the non-Linux stub implementation.
+    "sys/process/unix/common.rs",
+    # std's Linux-specific extension traits (abstract sockets, ancillary data,
+    # TCP quickack) are not part of OCTAGRAM's public OS API yet.
+    "os/net/mod.rs",
     "sys/random/mod.rs",
     "sys/thread/unix.rs",
 }
+
+
+def restore_linux_only_cfg_gates(std: Path) -> None:
+    """Undo the old broad Linux widening in files now explicitly Linux-only.
+
+    Rust bootstrap checkpoints may contain a checkout patched by an earlier
+    version of this script. Restore only the exact nested predicate this
+    patcher generated, so the updated exclusions also work on cache resume.
+    """
+    restored = 0
+    for relative in ("os/net/mod.rs", "sys/process/unix/common.rs"):
+        path = std / relative
+        source = path.read_text(encoding="utf-8")
+        updated = source.replace(OCTAGRAM_LINUX, 'target_os = "linux"')
+        if updated != source:
+            restored += source.count(OCTAGRAM_LINUX)
+            path.write_text(updated, encoding="utf-8")
+    print(
+        "RUST-STD-OCTAGRAM-LINUX-ONLY-CFG-PASS: "
+        f"restored {restored} Linux-only cfg predicate(s)"
+    )
+
+
+def preserve_linux_socket_option_cfgs(std: Path) -> None:
+    """Keep Linux-only socket option helpers out of OCTAGRAM std.
+
+    The shared Unix socket implementation is still selected for OCTAGRAM,
+    but it must not compile Linux-only TCP_QUICKACK, TCP_DEFER_ACCEPT or
+    SO_PASSCRED methods that have no OCTAGRAM callers or ABI contract.
+    """
+    path = std / "sys/net/connection/socket/unix.rs"
+    source = path.read_text(encoding="utf-8")
+    shared_widened = (
+        '#[cfg(any(target_os = "android", any(target_os = "linux", '
+        'target_os = "octagram"), target_os = "cygwin"))]'
+    )
+    shared_original = (
+        '#[cfg(any(target_os = "android", target_os = "linux", '
+        'target_os = "cygwin"))]'
+    )
+    linux_widened = '#[cfg(any(target_os = "linux", target_os = "octagram"))]'
+    linux_original = '#[cfg(target_os = "linux")]'
+    edits = (
+        ("set_quickack", shared_widened, shared_original),
+        ("quickack", shared_widened, shared_original),
+        ("set_deferaccept", linux_widened, linux_original),
+        ("deferaccept", linux_widened, linux_original),
+        ("set_passcred", shared_widened, shared_original),
+        ("passcred", shared_widened, shared_original),
+    )
+    for method, widened_cfg, original_cfg in edits:
+        widened = f"{widened_cfg}\\n    pub fn {method}"
+        original = f"{original_cfg}\\n    pub fn {method}"
+        if original in source:
+            continue
+        if source.count(widened) != 1:
+            raise SystemExit(
+                f"expected one widened or original Linux cfg for Socket::{method} in {path}"
+            )
+        source = source.replace(widened, original, 1)
+    path.write_text(source, encoding="utf-8")
+    print(
+        "RUST-STD-OCTAGRAM-LINUX-SOCKET-OPTIONS-PASS: "
+        "Linux-only socket option methods remain Linux-only"
+    )
 
 
 def widen_linux_cfg_gates(std: Path) -> None:
@@ -386,7 +457,12 @@ def main() -> int:
         else:
             destination.write_text(expected, encoding="utf-8")
 
+    # Restore old checkpoint edits before the global Linux cfg pass, then
+    # keep target-specific socket options Linux-only after the shared PAL gates
+    # have been widened.
+    restore_linux_only_cfg_gates(std)
     widen_linux_cfg_gates(std)
+    preserve_linux_socket_option_cfgs(std)
 
     # Keep the Linux-specific public namespace Linux-only. The shared private
     # os::net::linux_ext module above it is still widened for OCTAGRAM because

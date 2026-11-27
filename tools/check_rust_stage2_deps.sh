@@ -1,6 +1,7 @@
 #!/bin/sh
-# Compile target-side Rust dependencies that already caused bootstrap failures
-# before spending time on the LLVM and stage-2 compiler builds.
+# Compile target-side Rust dependency slices before the expensive LLVM build.
+# Rust and Cargo have separate lockfiles, so use separate Cargo workspaces: Cargo
+# otherwise unifies semver-compatible exact versions such as getrandom 0.3.3/0.3.4.
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -14,10 +15,19 @@ check_root=${RUNNER_TEMP:-/tmp}/octagram-stage2-dependency-check
 command -v cargo >/dev/null 2>&1 || { echo "cargo is not installed" >&2; exit 1; }
 
 rm -rf "$check_root"
-mkdir -p "$check_root/src"
-cat > "$check_root/Cargo.toml" <<EOF
+mkdir -p "$check_root"
+
+write_dependency_project() {
+    project=$1
+    project_name=$2
+    libc_version=$3
+    getrandom_version=$4
+    tempfile_version=$5
+    mkdir -p "$project/src"
+
+    cat > "$project/Cargo.toml" <<EOF
 [package]
-name = "octagram-stage2-dependency-check"
+name = "$project_name"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -26,84 +36,91 @@ publish = false
 
 [dependencies]
 errno = { version = "=0.3.14", default-features = false }
-getrandom_root = { package = "getrandom", version = "=0.3.3", default-features = false }
-getrandom_cargo = { package = "getrandom", version = "=0.3.4", default-features = false }
-getrandom_modern = { package = "getrandom", version = "=0.4.3", default-features = false }
-libc_root = { package = "libc", version = "=0.2.191", default-features = false }
-libc_cargo = { package = "libc", version = "=0.2.186", default-features = false }
+getrandom = { version = "=$getrandom_version", default-features = false }
+libc = { version = "=$libc_version", default-features = false }
 
 [dev-dependencies]
-tempfile_root = { package = "tempfile", version = "=3.23.0" }
-tempfile_cargo = { package = "tempfile", version = "=3.27.0" }
+tempfile = { version = "=$tempfile_version" }
 EOF
-cat > "$check_root/src/lib.rs" <<'EOF'
+
+    cat > "$project/src/lib.rs" <<'EOF'
 #![no_std]
 
 pub fn check_errno_surface() -> i32 {
     errno::errno().0
 }
 
-pub fn check_random_root(buffer: &mut [u8]) -> Result<(), getrandom_root::Error> {
-    getrandom_root::fill(buffer)
+pub fn check_random_surface(buffer: &mut [u8]) -> Result<(), getrandom::Error> {
+    getrandom::fill(buffer)
 }
 
-pub fn check_random_cargo(buffer: &mut [u8]) -> Result<(), getrandom_cargo::Error> {
-    getrandom_cargo::fill(buffer)
-}
-
-pub fn check_random_modern(buffer: &mut [u8]) -> Result<(), getrandom_modern::Error> {
-    getrandom_modern::fill(buffer)
-}
-
-// Compile-check the complete libc surface used by errno and the Rust Unix PAL
-// against both Rust workspace and Cargo submodule lockfile versions.
-pub unsafe fn check_rust_workspace_file_abi(
-    path: *const libc_root::c_char,
-    other_path: *const libc_root::c_char,
-    fd: libc_root::c_int,
-    directory_fd: libc_root::c_int,
+// Compile-check the POSIX surface consumed by errno and Rust std's Unix PAL.
+pub unsafe fn check_octagram_file_abi(
+    path: *const libc::c_char,
+    other_path: *const libc::c_char,
+    fd: libc::c_int,
+    directory_fd: libc::c_int,
 ) {
-    let _ = unsafe { libc_root::flock(fd, libc_root::LOCK_EX | libc_root::LOCK_NB) };
-    let _ = unsafe { libc_root::flock(fd, libc_root::LOCK_UN) };
-    let _ = unsafe { libc_root::unlink(path) };
-    let _ = unsafe { libc_root::unlinkat(directory_fd, path, 0) };
-    let _ = unsafe { libc_root::link(path, other_path) };
-    let _ = unsafe { libc_root::linkat(directory_fd, path, directory_fd, other_path, 0) };
-    let _ = unsafe { libc_root::rename(path, other_path) };
-    let _ = unsafe { libc_root::renameat(directory_fd, path, directory_fd, other_path) };
-    let _ = unsafe { libc_root::openat(directory_fd, path, libc_root::O_RDONLY) };
-    let directory = unsafe { libc_root::fdopendir(fd) };
-    let _ = unsafe { libc_root::readdir(directory) };
-    let _ = unsafe { libc_root::closedir(directory) };
-    let _ = unsafe { libc_root::opendir(path) };
-    let _ = unsafe { libc_root::strerror_r(0, core::ptr::null_mut(), 0) };
+    let _ = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+    let _ = unsafe { libc::flock(fd, libc::LOCK_UN) };
+    let _ = unsafe { libc::unlink(path) };
+    let _ = unsafe { libc::unlinkat(directory_fd, path, 0) };
+    let _ = unsafe { libc::link(path, other_path) };
+    let _ = unsafe { libc::linkat(directory_fd, path, directory_fd, other_path, 0) };
+    let _ = unsafe { libc::rename(path, other_path) };
+    let _ = unsafe { libc::renameat(directory_fd, path, directory_fd, other_path) };
+    let _ = unsafe { libc::openat(directory_fd, path, libc::O_RDONLY) };
+    let directory = unsafe { libc::fdopendir(fd) };
+    let _ = unsafe { libc::readdir(directory) };
+    let _ = unsafe { libc::closedir(directory) };
+    let _ = unsafe { libc::opendir(path) };
+    let _ = unsafe { libc::strerror_r(0, core::ptr::null_mut(), 0) };
+}
+EOF
 }
 
-pub unsafe fn check_cargo_file_abi(
-    path: *const libc_cargo::c_char,
-    other_path: *const libc_cargo::c_char,
-    fd: libc_cargo::c_int,
-    directory_fd: libc_cargo::c_int,
-) {
-    let _ = unsafe { libc_cargo::flock(fd, libc_cargo::LOCK_EX | libc_cargo::LOCK_NB) };
-    let _ = unsafe { libc_cargo::flock(fd, libc_cargo::LOCK_UN) };
-    let _ = unsafe { libc_cargo::unlink(path) };
-    let _ = unsafe { libc_cargo::unlinkat(directory_fd, path, 0) };
-    let _ = unsafe { libc_cargo::link(path, other_path) };
-    let _ = unsafe { libc_cargo::linkat(directory_fd, path, directory_fd, other_path, 0) };
-    let _ = unsafe { libc_cargo::rename(path, other_path) };
-    let _ = unsafe { libc_cargo::renameat(directory_fd, path, directory_fd, other_path) };
-    let _ = unsafe { libc_cargo::openat(directory_fd, path, libc_cargo::O_RDONLY) };
-    let directory = unsafe { libc_cargo::fdopendir(fd) };
-    let _ = unsafe { libc_cargo::readdir(directory) };
-    let _ = unsafe { libc_cargo::closedir(directory) };
-    let _ = unsafe { libc_cargo::opendir(path) };
-    let _ = unsafe { libc_cargo::strerror_r(0, core::ptr::null_mut(), 0) };
+# Rust root lockfile: libc 0.2.191, getrandom 0.3.3, tempfile 3.23.0.
+write_dependency_project \
+    "$check_root/rust-workspace" \
+    octagram-rust-workspace-dependency-check \
+    0.2.191 0.3.3 3.23.0
+
+# Cargo submodule lockfile: libc 0.2.186, getrandom 0.3.4, tempfile 3.27.0.
+write_dependency_project \
+    "$check_root/cargo-submodule" \
+    octagram-cargo-submodule-dependency-check \
+    0.2.186 0.3.4 3.27.0
+
+# getrandom 0.4.3 is also present in the two lockfiles. Test it separately to
+# avoid Cargo unifying semver-compatible exact versions inside one workspace.
+mkdir -p "$check_root/getrandom-modern/src"
+cat > "$check_root/getrandom-modern/Cargo.toml" <<'EOF'
+[package]
+name = "octagram-getrandom-modern-dependency-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+getrandom = { version = "=0.4.3", default-features = false }
+EOF
+cat > "$check_root/getrandom-modern/src/lib.rs" <<'EOF'
+#![no_std]
+
+pub fn check_random_surface(buffer: &mut [u8]) -> Result<(), getrandom::Error> {
+    getrandom::fill(buffer)
 }
 EOF
 
-echo "fetching errno, all three getrandom versions, both tempfile versions, and both libc versions"
-CARGO_HOME=$cargo_home cargo fetch --manifest-path "$check_root/Cargo.toml"
+echo "fetching separate Rust-workspace, Cargo-submodule, and getrandom 0.4.3 dependency graphs"
+for manifest in \
+    "$check_root/rust-workspace/Cargo.toml" \
+    "$check_root/cargo-submodule/Cargo.toml" \
+    "$check_root/getrandom-modern/Cargo.toml"; do
+    CARGO_HOME=$cargo_home cargo fetch --manifest-path "$manifest"
+done
 
 extract_crate() {
     package=$1
@@ -130,14 +147,10 @@ extract_crate() {
     }
 }
 
-extract_crate libc 0.2.191
-extract_crate libc 0.2.186
+for version in 0.2.191 0.2.186; do extract_crate libc "$version"; done
 extract_crate errno 0.3.14
-extract_crate getrandom 0.3.3
-extract_crate getrandom 0.3.4
-extract_crate getrandom 0.4.3
-extract_crate tempfile 3.23.0
-extract_crate tempfile 3.27.0
+for version in 0.3.3 0.3.4 0.4.3; do extract_crate getrandom "$version"; done
+for version in 3.23.0 3.27.0; do extract_crate tempfile "$version"; done
 
 for libc_version in 0.2.191 0.2.186; do
     for source in "$cargo_home"/registry/src/*/libc-"$libc_version"; do
@@ -149,28 +162,42 @@ python3 "$repo_root/tools/patch_errno_octagram.py" --registry-root "$cargo_home/
 python3 "$repo_root/tools/patch_getrandom_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_tempfile_octagram.py" --registry-root "$cargo_home/registry/src"
 
-echo "checking tempfile's OCTAGRAM dependency graph"
-dependency_tree=$(CARGO_HOME=$cargo_home cargo "+$toolchain" tree \
-    --manifest-path "$check_root/Cargo.toml" \
-    --target "$target" -Zjson-target-spec --edges normal,dev --prefix none)
-if printf '%s\n' "$dependency_tree" | grep -Eq '^rustix v'; then
-    echo "unexpected rustix dependency remains in the OCTAGRAM target graph" >&2
-    printf '%s\n' "$dependency_tree" >&2
-    exit 1
-fi
-for tempfile_version in 3.23.0 3.27.0; do
-    if ! printf '%s\n' "$dependency_tree" | grep -Eq "^tempfile v$tempfile_version"; then
-        echo "tempfile $tempfile_version is missing from the OCTAGRAM target dependency graph" >&2
+check_target_graph() {
+    project=$1
+    expected_tempfile=$2
+    label=$3
+    echo "checking $label target dependency graph"
+    dependency_tree=$(CARGO_HOME=$cargo_home cargo "+$toolchain" tree \
+        --manifest-path "$project/Cargo.toml" \
+        --target "$target" -Zjson-target-spec --edges normal,dev --prefix none)
+    if printf '%s\n' "$dependency_tree" | grep -Eq '^rustix v'; then
+        echo "unexpected rustix dependency remains in the OCTAGRAM target graph ($label)" >&2
+        printf '%s\n' "$dependency_tree" >&2
         exit 1
     fi
-done
+    if [ -n "$expected_tempfile" ] &&
+       ! printf '%s\n' "$dependency_tree" | grep -Eq "^tempfile v$expected_tempfile"; then
+        echo "tempfile $expected_tempfile is missing from the OCTAGRAM target graph ($label)" >&2
+        printf '%s\n' "$dependency_tree" >&2
+        exit 1
+    fi
+}
 
-echo "checking patched target dependencies for x86_64-unknown-octagram"
-CARGO_HOME=$cargo_home CARGO_TARGET_DIR=$check_root/target \
-    cargo "+$toolchain" check \
-    --manifest-path "$check_root/Cargo.toml" \
-    --target "$target" \
-    -Zjson-target-spec \
-    -Zbuild-std=core
+check_and_compile() {
+    project=$1
+    label=$2
+    check_target_graph "$project" "$3" "$label"
+    echo "compiling $label dependencies for x86_64-unknown-octagram"
+    CARGO_HOME=$cargo_home CARGO_TARGET_DIR=$check_root/target-$label \
+        cargo "+$toolchain" check \
+        --manifest-path "$project/Cargo.toml" \
+        --target "$target" \
+        -Zjson-target-spec \
+        -Zbuild-std=core
+}
+
+check_and_compile "$check_root/rust-workspace" 3.23.0 rust-workspace
+check_and_compile "$check_root/cargo-submodule" 3.27.0 cargo-submodule
+check_and_compile "$check_root/getrandom-modern" "" getrandom-modern
 
 echo "OCTAGRAM-RUST-STAGE2-DEPENDENCY-CHECK-PASS"

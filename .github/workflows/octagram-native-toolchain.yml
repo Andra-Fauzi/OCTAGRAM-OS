@@ -424,7 +424,7 @@ jobs:
           set -euo pipefail
           prefix="build/toolchain/llvm-$LLVM_VERSION-octagram"
           fail=0
-          for tool in llvm-config llc llvm-nm; do
+          for tool in llvm-config llc llvm-nm llvm-cov; do
             binary="$prefix/bin/$tool"
             if [ ! -x "$binary" ]; then
               echo "FAIL: $binary is missing"; fail=1; continue

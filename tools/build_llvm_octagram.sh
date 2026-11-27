@@ -146,6 +146,13 @@ fi
 
 llvm_short=$(printf '%s' "$llvm_version" | cut -d. -f1)
 install_prefix=${prefix:-$build_root/llvm-$llvm_version-octagram}
+# The install prefix is part of cmake_flags() and therefore the cache stamp.
+# Normalize an explicitly relative --prefix exactly like the default absolute
+# prefix, so verify/cache steps do not compute a different stamp from the build.
+case $install_prefix in
+    /*) ;;
+    *) install_prefix=$repo_root/$install_prefix ;;
+esac
 work_dir=$build_root/llvm-$llvm_version
 cmake_build=$work_dir/build-octagram
 state_file=$cmake_build/octagram-build-state.json

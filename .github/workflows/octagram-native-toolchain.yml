@@ -545,6 +545,15 @@ jobs:
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           sudo apt-get clean
 
+      - name: Restore the host LLVM release tarball
+        # Ubuntu has no llvm-22-dev, so the runner falls back to the ~1 GB
+        # release archive on every run. The archive is immutable for a version,
+        # so the key is the version alone and the install below reuses it.
+        uses: actions/cache@v4
+        with:
+          path: build/host-llvm/LLVM-${{ env.LLVM_VERSION }}-Linux-X64.tar.xz
+          key: octagram-host-llvm-${{ env.LLVM_VERSION }}
+
       - name: Install host LLVM for the build platform
         # bootstrap runs llvm-config on the runner while building the compiler
         # for x86_64-unknown-linux-gnu; the OCTAGRAM install only describes the
@@ -568,12 +577,28 @@ jobs:
             config=$(find_config || true)
           fi
           if [ -z "$config" ]; then
-            echo "llvm-$major-dev unavailable; downloading LLVM $LLVM_VERSION release"
+            # The release archive travels through actions/cache (step above), so
+            # only the first run pays for the ~1 GB download. A cached file that
+            # cannot be unpacked is dropped and fetched once more instead of
+            # failing the job.
+            tarball="build/host-llvm/LLVM-$LLVM_VERSION-Linux-X64.tar.xz"
             url="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/LLVM-$LLVM_VERSION-Linux-X64.tar.xz"
-            curl -fL --retry 3 -o /tmp/llvm-host.tar.xz "$url"
-            sudo mkdir -p /opt/llvm-host
-            sudo tar -xJf /tmp/llvm-host.tar.xz -C /opt/llvm-host --strip-components=1
-            rm -f /tmp/llvm-host.tar.xz
+            mkdir -p "$(dirname "$tarball")"
+            for attempt in use-cache download; do
+              if [ "$attempt" = download ] || [ ! -f "$tarball" ]; then
+                echo "downloading $url"
+                rm -f "$tarball"
+                curl -fL --retry 3 -o "$tarball.part" "$url"
+                mv "$tarball.part" "$tarball"
+              fi
+              sudo rm -rf /opt/llvm-host
+              sudo mkdir -p /opt/llvm-host
+              if sudo tar -xJf "$tarball" -C /opt/llvm-host --strip-components=1; then
+                break
+              fi
+              echo "the host LLVM archive could not be unpacked; fetching it again" >&2
+              rm -f "$tarball"
+            done
             config=/opt/llvm-host/bin/llvm-config
           fi
           [ -x "$config" ] || { echo "FAIL: no host llvm-config" >&2; exit 1; }

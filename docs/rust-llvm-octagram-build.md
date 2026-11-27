@@ -249,6 +249,12 @@ pernah dianggap selesai.
 
    Arsip sumber `llvm-project-<versi>.src.tar.xz` di-key hanya dengan versi,
    karena isinya arsip rilis upstream.
+8. Runner tidak menyediakan `llvm-22-dev` di apt, jadi `llvm-config` host
+   diambil dari arsip rilis resmi `LLVM-<versi>-Linux-X64.tar.xz` (~1 GB).
+   Arsip itu sekarang di-cache dengan key `octagram-host-llvm-<versi>` di
+   `build/host-llvm/`, jadi hanya run pertama yang mengunduhnya; run berikutnya
+   mengekstrak dari cache, dan mengunduh ulang hanya kalau arsip di cache tidak
+   bisa dibuka (file rusak/terpotong).
 
 Kenapa resume tidak memicu rebuild penuh: source LLVM di-extract ulang dari
 tarball yang di-cache, dan `tar` memulihkan mtime dari arsip. Objek yang sudah

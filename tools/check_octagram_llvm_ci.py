@@ -325,6 +325,96 @@ def main() -> int:
     elif install_save_at < verify_at:
         fail("install tree is cached before it is verified")
 
+    # --- the build-input stamp ---------------------------------------------
+    # A restore-keys fallback can hand back a tree built from an older sysroot
+    # or built with other flags. The build writes a stamp of its inputs into the
+    # install prefix, and the workflow must delete a tree whose stamp does not
+    # match instead of trusting the cache, a warning, or a manual cache delete.
+    require(
+        build,
+        ".octagram-build-inputs",
+        "build_llvm_octagram.sh must write the build-input stamp into the install prefix",
+    )
+    require(
+        build,
+        "write_input_stamp",
+        "build_llvm_octagram.sh must write the stamp after a successful install",
+    )
+    require(
+        build,
+        "OCTAGRAM-LLVM-INSTALL-INPUTS-MATCH",
+        "build_llvm_octagram.sh must answer --check-install-inputs with a pass marker",
+    )
+    require(
+        build,
+        "--check-install-inputs",
+        "build_llvm_octagram.sh must accept --check-install-inputs",
+    )
+    stamp_fn = re.search(r"^build_inputs_stamp\(\) \{\n(.*?)^\}\n", build, re.M | re.S)
+    if not stamp_fn:
+        fail("build_llvm_octagram.sh has no build_inputs_stamp()")
+    else:
+        for needle, what in (
+            ("$llvm_version", "the LLVM version"),
+            ("$toolchain_file", "the toolchain file"),
+            ("$sysroot", "the sysroot contents"),
+            ("cmake_flags", "the CMake flag vector"),
+        ):
+            require(
+                stamp_fn.group(1),
+                needle,
+                f"the build-input stamp must cover {what}",
+            )
+    # Reusing a prefix is decided by the stamp, and a mismatch has to discard the
+    # build tree too: an old CMakeCache would mix the old and new inputs.
+    reuse = re.search(r"if install_complete && \[ \"\$clean\" -eq 0 \]; then(.*?)\nfi\n", build, re.S)
+    if not reuse:
+        fail("build_llvm_octagram.sh no longer decides reuse from install_complete")
+    else:
+        require(
+            reuse.group(1),
+            "installed_input_stamp",
+            "build_llvm_octagram.sh must compare the installed stamp before reusing a prefix",
+        )
+        require(
+            reuse.group(1),
+            'rm -rf "$install_prefix" "$cmake_build"',
+            "a prefix whose stamp does not match must be discarded with its build tree",
+        )
+
+    install_check = step_block(llvm, "Verify the restored libLLVM inputs")
+    if not install_check:
+        fail("llvm job does not verify a restored tree against its build-input stamp")
+    else:
+        require(
+            install_check,
+            "--check-install-inputs",
+            "the restored libLLVM tree must be checked with --check-install-inputs",
+        )
+        require(
+            install_check,
+            'rm -rf "$prefix"',
+            "a restored libLLVM tree whose stamp does not match must be deleted",
+        )
+        require(install_check, "usable=true", "the install check must publish usable=true")
+        require(install_check, "usable=false", "the install check must publish usable=false")
+    check_at = llvm.find("name: Verify the restored libLLVM inputs")
+    build_at = llvm.find("name: Build libLLVM")
+    save_at = llvm.find("name: Save libLLVM install tree")
+    if check_at < 0 or build_at < 0:
+        fail("llvm job has no install-input check or no build step")
+    else:
+        if check_at > build_at:
+            fail("the install-input stamp is checked after the build starts")
+        if save_at >= 0 and check_at > save_at:
+            fail("the install tree is saved before its build-input stamp is checked")
+    for step_name in ("Build libLLVM", "Save libLLVM install tree"):
+        require(
+            step_block(llvm, step_name),
+            "steps.llvm-install.outputs.usable != 'true'",
+            f"'{step_name}' must only run for an install tree this run can trust",
+        )
+
     # --- behaviour that does not need a build -------------------------------
     cases = [
         (BUILD, "build_llvm_octagram.sh", ["--help"], 0, "--time-budget"),
@@ -368,7 +458,8 @@ def main() -> int:
         "OCTAGRAM-LLVM-CI-PASS: both build jobs keep their budget below the "
         "six-hour cap, escalate the stop until the build is gone, restore "
         "checkpoints by prefix, save them only when incomplete, and cache the "
-        "install tree only after verification"
+        "install tree only after verification, and rebuild a restored install "
+        "tree whose build-input stamp names other sysroot/flags"
     )
     return 0
 

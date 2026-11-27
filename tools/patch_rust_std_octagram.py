@@ -186,14 +186,14 @@ def gate_linux_extension_modules(std: Path) -> None:
     """Compile ancillary-data and TCP extension modules only on their ABIs."""
     path = std / "os/net/linux_ext/mod.rs"
     source = path.read_text(encoding="utf-8")
-    cfg = '#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin"))]\\n'
+    cfg = '#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin"))]\n'
     modules = (
         (
-            '#[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]\\n'
+            '#[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]\n'
             "pub(crate) mod socket;",
         ),
         (
-            '#[stable(feature = "tcp_quickack", since = "1.89.0")]\\n'
+            '#[stable(feature = "tcp_quickack", since = "1.89.0")]\n'
             "pub(crate) mod tcp;",
         ),
     )
@@ -216,12 +216,12 @@ def allow_octagram_internal_socket_addr_ext(std: Path) -> None:
     path = std / "os/net/linux_ext/addr.rs"
     source = path.read_text(encoding="utf-8")
     anchor = (
-        '#[stable(feature = "unix_socket_abstract", since = "1.70.0")]\\n'
+        '#[stable(feature = "unix_socket_abstract", since = "1.70.0")]\n'
         "pub impl(in crate::os) trait SocketAddrExt {"
     )
     patched = (
-        '#[stable(feature = "unix_socket_abstract", since = "1.70.0")]\\n'
-        '#[cfg_attr(target_os = "octagram", allow(dead_code))]\\n'
+        '#[stable(feature = "unix_socket_abstract", since = "1.70.0")]\n'
+        '#[cfg_attr(target_os = "octagram", allow(dead_code))]\n'
         "pub impl(in crate::os) trait SocketAddrExt {"
     )
     if patched not in source:

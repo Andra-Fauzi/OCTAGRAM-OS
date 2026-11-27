@@ -210,6 +210,8 @@ jobs:
     env:
       LLVM_VERSION: ${{ inputs.llvm_version || '21.1.0' }}
       JOBS: ${{ inputs.jobs || '4' }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 5G
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -218,7 +220,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential g++ binutils lld cmake ninja-build \
+            build-essential g++ binutils lld cmake ninja-build ccache \
             python3 curl git ca-certificates
 
       - name: Free disk space
@@ -228,6 +230,20 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           sudo apt-get clean
+
+      - name: Restore LLVM compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: octagram-llvm-ccache-${{ env.LLVM_VERSION }}-${{ runner.os }}-${{ github.workflow }}
+          restore-keys: |
+            octagram-llvm-ccache-${{ env.LLVM_VERSION }}-${{ runner.os }}-
+
+      - name: Report compiler cache state
+        run: |
+          ccache --set-config=max_size="$CCACHE_MAXSIZE"
+          ccache --zero-stats
+          ccache --show-stats
 
       - name: Download sysroot
         uses: actions/download-artifact@v4
@@ -239,7 +255,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}.src.tar.xz
-          key: octagram-llvm-src-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh') }}
+          key: octagram-llvm-src-${{ env.LLVM_VERSION }}
 
       - name: Restore libLLVM install tree
         id: llvm-cache
@@ -267,8 +283,8 @@ jobs:
             --jobs "$JOBS"
           # Build tree + extracted source are several GiB and are not needed
           # after install; the source tarball is kept for the next cache save.
-          rm -rf "build/toolchain/llvm-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src" \
-                 "build/toolchain/llvm-$LLVM_VERSION/build-octagram"
+          rm -rf "build/toolchain/llvm-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src"
+          ccache --show-stats
 
       - name: Verify libLLVM install (static OCTAGRAM ELF)
         run: |

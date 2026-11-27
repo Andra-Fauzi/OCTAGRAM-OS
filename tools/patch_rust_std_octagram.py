@@ -394,13 +394,30 @@ def main() -> int:
     # Linux-only process extensions such as PidFd. Do not expose/compile those
     # modules for OCTAGRAM.
     os_mod = std / "os/mod.rs"
-    replace_once(
-        os_mod,
-        '        #[cfg(any(target_os = "linux", target_os = "octagram"))]\\n'
-        "        pub mod linux;\\n",
-        '        #[cfg(target_os = "linux")]\\n'
-        "        pub mod linux;\\n",
+    os_source = os_mod.read_text(encoding="utf-8")
+    linux_only_module = re.compile(
+        r'(?m)^[ \\t]*#\\[cfg\\(target_os = "linux"\\)\\]\\r?\\n[ \\t]*pub mod linux;'
     )
+    widened_linux_module = re.compile(
+        r'(?m)^([ \\t]*)#\\[cfg\\(any\\(target_os = "linux", target_os = "octagram"\\)\\)\\]\\r?\\n'
+        r'([ \\t]*)pub mod linux;'
+    )
+    if linux_only_module.search(os_source):
+        pass
+    else:
+        os_source, changed = widened_linux_module.subn(
+            lambda match: (
+                f'{match.group(1)}#[cfg(target_os = "linux")]\\n'
+                f'{match.group(2)}pub mod linux;'
+            ),
+            os_source,
+        )
+        if changed != 1:
+            raise SystemExit(
+                "expected exactly one widened public os::linux module in "
+                f"{os_mod}, found {changed}; refusing to compile Linux-only APIs for OCTAGRAM"
+            )
+        os_mod.write_text(os_source, encoding="utf-8")
     print("RUST-STD-OCTAGRAM-LINUX-OS-MODULE-PASS: os::linux remains Linux-only")
 
     print("RUST-STD-OCTAGRAM-PATCH-PASS: Unix target glue installed in rust-src")

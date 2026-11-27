@@ -258,11 +258,15 @@ def main() -> int:
         "cargo fetch",
         "Rust bootstrap must fetch the exact libc crate before patching its registry source",
     )
-    require(
-        bootstrap,
-        'libc = { version = "=$LIBC_VERSION", default-features = false }',
-        "the libc registry prefetch must pin the same version used by Rust std",
-    )
+    for needle, message in (
+        ('libc-rust-workspace = { package = "libc", version = "=$LIBC_VERSION"', "bootstrap must fetch workspace libc 0.2.191"),
+        ('libc-cargo-submodule = { package = "libc", version = "=$LIBC_CARGO_VERSION"', "bootstrap must fetch Cargo libc 0.2.186"),
+        ("LIBC_CARGO_VERSION=0.2.186", "bootstrap must pin Cargo's libc lockfile version"),
+        ("GETRANDOM_CARGO_VERSION=0.3.4", "bootstrap must pin Cargo's getrandom 0.3.4"),
+        ("GETRANDOM_MODERN_VERSION=0.4.3", "bootstrap must pin getrandom 0.4.3"),
+        ("TEMPFILE_CARGO_VERSION=3.27.0", "bootstrap must pin Cargo's tempfile 3.27.0"),
+    ):
+        require(bootstrap, needle, message)
     require(
         bootstrap,
         '"$cargo_home"/registry/src/*/libc-"$LIBC_VERSION"',
@@ -563,9 +567,24 @@ def main() -> int:
             f"the libc target-module re-export list is missing {symbol}",
         )
     require(
+        libc_module,
+        "pub const O_RDONLY:",
+        "OCTAGRAM libc must define the POSIX O_RDONLY flag",
+    )
+    require(
+        libc_patcher,
+        "O_RDONLY",
+        "the new libc module must re-export O_RDONLY to the crate root",
+    )
+    require(
         stage2_deps_check,
-        "check_octagram_file_abi",
-        "the early Rust dependency check must compile-check Rust std's filesystem ABI",
+        "check_rust_workspace_file_abi",
+        "the early target check must compile-check the Rust workspace libc ABI",
+    )
+    require(
+        stage2_deps_check,
+        "check_cargo_file_abi",
+        "the early target check must compile-check the Cargo libc ABI",
     )
     require(
         errno_patch,
@@ -596,11 +615,14 @@ def main() -> int:
     # tempfile is a direct compiler dependency and pulls rustix on Unix by
     # default. OCTAGRAM's tempfile path uses std::fs for rename/unlink instead,
     # keeping unsupported Linux/BSD libc APIs out of this target.
-    require(
-        tempfile_patch,
-        "TEMPFILE_VERSION = \"3.23.0\"",
-        "the tempfile patcher must be pinned to the compiler's lockfile version",
-    )
+    for needle, message in (
+        ("TEMPFILE_RUSTIX_VERSIONS = {", "the tempfile patcher must declare its supported lockfile versions"),
+        ('"3.23.0": "1.0.0"', "the patcher must match Rust workspace tempfile 3.23.0/rustix 1.0.0"),
+        ('"3.27.0": "1.1.4"', "the patcher must match Cargo tempfile 3.27.0/rustix 1.1.4"),
+        ("REOPEN_327_OLD", "tempfile 3.27.0 must replace its rustix fstat implementation"),
+        ("std::os::unix::fs::MetadataExt", "tempfile 3.27.0 must use the std metadata API on OCTAGRAM"),
+    ):
+        require(tempfile_patch, needle, message)
     require(
         tempfile_patch,
         'not(target_os = \"octagram\")',
@@ -616,16 +638,23 @@ def main() -> int:
         "fs::rename(old_path, new_path)",
         "the OCTAGRAM tempfile backend must rename through std::fs",
     )
-    require(
-        bootstrap,
-        "TEMPFILE_VERSION=3.23.0",
-        "Rust bootstrap must pin the tempfile source version",
-    )
+    require(bootstrap, "TEMPFILE_VERSION=3.23.0", "Rust bootstrap must pin tempfile 3.23.0")
+    require(bootstrap, "TEMPFILE_CARGO_VERSION=3.27.0", "Rust bootstrap must pin Cargo tempfile 3.27.0")
     require(
         bootstrap,
         "patch_tempfile_octagram.py",
         "Rust bootstrap must patch tempfile before x.py",
     )
+
+    # All getrandom versions in the two pinned lockfiles must use the same
+    # OCTAGRAM syscall ABI, including the newer 0.4 backend used by Cargo.
+    require(
+        getrandom_patch,
+        'GETRANDOM_VERSIONS = ("0.3.3", "0.3.4", "0.4.3")',
+        "the getrandom patcher must cover both lockfiles' active crate versions",
+    )
+    for version in ("0.3.3", "0.3.4", "0.4.3"):
+        require(getrandom_patch, version, f"getrandom patcher is missing version {version}")
 
     # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
     # not an unsupported-target bypass or a CPU-specific substitute.
@@ -706,16 +735,20 @@ def main() -> int:
     )
     for needle, message in (
         ('errno = { version = "=0.3.14"', "errno check must pin 0.3.14"),
-        ('getrandom = { version = "=0.3.3"', "getrandom check must pin 0.3.3"),
-        ('libc = { version = "=0.2.191"', "libc check must pin 0.2.191"),
-        ('tempfile = { version = "=3.23.0" }', "tempfile check must pin 3.23.0"),
+        ('getrandom_root = { package = "getrandom", version = "=0.3.3"', "check must pin workspace getrandom 0.3.3"),
+        ('getrandom_cargo = { package = "getrandom", version = "=0.3.4"', "check must pin Cargo getrandom 0.3.4"),
+        ('getrandom_modern = { package = "getrandom", version = "=0.4.3"', "check must pin getrandom 0.4.3"),
+        ('libc_root = { package = "libc", version = "=0.2.191"', "check must pin workspace libc 0.2.191"),
+        ('libc_cargo = { package = "libc", version = "=0.2.186"', "check must pin Cargo libc 0.2.186"),
+        ('tempfile_root = { package = "tempfile", version = "=3.23.0" }', "check must pin workspace tempfile 3.23.0"),
+        ('tempfile_cargo = { package = "tempfile", version = "=3.27.0" }', "check must pin Cargo tempfile 3.27.0"),
         ("-Zbuild-std=core", "dependency check must compile against the target core"),
         ("cargo \"+$toolchain\" tree", "dependency check must inspect the resolved OCTAGRAM dependency graph"),
         ("^rustix v", "dependency check must reject rustix in the OCTAGRAM target graph"),
         ("patch_tempfile_octagram.py", "dependency check must patch tempfile's Unix backend"),
         ("apply_rust_libc_octagram.py", "dependency check must apply the OCTAGRAM libc bindings"),
         ("patch_errno_octagram.py", "dependency check must patch errno's errno accessor"),
-        ("patch_getrandom_octagram.py", "dependency check must patch getrandom's target backend"),
+        ("patch_getrandom_octagram.py", "dependency check must patch all getrandom target backends"),
     ):
         require(stage2_deps_check, needle, message)
 
@@ -1203,6 +1236,76 @@ use {
             fail("tempfile patcher did not install the OCTAGRAM std filesystem fallbacks")
         if not (package / ".cargo-ok").is_file():
             fail("tempfile patcher did not preserve the Cargo registry extraction marker")
+
+    # Exercise the Cargo submodule's newer tempfile 3.27.0 source too. It uses
+    # rustix for fstat in reopen(), a path absent from tempfile 3.23.0.
+    with tempfile.TemporaryDirectory() as temp_root:
+        registry_root = Path(temp_root) / "registry" / "src"
+        package = registry_root / "index.test" / "tempfile-3.27.0"
+        (package / "src" / "file" / "imp").mkdir(parents=True)
+        (package / "Cargo.toml").write_text(
+            """[package]
+name = "tempfile"
+version = "3.27.0"
+
+[target.'cfg(any(unix, target_os = "wasi"))'.dependencies.rustix]
+version = "1.1.4"
+features = ["fs"]
+""",
+            encoding="utf-8",
+        )
+        (package / "src" / "file" / "imp" / "unix.rs").write_text(
+            """use std::fs::{self, File, OpenOptions};
+use std::io;
+use std::path::Path;
+use {
+    rustix::fs::{rename, unlink},
+    std::fs::hard_link,
+};
+
+pub fn reopen(file: &File, path: &Path) -> io::Result<File> {
+    let new_file = OpenOptions::new().read(true).write(true).open(path)?;
+    let old_meta = rustix::fs::fstat(file)?;
+    let new_meta = rustix::fs::fstat(&new_file)?;
+    if old_meta.st_dev != new_meta.st_dev || old_meta.st_ino != new_meta.st_ino {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "original tempfile has been replaced",
+        ));
+    }
+    Ok(new_file)
+}
+""",
+            encoding="utf-8",
+        )
+        patch_runs = []
+        for _ in range(2):
+            patch_runs.append(
+                subprocess.run(
+                    [sys.executable, str(TEMPFILE_PATCH), "--registry-root", str(registry_root)],
+                    cwd=REPO,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            )
+        if any(result.returncode != 0 for result in patch_runs):
+            fail(
+                "tempfile 3.27.0 patcher fixture failed: "
+                + " | ".join(result.stdout + result.stderr for result in patch_runs)
+            )
+        patched_manifest = (package / "Cargo.toml").read_text(encoding="utf-8")
+        patched_unix = (package / "src" / "file" / "imp" / "unix.rs").read_text(encoding="utf-8")
+        if 'not(target_os = "octagram")' not in patched_manifest:
+            fail("tempfile 3.27.0 patcher did not exclude OCTAGRAM from rustix")
+        if "rustix::fs::fstat" in patched_unix:
+            fail("tempfile 3.27.0 patcher left rustix fstat in reopen()")
+        if "std::os::unix::fs::MetadataExt" not in patched_unix:
+            fail("tempfile 3.27.0 patcher did not use MetadataExt in reopen()")
+        if "fs::rename(old_path, new_path)" not in patched_unix or "fs::remove_file(path)" not in patched_unix:
+            fail("tempfile 3.27.0 patcher did not install std filesystem wrappers")
+        if not (package / ".cargo-ok").is_file():
+            fail("tempfile 3.27.0 patcher did not preserve the Cargo registry extraction marker")
 
     if failures:
         print(f"OCTAGRAM-LLVM-CI-FAIL ({len(failures)})")

@@ -334,6 +334,16 @@ def main() -> int:
         "the std PAL patcher must verify the accept4 fallback for OCTAGRAM",
     )
     require(
+        std_patch,
+        'stack_overflow_mod = std / "sys/pal/unix/stack_overflow/mod.rs"',
+        "the std PAL patcher must avoid Linux pthread stack introspection on OCTAGRAM",
+    )
+    require(
+        std_patch,
+        'RUST-STD-OCTAGRAM-STACK-OVERFLOW-NONE-PASS',
+        "the std PAL patcher must report the OCTAGRAM stack-overflow fallback",
+    )
+    require(
         host_target_patch,
         "expected_octagram_static_dylib",
         "the Rust target patch must suppress only the expected static OCTAGRAM dylib warning",

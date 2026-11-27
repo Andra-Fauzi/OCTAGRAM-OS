@@ -1232,7 +1232,7 @@ use {
             fail("tempfile patcher did not exclude OCTAGRAM from the rustix dependency")
         if 'use rustix::fs::{rename, unlink};' not in patched_unix:
             fail("tempfile patcher removed rustix for all Unix targets")
-        if "fs.rename(old_path, new_path)" not in patched_unix or "fs.remove_file(path)" not in patched_unix:
+        if "fs::rename(old_path, new_path)" not in patched_unix or "fs::remove_file(path)" not in patched_unix:
             fail("tempfile patcher did not install the OCTAGRAM std filesystem fallbacks")
         if not (package / ".cargo-ok").is_file():
             fail("tempfile patcher did not preserve the Cargo registry extraction marker")

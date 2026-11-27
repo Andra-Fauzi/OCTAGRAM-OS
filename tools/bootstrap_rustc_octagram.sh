@@ -524,12 +524,25 @@ python3 "$repo_root/tools/apply_rust_libc_octagram.py" "$libc_checkout"
 # Fetch the exact lockfile version now and patch that extracted source before
 # the first stage1 std compilation, otherwise libc exports `unistd` without
 # an OCTAGRAM module and fails with E0432.
-echo "fetching libc $LIBC_VERSION from the Rust std manifest"
+echo "fetching libc $LIBC_VERSION into Cargo registry cache"
+libc_fetch_dir=$rust_checkout/build/octagram-libc-fetch
+mkdir -p "$libc_fetch_dir/src"
+cat > "$libc_fetch_dir/Cargo.toml" <<EOF
+[package]
+name = "octagram-libc-fetch"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libc = { version = "=$LIBC_VERSION", default-features = false }
+EOF
+: > "$libc_fetch_dir/src/lib.rs"
 (
-    cd "$rust_checkout"
-    cargo fetch --locked --manifest-path library/std/Cargo.toml --target x86_64-unknown-linux-gnu
+    cd "$libc_fetch_dir"
+    cargo fetch
 )
-cargo_home=$CARGO_HOME
+cargo_home=$(printenv CARGO_HOME 2>/dev/null || true)
 if [ -z "$cargo_home" ]; then cargo_home=$HOME/.cargo; fi
 for archive in "$cargo_home"/registry/cache/*/libc-"$LIBC_VERSION".crate; do
     [ -f "$archive" ] || continue

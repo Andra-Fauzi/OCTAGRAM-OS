@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch getrandom 0.3.3 with OCTAGRAM's native syscall-121 backend.
+"""Patch the locked getrandom 0.3.x/0.4.x crates with OCTAGRAM syscall-121 backend.
 
 The backend follows OCTAGRAM's int 0x80 syscall ABI directly. It does not
 depend on upstream libc errno helpers, Linux syscall numbers, or RDRAND.
@@ -13,7 +13,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-GETRANDOM_VERSION = "0.3.3"
+GETRANDOM_VERSIONS = ("0.3.3", "0.3.4", "0.4.3")
 
 # Remove this exact dependency table added by the earlier libc-backed patch.
 OLD_MANIFEST_BLOCK = """[target.'cfg(target_os = "octagram")'.dependencies]
@@ -117,10 +117,10 @@ def patch_package(package: Path) -> bool:
     manifest_source = manifest.read_text(encoding="utf-8")
     parsed = tomllib.loads(manifest_source)
     version = parsed.get("package", {}).get("version")
-    if version != GETRANDOM_VERSION:
+    if version not in GETRANDOM_VERSIONS:
         raise SystemExit(
             f"unexpected getrandom version in {manifest}: {version!r}; "
-            f"expected {GETRANDOM_VERSION}"
+            f"expected one of {', '.join(GETRANDOM_VERSIONS)}"
         )
 
     changed = False
@@ -196,19 +196,23 @@ def main() -> int:
         cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
         registry_root = cargo_home / "registry" / "src"
 
-    packages = sorted(registry_root.glob(f"*/getrandom-{GETRANDOM_VERSION}"))
+    packages = []
+    for version in GETRANDOM_VERSIONS:
+        packages.extend(sorted(registry_root.glob(f"*/getrandom-{version}")))
     if not packages:
         raise SystemExit(
-            f"getrandom {GETRANDOM_VERSION} was not found below {registry_root}; "
-            "run cargo fetch before applying the OCTAGRAM backend"
+            f"getrandom {', '.join(GETRANDOM_VERSIONS)} was not found below "
+            f"{registry_root}; run cargo fetch before applying the OCTAGRAM backend"
         )
 
     changed_count = 0
     for package in packages:
         changed_count += int(patch_package(package))
+    found_versions = sorted({p.name.removeprefix("getrandom-") for p in packages})
     print(
         "RUST-GETRANDOM-OCTAGRAM-BACKEND-PASS: "
-        f"patched {len(packages)} source tree(s); OCTAGRAM uses syscall 121"
+        f"patched {len(packages)} source tree(s) ({', '.join(found_versions)}); "
+        "OCTAGRAM uses syscall 121"
     )
     if changed_count == 0:
         print("getrandom OCTAGRAM backend was already patched")

@@ -153,12 +153,9 @@ OCTAGRAM_ARM_FILES = {
     # The shared process implementation contains Linux-only pidfd state and
     # methods. OCTAGRAM currently uses the non-Linux stub implementation.
     "sys/process/unix/common.rs",
-    # Keep Linux-only OS namespace gates unchanged; OCTAGRAM uses the shared
-    # Unix module and its dedicated private os::octagram PAL instead.
-    "os/mod.rs",
-    # std's Linux-specific extension traits (abstract sockets, ancillary data,
-    # TCP quickack) are not part of OCTAGRAM's public OS API yet.
-    "os/net/mod.rs",
+    # Keep Linux networking extension API declarations target-specific:
+    # OCTAGRAM needs linux_ext::addr internally, but not ancillary/TCP traits.
+    "os/net/linux_ext/mod.rs",
     "sys/random/mod.rs",
     "sys/thread/unix.rs",
 }
@@ -172,7 +169,7 @@ def restore_linux_only_cfg_gates(std: Path) -> None:
     patcher generated, so the updated exclusions also work on cache resume.
     """
     restored = 0
-    for relative in ("os/mod.rs", "os/net/mod.rs", "sys/process/unix/common.rs"):
+    for relative in ("os/net/linux_ext/mod.rs", "sys/process/unix/common.rs"):
         path = std / relative
         source = path.read_text(encoding="utf-8")
         updated = source.replace(OCTAGRAM_LINUX, 'target_os = "linux"')
@@ -182,6 +179,59 @@ def restore_linux_only_cfg_gates(std: Path) -> None:
     print(
         "RUST-STD-OCTAGRAM-LINUX-ONLY-CFG-PASS: "
         f"restored {restored} Linux-only cfg predicate(s)"
+    )
+
+
+def gate_linux_extension_modules(std: Path) -> None:
+    """Compile ancillary-data and TCP extension modules only on their ABIs."""
+    path = std / "os/net/linux_ext/mod.rs"
+    source = path.read_text(encoding="utf-8")
+    cfg = '#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin"))]\\n'
+    modules = (
+        (
+            '#[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]\\n'
+            "pub(crate) mod socket;",
+        ),
+        (
+            '#[stable(feature = "tcp_quickack", since = "1.89.0")]\\n'
+            "pub(crate) mod tcp;",
+        ),
+    )
+    for (anchor,) in modules:
+        gated = cfg + anchor
+        if gated in source:
+            continue
+        if source.count(anchor) != 1:
+            raise SystemExit(f"expected one Linux extension module declaration in {path}: {anchor!r}")
+        source = source.replace(anchor, gated, 1)
+    path.write_text(source, encoding="utf-8")
+    print(
+        "RUST-STD-OCTAGRAM-LINUX-EXTENSIONS-PASS: "
+        "ancillary-data and TCP extension modules remain Linux/Android/Cygwin-only"
+    )
+
+
+def allow_octagram_internal_socket_addr_ext(std: Path) -> None:
+    """Retain the internal abstract-socket helper without a false dead-code error."""
+    path = std / "os/net/linux_ext/addr.rs"
+    source = path.read_text(encoding="utf-8")
+    anchor = (
+        '#[stable(feature = "unix_socket_abstract", since = "1.70.0")]\\n'
+        "pub impl(in crate::os) trait SocketAddrExt {"
+    )
+    patched = (
+        '#[stable(feature = "unix_socket_abstract", since = "1.70.0")]\\n'
+        '#[cfg_attr(target_os = "octagram", allow(dead_code))]\\n'
+        "pub impl(in crate::os) trait SocketAddrExt {"
+    )
+    if patched not in source:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"expected one SocketAddrExt trait declaration in {path}")
+        source = source.replace(anchor, patched, 1)
+        path.write_text(source, encoding="utf-8")
+    print(
+        "RUST-STD-OCTAGRAM-ABSTRACT-SOCKET-EXT-PASS: "
+        "internal SocketAddrExt helper is retained without an unused-code warning"
     )
 
 
@@ -464,6 +514,8 @@ def main() -> int:
     # keep target-specific socket options Linux-only after the shared PAL gates
     # have been widened.
     restore_linux_only_cfg_gates(std)
+    gate_linux_extension_modules(std)
+    allow_octagram_internal_socket_addr_ext(std)
     widen_linux_cfg_gates(std)
     preserve_linux_socket_option_cfgs(std)
 

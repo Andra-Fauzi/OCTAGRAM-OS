@@ -310,12 +310,62 @@ def main() -> int:
         "sys/process/mod.rs",
         "sys/process/unix/mod.rs",
         "sys/process/unix/unix.rs",
+        "sys/process/unix/common.rs",
+        "os/net/mod.rs",
     ):
         require(
             std_patch,
             f'"{excluded}"',
             f"the std PAL patcher must keep Linux-only code out of {excluded}",
         )
+    require(
+        std_patch,
+        "def restore_linux_only_cfg_gates(std: Path)",
+        "the std patcher must restore Linux-only cfgs in cached OCTAGRAM std checkouts",
+    )
+    require(
+        std_patch,
+        'for relative in ("os/net/mod.rs", "sys/process/unix/common.rs")',
+        "the std patcher must keep Linux networking extensions and pidfd process state Linux-only",
+    )
+    require(
+        std_patch,
+        "restore_linux_only_cfg_gates(std)",
+        "the std patcher must restore cached cfgs before applying the global Linux PAL widening",
+    )
+    require(
+        std_patch,
+        "def preserve_linux_socket_option_cfgs(std: Path)",
+        "the std patcher must keep unsupported Linux socket-option helpers out of OCTAGRAM",
+    )
+    for method in (
+        "set_quickack",
+        "quickack",
+        "set_deferaccept",
+        "deferaccept",
+        "set_passcred",
+        "passcred",
+    ):
+        require(
+            std_patch,
+            f'("{method}",',
+            f"the std patcher must retain the Linux-only cfg gate for Socket::{method}",
+        )
+    require(
+        std_patch,
+        "preserve_linux_socket_option_cfgs(std)",
+        "the std patcher must apply Linux-only socket-option gates after widening shared Unix cfgs",
+    )
+    require(
+        std_patch,
+        "RUST-STD-OCTAGRAM-LINUX-SOCKET-OPTIONS-PASS",
+        "the std patcher must report that unsupported Linux socket-option methods were excluded",
+    )
+    require(
+        std_patch,
+        "RUST-STD-OCTAGRAM-LINUX-ONLY-CFG-PASS",
+        "the std patcher must report restoration of cached Linux-only cfgs",
+    )
     if 'pub(in crate::sys) use cfm::CachedFileMetadata;' in std_patch:
         fail("OCTAGRAM must use generic io::copy, not export Linux-only CachedFileMetadata")
     require(

@@ -61,6 +61,7 @@ LIBC_PIN=ccc2ff4aaab962f7fde7b8edda7379c045b1ca12
 LIBC_VERSION=0.2.191
 GETRANDOM_VERSION=0.3.3
 ERRNO_VERSION=0.3.14
+TEMPFILE_VERSION=3.23.0
 HOST=x86_64-unknown-octagram
 TARGET=x86_64-unknown-none
 
@@ -633,23 +634,28 @@ publish = false
 [dependencies]
 errno = { version = "=$ERRNO_VERSION", default-features = false }
 libc = { version = "=$LIBC_VERSION", default-features = false }
+tempfile = { version = "=$TEMPFILE_VERSION" }
 EOF
 : > "$errno_fetch_dir/src/lib.rs"
 (
     cd "$errno_fetch_dir"
     cargo fetch
 )
-for archive in "$cargo_home"/registry/cache/*/errno-"$ERRNO_VERSION".crate; do
-    [ -f "$archive" ] || continue
-    registry_id=$(basename "$(dirname "$archive")")
-    registry_source_root=$cargo_home/registry/src/$registry_id
-    registry_source=$registry_source_root/errno-$ERRNO_VERSION
-    if [ ! -f "$registry_source/Cargo.toml" ]; then
-        mkdir -p "$registry_source_root"
-        tar -xzf "$archive" -C "$registry_source_root"
-    fi
+for package_version in "errno-$ERRNO_VERSION" "tempfile-$TEMPFILE_VERSION"; do
+    for archive in "$cargo_home"/registry/cache/*/"$package_version".crate; do
+        [ -f "$archive" ] || continue
+        registry_id=$(basename "$(dirname "$archive")")
+        registry_source_root=$cargo_home/registry/src/$registry_id
+        registry_source=$registry_source_root/$package_version
+        if [ ! -f "$registry_source/Cargo.toml" ]; then
+            mkdir -p "$registry_source_root"
+            tar -xzf "$archive" -C "$registry_source_root"
+        fi
+    done
 done
 python3 "$repo_root/tools/patch_errno_octagram.py" \
+    --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_tempfile_octagram.py" \
     --registry-root "$cargo_home/registry/src"
 
 

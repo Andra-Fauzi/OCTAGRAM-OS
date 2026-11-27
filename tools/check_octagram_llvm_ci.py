@@ -41,6 +41,7 @@ BUILD = REPO / "tools" / "build_llvm_octagram.sh"
 BOOTSTRAP = REPO / "tools" / "bootstrap_rustc_octagram.sh"
 STD_PATCH = REPO / "tools" / "patch_rust_std_octagram.py"
 HOST_TARGET_PATCH = REPO / "tools" / "apply_rust_octagram_host_target.py"
+GETRANDOM_PATCH = REPO / "tools" / "patch_getrandom_octagram.py"
 GITHUB_JOB_LIMIT_MINUTES = 360
 
 failures: list[str] = []
@@ -80,6 +81,7 @@ def main() -> int:
     bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
     std_patch = STD_PATCH.read_text(encoding="utf-8")
     host_target_patch = HOST_TARGET_PATCH.read_text(encoding="utf-8")
+    getrandom_patch = GETRANDOM_PATCH.read_text(encoding="utf-8")
 
     # --- the build script ---------------------------------------------------
     for flag in ("--time-budget", "--resume", "--status", "--print-build-inputs-stamp"):
@@ -497,6 +499,49 @@ def main() -> int:
         "the Rust target patch must remove the stale OCTAGRAM-only Dylib warning suppression",
     )
 
+    # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
+    # not an unsupported-target bypass or a CPU-specific substitute.
+    require(
+        getrandom_patch,
+        'target_os = "octagram"',
+        "the getrandom patcher must add an OCTAGRAM-specific backend",
+    )
+    require(
+        getrandom_patch,
+        "mod getrandom;",
+        "the getrandom patcher must select the upstream libc-backed implementation",
+    )
+    require(
+        getrandom_patch,
+        "libc::getrandom",
+        "the getrandom patcher must use OCTAGRAM libc getrandom()",
+    )
+    require(
+        getrandom_patch,
+        "RUST-GETRANDOM-OCTAGRAM-BACKEND-PASS",
+        "the getrandom patcher must emit a verifiable pass marker",
+    )
+    require(
+        bootstrap,
+        'GETRANDOM_VERSION=0.3.3',
+        "the bootstrap must pin the getrandom source version it patches",
+    )
+    require(
+        bootstrap,
+        'octagram-getrandom-fetch',
+        "the bootstrap must fetch getrandom before stage-2 compilation",
+    )
+    require(
+        bootstrap,
+        'patch_getrandom_octagram.py',
+        "the bootstrap must apply the OCTAGRAM getrandom backend patch",
+    )
+    require(
+        bootstrap,
+        'RUST-GETRANDOM-OCTAGRAM-BACKEND-PASS',
+        "the bootstrap must verify that the registry getrandom backend was patched",
+    )
+
     # --- the rustc-cargo job -----------------------------------------------
     rustc = job_block(workflow, "rustc-cargo")
     require(
@@ -817,6 +862,52 @@ def main() -> int:
         changed = fingerprint()
         if changed.returncode != 0 or changed.stdout == first.stdout:
             fail("LLVM input fingerprint did not change when sysroot contents changed")
+
+    # The getrandom patcher is tested with a synthetic registry package so
+    # its source edits and resume/idempotency behaviour are checked without
+    # network access or a Rust rebuild.
+    with tempfile.TemporaryDirectory() as temp_root:
+        registry_root = Path(temp_root) / "registry" / "src"
+        package = registry_root / "index.test" / "getrandom-0.3.3"
+        (package / "src" / "backends").mkdir(parents=True)
+        (package / "Cargo.toml").write_text(
+            '[package]\\nname = "getrandom"\\nversion = "0.3.3"\\n'
+            + '[lints.rust.unexpected_cfgs]\\nlevel = "warn"\\n',
+            encoding="utf-8",
+        )
+        (package / "src" / "backends.rs").write_text(
+            'cfg_if! {\\n'
+            + '    } else if #[cfg(any(\\n'
+            + '        target_os = "android",\\n'
+            + '        target_os = "linux",\\n'
+            + '        target_os = "dragonfly",\\n',
+            encoding="utf-8",
+        )
+        (package / "src" / "backends" / "getrandom.rs").write_text(
+            "pub fn fill_inner() {}\\n", encoding="utf-8"
+        )
+        patch_runs = []
+        for _ in range(2):
+            patch_runs.append(
+                subprocess.run(
+                    [sys.executable, str(GETRANDOM_PATCH), "--registry-root", str(registry_root)],
+                    cwd=REPO,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            )
+        if any(result.returncode != 0 for result in patch_runs):
+            fail(
+                "getrandom patcher fixture failed: "
+                + " | ".join(result.stdout + result.stderr for result in patch_runs)
+            )
+        patched_manifest = (package / "Cargo.toml").read_text(encoding="utf-8")
+        patched_backends = (package / "src" / "backends.rs").read_text(encoding="utf-8")
+        if patched_manifest.count("target_os = \\"octagram\\"") != 1:
+            fail("getrandom patcher did not add exactly one OCTAGRAM libc dependency")
+        if patched_backends.count("mod getrandom;") != 1:
+            fail("getrandom patcher did not add exactly one OCTAGRAM backend selection")
 
     if failures:
         print(f"OCTAGRAM-LLVM-CI-FAIL ({len(failures)})")

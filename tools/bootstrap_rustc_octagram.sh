@@ -59,6 +59,7 @@ repo_root=$(cd "$tools_dir/.." && pwd)
 RUST_PIN=342d74463af7dd3018ef6aa04dd5500c2deb5bd1
 LIBC_PIN=ccc2ff4aaab962f7fde7b8edda7379c045b1ca12
 LIBC_VERSION=0.2.191
+GETRANDOM_VERSION=0.3.3
 HOST=x86_64-unknown-octagram
 TARGET=x86_64-unknown-none
 
@@ -573,6 +574,44 @@ if [ "$registry_patch_count" -eq 0 ]; then
     exit 1
 fi
 echo "RUST-LIBC-CARGO-REGISTRY-PATCH-PASS: patched $registry_patch_count registry source(s)"
+
+# getrandom 0.3.3 is used by the stage-2 compiler dependency graph (through
+# hashbrown/parking_lot_core). Upstream does not know target_os=octagram, but
+# OCTAGRAM libc already exports getrandom(), backed by syscall 121. Fetch and
+# patch the exact registry source before x.py starts compiling stage 2.
+echo "fetching getrandom $GETRANDOM_VERSION into Cargo registry cache"
+getrandom_fetch_dir=$rust_checkout/build/octagram-getrandom-fetch
+mkdir -p "$getrandom_fetch_dir/src"
+cat > "$getrandom_fetch_dir/Cargo.toml" <<EOF
+[package]
+name = "octagram-getrandom-fetch"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+getrandom = { version = "=$GETRANDOM_VERSION", default-features = false }
+EOF
+: > "$getrandom_fetch_dir/src/lib.rs"
+(
+    cd "$getrandom_fetch_dir"
+    cargo fetch
+)
+for archive in "$cargo_home"/registry/cache/*/getrandom-"$GETRANDOM_VERSION".crate; do
+    [ -f "$archive" ] || continue
+    registry_id=$(basename "$(dirname "$archive")")
+    registry_source_root=$cargo_home/registry/src/$registry_id
+    registry_source=$registry_source_root/getrandom-$GETRANDOM_VERSION
+    if [ ! -f "$registry_source/Cargo.toml" ]; then
+        mkdir -p "$registry_source_root"
+        tar -xzf "$archive" -C "$registry_source_root"
+    fi
+done
+python3 "$repo_root/tools/patch_getrandom_octagram.py" \
+    --registry-root "$cargo_home/registry/src"
+
 
 # 3. Host triple must exist inside rustc itself ----------------------------
 echo "registering $HOST as a builtin rustc target"

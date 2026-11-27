@@ -84,9 +84,11 @@ on:
       - "user/**"
       - ".github/workflows/octagram-native-toolchain.yml"
 
+# Never cancel a multi-hour native-toolchain build just because a newer commit
+# arrives. New runs queue behind the active run for the same ref.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   # Stage0 toolchain for host-side helpers (fmt/check of the kernel, probes).
@@ -206,19 +208,23 @@ jobs:
     needs: preflight
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    # Leave headroom below GitHub's six-hour hosted-job ceiling while allowing
+    # the long static LLVM build more time than the previous 5h30 limit.
+    timeout-minutes: 350
     env:
       LLVM_VERSION: ${{ inputs.llvm_version || '21.1.0' }}
       JOBS: ${{ inputs.jobs || '4' }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 5G
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential g++ binutils lld cmake ninja-build \
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y \
+            build-essential g++ binutils lld cmake ninja-build ccache \
             python3 curl git ca-certificates
 
       - name: Free disk space
@@ -229,6 +235,23 @@ jobs:
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           sudo apt-get clean
 
+      - name: Restore LLVM compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          # Cache entries are immutable: use a unique key per attempt so each
+          # run can publish its newer ccache contents. Restore the newest
+          # compatible snapshot from the prefix.
+          key: octagram-llvm-ccache-${{ env.LLVM_VERSION }}-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            octagram-llvm-ccache-${{ env.LLVM_VERSION }}-${{ runner.os }}-
+
+      - name: Report compiler cache state
+        run: |
+          ccache --set-config=max_size="$CCACHE_MAXSIZE"
+          ccache --zero-stats
+          ccache --show-stats
+
       - name: Download sysroot
         uses: actions/download-artifact@v4
         with:
@@ -238,12 +261,12 @@ jobs:
       - name: Restore LLVM source tarball
         uses: actions/cache@v4
         with:
-          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}.src.tar.xz
-          key: octagram-llvm-src-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh') }}
+          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}/llvm-project-${{ env.LLVM_VERSION }}.src.tar.xz
+          key: octagram-llvm-src-${{ env.LLVM_VERSION }}
 
       - name: Restore libLLVM install tree
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
           key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile', 'user/include/**', 'user/*.c', 'user/third_party/libcxx/**') }}
@@ -269,6 +292,7 @@ jobs:
           # after install; the source tarball is kept for the next cache save.
           rm -rf "build/toolchain/llvm-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src" \
                  "build/toolchain/llvm-$LLVM_VERSION/build-octagram"
+          ccache --show-stats
 
       - name: Verify libLLVM install (static OCTAGRAM ELF)
         run: |
@@ -322,6 +346,16 @@ jobs:
           ls -l "$prefix/lib" | head -20
           [ "$fail" -eq 0 ] || exit 1
 
+      # Only publish an install-tree cache after the static ELF and
+      # llvm-config checks pass. A broken/partial install must never become a
+      # cache hit that skips the real build on the next run.
+      - name: Save verified libLLVM install tree
+        if: success() && steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
+          key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile', 'user/include/**', 'user/*.c', 'user/third_party/libcxx/**') }}
+
       - name: Upload libLLVM
         uses: actions/upload-artifact@v4
         with:
@@ -329,7 +363,7 @@ jobs:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
           if-no-files-found: error
           compression-level: 0
-          retention-days: 7
+          retention-days: 30
 
   rustc-cargo:
     name: rustc + cargo for x86_64-unknown-octagram

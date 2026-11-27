@@ -105,10 +105,34 @@ if [ -z "$source_dir" ]; then
     source_dir=$work_dir/llvm-project-$llvm_version.src
     if [ ! -f "$source_dir/llvm/CMakeLists.txt" ]; then
         tarball=$work_dir/llvm-project-$llvm_version.src.tar.xz
+        # A previous interrupted download must never be mistaken for a
+        # complete release archive. Validate cached and newly downloaded files.
+        if [ -f "$tarball" ] && ! tar -tJf "$tarball" >/dev/null 2>&1; then
+            echo "cached LLVM source archive is incomplete; downloading again" >&2
+            rm -f "$tarball"
+        fi
         if [ ! -f "$tarball" ]; then
             url="https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvm_version/llvm-project-$llvm_version.src.tar.xz"
             echo "downloading $url"
-            curl -fL --retry 3 -o "$tarball.part" "$url"
+            download_ok=0
+            attempt=1
+            while [ "$attempt" -le 3 ]; do
+                rm -f "$tarball.part"
+                if curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
+                    --connect-timeout 30 --max-time 1800 \
+                    -o "$tarball.part" "$url" \
+                    && tar -tJf "$tarball.part" >/dev/null 2>&1; then
+                    download_ok=1
+                    break
+                fi
+                echo "LLVM source download/validation attempt $attempt failed" >&2
+                attempt=$((attempt + 1))
+            done
+            if [ "$download_ok" -ne 1 ]; then
+                rm -f "$tarball.part"
+                echo "build_llvm_octagram: could not obtain a valid LLVM source archive" >&2
+                exit 1
+            fi
             if [ -n "${LLVM_SHA256:-}" ]; then
                 actual=$(sha256sum "$tarball.part" | cut -d' ' -f1)
                 if [ "$actual" != "$LLVM_SHA256" ]; then
@@ -123,8 +147,26 @@ if [ -z "$source_dir" ]; then
             fi
             mv "$tarball.part" "$tarball"
         fi
+        # Extract into a staging directory and publish only after the complete
+        # source tree is present. A killed tar process cannot leave a tree that
+        # looks valid merely because llvm/CMakeLists.txt was already unpacked.
         echo "extracting $tarball"
-        tar -xJf "$tarball" -C "$work_dir"
+        extract_dir=$work_dir/.llvm-source-extract-$
+        rm -rf "$extract_dir"
+        mkdir -p "$extract_dir"
+        if ! tar -xJf "$tarball" -C "$extract_dir"; then
+            rm -rf "$extract_dir"
+            echo "build_llvm_octagram: LLVM source extraction failed" >&2
+            exit 1
+        fi
+        extracted_source=$extract_dir/llvm-project-$llvm_version.src
+        if [ ! -f "$extracted_source/llvm/CMakeLists.txt" ]; then
+            rm -rf "$extract_dir"
+            echo "build_llvm_octagram: extracted LLVM source tree is incomplete" >&2
+            exit 1
+        fi
+        mv "$extracted_source" "$source_dir"
+        rmdir "$extract_dir"
     fi
 fi
 
@@ -192,6 +234,18 @@ set -- \
     -DLLVM_OPTIMIZED_TABLEGEN=ON \
     -DLLVM_BUILD_EXTERNAL_COMPILER_RT=OFF \
     -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF
+
+# Reuse compiler outputs across CI runs when a configuration change forces a
+# rebuild. ccache is optional for local builds and does not alter target flags.
+if command -v ccache >/dev/null 2>&1; then
+    ccache --set-config=max_size="${CCACHE_MAXSIZE:-5G}" >/dev/null
+    set -- "$@" \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    echo "  compiler cache: ccache ($(ccache --get-config=max_size))"
+else
+    echo "  compiler cache: unavailable (install ccache to enable incremental CI reuse)"
+fi
 
 echo "configuring LLVM $llvm_version for x86_64-unknown-octagram"
 echo "  source:  $source_dir"

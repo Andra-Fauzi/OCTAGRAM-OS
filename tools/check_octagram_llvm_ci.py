@@ -534,7 +534,7 @@ def main() -> int:
 
         first = fingerprint()
         repeated = fingerprint()
-        if first.returncode != 0 or not re.fullmatch(r"[0-9a-f]{64}\\n?", first.stdout):
+        if first.returncode != 0 or not re.fullmatch(r"[0-9a-f]{64}", first.stdout.strip()):
             fail(f"LLVM input fingerprint command failed: {first.stdout}{first.stderr}")
         if repeated.returncode != 0 or repeated.stdout != first.stdout:
             fail("LLVM input fingerprint is not deterministic for an unchanged sysroot")

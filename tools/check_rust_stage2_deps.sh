@@ -23,6 +23,7 @@ write_dependency_project() {
     libc_version=$3
     getrandom_version=$4
     tempfile_version=$5
+    filetime_version=$6
     mkdir -p "$project/src"
 
     cat > "$project/Cargo.toml" <<EOF
@@ -38,6 +39,7 @@ publish = false
 errno = { version = "=0.3.14", default-features = false }
 getrandom = { version = "=$getrandom_version", default-features = false }
 libc = { version = "=$libc_version", default-features = false }
+filetime = { version = "=$filetime_version" }
 
 [dev-dependencies]
 tempfile = { version = "=$tempfile_version" }
@@ -89,13 +91,13 @@ EOF
 write_dependency_project \
     "$check_root/rust-workspace" \
     octagram-rust-workspace-dependency-check \
-    0.2.191 0.3.3 3.23.0
+    0.2.191 0.3.3 3.23.0 0.2.27
 
 # Cargo submodule lockfile: libc 0.2.186, getrandom 0.3.4, tempfile 3.27.0.
 write_dependency_project \
     "$check_root/cargo-submodule" \
     octagram-cargo-submodule-dependency-check \
-    0.2.186 0.3.4 3.27.0
+    0.2.186 0.3.4 3.27.0 0.2.29
 
 # getrandom 0.4.3 is also present in the two lockfiles. Test it separately to
 # avoid Cargo unifying semver-compatible exact versions inside one workspace.
@@ -157,6 +159,7 @@ for version in 0.2.191 0.2.186; do extract_crate libc "$version"; done
 extract_crate errno 0.3.14
 for version in 0.3.3 0.3.4 0.4.3; do extract_crate getrandom "$version"; done
 for version in 3.23.0 3.27.0; do extract_crate tempfile "$version"; done
+for version in 0.2.27 0.2.29; do extract_crate filetime "$version"; done
 
 for libc_version in 0.2.191 0.2.186; do
     for source in "$cargo_home"/registry/src/*/libc-"$libc_version"; do
@@ -167,6 +170,7 @@ done
 python3 "$repo_root/tools/patch_errno_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_getrandom_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_tempfile_octagram.py" --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_filetime_octagram.py" --registry-root "$cargo_home/registry/src"
 
 echo "OCTAGRAM custom-target cfg:"
 rustc "+$toolchain" -Z unstable-options --print cfg --target "$target" | sort

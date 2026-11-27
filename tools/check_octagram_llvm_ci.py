@@ -324,8 +324,8 @@ def main() -> int:
     )
     require(
         host_target_patch,
-        "session.opts.target_triple == \"x86_64-unknown-octagram\"",
-        "the dylib-warning exception must be limited to the OCTAGRAM target triple",
+        'session.opts.target_triple.tuple() == "x86_64-unknown-octagram"',
+        "the dylib-warning exception must compare the TargetTuple string, and only match OCTAGRAM",
     )
     require(
         host_target_patch,

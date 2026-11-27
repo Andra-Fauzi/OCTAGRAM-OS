@@ -151,6 +151,9 @@ jobs:
       - name: Check resumable LLVM CI contract
         run: python3 tools/check_octagram_llvm_ci.py
 
+      - name: Check host llvm-config adapter
+        run: python3 tools/host_llvm_config_wrapper.py --self-test
+
       - name: Install Rust nightly
         run: |
           rustup toolchain install "$OCTAGRAM_RUST_TOOLCHAIN" --profile minimal
@@ -543,9 +546,11 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+          major=${LLVM_VERSION%%.*}
           sudo apt-get install -y \
             build-essential g++ binutils lld cmake ninja-build \
-            python3 curl git ca-certificates
+            python3 curl git ca-certificates \
+            "libpolly-${major}-dev" libz3-dev
 
       - name: Free disk space
         run: |
@@ -618,6 +623,34 @@ jobs:
           echo "HOST_LLVM_CONFIG=$config" >> "$GITHUB_ENV"
           echo "host llvm-config: $config ($reported)"
 
+      - name: Validate host LLVM static-link dependencies
+        run: |
+          set -euo pipefail
+          host_config="$HOST_LLVM_CONFIG"
+          host_libdir=$("$host_config" --libdir)
+          host_libs=$("$host_config" --link-static --libs)
+          for lib in Polly PollyISL; do
+            if printf '%s\\n' "$host_libs" | tr ' ' '\\n' | grep -qx -- "-l$lib"; then
+              if [ ! -s "$host_libdir/lib$lib.a" ] && [ ! -s "$host_libdir/lib$lib.so" ]; then
+                echo "FAIL: host llvm-config requires -l$lib but $host_libdir/lib$lib.a/.so is missing" >&2
+                exit 1
+              fi
+            fi
+          done
+          system_libs=$(OCTAGRAM_REAL_LLVM_CONFIG="$host_config" python3 tools/host_llvm_config_wrapper.py --link-static --system-libs)
+          if printf '%s\\n' "$system_libs" | grep -Eq '(^|[[:space:]])-llib[^[:space:]]*\\.so([.0-9]*)([[:space:]]|$)'; then
+            echo "FAIL: host llvm-config adapter left an invalid -llib*.so flag:" >&2
+            echo "$system_libs" >&2
+            exit 1
+          fi
+          if printf '%s\\n' "$system_libs" | grep -Eq '(^|[[:space:]])-lz3([[:space:]]|$)'; then
+            z3_linker_file=$(cc -print-file-name=libz3.so)
+            [ -f "$z3_linker_file" ] || { echo "FAIL: -lz3 requested but libz3-dev linker file is missing" >&2; exit 1; }
+          fi
+          echo "HOST-LLVM-LINK-INPUTS-PASS"
+          echo "host libdir: $host_libdir"
+          echo "host system libs: $system_libs"
+
       - name: Install Rust stage0 toolchain
         run: |
           rustup toolchain install "$OCTAGRAM_RUST_TOOLCHAIN" \
@@ -664,9 +697,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build/toolchain/rust
-          key: octagram-rust-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/bootstrap_rustc_octagram.sh', 'tools/apply_rust_libc_octagram.py', 'tools/apply_rust_octagram_host_target.py', 'tools/patch_rust_std_octagram.py', 'tools/stage_octagram_toolchain.sh', 'patches/rust/**', 'patches/rust-std/**', 'patches/libc/**', 'user/toolchain/**', 'user/include/**', 'user/*.c') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: octagram-rust-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/bootstrap_rustc_octagram.sh', 'tools/host_llvm_config_wrapper.py', 'tools/apply_rust_libc_octagram.py', 'tools/apply_rust_octagram_host_target.py', 'tools/patch_rust_std_octagram.py', 'tools/stage_octagram_toolchain.sh', 'patches/rust/**', 'patches/rust-std/**', 'patches/libc/**', 'user/toolchain/**', 'user/include/**', 'user/*.c') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            octagram-rust-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/bootstrap_rustc_octagram.sh', 'tools/apply_rust_libc_octagram.py', 'tools/apply_rust_octagram_host_target.py', 'tools/patch_rust_std_octagram.py', 'tools/stage_octagram_toolchain.sh', 'patches/rust/**', 'patches/rust-std/**', 'patches/libc/**', 'user/toolchain/**', 'user/include/**', 'user/*.c') }}-
+            octagram-rust-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/bootstrap_rustc_octagram.sh', 'tools/host_llvm_config_wrapper.py', 'tools/apply_rust_libc_octagram.py', 'tools/apply_rust_octagram_host_target.py', 'tools/patch_rust_std_octagram.py', 'tools/stage_octagram_toolchain.sh', 'patches/rust/**', 'patches/rust-std/**', 'patches/libc/**', 'user/toolchain/**', 'user/include/**', 'user/*.c') }}-
 
       - name: Prepare rustc bootstrap
         if: env.RUSTC_MODE == 'prepare-only'

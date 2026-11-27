@@ -403,8 +403,8 @@ if [ ! -d "$target_llvm_bindir" ]; then
     exit 1
 fi
 target_llvm_bindir=$(CDPATH= cd -- "$target_llvm_bindir" && pwd -P)
-if [ ! -e "$target_llvm_bindir/llvm-cov" ]; then
-    echo "bootstrap_rustc_octagram: error: LLVM tool llvm-cov is missing from $target_llvm_bindir" >&2
+if [ ! -x "$target_llvm_bindir/llvm-cov" ]; then
+    echo "bootstrap_rustc_octagram: error: LLVM tool llvm-cov is missing or not executable in $target_llvm_bindir" >&2
     echo "bootstrap_rustc_octagram:        the Rust bootstrap Assemble step requires this tool." >&2
     exit 1
 fi

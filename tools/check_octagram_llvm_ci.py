@@ -6,14 +6,15 @@ steps, and its dependency cache is 10 GB per repository by default. A full
 libLLVM cross-build does not fit in one run, so the workflow must:
 
   * stop itself before the six-hour ceiling (--time-budget < timeout-minutes);
-  * keep the CMake build tree and save it as a checkpoint when it stops;
+  * keep the CMake build tree and save it after a budget stop or safe external cancellation;
+  * key install and build caches by the exact build-input fingerprint;
   * restore that checkpoint and pass --resume on the next run;
   * never cache a partial install tree under the "install" key.
 
 A stop that hangs is as bad as no stop: GitHub would kill the job at six hours
-and the checkpoint save step would never run. So the scripts escalate the stop
-from SIGINT to SIGTERM and SIGKILL, wait for the children, and record which
-signal was needed in the state file. The rustc checkpoint also drops the stage0
+and the checkpoint save step would never run. Budget stops escalate from SIGINT
+to SIGTERM and SIGKILL; explicit cancellation uses a bounded signal handler to
+quiesce Ninja before the always-run cache-save step. The rustc checkpoint also drops the stage0
 compiler tree, which the next run re-copies from the pinned toolchain, so the
 multi-GB checkpoint fits the 10 GB repository cache quota.
 
@@ -77,7 +78,7 @@ def main() -> int:
     bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
 
     # --- the build script ---------------------------------------------------
-    for flag in ("--time-budget", "--resume", "--status"):
+    for flag in ("--time-budget", "--resume", "--status", "--print-build-inputs-stamp"):
         require(build, flag, f"build_llvm_octagram.sh no longer accepts {flag}")
     require(
         build,
@@ -106,6 +107,21 @@ def main() -> int:
         build,
         '"stop_signal": "$stop_signal"',
         "build_llvm_octagram.sh must record which signal stopped the build",
+    )
+    require(
+        build,
+        "external_cancel_checkpoint",
+        "build_llvm_octagram.sh must quiesce Ninja when the GitHub job is cancelled",
+    )
+    require(
+        build,
+        "trap 'external_cancel_checkpoint INT' INT",
+        "build_llvm_octagram.sh must trap external SIGINT while Ninja is running",
+    )
+    require(
+        build,
+        "trap 'external_cancel_checkpoint TERM' TERM",
+        "build_llvm_octagram.sh must trap external SIGTERM while Ninja is running",
     )
     require(
         build,
@@ -146,6 +162,16 @@ def main() -> int:
             )
     require(workflow, "fresh_build:", "workflow_dispatch has no fresh_build input")
 
+    # Compute one fingerprint and use it for both LLVM install and build caches.
+    fingerprint = step_block(llvm, "Compute exact LLVM build input fingerprint")
+    if not fingerprint:
+        fail("llvm job does not compute the exact build-input fingerprint before cache restore")
+    else:
+        require(
+            fingerprint,
+            "--print-build-inputs-stamp",
+            "cache fingerprint step must call the build script's stamp function",
+        )
     # The build step must pass the budget, resume a restored tree, and turn the
     # script's exit 75 into a successful job with incomplete=true.
     require(llvm, "--time-budget", "the llvm build step does not pass --time-budget")
@@ -275,6 +301,11 @@ def main() -> int:
     else:
         require(
             restore,
+            "steps.llvm-inputs.outputs.stamp",
+            "LLVM build checkpoint key must use the exact build-input fingerprint",
+        )
+        require(
+            restore,
             "actions/cache/restore@v4",
             "build checkpoint must be restored with actions/cache/restore@v4",
         )
@@ -296,7 +327,12 @@ def main() -> int:
         require(
             save,
             "incomplete == 'true'",
-            "build checkpoint must only be saved for an incomplete build",
+            "budget-stopped LLVM checkpoints must still be saved",
+        )
+        require(
+            save,
+            "steps.llvm-build.outcome == 'cancelled'",
+            "a safely stopped LLVM build must also be saved after user cancellation",
         )
 
     # The install tree is the "done" marker: it may only be saved after the
@@ -304,6 +340,13 @@ def main() -> int:
     install_restore = step_block(llvm, "Restore libLLVM install tree")
     if "actions/cache/restore@v4" not in install_restore:
         fail("libLLVM install tree must be restored with actions/cache/restore@v4")
+    require(
+        install_restore,
+        "steps.llvm-inputs.outputs.stamp",
+        "libLLVM install cache key must use the exact build-input fingerprint",
+    )
+    if "restore-keys:" in install_restore:
+        fail("libLLVM install cache must not use a broad restore prefix")
     install_save = step_block(llvm, "Save libLLVM install tree")
     if not install_save:
         fail("libLLVM install tree has no explicit save step")
@@ -326,10 +369,8 @@ def main() -> int:
         fail("install tree is cached before it is verified")
 
     # --- the build-input stamp ---------------------------------------------
-    # A restore-keys fallback can hand back a tree built from an older sysroot
-    # or built with other flags. The build writes a stamp of its inputs into the
-    # install prefix, and the workflow must delete a tree whose stamp does not
-    # match instead of trusting the cache, a warning, or a manual cache delete.
+    # The cache key itself is the stamp; the install verifier remains a second
+    # line of defence against a damaged or manually populated cache.
     require(
         build,
         ".octagram-build-inputs",
@@ -455,11 +496,10 @@ def main() -> int:
         print(f"OCTAGRAM-LLVM-CI-FAIL ({len(failures)})")
         return 1
     print(
-        "OCTAGRAM-LLVM-CI-PASS: both build jobs keep their budget below the "
-        "six-hour cap, escalate the stop until the build is gone, restore "
-        "checkpoints by prefix, save them only when incomplete, and cache the "
-        "install tree only after verification, and rebuild a restored install "
-        "tree whose build-input stamp names other sysroot/flags"
+        "OCTAGRAM-LLVM-CI-PASS: build jobs stay below the six-hour cap, "
+        "escalate budget stops, quiesce external cancellations, restore "
+        "checkpoints by exact-input prefix, save cancelled checkpoints, and "
+        "cache only verified installs whose input fingerprint matches"
     )
     return 0
 

@@ -538,8 +538,8 @@ def main() -> int:
     )
     require(
         bootstrap,
-        'RUST-GETRANDOM-OCTAGRAM-BACKEND-PASS',
-        "the bootstrap must verify that the registry getrandom backend was patched",
+        '--registry-root "$cargo_home/registry/src"',
+        "the bootstrap must patch the getrandom Cargo registry source used by stage 2",
     )
 
     # --- the rustc-cargo job -----------------------------------------------

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch the installed rust-src component with the OCTAGRAM std PAL probe glue."""
+"""Patch the pinned Rust checkout std PAL with OCTAGRAM Unix target glue."""
 
 from __future__ import annotations
 

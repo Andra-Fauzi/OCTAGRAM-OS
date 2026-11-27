@@ -269,8 +269,8 @@ def main() -> int:
         require(bootstrap, needle, message)
     require(
         bootstrap,
-        '"$cargo_home"/registry/src/*/libc-"$LIBC_VERSION"',
-        "Rust bootstrap must locate the extracted libc source Cargo actually compiles",
+        '"$cargo_home"/registry/src/*/libc-"$libc_version"',
+        "Rust bootstrap must locate each extracted libc lockfile source Cargo actually compiles",
     )
     require(
         bootstrap,
@@ -625,7 +625,7 @@ def main() -> int:
         require(tempfile_patch, needle, message)
     require(
         tempfile_patch,
-        'not(target_os = \"octagram\")',
+        "NEW_MANIFEST_HEADER",
         "the tempfile patcher must exclude OCTAGRAM from the rustix dependency",
     )
     require(

@@ -111,8 +111,8 @@ def main() -> int:
     # compiler self-contained without enabling shared-object TLS in OCTAGRAM.
     driver_manifest = root / "compiler/rustc_driver/Cargo.toml"
     source = driver_manifest.read_text(encoding="utf-8")
-    dylib_crate_type = '[lib]\\ncrate-type = ["dylib"]'
-    static_crate_type = '[lib]\\ncrate-type = ["rlib"]'
+    dylib_crate_type = '[lib]\ncrate-type = ["dylib"]'
+    static_crate_type = '[lib]\ncrate-type = ["rlib"]'
     if static_crate_type not in source:
         if source.count(dylib_crate_type) != 1:
             raise SystemExit(
@@ -131,20 +131,20 @@ def main() -> int:
     # conditional so it remains unchanged for targets that still emit it.
     compile_steps = root / "src/bootstrap/src/core/build_steps/compile.rs"
     compile_source = compile_steps.read_text(encoding="utf-8")
-    old_strip = \"\"\"        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
+    old_strip = """        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
             && builder.config.rust_debuginfo_level_tools == DebuginfoLevel::None
         {
             let rustc_driver = target_root_dir.join("librustc_driver.so");
             strip_debug(builder, target, &rustc_driver);
-        }\"\"\"
-    new_strip = \"\"\"        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
+        }"""
+    new_strip = """        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
             && builder.config.rust_debuginfo_level_tools == DebuginfoLevel::None
         {
             let rustc_driver = target_root_dir.join("librustc_driver.so");
             if rustc_driver.is_file() {
                 strip_debug(builder, target, &rustc_driver);
             }
-        }\"\"\"
+        }"""
     if new_strip not in compile_source:
         if compile_source.count(old_strip) != 1:
             raise SystemExit(

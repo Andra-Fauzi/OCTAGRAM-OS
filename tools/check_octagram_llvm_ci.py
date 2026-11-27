@@ -44,6 +44,7 @@ HOST_TARGET_PATCH = REPO / "tools" / "apply_rust_octagram_host_target.py"
 GETRANDOM_PATCH = REPO / "tools" / "patch_getrandom_octagram.py"
 ERRNO_PATCH = REPO / "tools" / "patch_errno_octagram.py"
 TEMPFILE_PATCH = REPO / "tools" / "patch_tempfile_octagram.py"
+FILETIME_PATCH = REPO / "tools" / "patch_filetime_octagram.py"
 LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
 LIBC_PATCHER = REPO / "tools" / "apply_rust_libc_octagram.py"
 RUNTIME = REPO / "user" / "runtime.c"
@@ -90,6 +91,7 @@ def main() -> int:
     getrandom_patch = GETRANDOM_PATCH.read_text(encoding="utf-8")
     errno_patch = ERRNO_PATCH.read_text(encoding="utf-8")
     tempfile_patch = TEMPFILE_PATCH.read_text(encoding="utf-8")
+    filetime_patch = FILETIME_PATCH.read_text(encoding="utf-8")
     libc_module = LIBC_MODULE.read_text(encoding="utf-8")
     libc_patcher = LIBC_PATCHER.read_text(encoding="utf-8")
     runtime = RUNTIME.read_text(encoding="utf-8")
@@ -666,6 +668,37 @@ def main() -> int:
     for version in ("0.3.3", "0.3.4", "0.4.3"):
         require(getrandom_patch, version, f"getrandom patcher is missing version {version}")
 
+    # filetime is present in both Rust and Cargo lockfiles. Its generic
+    # fallback would call lutimes(), which OCTAGRAM does not export; select
+    # the existing utimensat backend instead.
+    for needle, message in (
+        ('FILETIME_VERSIONS = ("0.2.27", "0.2.29")', "filetime patcher must cover both lockfile versions"),
+        ('target_os = "octagram",', "filetime patcher must add the OCTAGRAM target selector"),
+        ("mod utimensat;", "filetime patcher must keep the POSIX utimensat backend"),
+        ("RUST-FILETIME-OCTAGRAM-BACKEND-PASS", "filetime patcher must emit a verifiable pass marker"),
+    ):
+        require(filetime_patch, needle, message)
+    require(
+        bootstrap,
+        'FILETIME_VERSION=0.2.27',
+        "Rust bootstrap must pin workspace filetime 0.2.27",
+    )
+    require(
+        bootstrap,
+        'FILETIME_CARGO_VERSION=0.2.29',
+        "Rust bootstrap must pin Cargo submodule filetime 0.2.29",
+    )
+    require(
+        bootstrap,
+        'fetch_locked_crate filetime "$FILETIME_VERSION"',
+        "Rust bootstrap must fetch filetime 0.2.27 before stage 2",
+    )
+    require(
+        bootstrap,
+        'patch_filetime_octagram.py',
+        "Rust bootstrap must patch filetime before stage 2",
+    )
+
     # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
     # not an unsupported-target bypass or a CPU-specific substitute.
     require(
@@ -757,6 +790,10 @@ def main() -> int:
         ("^rustix v", "dependency check must report rustix when the custom target selector is not applied"),
         ("check_and_compile", "dependency check must compile each isolated dependency group"),
         ("patch_tempfile_octagram.py", "dependency check must patch tempfile's Unix backend"),
+        ("filetime = { version = \"=$filetime_version\" }", "dependency check must compile the locked filetime crate"),
+        ("0.2.191 0.3.3 3.23.0 0.2.27", "Rust workspace preflight must include filetime 0.2.27"),
+        ("0.2.186 0.3.4 3.27.0 0.2.29", "Cargo submodule preflight must include filetime 0.2.29"),
+        ("patch_filetime_octagram.py", "dependency check must patch filetime to utimensat"),
         ("apply_rust_libc_octagram.py", "dependency check must apply the OCTAGRAM libc bindings"),
         ("patch_errno_octagram.py", "dependency check must patch errno's errno accessor"),
         ("patch_getrandom_octagram.py", "dependency check must patch all getrandom target backends"),
@@ -1317,6 +1354,57 @@ pub fn reopen(file: &File, path: &Path) -> io::Result<File> {
             fail("tempfile 3.27.0 patcher did not install std filesystem wrappers")
         if not (package / ".cargo-ok").is_file():
             fail("tempfile 3.27.0 patcher did not preserve the Cargo registry extraction marker")
+
+    # Test both pinned filetime crate sources and ensure OCTAGRAM selects
+    # utimensat instead of the generic utimes/lutimes fallback.
+    for version in ("0.2.27", "0.2.29"):
+        with tempfile.TemporaryDirectory() as temp_root:
+            registry_root = Path(temp_root) / "registry" / "src"
+            package = registry_root / "index.test" / f"filetime-{version}"
+            (package / "src" / "unix").mkdir(parents=True)
+            (package / "Cargo.toml").write_text(
+                f'[package]\\nname = "filetime"\\nversion = "{version}"\\n',
+                encoding="utf-8",
+            )
+            (package / "src" / "unix" / "mod.rs").write_text(
+                """cfg_if::cfg_if! {
+    if #[cfg(target_os = "linux")] {
+        mod linux;
+        pub use self::linux::*;
+    } else if #[cfg(any(target_os = "aix",
+                        target_os = "openbsd",
+                        target_os = "haiku"))] {
+        mod utimensat;
+        pub use self::utimensat::*;
+    } else {
+        mod utimes;
+        pub use self::utimes::*;
+    }
+}
+""",
+                encoding="utf-8",
+            )
+            patch_runs = []
+            for _ in range(2):
+                patch_runs.append(
+                    subprocess.run(
+                        [sys.executable, str(FILETIME_PATCH), "--registry-root", str(registry_root)],
+                        cwd=REPO,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                )
+            if any(result.returncode != 0 for result in patch_runs):
+                fail(
+                    f"filetime {version} patcher fixture failed: "
+                    + " | ".join(result.stdout + result.stderr for result in patch_runs)
+                )
+            patched = (package / "src" / "unix" / "mod.rs").read_text(encoding="utf-8")
+            if patched.count('target_os = "octagram"') != 1 or "mod utimensat;" not in patched:
+                fail(f"filetime {version} patcher did not select utimensat for OCTAGRAM")
+            if not (package / ".cargo-ok").is_file():
+                fail(f"filetime {version} patcher did not preserve the registry marker")
 
     if failures:
         print(f"OCTAGRAM-LLVM-CI-FAIL ({len(failures)})")

@@ -530,6 +530,8 @@ extern "C" {
                     address: *mut sockaddr, address_length: *mut socklen_t) -> ssize_t;
     pub fn readv(fd: c_int, vectors: *const iovec, count: c_int) -> ssize_t;
     pub fn writev(fd: c_int, vectors: *const iovec, count: c_int) -> ssize_t;
+    // POSIX strerror_r is implemented by the OCTAGRAM C runtime in runtime.c.
+    pub fn strerror_r(error: c_int, buffer: *mut c_char, length: size_t) -> c_int;
     pub fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
     pub fn dirfd(directory: *mut crate::DIR) -> c_int;
     pub fn futimens(fd: c_int, times: *const crate::timespec) -> c_int;

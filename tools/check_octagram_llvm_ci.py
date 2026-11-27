@@ -463,7 +463,7 @@ def main() -> int:
     )
     require(
         host_target_patch,
-        "if rustc_driver.is_file():",
+        "if rustc_driver.is_file() {",
         "bootstrap must strip rustc_driver only when a shared driver artifact exists",
     )
     require(

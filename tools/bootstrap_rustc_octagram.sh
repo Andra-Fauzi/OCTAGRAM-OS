@@ -557,7 +557,20 @@ done
 registry_patch_count=0
 for registry_source in "$cargo_home"/registry/src/*/libc-"$LIBC_VERSION"; do
     [ -f "$registry_source/Cargo.toml" ] || continue
-    if ! grep -Eq '^version = "0\.2\.191"
+    if ! grep -Eq '^version = "0\.2\.191"$' "$registry_source/Cargo.toml"; then
+        echo "bootstrap_rustc_octagram: error: unexpected libc package version in $registry_source" >&2
+        exit 1
+    fi
+    echo "patching Cargo registry source: $registry_source"
+    python3 "$repo_root/tools/apply_rust_libc_octagram.py" "$registry_source" --allow-unpinned
+    registry_patch_count=$((registry_patch_count + 1))
+done
+if [ "$registry_patch_count" -eq 0 ]; then
+    echo "bootstrap_rustc_octagram: error: cargo fetch did not expose libc $LIBC_VERSION in $cargo_home/registry/src" >&2
+    echo "bootstrap_rustc_octagram:        registry cache must contain the exact source used by -Z build-std." >&2
+    exit 1
+fi
+echo "RUST-LIBC-CARGO-REGISTRY-PATCH-PASS: patched $registry_patch_count registry source(s)"
 
 # 3. Host triple must exist inside rustc itself ----------------------------
 echo "registering $HOST as a builtin rustc target"

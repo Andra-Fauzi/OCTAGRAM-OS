@@ -219,6 +219,18 @@ pernah dianggap selesai.
    prefix yang dipakai key cache install tree. Kalau script tetap menemukan
    `llvm-config` yang ada tapi tidak executable, pesan errornya sekarang
    menyebut mode file dan penyebabnya, bukan menyuruh membangun LLVM lagi.
+7. Cache install tree di-key dengan hash `tools/build_llvm_octagram.sh` +
+   `user/**` + `tools/octagram_llvm_config.py`, tetapi restore-nya memakai
+   `restore-keys: octagram-llvm-install-<versi>-`. Alasannya: mengubah bagian
+   orkestrasi script (budget, sinyal, checkpoint) mengubah hash tanpa mengubah
+   pustaka yang dihasilkan, dan key yang ketat membuat setiap edit seperti itu
+   membangun ulang libLLVM ~45 menit. Tree terbaru untuk versi itu dipakai
+   ulang (step verifikasi tetap berjalan), dan tree hasil fallback **tidak**
+   disimpan ulang dengan key baru, jadi key yang tepat hanya berisi hasil build
+   dari input yang tepat. Kalau perubahan benar-benar mengubah pustaka (flag
+   CMake, patch LLVM), hapus entri `octagram-llvm-install-*` di
+   Actions → Caches dulu. Arsip sumber `llvm-project-<versi>.src.tar.xz`
+   di-key hanya dengan versi, karena isinya arsip rilis upstream.
 
 Kenapa resume tidak memicu rebuild penuh: source LLVM di-extract ulang dari
 tarball yang di-cache, dan `tar` memulihkan mtime dari arsip. Objek yang sudah

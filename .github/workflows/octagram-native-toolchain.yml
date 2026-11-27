@@ -259,10 +259,13 @@ jobs:
         # Path must match where build_llvm_octagram.sh keeps the download
         # (build/toolchain/llvm-<ver>/llvm-project-<ver>.src.tar.xz); the old
         # path never existed, so every run downloaded it again.
+        # The key is the version alone: the file is the pinned upstream release
+        # archive, so edits to our own script never change it. Hashing the
+        # script here made every edit download 1.3 GB again.
         uses: actions/cache@v4
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}/llvm-project-${{ env.LLVM_VERSION }}.src.tar.xz
-          key: octagram-llvm-src-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh') }}
+          key: octagram-llvm-src-${{ env.LLVM_VERSION }}
 
       - name: Restore libLLVM install tree
         id: llvm-cache
@@ -273,6 +276,25 @@ jobs:
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
           key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile', 'user/include/**', 'user/*.c', 'user/third_party/libcxx/**') }}
+          # A strict key made every edit of build_llvm_octagram.sh rebuild
+          # libLLVM for ~45 minutes, even when only its budget/signal/
+          # checkpoint logic changed and the produced libraries are identical.
+          # Fall back to the newest verified tree for this LLVM version; the
+          # verifier below still checks the ELF shape, the archives and
+          # octagram-llvm-config, and the build step reuses a complete tree.
+          # A change that does alter the produced libraries (CMake flags,
+          # patches) needs the old entries deleted: Actions -> Caches ->
+          # octagram-llvm-install-*. Do that instead of trusting the fallback.
+          restore-keys: |
+            octagram-llvm-install-${{ env.LLVM_VERSION }}-
+
+      - name: Report a libLLVM cache fallback
+        # The build step below reuses a complete tree, so this run is fast, but
+        # it also does not re-save the tree under the new key: say so, because
+        # the build then silently depends on an older revision of the script.
+        if: steps.llvm-cache.outputs.cache-hit != 'true' && steps.llvm-cache.outputs.cache-matched-key != ''
+        run: |
+          echo "::warning title=libLLVM from an older cache key::restored ${{ steps.llvm-cache.outputs.cache-matched-key }} instead of the key for these inputs (${{ steps.llvm-cache.outputs.cache-primary-key }}); the tree is reused and not re-saved. Delete octagram-llvm-install-* in Actions -> Caches if this change alters the produced libraries."
 
       - name: Restore libLLVM build checkpoint
         id: llvm-build-cache
@@ -290,7 +312,11 @@ jobs:
       - name: Require cached libLLVM when build_llvm is off
         # The build_llvm input exists only for workflow_dispatch. On push,
         # inputs.build_llvm is unset (not an instruction to disable the build).
-        if: github.event_name == 'workflow_dispatch' && inputs.build_llvm == false && steps.llvm-cache.outputs.cache-hit != 'true'
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_llvm == false &&
+          steps.llvm-cache.outputs.cache-hit != 'true' &&
+          steps.llvm-cache.outputs.cache-matched-key == ''
         run: |
           echo "build_llvm=false tetapi tidak ada libLLVM $LLVM_VERSION di cache." >&2
           echo "Jalankan workflow dengan build_llvm=true sekali untuk mengisinya." >&2
@@ -423,8 +449,14 @@ jobs:
 
       - name: Save libLLVM install tree
         # Only a verified install is cached; a partial prefix under this key
-        # would make the next run skip the build.
-        if: success() && steps.llvm-build.outputs.incomplete != 'true' && steps.llvm-cache.outputs.cache-hit != 'true'
+        # would make the next run skip the build. A tree that came from the
+        # restore-keys fallback is never re-saved under the new key, so an old
+        # build can never be presented as the result of these inputs.
+        if: >-
+          success() &&
+          steps.llvm-build.outputs.incomplete != 'true' &&
+          steps.llvm-cache.outputs.cache-hit != 'true' &&
+          steps.llvm-cache.outputs.cache-matched-key == ''
         uses: actions/cache/save@v4
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram

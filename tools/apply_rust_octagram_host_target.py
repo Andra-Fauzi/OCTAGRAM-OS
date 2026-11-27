@@ -10,8 +10,9 @@ applies four checked edits to a pinned rust-lang/rust checkout:
 2. adds `Octagram = "octagram"` to the `Os` enum in
    compiler/rustc_target/src/spec/mod.rs;
 3. registers the target in the `supported_targets!` list;
-4. suppresses only the expected unsupported-`dylib` warning for this exact
-   static-only target in compiler/rustc_interface/src/passes.rs.
+4. preserves the upstream unsupported-crate-type diagnostic in
+   compiler/rustc_interface/src/passes.rs, which Cargo needs when probing
+   target-specific output filenames.
 
 Every source edit is anchored on an exact block and is idempotent, so
 re-running it after a partial failure is safe. The checkout revision is

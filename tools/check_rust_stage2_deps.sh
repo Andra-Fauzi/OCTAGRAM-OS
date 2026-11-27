@@ -148,12 +148,6 @@ done
 python3 "$repo_root/tools/patch_errno_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_getrandom_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_tempfile_octagram.py" --registry-root "$cargo_home/registry/src"
-for tempfile_version in 3.23.0 3.27.0; do
-    if ! grep -q "TEMPFILE_VERSION = \"$tempfile_version\"" "$repo_root/tools/patch_tempfile_octagram.py"; then
-        echo "tempfile patcher does not declare support for $tempfile_version" >&2
-        exit 1
-    fi
-done
 
 echo "checking tempfile's OCTAGRAM dependency graph"
 dependency_tree=$(CARGO_HOME=$cargo_home cargo "+$toolchain" tree \

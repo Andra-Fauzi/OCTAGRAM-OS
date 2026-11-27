@@ -368,25 +368,33 @@ def main() -> int:
         "condition == '#[cfg(target_os = \"linux\")]'",
         "the std PAL patcher must recognize the restored Linux-only os::linux cfg",
     )
+    # Cargo's --print=file-names probe parses rustc's unsupported-crate-type
+    # diagnostic to skip Dylib/ProcMacro on this static-only target. Never
+    # suppress that warning: doing so shifts Cargo's output-line parser.
     require(
         host_target_patch,
-        "expected_octagram_static_dylib",
-        "the Rust target patch must suppress only the expected static OCTAGRAM dylib warning",
+        "Keep rustc's unsupported-crate-type warning intact.",
+        "the Rust target patch must preserve the diagnostic Cargo uses for unsupported crate types",
     )
     require(
         host_target_patch,
-        'session.opts.target_triple.tuple() == "x86_64-unknown-octagram"',
-        "the dylib-warning exception must compare the TargetTuple string, and only match OCTAGRAM",
+        "RUST-OCTAGRAM-CRATE-TYPE-DIAGNOSTICS-PASS",
+        "the Rust target patch must report that Cargo crate-type diagnostics are preserved",
     )
     require(
         host_target_patch,
-        "*crate_type == CrateType::Dylib",
-        "the dylib-warning exception must be limited to CrateType::Dylib",
+        "if new_diagnostic in passes_source:",
+        "the Rust target patch must restore the original diagnostic in cached checkouts",
     )
     require(
         host_target_patch,
-        "RUST-OCTAGRAM-STATIC-DYLIB-PASS",
-        "the target patch must report that the static dylib exception was installed",
+        "elif old_diagnostic not in passes_source:",
+        "the Rust target patch must fail safely when neither known diagnostic form is present",
+    )
+    require(
+        host_target_patch,
+        "passes_source = passes_source.replace(new_diagnostic, old_diagnostic, 1)",
+        "the Rust target patch must remove the stale OCTAGRAM-only Dylib warning suppression",
     )
 
     # --- the rustc-cargo job -----------------------------------------------

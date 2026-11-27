@@ -691,6 +691,21 @@ fi
 if [ "$time_budget" -gt 0 ]; then
     echo "running x.py with ${budget_seconds}s remaining of the ${time_budget}m budget"
 fi
+
+# Cargo interprets RUSTC_WRAPPER and RUSTC_WORKSPACE_WRAPPER as executable
+# prefixes. If either leaks from the runner/bootstrap environment and points
+# at the stage compiler itself, Cargo invokes:
+#   rustc rustc <normal arguments>
+# The second rustc path is then treated as an input and --print=file-names
+# probing becomes invalid. Rust bootstrap already selects the compiler for
+# each stage, so external wrapper variables must not be inherited here.
+if [ -n "${RUSTC_WRAPPER:-}" ]; then
+    echo "bootstrap: ignoring inherited RUSTC_WRAPPER=$RUSTC_WRAPPER"
+fi
+if [ -n "${RUSTC_WORKSPACE_WRAPPER:-}" ]; then
+    echo "bootstrap: ignoring inherited RUSTC_WORKSPACE_WRAPPER=$RUSTC_WORKSPACE_WRAPPER"
+fi
+unset RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
 budget_marker=$rust_checkout/build/budget-exhausted
 stop_signal_file=$rust_checkout/build/stop-signal
 stop_pids_file=$rust_checkout/build/stop-pids

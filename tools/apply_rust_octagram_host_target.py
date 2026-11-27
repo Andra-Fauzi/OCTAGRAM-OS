@@ -114,7 +114,7 @@ def main() -> int:
                 target_triple: &session.opts.target_triple,
             });"""
     new_diagnostic = """            let expected_octagram_static_dylib =
-                session.opts.target_triple == "x86_64-unknown-octagram"
+                session.opts.target_triple.tuple() == "x86_64-unknown-octagram"
                     && *crate_type == CrateType::Dylib;
             if !expected_octagram_static_dylib {
                 session.dcx().emit_warn(diagnostics::UnsupportedCrateTypeForTarget {

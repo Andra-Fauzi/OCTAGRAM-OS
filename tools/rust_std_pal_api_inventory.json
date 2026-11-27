@@ -376,6 +376,96 @@
       "header": "user/include/pthread.h",
       "status": "implemented",
       "notes": "Thread attribute lifecycle and stack sizing used by generic Rust Unix PAL"
+    },
+    {
+      "symbol": "flock",
+      "header": "user/include/sys/file.h",
+      "status": "implemented",
+      "notes": "Whole-open-file advisory lock used by Rust std File locking; arbitrary byte-range fcntl locks are not supported."
+    },
+    {
+      "symbol": "clock_nanosleep",
+      "header": "user/include/time.h",
+      "status": "implemented",
+      "notes": "Monotonic/realtime absolute sleep used by Rust std Unix thread parking and sleep_until."
+    },
+    {
+      "symbol": "socket",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Creates OCTAGRAM sockets; current protocol coverage is limited to kernel-supported socket families."
+    },
+    {
+      "symbol": "bind",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Binds a supported socket address; network protocol coverage is limited."
+    },
+    {
+      "symbol": "listen",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Enables listening on supported stream sockets."
+    },
+    {
+      "symbol": "accept",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Accepts supported sockets; Rust std sets FD_CLOEXEC with fcntl after accept because accept4 is unavailable."
+    },
+    {
+      "symbol": "connect",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Connects supported socket families; protocol coverage is limited."
+    },
+    {
+      "symbol": "shutdown",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Uses the OCTAGRAM socket shutdown syscall."
+    },
+    {
+      "symbol": "getsockname",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Queries the local address of a supported socket."
+    },
+    {
+      "symbol": "getpeername",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Queries the peer address of a connected supported socket."
+    },
+    {
+      "symbol": "setsockopt",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Delegates to OCTAGRAM socket options; only kernel-supported options are available."
+    },
+    {
+      "symbol": "getsockopt",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Delegates to OCTAGRAM socket options; only kernel-supported options are available."
+    },
+    {
+      "symbol": "sendto",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Sends datagrams or payloads for supported socket families."
+    },
+    {
+      "symbol": "recvfrom",
+      "header": "user/include/sys/socket.h",
+      "status": "partial",
+      "notes": "Receives datagrams or payloads for supported socket families."
+    },
+    {
+      "symbol": "socketpair",
+      "header": "user/include/sys/socket.h",
+      "status": "implemented",
+      "notes": "Creates a pair of connected local sockets through oct_socketpair."
     }
   ]
 }

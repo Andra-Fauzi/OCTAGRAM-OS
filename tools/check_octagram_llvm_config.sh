@@ -84,6 +84,9 @@ if [ "$bootstrap_only" -eq 0 ]; then
     # runs it; the generator only writes the host-runnable replacement.
     printf '#!/bin/sh\necho %s\n' "$expected_version" > "$prefix/bin/llvm-config"
     chmod +x "$prefix/bin/llvm-config"
+    # Rust bootstrap resolves llvm-cov from llvm-config --bindir.
+    printf '#!/bin/sh\nexit 0\n' > "$prefix/bin/llvm-cov"
+    chmod +x "$prefix/bin/llvm-cov"
     grep -q '^#define LLVM_VERSION_MAJOR' "$build_dir/include/llvm/Config/llvm-config.h" \
         && [ "$(sed -n 's/^#define LLVM_VERSION_MAJOR \([0-9]*\)$/\1/p' \
               "$build_dir/include/llvm/Config/llvm-config.h" | head -n 1)" = "$major" ] \

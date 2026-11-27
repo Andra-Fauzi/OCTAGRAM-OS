@@ -154,7 +154,8 @@
     "The initial upstream rust-lang/libc OCTAGRAM module compiles for the custom target, but this does not prove full std PAL runtime conformance or guest runtime symbol behavior.",
     "The Rust std probe and a static OCTAGRAM std executable now compile and link in CI; this does not prove Rust std runtime behavior on the guest, and execution inside OCTAGRAM/QEMU remains unverified.",
     "The built-in x86_64-unknown-octagram target is static-only (dynamic_linking = false), so pinned rustc rejects CrateType::Dylib and CrateType::ProcMacro. Cargo running inside OCTAGRAM therefore cannot yet build dependencies that require procedural macros; full Cargo ecosystem support needs a dynamic loader/DSO ABI or a different proc-macro execution design.",
-    "The public struct stat exposes uid/gid/device/inode/link/block/time fields, but the current kernel oct_stat supplies only size, mode, and modified_seconds; other values are zero placeholders, so matching std::os::unix::fs::MetadataExt fields are not semantically complete."
+    "The public struct stat exposes uid/gid/device/inode/link/block/time fields, but the current kernel oct_stat supplies only size, mode, and modified_seconds; other values are zero placeholders, so matching std::os::unix::fs::MetadataExt fields are not semantically complete.",
+    "The accept4 fallback cannot set FD_CLOEXEC atomically: OCTAGRAM calls accept() then fcntl(F_SETFD), leaving a small descriptor-inheritance race with a concurrent fork/exec."
   ],
   "upstream_libc": {
     "repository": "rust-lang/libc",

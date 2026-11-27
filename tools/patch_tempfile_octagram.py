@@ -16,12 +16,14 @@ from pathlib import Path
 
 TEMPFILE_VERSION = "3.23.0"
 
-OLD_MANIFEST_HEADER = "[target.'cfg(any(unix, target_os = \"wasi\"))'.dependencies]"
+OLD_MANIFEST_HEADER = (
+    "[target.'cfg(any(unix, target_os = \"wasi\"))'.dependencies.rustix]"
+)
 NEW_MANIFEST_HEADER = (
     "[target.'cfg(all(any(unix, target_os = \"wasi\"), "
-    "not(target_os = \"octagram\")))'.dependencies]"
+    "not(target_os = \"octagram\")))'.dependencies.rustix]"
 )
-RUSTIX_DEPENDENCY = 'rustix = { version = "1.0.0", features = ["fs"] }'
+RUSTIX_DEPENDENCY_FIELDS = ('features = ["fs"]', 'version = "1.0.0"')
 
 OLD_IMPORTS = """#[cfg(not(target_os = "redox"))]
 use {
@@ -66,18 +68,18 @@ def patch_package(package: Path) -> bool:
 
     manifest_text = manifest.read_text(encoding="utf-8")
     if NEW_MANIFEST_HEADER in manifest_text:
-        if RUSTIX_DEPENDENCY not in manifest_text:
-            raise SystemExit(f"tempfile rustix dependency entry missing in {manifest}")
         manifest_new = manifest_text
     else:
         if manifest_text.count(OLD_MANIFEST_HEADER) != 1:
             raise SystemExit(
-                f"expected one Unix/WASI dependency table in {manifest}; "
-                "refusing an unreviewed source layout"
+                f"expected one normalized Unix/WASI rustix dependency table "
+                f"in {manifest}; refusing an unreviewed source layout"
             )
-        if manifest_text.count(RUSTIX_DEPENDENCY) != 1:
+        dependency_start = manifest_text.index(OLD_MANIFEST_HEADER)
+        dependency_block = manifest_text[dependency_start:]
+        if not all(field in dependency_block for field in RUSTIX_DEPENDENCY_FIELDS):
             raise SystemExit(
-                f"expected one rustix fs dependency in {manifest}; "
+                f"unexpected rustix dependency fields in {manifest}; "
                 "refusing an unreviewed source layout"
             )
         manifest_new = manifest_text.replace(

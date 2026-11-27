@@ -45,6 +45,7 @@ GETRANDOM_PATCH = REPO / "tools" / "patch_getrandom_octagram.py"
 ERRNO_PATCH = REPO / "tools" / "patch_errno_octagram.py"
 LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
 RUNTIME = REPO / "user" / "runtime.c"
+STAGE2_DEPS_CHECK = REPO / "tools" / "check_rust_stage2_deps.sh"
 GITHUB_JOB_LIMIT_MINUTES = 360
 
 failures: list[str] = []
@@ -88,6 +89,7 @@ def main() -> int:
     errno_patch = ERRNO_PATCH.read_text(encoding="utf-8")
     libc_module = LIBC_MODULE.read_text(encoding="utf-8")
     runtime = RUNTIME.read_text(encoding="utf-8")
+    stage2_deps_check = STAGE2_DEPS_CHECK.read_text(encoding="utf-8")
 
     # --- the build script ---------------------------------------------------
     for flag in ("--time-budget", "--resume", "--status", "--print-build-inputs-stamp"):
@@ -606,6 +608,36 @@ def main() -> int:
         '--registry-root "$cargo_home/registry/src"',
         "the bootstrap must patch the getrandom Cargo registry source used by stage 2",
     )
+
+    # Check the dependencies that already failed in stage 2 before the
+    # multi-hour LLVM build. This target check only builds core plus the
+    # errno/libc/getrandom dependency slice and does not consume libLLVM.
+    preflight = job_block(workflow, "preflight")
+    rust_install = step_block(preflight, "Install Rust nightly")
+    require(
+        rust_install,
+        "--component rust-src",
+        "the early target dependency check needs the nightly rust-src component",
+    )
+    dependency_step = step_block(
+        preflight,
+        "Check Rust stage-2 dependency compatibility (no LLVM build)",
+    )
+    require(
+        dependency_step,
+        "tools/check_rust_stage2_deps.sh",
+        "preflight must compile the known stage-2 dependency slice before LLVM",
+    )
+    for needle, message in (
+        ('errno = { version = "=0.3.14"', "errno check must pin 0.3.14"),
+        ('getrandom = { version = "=0.3.3"', "getrandom check must pin 0.3.3"),
+        ('libc = { version = "=0.2.191"', "libc check must pin 0.2.191"),
+        ("-Zbuild-std=core", "dependency check must compile against the target core"),
+        ("apply_rust_libc_octagram.py", "dependency check must apply the OCTAGRAM libc bindings"),
+        ("patch_errno_octagram.py", "dependency check must patch errno's errno accessor"),
+        ("patch_getrandom_octagram.py", "dependency check must patch getrandom's target backend"),
+    ):
+        require(stage2_deps_check, needle, message)
 
     # --- the rustc-cargo job -----------------------------------------------
     rustc = job_block(workflow, "rustc-cargo")

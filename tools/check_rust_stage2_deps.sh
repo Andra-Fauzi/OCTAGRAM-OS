@@ -200,8 +200,9 @@ check_target_graph() {
 
 check_and_compile() {
     project=$1
-    label=$2
-    check_target_graph "$project" "$3" "$label"
+    expected_tempfile=$2
+    label=$3
+    check_target_graph "$project" "$expected_tempfile" "$label"
     echo "compiling $label dependencies for x86_64-unknown-octagram"
     CARGO_HOME=$cargo_home CARGO_TARGET_DIR=$check_root/target-$label \
         cargo "+$toolchain" check \

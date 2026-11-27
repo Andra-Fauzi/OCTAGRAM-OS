@@ -395,29 +395,27 @@ def main() -> int:
     # modules for OCTAGRAM.
     os_mod = std / "os/mod.rs"
     os_source = os_mod.read_text(encoding="utf-8")
-    linux_only_module = re.compile(
-        r'(?m)^[ \\t]*#\\[cfg\\(target_os = "linux"\\)\\]\\r?\\n[ \\t]*pub mod linux;'
-    )
-    widened_linux_module = re.compile(
-        r'(?m)^([ \\t]*)#\\[cfg\\(any\\(target_os = "linux", target_os = "octagram"\\)\\)\\]\\r?\\n'
-        r'([ \\t]*)pub mod linux;'
-    )
-    if linux_only_module.search(os_source):
-        pass
-    else:
-        os_source, changed = widened_linux_module.subn(
-            lambda match: (
-                f'{match.group(1)}#[cfg(target_os = "linux")]\\n'
-                f'{match.group(2)}pub mod linux;'
-            ),
-            os_source,
+    lines = os_source.splitlines(keepends=True)
+    changed = 0
+    already_linux_only = 0
+    for index in range(len(lines) - 1):
+        if lines[index + 1].strip() != "pub mod linux;":
+            continue
+        condition = lines[index].strip()
+        if condition == '#[cfg(any(target_os = "linux", target_os = "octagram"))]':
+            indent = lines[index][:len(lines[index]) - len(lines[index].lstrip())]
+            newline = "\r\n" if lines[index].endswith("\r\n") else "\n" if lines[index].endswith("\n") else ""
+            lines[index] = f'{indent}#[cfg(target_os = "linux")]{newline}'
+            changed += 1
+        elif condition == '#[cfg(target_os = "linux")]':
+            already_linux_only += 1
+    if changed > 1 or (changed == 0 and already_linux_only != 1):
+        raise SystemExit(
+            "expected exactly one public os::linux module to restore or verify in "
+            f"{os_mod} (changed={changed}, already_linux_only={already_linux_only})"
         )
-        if changed != 1:
-            raise SystemExit(
-                "expected exactly one widened public os::linux module in "
-                f"{os_mod}, found {changed}; refusing to compile Linux-only APIs for OCTAGRAM"
-            )
-        os_mod.write_text(os_source, encoding="utf-8")
+    if changed:
+        os_mod.write_text("".join(lines), encoding="utf-8")
     print("RUST-STD-OCTAGRAM-LINUX-OS-MODULE-PASS: os::linux remains Linux-only")
 
     print("RUST-STD-OCTAGRAM-PATCH-PASS: Unix target glue installed in rust-src")

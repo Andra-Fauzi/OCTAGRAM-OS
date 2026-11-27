@@ -260,7 +260,19 @@ def main() -> int:
                 Ok(Socket(fd))
             },
         }"""
-    replace_once(socket_unix, old_accept_select, octagram_accept_select)
+    # A resumed build has already run widen_linux_cfg_gates(), which turns
+    # the Linux arm inside this inserted branch into any(linux, octagram).
+    # Recognize both exact forms so a checkpoint can safely run this patcher
+    # again instead of failing on an already-patched socket source.
+    socket_source = socket_unix.read_text(encoding="utf-8")
+    widened_accept_select = octagram_accept_select.replace(
+        'target_os = "linux",',
+        'any(target_os = "linux", target_os = "octagram"),',
+    )
+    if octagram_accept_select in socket_source or widened_accept_select in socket_source:
+        pass
+    else:
+        replace_once(socket_unix, old_accept_select, octagram_accept_select)
     print("RUST-STD-OCTAGRAM-ACCEPT-FALLBACK-PASS: accept + fcntl replaces unsupported accept4")
 
     # The upstream Linux stack-overflow handler queries pthread stack bounds.

@@ -146,15 +146,14 @@
     "OCTAGRAM libc is not glibc or musl ABI-compatible; upstream libc module must describe OCTAGRAM's own ABI.",
     "Generic Rust Unix PAL may request libc functions or constants absent from current OCTAGRAM headers/runtime.",
     "struct stat is a translated public C structure; raw kernel oct_stat must not be confused with it.",
-    "getrandom currently uses xorshift seeded from TSC and is not a cryptographic entropy guarantee.",
-    "The initial upstream libc target module compiles for the custom target, but full Rust std linkage and runtime behavior are not yet verified.",
+    "The getrandom entropy source remains xorshift seeded from TSC and is not cryptographically secure; the Rust std probe compiles but this is not a secure randomness guarantee.",
     "fdopendir is implemented for directory descriptors; full POSIX directory-stream semantics and error/EOF distinction still need conformance tests.",
     "pthread_getattr_np, pthread_attr_getstack, and pthread_attr_getguardsize are not implemented; the OCTAGRAM std port selects handler_none, so it does not query native stack bounds or install the upstream stack-overflow signal handler.",
     "accept4 is not implemented; the OCTAGRAM std port uses accept() followed by fcntl(FD_CLOEXEC) for accepted sockets.",
     "sendmsg and recvmsg transfer ordinary payloads, but ancillary control data and descriptor passing are unsupported; sendmsg returns ENOTSUP when control data is supplied.",
-    "getrandom currently uses xorshift seeded from TSC and is not a cryptographic entropy guarantee.",
     "The Rust std probe and a static OCTAGRAM std executable now compile and link in CI; execution of that executable inside OCTAGRAM/QEMU remains unverified.",
-    "The initial upstream rust-lang/libc OCTAGRAM module compiles for the custom target, but this does not prove full std PAL runtime conformance or guest runtime symbol behavior."
+    "The initial upstream rust-lang/libc OCTAGRAM module compiles for the custom target, but this does not prove full std PAL runtime conformance or guest runtime symbol behavior.",
+    "The std executable now compiles and links for OCTAGRAM, but this does not prove Rust std runtime behavior on the guest; execution inside OCTAGRAM/QEMU and broader POSIX conformance remain unverified."
   ],
   "upstream_libc": {
     "repository": "rust-lang/libc",

@@ -134,14 +134,19 @@ def enable_std_file_locks(std: Path) -> None:
 OCTAGRAM_LINUX = 'any(target_os = "linux", target_os = "octagram")'
 
 OCTAGRAM_ARM_FILES = {
-    # `os/unix/mod.rs` already re-exports the OCTAGRAM platform module; widening
-    # it as well would glob in the Linux module too, which makes names like `fs`
-    # and `raw` ambiguous.
+    # These files need target-specific decisions rather than blanket Linux cfg
+    # widening. They contain optimizations or syscalls that are not part of the
+    # current OCTAGRAM ABI, or are only consumed by the Linux kernel_copy path.
+    "io/stdio.rs",
     "os/unix/mod.rs",
     "sys/args/unix.rs",
+    "sys/fs/mod.rs",
     "sys/fs/unix.rs",
     "sys/io/kernel_copy/mod.rs",
+    "sys/pal/unix/weak/mod.rs",
     "sys/paths/unix.rs",
+    "sys/process/unix/mod.rs",
+    "sys/process/unix/unix.rs",
     "sys/random/mod.rs",
     "sys/thread/unix.rs",
 }
@@ -265,21 +270,14 @@ def main() -> int:
         + current_exe_anchor,
     )
 
-    # OCTAGRAM exposes clock_nanosleep on CLOCK_MONOTONIC and the cached
-    # metadata wrapper only forwards Read/Write, so both Linux-only items are
-    # usable as they are.
+    # OCTAGRAM exposes clock_nanosleep on CLOCK_MONOTONIC. Keep the generic
+    # Unix filesystem copy path: CachedFileMetadata is only consumed by the
+    # Linux kernel_copy optimization, which is not enabled for this target.
     replace_once(
         std / "sys/thread/unix.rs",
         '    target_os = "vxworks",\n    target_os = "wasi",\n))]\npub fn sleep_until',
         '    target_os = "vxworks",\n    target_os = "wasi",\n'
         '    target_os = "octagram",\n))]\npub fn sleep_until',
-    )
-    replace_once(
-        std / "sys/fs/unix.rs",
-        '#[cfg(any(target_os = "linux", target_os = "android"))]\n'
-        'pub(in crate::sys) use cfm::CachedFileMetadata;',
-        '#[cfg(any(target_os = "linux", target_os = "android", target_os = "octagram"))]\n'
-        'pub(in crate::sys) use cfm::CachedFileMetadata;',
     )
 
     # std/build.rs keeps the list of targets whose std is not "restricted"; without

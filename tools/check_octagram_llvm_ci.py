@@ -734,8 +734,8 @@ def main() -> int:
         "preflight must compile the known stage-2 dependency slice before LLVM",
     )
     for needle, message in (
-        ('"rust-workspace" \\', "dependency preflight must create an isolated Rust workspace lockfile test"),
-        ('"cargo-submodule" \\', "dependency preflight must create an isolated Cargo submodule lockfile test"),
+        ('"rust-workspace"', "dependency preflight must create an isolated Rust workspace lockfile test"),
+        ('"cargo-submodule"', "dependency preflight must create an isolated Cargo submodule lockfile test"),
         ('"getrandom-modern"', "dependency preflight must test getrandom 0.4.3 separately"),
         ("0.2.191 0.3.3 3.23.0", "Rust workspace preflight must use its exact lockfile dependency versions"),
         ("0.2.186 0.3.4 3.27.0", "Cargo submodule preflight must use its exact lockfile dependency versions"),

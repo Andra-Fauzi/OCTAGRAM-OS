@@ -66,6 +66,8 @@ GETRANDOM_MODERN_VERSION=0.4.3
 ERRNO_VERSION=0.3.14
 TEMPFILE_VERSION=3.23.0
 TEMPFILE_CARGO_VERSION=3.27.0
+FILETIME_VERSION=0.2.27
+FILETIME_CARGO_VERSION=0.2.29
 HOST=x86_64-unknown-octagram
 TARGET=x86_64-unknown-none
 
@@ -588,6 +590,8 @@ fetch_locked_crate getrandom "$GETRANDOM_MODERN_VERSION"
 fetch_locked_crate errno "$ERRNO_VERSION"
 fetch_locked_crate tempfile "$TEMPFILE_VERSION"
 fetch_locked_crate tempfile "$TEMPFILE_CARGO_VERSION"
+fetch_locked_crate filetime "$FILETIME_VERSION"
+fetch_locked_crate filetime "$FILETIME_CARGO_VERSION"
 
 registry_patch_count=0
 for libc_version in "$LIBC_VERSION" "$LIBC_CARGO_VERSION"; do
@@ -615,6 +619,8 @@ python3 "$repo_root/tools/patch_getrandom_octagram.py" \
 python3 "$repo_root/tools/patch_errno_octagram.py" \
     --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_tempfile_octagram.py" \
+    --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_filetime_octagram.py" \
     --registry-root "$cargo_home/registry/src"
 
 

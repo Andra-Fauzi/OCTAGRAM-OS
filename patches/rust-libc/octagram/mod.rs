@@ -530,9 +530,22 @@ extern "C" {
                     address: *mut sockaddr, address_length: *mut socklen_t) -> ssize_t;
     pub fn readv(fd: c_int, vectors: *const iovec, count: c_int) -> ssize_t;
     pub fn writev(fd: c_int, vectors: *const iovec, count: c_int) -> ssize_t;
-    // POSIX strerror_r is implemented by the OCTAGRAM C runtime in runtime.c.
+    // POSIX string and filesystem calls exported by the OCTAGRAM C runtime.
     pub fn strerror_r(error: c_int, buffer: *mut c_char, length: size_t) -> c_int;
+    pub fn unlink(path: *const c_char) -> c_int;
+    pub fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int;
+    pub fn link(old_path: *const c_char, new_path: *const c_char) -> c_int;
+    pub fn linkat(old_dirfd: c_int, old_path: *const c_char, new_dirfd: c_int,
+                  new_path: *const c_char, flags: c_int) -> c_int;
+    pub fn rename(old_path: *const c_char, new_path: *const c_char) -> c_int;
+    pub fn renameat(old_dirfd: c_int, old_path: *const c_char, new_dirfd: c_int,
+                    new_path: *const c_char) -> c_int;
+    pub fn flock(fd: c_int, operation: c_int) -> c_int;
     pub fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
+    pub fn opendir(path: *const c_char) -> *mut crate::DIR;
+    pub fn fdopendir(fd: c_int) -> *mut crate::DIR;
+    pub fn closedir(directory: *mut crate::DIR) -> c_int;
+    pub fn readdir(directory: *mut crate::DIR) -> *mut dirent;
     pub fn dirfd(directory: *mut crate::DIR) -> c_int;
     pub fn futimens(fd: c_int, times: *const crate::timespec) -> c_int;
     pub fn utimensat(dirfd: c_int, path: *const c_char, times: *const crate::timespec, flags: c_int) -> c_int;
@@ -635,6 +648,19 @@ extern "C" {
     pub fn mprotect(address: *mut c_void, length: size_t, protection: c_int) -> c_int;
     pub fn sigaltstack(new_stack: *const stack_t, old_stack: *mut stack_t) -> c_int;
     pub fn sendfile(out_fd: c_int, in_fd: c_int, offset: *mut off_t, count: size_t) -> ssize_t;
+
+    // The target has 64-bit offsets but uses the POSIX (unsuffixed) symbol
+    // names. Keep both Rust API spellings mapped to the same C ABI symbols.
+    pub fn open(path: *const c_char, oflag: c_int, ...) -> c_int;
+    pub fn openat(dirfd: c_int, path: *const c_char, oflag: c_int, ...) -> c_int;
+    pub fn stat(path: *const c_char, buf: *mut stat) -> c_int;
+    pub fn lstat(path: *const c_char, buf: *mut stat) -> c_int;
+    pub fn fstat(fd: c_int, buf: *mut stat) -> c_int;
+    pub fn fstatat(dirfd: c_int, path: *const c_char, buf: *mut stat, flag: c_int) -> c_int;
+    pub fn lseek(fd: c_int, offset: off_t, whence: c_int) -> off_t;
+    pub fn ftruncate(fd: c_int, length: off_t) -> c_int;
+    pub fn pread(fd: c_int, buf: *mut c_void, count: size_t, offset: off_t) -> ssize_t;
+    pub fn pwrite(fd: c_int, buf: *const c_void, count: size_t, offset: off_t) -> ssize_t;
 
     #[link_name = "open"]
     pub fn open64(path: *const c_char, oflag: c_int, ...) -> c_int;

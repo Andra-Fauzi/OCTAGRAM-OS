@@ -27,6 +27,7 @@ publish = false
 [dependencies]
 errno = { version = "=0.3.14", default-features = false }
 getrandom = { version = "=0.3.3", default-features = false }
+rustix = { version = "=1.1.5", default-features = false, features = ["fs"] }
 libc = { version = "=0.2.191", default-features = false }
 EOF
 cat > "$check_root/src/lib.rs" <<'EOF'

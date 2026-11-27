@@ -252,5 +252,15 @@ yang disediakan di atas.
   `OPEN_MAX` 64, `ARG_MAX` 64 KiB, `CHILD_MAX` 64 (mengikuti kernel), dan
   `getrlimit(RLIMIT_NOFILE)` melaporkan 64 alih-alih `RLIM_INFINITY` supaya
   program tidak menyiapkan tabel fd yang tidak bisa dipenuhi kernel.
-- **Belum ada CI.** Job bootstrap belum ditambahkan; artefak `sysroot.json`
-  dan `llvm-config --version` harus dicatat saat job itu dibuat.
+- **CI.** Job `rustc-cargo` di `.github/workflows/octagram-native-toolchain.yml`
+  menjalankan `bootstrap_rustc_octagram.sh --build` setelah libLLVM diunduh,
+  lalu memverifikasi ELF hasil staging dan mengunggah `octagram-toolchain`.
+  Bootstrap juga lebih lama dari batas 6 jam GitHub, jadi job itu memakai pola
+  yang sama dengan libLLVM: `--time-budget` (default 270 menit), `SIGINT` ke
+  `x.py`, exit 75, lalu checkpoint `build/toolchain/rust` (checkout + build
+  directory) yang di-restore lewat prefix `restore-keys` dan dilanjutkan dengan
+  `--resume`. Checkout ikut di-cache karena clone baru mengembalikan mtime
+  sumber ke waktu sekarang dan memaksa cargo membangun ulang semuanya.
+  `status-summary` melaporkan `overall=incomplete` untuk run yang berhenti di
+  budget, bukan gagal. Batas cache 10 GB per repo berlaku untuk kedua
+  checkpoint; kalau tidak cukup, naikkan *Cache size eviction limit*.

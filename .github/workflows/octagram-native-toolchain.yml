@@ -40,6 +40,14 @@ on:
           - prepare-only
           - skip
         default: full
+      time_budget:
+        description: "Build minutes per run before a checkpoint is saved (LLVM and rustc; keep below timeout-minutes)"
+        required: false
+        default: "270"
+      fresh_build:
+        description: "Ignore any saved LLVM build checkpoint and start from scratch"
+        type: boolean
+        default: false
   push:
     branches:
       - feature/native-self-hosting-testing-4
@@ -47,6 +55,7 @@ on:
       - "tools/build_llvm_octagram.sh"
       - "tools/bootstrap_rustc_octagram.sh"
       - "tools/octagram_llvm_config.py"
+      - "tools/check_octagram_llvm_ci.py"
       - "tools/build_octagram_toolchain.sh"
       - "tools/stage_octagram_toolchain.sh"
       - "tools/stage_octagram_sysroot.py"
@@ -68,6 +77,7 @@ on:
       - "tools/build_llvm_octagram.sh"
       - "tools/bootstrap_rustc_octagram.sh"
       - "tools/octagram_llvm_config.py"
+      - "tools/check_octagram_llvm_ci.py"
       - "tools/build_octagram_toolchain.sh"
       - "tools/stage_octagram_toolchain.sh"
       - "tools/stage_octagram_sysroot.py"
@@ -86,7 +96,10 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a run mid-build: a cancelled job does not reach the checkpoint
+  # save step, so hours of LLVM work would be thrown away. A new push queues
+  # behind the running one and resumes from its checkpoint.
+  cancel-in-progress: false
 
 env:
   # Stage0 toolchain for host-side helpers (fmt/check of the kernel, probes).
@@ -206,10 +219,17 @@ jobs:
     needs: preflight
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    # GitHub terminates a hosted job at six hours and never runs the remaining
+    # steps, so the build stops itself earlier (--time-budget) and saves a
+    # checkpoint; the next run restores it and continues. The ceiling leaves
+    # room for setup, cache restore and the checkpoint save.
+    timeout-minutes: 350
     env:
       LLVM_VERSION: ${{ inputs.llvm_version || '21.1.0' }}
       JOBS: ${{ inputs.jobs || '4' }}
+      TIME_BUDGET: ${{ inputs.time_budget || '270' }}
+    outputs:
+      incomplete: ${{ steps.llvm-build.outputs.incomplete }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -236,17 +256,36 @@ jobs:
           path: user/build/sysroot-octagram
 
       - name: Restore LLVM source tarball
+        # Path must match where build_llvm_octagram.sh keeps the download
+        # (build/toolchain/llvm-<ver>/llvm-project-<ver>.src.tar.xz); the old
+        # path never existed, so every run downloaded it again.
         uses: actions/cache@v4
         with:
-          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}.src.tar.xz
+          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}/llvm-project-${{ env.LLVM_VERSION }}.src.tar.xz
           key: octagram-llvm-src-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh') }}
 
       - name: Restore libLLVM install tree
         id: llvm-cache
-        uses: actions/cache@v4
+        # Restore-only: a partial install must never be saved under this key,
+        # or the next run would skip the build and ship an incomplete prefix.
+        # The matching save step runs after the verifier accepts the tree.
+        uses: actions/cache/restore@v4
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
           key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile', 'user/include/**', 'user/*.c', 'user/third_party/libcxx/**') }}
+
+      - name: Restore libLLVM build checkpoint
+        id: llvm-build-cache
+        # The key carries the run id, so every run can save its own checkpoint;
+        # restore-keys then picks the most recent one written for these inputs.
+        # A changed script, toolchain or sysroot changes the hash and correctly
+        # starts over instead of resuming an incompatible tree.
+        uses: actions/cache/restore@v4
+        with:
+          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}/build-octagram
+          key: octagram-llvm-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile', 'user/include/**', 'user/*.c', 'user/third_party/libcxx/**') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            octagram-llvm-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile', 'user/include/**', 'user/*.c', 'user/third_party/libcxx/**') }}-
 
       - name: Require cached libLLVM when build_llvm is off
         # The build_llvm input exists only for workflow_dispatch. On push,
@@ -257,20 +296,80 @@ jobs:
           echo "Jalankan workflow dengan build_llvm=true sekali untuk mengisinya." >&2
           exit 1
 
-      - name: Build libLLVM
+      - name: Build libLLVM (time-budgeted, resumable)
+        id: llvm-build
         # Push always builds LLVM; manual runs may explicitly reuse a cache.
         if: (github.event_name != 'workflow_dispatch' || inputs.build_llvm == true) && steps.llvm-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          tools/build_llvm_octagram.sh \
-            --llvm-version "$LLVM_VERSION" \
-            --jobs "$JOBS"
-          # Build tree + extracted source are several GiB and are not needed
-          # after install; the source tarball is kept for the next cache save.
-          rm -rf "build/toolchain/llvm-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src" \
-                 "build/toolchain/llvm-$LLVM_VERSION/build-octagram"
+          args=(--llvm-version "$LLVM_VERSION" --jobs "$JOBS" --time-budget "$TIME_BUDGET")
+          tree="build/toolchain/llvm-$LLVM_VERSION/build-octagram"
+          if [ -f "$tree/CMakeCache.txt" ]; then
+            args+=(--resume)
+            echo "RESUME: continuing the restored build tree ($tree)"
+          fi
+          if [ "${FRESH_BUILD:-false}" = "true" ]; then
+            args+=(--clean)
+            echo "FRESH-BUILD: discarding the restored build tree"
+          fi
+          status=0
+          tools/build_llvm_octagram.sh "${args[@]}" || status=$?
+          if [ "$status" -eq 75 ]; then
+            # Exit 75 is the script saying "stopped at the budget, tree intact".
+            # Reporting it as a job failure would hide that the next run can
+            # continue, and a failed job still runs the checkpoint save below.
+            echo "incomplete=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=LLVM build incomplete::Time budget ${TIME_BUDGET}m reached. The build tree is saved as a checkpoint; run this workflow again to continue from it."
+            exit 0
+          fi
+          echo "incomplete=false" >> "$GITHUB_OUTPUT"
+          exit "$status"
+        env:
+          FRESH_BUILD: ${{ inputs.fresh_build }}
+
+      - name: Check for a build checkpoint to save
+        id: checkpoint
+        if: always()
+        run: |
+          tree="build/toolchain/llvm-$LLVM_VERSION/build-octagram"
+          if [ -f "$tree/build.ninja" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            du -sh "$tree" || true
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save libLLVM build checkpoint
+        # Only an interrupted build needs the tree: a finished build is served
+        # by the install tree, and a failed one needs code changes (which change
+        # the cache hash anyway). Cache storage is 10 GB per repository by
+        # default, so this deliberately keeps one tree per inputs hash.
+        if: >-
+          always() &&
+          steps.llvm-build.outputs.incomplete == 'true' &&
+          steps.checkpoint.outputs.present == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}/build-octagram
+          key: ${{ steps.llvm-build-cache.outputs.cache-primary-key }}
+
+      - name: Remove the extracted LLVM source
+        # The tarball is cached; a resumed run extracts it again with the
+        # archive's own mtimes, so ninja does not treat every object as stale.
+        if: always()
+        run: rm -rf "build/toolchain/llvm-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src"
+
+      - name: Remove the build tree after a finished build
+        # Only an unfinished build needs the tree. Dropping it here keeps the
+        # runner disk free for the install tree and the artifact upload.
+        if: success() && steps.llvm-build.outputs.incomplete != 'true'
+        run: rm -rf "build/toolchain/llvm-$LLVM_VERSION/build-octagram"
 
       - name: Verify libLLVM install (static OCTAGRAM ELF)
+        # Nothing to verify when this run stopped at the budget; the checkpoint
+        # save below is what matters, and the next run finishes the install.
+        if: success() && steps.llvm-build.outputs.incomplete != 'true'
         run: |
           set -euo pipefail
           prefix="build/toolchain/llvm-$LLVM_VERSION-octagram"
@@ -322,7 +421,17 @@ jobs:
           ls -l "$prefix/lib" | head -20
           [ "$fail" -eq 0 ] || exit 1
 
+      - name: Save libLLVM install tree
+        # Only a verified install is cached; a partial prefix under this key
+        # would make the next run skip the build.
+        if: success() && steps.llvm-build.outputs.incomplete != 'true' && steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
+
       - name: Upload libLLVM
+        if: success() && steps.llvm-build.outputs.incomplete != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: octagram-llvm-${{ env.LLVM_VERSION }}
@@ -336,16 +445,22 @@ jobs:
     needs: [preflight, llvm]
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (inputs.rustc_mode || 'full') != 'skip'
+      (inputs.rustc_mode || 'full') != 'skip' &&
+      needs.llvm.outputs.incomplete != 'true'
     runs-on: ubuntu-latest
     # The full bootstrap (stage2 rustc + upstream Cargo for the OCTAGRAM host)
     # is expensive; it runs on pushes to this dedicated branch and manually.
-    # Keep the ceiling explicit so a hung x.py fails rather than timing out.
-    timeout-minutes: 355
+    # Like the llvm job it stops itself at --time-budget, saves the checkout and
+    # incremental build directory, and the next run continues from there; the
+    # ceiling stays under GitHub's six-hour job limit so the save always runs.
+    timeout-minutes: 350
     env:
       LLVM_VERSION: ${{ inputs.llvm_version || '21.1.0' }}
       JOBS: ${{ inputs.jobs || '4' }}
       RUSTC_MODE: ${{ inputs.rustc_mode || 'full' }}
+      TIME_BUDGET: ${{ inputs.time_budget || '270' }}
+    outputs:
+      incomplete: ${{ steps.rustc-build.outputs.incomplete }}
     steps:
       - name: Checkout OCTAGRAM-OS
         uses: actions/checkout@v4
@@ -429,6 +544,20 @@ jobs:
           name: octagram-llvm-${{ env.LLVM_VERSION }}
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
 
+      - name: Restore rustc bootstrap checkpoint
+        id: rustc-cache
+        # The whole checkout travels with its build/ directory: a fresh clone
+        # would reset every source mtime and make cargo rebuild from scratch.
+        # The key carries the run id, restore-keys picks the newest checkpoint
+        # for the same inputs, and any change to the patches or toolchain
+        # changes the hash so an incompatible tree is never resumed.
+        uses: actions/cache/restore@v4
+        with:
+          path: build/toolchain/rust
+          key: octagram-rust-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/bootstrap_rustc_octagram.sh', 'tools/apply_rust_libc_octagram.py', 'tools/apply_rust_octagram_host_target.py', 'tools/patch_rust_std_octagram.py', 'tools/stage_octagram_toolchain.sh', 'patches/rust/**', 'patches/rust-std/**', 'patches/libc/**', 'user/toolchain/**', 'user/include/**', 'user/*.c') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            octagram-rust-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/bootstrap_rustc_octagram.sh', 'tools/apply_rust_libc_octagram.py', 'tools/apply_rust_octagram_host_target.py', 'tools/patch_rust_std_octagram.py', 'tools/stage_octagram_toolchain.sh', 'patches/rust/**', 'patches/rust-std/**', 'patches/libc/**', 'user/toolchain/**', 'user/include/**', 'user/*.c') }}-
+
       - name: Prepare rustc bootstrap
         if: env.RUSTC_MODE == 'prepare-only'
         run: |
@@ -439,19 +568,65 @@ jobs:
             --libc-checkout upstream-libc \
             --jobs "$JOBS"
 
-      - name: Build rustc and cargo for OCTAGRAM
+      - name: Build rustc and cargo for OCTAGRAM (time-budgeted, resumable)
+        id: rustc-build
         if: env.RUSTC_MODE == 'full'
+        env:
+          FRESH_BUILD: ${{ inputs.fresh_build }}
         run: |
           set -euo pipefail
-          tools/bootstrap_rustc_octagram.sh \
-            --llvm-prefix "build/toolchain/llvm-$LLVM_VERSION-octagram" \
-            --host-llvm-config "$HOST_LLVM_CONFIG" \
-            --libc-checkout upstream-libc \
-            --jobs "$JOBS" \
-            --build
+          args=(--llvm-prefix "build/toolchain/llvm-$LLVM_VERSION-octagram"
+                --host-llvm-config "$HOST_LLVM_CONFIG"
+                --libc-checkout upstream-libc
+                --jobs "$JOBS"
+                --time-budget "$TIME_BUDGET"
+                --build)
+          if [ -d build/toolchain/rust/.git ]; then
+            args+=(--resume)
+            echo "RESUME: continuing the restored rust checkout/build directory"
+          fi
+          if [ "${FRESH_BUILD:-false}" = "true" ]; then
+            args+=(--clean)
+            echo "FRESH-BUILD: discarding the restored bootstrap tree"
+          fi
+          status=0
+          tools/bootstrap_rustc_octagram.sh "${args[@]}" || status=$?
+          if [ "$status" -eq 75 ]; then
+            echo "incomplete=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=rustc bootstrap incomplete::Time budget ${TIME_BUDGET}m reached. The bootstrap tree is saved as a checkpoint; run this workflow again to continue from it."
+            exit 0
+          fi
+          echo "incomplete=false" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Check for a rustc checkpoint to save
+        id: rustc-checkpoint
+        if: always()
+        run: |
+          if [ -d build/toolchain/rust/build ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            du -sh build/toolchain/rust || true
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save rustc bootstrap checkpoint
+        # Only an interrupted bootstrap needs the tree; the staged toolchain is
+        # the finished product. Cache storage is 10 GB per repository by
+        # default, so keep one tree per inputs hash and do not fail the run if
+        # the save is refused.
+        if: >-
+          always() &&
+          steps.rustc-build.outputs.incomplete == 'true' &&
+          steps.rustc-checkpoint.outputs.present == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: build/toolchain/rust
+          key: ${{ steps.rustc-cache.outputs.cache-primary-key }}
 
       - name: Verify staged toolchain
-        if: env.RUSTC_MODE == 'full'
+        if: success() && env.RUSTC_MODE == 'full' && steps.rustc-build.outputs.incomplete != 'true'
         run: |
           set -euo pipefail
           stage=build/toolchain/octagram-toolchain
@@ -475,7 +650,7 @@ jobs:
           echo "TOOLCHAIN-VERIFY-PASS"
 
       - name: Upload rustc + cargo
-        if: env.RUSTC_MODE == 'full'
+        if: success() && env.RUSTC_MODE == 'full' && steps.rustc-build.outputs.incomplete != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: octagram-toolchain
@@ -494,14 +669,27 @@ jobs:
         env:
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           LLVM_RESULT: ${{ needs.llvm.result }}
+          LLVM_INCOMPLETE: ${{ needs.llvm.outputs.incomplete }}
           RUSTC_RESULT: ${{ needs.rustc-cargo.result }}
+          RUSTC_INCOMPLETE: ${{ needs.rustc-cargo.outputs.incomplete }}
           EVENT: ${{ github.event_name }}
         run: |
           echo "STATUS event=${EVENT}"
           echo "STATUS preflight=${PREFLIGHT_RESULT}"
           # skipped = build tidak diminta untuk event ini, bukan gagal.
-          echo "STATUS llvm=${LLVM_RESULT}"
-          echo "STATUS rustc-cargo=${RUSTC_RESULT}"
+          incomplete=0
+          if [ "${LLVM_RESULT}" = "success" ] && [ "${LLVM_INCOMPLETE}" = "true" ]; then
+            incomplete=1
+            echo "STATUS llvm=incomplete (batas waktu tercapai; checkpoint tersimpan)"
+          else
+            echo "STATUS llvm=${LLVM_RESULT}"
+          fi
+          if [ "${RUSTC_RESULT}" = "success" ] && [ "${RUSTC_INCOMPLETE}" = "true" ]; then
+            incomplete=1
+            echo "STATUS rustc-cargo=incomplete (batas waktu tercapai; checkpoint tersimpan)"
+          else
+            echo "STATUS rustc-cargo=${RUSTC_RESULT}"
+          fi
           echo "STATUS guest-runtime=not-run (butuh QEMU; lihat docs/rust-llvm-octagram-build.md)"
           if [ "${PREFLIGHT_RESULT}" != "success" ]; then
             echo "STATUS overall=failed"
@@ -513,4 +701,11 @@ jobs:
               *) echo "STATUS overall=failed"; exit 1 ;;
             esac
           done
+          if [ "$incomplete" -eq 1 ]; then
+            # Bukan kegagalan: jalankan workflow lagi untuk melanjutkan dari
+            # checkpoint, bukan dari nol.
+            echo "STATUS overall=incomplete (jalankan ulang untuk melanjutkan)"
+            echo "::warning title=Build belum selesai::Checkpoint tersimpan. Jalankan workflow ini lagi untuk melanjutkan build dari titik terakhir."
+            exit 0
+          fi
           echo "STATUS overall=passed"

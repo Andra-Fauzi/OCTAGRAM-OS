@@ -155,8 +155,12 @@ lihat [rustc-native-bootstrap-runbook.md](rustc-native-bootstrap-runbook.md) §5
   linker native (`kernel/src/toolchain.rs`), fallback dokumen adalah memport
   LLD (opsi B di [rust-m4-3-backend-plan.md](rust-m4-3-backend-plan.md)).
 - **CI belum pernah menjalankan build penuh.** Workflow menyediakan job-nya
-  (lihat §7), tetapi build libLLVM dan bootstrap rustc belum tercatat pernah
-  selesai di runner GitHub; job beratnya berjalan lewat `workflow_dispatch`.
+  (lihat §7), dan build libLLVM sekarang bisa dilanjutkan antar-run, tetapi
+  satu rangkaian penuh sampai artefak `octagram-toolchain` belum tercatat
+  selesai di runner GitHub.
+- **Build lebih lama dari satu job.** Runner GitHub mematikan job di 6 jam,
+  jadi libLLVM tidak mungkin selesai dalam satu run dengan `--jobs 4`. Yang
+  menjamin kemajuan adalah checkpoint build tree (§7b), bukan satu run panjang.
 
 ## 7. CI
 
@@ -167,10 +171,75 @@ langkah di atas sebagai tiga job berurutan, dengan artefak di antaranya:
 | --- | --- | --- |
 | `preflight` | `make -C user sysroot`, `check_octagram_runtime_probes.sh`, `check_octagram_rust_target.py` | `octagram-sysroot` |
 | `llvm` | `tools/build_llvm_octagram.sh --llvm-version ... --jobs ...` | `octagram-llvm-<versi>` |
-| `rustc-cargo` | `tools/bootstrap_rustc_octagram.sh --llvm-prefix ... --libc-checkout upstream-libc --build` | `octagram-toolchain` |
+| `rustc-cargo` | `tools/bootstrap_rustc_octagram.sh --llvm-prefix ... --libc-checkout upstream-libc --time-budget ... --resume --build` | `octagram-toolchain` |
 
-Push dan pull request hanya menjalankan `preflight`; job `llvm` dan
-`rustc-cargo` hanya berjalan lewat `workflow_dispatch` karena durasinya jam-an.
+Pull request hanya menjalankan `preflight`. Push ke
+`feature/native-self-hosting-testing-4` dan `workflow_dispatch` menjalankan
+`llvm` lalu `rustc-cargo`, dengan artefak di antaranya.
+
+### 7b. Build yang bisa dilanjutkan (batas 6 jam GitHub)
+
+Runner GitHub mematikan job di **6 jam** dan tidak menjalankan step
+sesudahnya, sedangkan cache dependensi dibatasi **10 GB per repo** (entri yang
+tidak diakses 7 hari dihapus, dan yang paling lama dipakai dibuang lebih dulu
+saat kuota penuh). Build libLLVM statis untuk target ini lebih lama dari itu,
+jadi satu run tidak dirancang untuk menyelesaikannya sendirian:
+
+1. `timeout-minutes: 350` (di bawah batas 360) dan `--time-budget` default
+   **270 menit** untuk langkah build. Sisa ~80 menit dipakai untuk setup,
+   restore cache, dan menyimpan checkpoint.
+2. Saat budget habis, `build_llvm_octagram.sh` mengirim `SIGINT` ke ninja,
+   membiarkan ninja menyelesaikan edge yang sedang jalan, menulis
+   `octagram-build-state.json` dengan `"phase": "incomplete"`, dan keluar
+dengan **75** (`EX_TEMPFAIL`). Build tree tidak dihapus.
+3. Step build memetakan exit 75 menjadi `incomplete=true` dan **exit 0**: job
+tidak merah karena batas waktu, dan step verifikasi/upload dilewati. Step
+   `Save libLLVM build checkpoint` menyimpan `build-octagram/` dengan key
+   `octagram-llvm-build-<versi>-<hash>-<run_id>`; `restore-keys` berakhiran `-`
+   membuat run berikutnya mengambil checkpoint terbaru untuk input yang sama.
+4. Run berikutnya me-restore checkpoint, mendeteksi `CMakeCache.txt`, dan
+   memanggil script dengan `--resume`: konfigurasi CMake dilewati dan ninja
+   hanya membangun yang belum selesai.
+5. Setelah build benar-benar selesai dan verifikasi ELF statis lulus, install
+tree disimpan dengan key `octagram-llvm-install-<versi>-<hash>`. Key itu
+**restore-only** sampai verifikasi lulus, jadi prefix yang setengah jadi tidak
+pernah dianggap selesai.
+
+Kenapa resume tidak memicu rebuild penuh: source LLVM di-extract ulang dari
+tarball yang di-cache, dan `tar` memulihkan mtime dari arsip. Objek yang sudah
+dibangun tetap lebih baru dari source, jadi ninja tidak menganggap semuanya
+basi. Build tree sendirilah yang di-cache, bukan source hasil extract.
+
+Konsekuensi yang perlu diketahui:
+
+- Cache checkpoint bisa beberapa GB. Simpan satu checkpoint per hash input;
+  kalau kuota 10 GB repo kurang, naikkan *Cache size eviction limit* di
+  Settings → Actions (di atas 10 GB ditagih) atau pakai runner yang lebih besar.
+- Job yang dibatalkan tidak pernah sampai ke step simpan checkpoint. Karena itu
+  workflow memakai `cancel-in-progress: false`: push baru mengantre dan
+  melanjutkan dari checkpoint, bukan mematikan build yang sedang jalan.
+- `workflow_dispatch` punya input `time_budget` (menit) dan `fresh_build`
+  (buang checkpoint dan mulai dari nol, misalnya setelah mengubah flag CMake
+  yang tidak tercakup hash).
+- `status-summary` melaporkan `overall=incomplete` (dengan warning annotation)
+  untuk run yang berhenti di budget, dan job `rustc-cargo` tidak dijalankan
+  sampai libLLVM lengkap.
+
+Job `rustc-cargo` memakai pola yang sama untuk bootstrap rustc: input
+`time_budget` yang sama, `SIGINT` ke `x.py`, exit 75, dan checkpoint
+`build/toolchain/rust` (checkout + build directory) dengan key
+`octagram-rust-build-<versi>-<hash>-<run_id>-<attempt>`. Checkout ikut di-cache
+karena clone baru akan mengembalikan mtime sumber ke waktu sekarang dan memaksa
+cargo membangun ulang seluruh tree. Checkpoint rustc biasanya lebih besar dari
+checkpoint libLLVM; kalau kuota 10 GB repo tidak cukup untuk keduanya, naikkan
+*Cache size eviction limit* atau pakai `time_budget` yang lebih besar per run
+supaya jumlah checkpoint lebih sedikit.
+
+Pemeriksaan kontrak ini ada di `tools/check_octagram_llvm_ci.py` (dijalankan
+job `fixture` di `octagram-llvm-config.yml`): timeout kedua job di bawah 360
+menit, budget di bawah timeout, checkpoint di-restore lewat prefix dan hanya
+disimpan saat `incomplete`, install tree hanya di-cache setelah verifikasi, dan
+kedua script mendukung `--time-budget`/`--resume`/`--status` serta exit 75.
 
 ### Workflow cepat: `octagram-llvm-config.yml`
 
@@ -179,7 +248,7 @@ LLVM:
 
 | Job | Isi | Durasi |
 | --- | --- | --- |
-| `fixture` | parse (`py_compile`, `sh -n`), pemeriksaan wiring (generator dipanggil build script, bootstrap memakai wrapper dan `--host-llvm-config`, nomor perintah `fcntl` tidak bertabrakan), lalu `tools/check_octagram_llvm_config.sh` | detik |
+| `fixture` | parse (`py_compile`, `sh -n`), pemeriksaan wiring (generator dipanggil build script, bootstrap memakai wrapper dan `--host-llvm-config`, nomor perintah `fcntl` tidak bertabrakan), `tools/check_octagram_llvm_ci.py` (kontrak build yang bisa dilanjutkan), lalu `tools/check_octagram_llvm_config.sh` | detik |
 | `real-llvm` | unduh source LLVM, **configure saja** (tanpa build), lalu jalankan pemeriksaan yang sama dengan `--build-dir` ke manifest komponen sungguhan | beberapa menit |
 
 `tools/check_octagram_llvm_config.sh` menguji: `--version`/`--host-target`,

@@ -31,6 +31,11 @@
 #     --jobs N              bootstrap parallelism
 #     --build               also run x.py build (default: prepare only)
 #     --check               validate the inputs, print the pass marker, exit
+#     --time-budget MIN     stop x.py after MIN minutes and keep the build
+#                           directory; exit 75 so CI can checkpoint and resume
+#     --resume              continue the checkout/build directory from an
+#                           earlier run; fails when there is nothing to resume
+#     --status              print octagram-build-state.json and exit
 #     --clean               remove the bootstrap build directory first
 #
 # Status: scaffolding. Not executed in this workspace: it needs a Rust nightly
@@ -38,6 +43,8 @@
 # libLLVM. Nothing here has been verified against a real octagram rustc.
 
 set -eu
+
+start_epoch=$(date +%s)
 
 script=$0
 case $script in
@@ -62,6 +69,9 @@ jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 run_build=0
 check_only=0
 clean=0
+resume=0
+status_only=0
+time_budget=${OCTAGRAM_RUSTC_TIME_BUDGET:-0}
 
 while [ $# -gt 0 ]; do
     case $1 in
@@ -75,8 +85,11 @@ while [ $# -gt 0 ]; do
         --build) run_build=1; shift ;;
         --check) check_only=1; shift ;;
         --clean) clean=1; shift ;;
+        --time-budget) time_budget=$2; shift 2 ;;
+        --resume) resume=1; shift ;;
+        --status) status_only=1; shift ;;
         -h|--help)
-            sed -n '2,43p' "$0"
+            sed -n '2,/^$/p' "$0"
             exit 0
             ;;
         *)
@@ -85,6 +98,65 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+case $time_budget in
+    ''|*[!0-9]*)
+        echo "bootstrap_rustc_octagram: error: --time-budget takes whole minutes, got '$time_budget'" >&2
+        exit 2
+        ;;
+esac
+if [ "$resume" -eq 1 ] && [ "$clean" -eq 1 ]; then
+    echo "bootstrap_rustc_octagram: error: --resume and --clean contradict each other" >&2
+    exit 2
+fi
+
+# The state file lives inside the build directory, so a CI checkpoint restores
+# it together with the tree it describes.
+state_file=$rust_checkout/build/octagram-build-state.json
+
+if [ "$status_only" -eq 1 ]; then
+    if [ ! -f "$state_file" ]; then
+        echo "bootstrap_rustc_octagram: no build state at $state_file" >&2
+        exit 1
+    fi
+    cat "$state_file"
+    exit 0
+fi
+
+write_state() {
+    phase=$1
+    mkdir -p "$(dirname "$state_file")"
+    cat > "$state_file" <<EOF
+{
+  "phase": "$phase",
+  "rust_pin": "$RUST_PIN",
+  "host": "$HOST",
+  "target": "$TARGET",
+  "jobs": $jobs,
+  "time_budget_minutes": $time_budget,
+  "checkout": "$rust_checkout",
+  "stage_dir": "$stage_dir",
+  "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+}
+
+# GitHub cancels a hosted job at six hours and never runs the later steps, so a
+# bootstrap that cannot finish in one run stops on its own terms and leaves a
+# build directory the next run can continue from.
+remaining_budget_seconds() {
+    if [ "$time_budget" -le 0 ]; then
+        echo 0
+        return 0
+    fi
+    elapsed=$(( $(date +%s) - start_epoch ))
+    remaining=$(( time_budget * 60 - elapsed ))
+    if [ "$remaining" -gt 0 ]; then
+        echo "$remaining"
+    else
+        echo 0
+    fi
+}
 
 if [ -z "$llvm_prefix" ]; then
     llvm_prefix=$(find "$build_root" -maxdepth 1 -type d -name 'llvm-*-octagram' 2>/dev/null | sort | tail -n 1)
@@ -185,6 +257,18 @@ if [ "$check_only" -eq 1 ]; then
     echo "  target llvm: $target_llvm_config ($target_llvm_reported)"
     echo "OCTAGRAM-BOOTSTRAP-PREFLIGHT-PASS"
     exit 0
+fi
+
+if [ "$resume" -eq 1 ] && [ ! -d "$rust_checkout/.git" ]; then
+    echo "bootstrap_rustc_octagram: error: --resume but no checkout at $rust_checkout" >&2
+    echo "bootstrap_rustc_octagram: rerun without --resume to clone and prepare one" >&2
+    exit 1
+fi
+
+# --clean promises a from-scratch bootstrap, which includes the incremental
+# build directory; config.toml is rewritten further down as before.
+if [ "$clean" -eq 1 ]; then
+    rm -rf "$rust_checkout/build"
 fi
 
 # 1. Rust checkout ---------------------------------------------------------
@@ -332,10 +416,60 @@ if ! command -v rustup >/dev/null 2>&1 && ! command -v rustc >/dev/null 2>&1; th
     exit 1
 fi
 
-cd "$rust_checkout"
-./x.py build --stage 2 --host "$HOST" compiler/rustc src/tools/cargo -j "$jobs"
+budget_seconds=$(remaining_budget_seconds)
+if [ "$time_budget" -gt 0 ] && [ "$budget_seconds" -eq 0 ]; then
+    write_state incomplete
+    echo "OCTAGRAM-RUSTC-BUILD-INCOMPLETE: the ${time_budget}m budget was spent before x.py" >&2
+    echo "bootstrap_rustc_octagram: checkout kept at $rust_checkout; rerun to continue" >&2
+    exit 75
+fi
+
+if [ "$time_budget" -gt 0 ]; then
+    echo "running x.py with ${budget_seconds}s remaining of the ${time_budget}m budget"
+fi
+budget_marker=$rust_checkout/build/budget-exhausted
+mkdir -p "$rust_checkout/build"
+rm -f "$budget_marker"
+
+# x.py installs its own SIGINT handler and terminates the cargo/rustc children
+# it started, so the interrupted build leaves a usable incremental directory.
+( cd "$rust_checkout" && exec ./x.py build --stage 2 --host "$HOST" \
+    compiler/rustc src/tools/cargo -j "$jobs" ) &
+build_pid=$!
+watcher=
+if [ "$budget_seconds" -gt 0 ]; then
+    (
+        sleep "$budget_seconds"
+        : > "$budget_marker"
+        kill -INT "$build_pid" 2>/dev/null || true
+    ) &
+    watcher=$!
+fi
+build_status=0
+wait "$build_pid" || build_status=$?
+if [ -n "$watcher" ]; then
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+fi
 
 stage_root=$rust_checkout/build/$HOST/stage2
+if [ -f "$budget_marker" ]; then
+    if [ "$build_status" -eq 0 ] && [ -x "$stage_root/bin/rustc" ]; then
+        echo "the budget expired as the build finished; continuing with staging"
+    else
+        write_state incomplete
+        echo "OCTAGRAM-RUSTC-BUILD-INCOMPLETE: stopped at the ${time_budget}m time budget" >&2
+        echo "bootstrap_rustc_octagram: x.py was interrupted; the build directory is kept at" >&2
+        echo "bootstrap_rustc_octagram:   $rust_checkout/build" >&2
+        echo "bootstrap_rustc_octagram: rerun the same command to continue from here." >&2
+        exit 75
+    fi
+fi
+if [ "$build_status" -ne 0 ]; then
+    write_state failed
+    echo "bootstrap_rustc_octagram: error: x.py failed with status $build_status" >&2
+    exit 1
+fi
 if [ ! -x "$stage_root/bin/rustc" ]; then
     echo "bootstrap_rustc_octagram: error: bootstrap produced no $stage_root/bin/rustc" >&2
     exit 1
@@ -352,6 +486,8 @@ llvm_version=$("$llvm_config" --version 2>/dev/null || echo unknown)
     --target "$TARGET" \
     --rust-commit "$RUST_PIN" \
     --llvm-version "$llvm_version"
+
+write_state complete
 
 echo
 ls -l "$stage_dir/bin"

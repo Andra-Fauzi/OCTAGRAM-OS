@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""Guard the resumable LLVM CI contract.
+
+GitHub terminates a hosted job at six hours and never runs its remaining
+steps, and its dependency cache is 10 GB per repository by default. A full
+libLLVM cross-build does not fit in one run, so the workflow must:
+
+  * stop itself before the six-hour ceiling (--time-budget < timeout-minutes);
+  * keep the CMake build tree and save it as a checkpoint when it stops;
+  * restore that checkpoint and pass --resume on the next run;
+  * never cache a partial install tree under the "install" key.
+
+These are text assertions on the workflow and the build script. They catch the
+regression that matters: an edit that silently makes the build start over, or
+that reports an unfinished build as done. No LLVM build is needed.
+
+Usage:
+    tools/check_octagram_llvm_ci.py
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+WORKFLOW = REPO / ".github" / "workflows" / "octagram-native-toolchain.yml"
+BUILD = REPO / "tools" / "build_llvm_octagram.sh"
+BOOTSTRAP = REPO / "tools" / "bootstrap_rustc_octagram.sh"
+GITHUB_JOB_LIMIT_MINUTES = 360
+
+failures: list[str] = []
+
+
+def fail(message: str) -> None:
+    failures.append(message)
+    print(f"FAIL: {message}")
+
+
+def job_block(text: str, name: str) -> str:
+    """Return the YAML text of one top-level job."""
+    match = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)", text, re.M | re.S)
+    if not match:
+        fail(f"workflow has no '{name}' job")
+        return ""
+    return match.group(1)
+
+
+def require(haystack: str, needle: str, message: str) -> None:
+    if needle not in haystack:
+        fail(message)
+
+
+def step_block(job: str, name: str) -> str:
+    """Return one step's YAML, from its name to the next step."""
+    start = job.find(f"name: {name}")
+    if start < 0:
+        return ""
+    following = job.find("\n      - ", start)
+    return job[start:] if following < 0 else job[start:following]
+
+
+def main() -> int:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    build = BUILD.read_text(encoding="utf-8")
+    bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
+
+    # --- the build script ---------------------------------------------------
+    for flag in ("--time-budget", "--resume", "--status"):
+        require(build, flag, f"build_llvm_octagram.sh no longer accepts {flag}")
+    require(
+        build,
+        "exit 75",
+        "build_llvm_octagram.sh must exit 75 (EX_TEMPFAIL) when the budget runs out",
+    )
+    require(
+        build,
+        "octagram-build-state.json",
+        "build_llvm_octagram.sh must record build state for the incomplete marker",
+    )
+    require(
+        build,
+        "kill -INT",
+        "build_llvm_octagram.sh must stop ninja with SIGINT so the tree stays resumable",
+    )
+    require(
+        build,
+        "-C -",
+        "build_llvm_octagram.sh must resume an interrupted LLVM tarball download",
+    )
+
+    # --- the llvm job -------------------------------------------------------
+    llvm = job_block(workflow, "llvm")
+    timeout = re.search(r"^    timeout-minutes: (\d+)$", llvm, re.M)
+    if not timeout:
+        fail("llvm job has no timeout-minutes")
+        timeout_minutes = GITHUB_JOB_LIMIT_MINUTES
+    else:
+        timeout_minutes = int(timeout.group(1))
+        if timeout_minutes > GITHUB_JOB_LIMIT_MINUTES:
+            fail(
+                f"llvm timeout-minutes is {timeout_minutes}; GitHub kills hosted jobs at "
+                f"{GITHUB_JOB_LIMIT_MINUTES} and the checkpoint save would never run"
+            )
+        if timeout_minutes < 60:
+            fail(f"llvm timeout-minutes is only {timeout_minutes}; a checkpoint save needs room")
+
+    budget = re.search(r"^\s+time_budget:\n(?:.*\n)*?\s+default: \"(\d+)\"", workflow, re.M)
+    if not budget:
+        fail("workflow_dispatch has no time_budget input")
+    else:
+        budget_minutes = int(budget.group(1))
+        if budget_minutes >= timeout_minutes:
+            fail(
+                f"default time_budget {budget_minutes}m is not below timeout-minutes "
+                f"{timeout_minutes}m; the job would be killed before it saves a checkpoint"
+            )
+        if timeout_minutes - budget_minutes < 20:
+            fail(
+                f"only {timeout_minutes - budget_minutes}m between the time budget and the "
+                "job timeout; cache restore and the checkpoint save need more room"
+            )
+    require(workflow, "fresh_build:", "workflow_dispatch has no fresh_build input")
+
+    # The build step must pass the budget, resume a restored tree, and turn the
+    # script's exit 75 into a successful job with incomplete=true.
+    require(llvm, "--time-budget", "the llvm build step does not pass --time-budget")
+    require(llvm, "--resume", "the llvm build step never resumes a restored build tree")
+    require(
+        llvm,
+        '"$status" -eq 75',
+        "the llvm build step does not handle the script's exit 75",
+    )
+    require(
+        llvm,
+        "incomplete=true",
+        "the llvm build step does not publish incomplete=true to the job output",
+    )
+    if re.search(r'"\$status" -eq 75\)\n(?:\s+.*\n){0,6}?\s+exit 1\n', llvm):
+        fail("the llvm build step turns exit 75 into a failure instead of a checkpoint")
+    # --- the rustc bootstrap script ----------------------------------------
+    for flag in ("--time-budget", "--resume", "--status"):
+        require(bootstrap, flag, f"bootstrap_rustc_octagram.sh no longer accepts {flag}")
+    require(
+        bootstrap,
+        "exit 75",
+        "bootstrap_rustc_octagram.sh must exit 75 (EX_TEMPFAIL) when the budget runs out",
+    )
+    require(
+        bootstrap,
+        "octagram-build-state.json",
+        "bootstrap_rustc_octagram.sh must record build state for the incomplete marker",
+    )
+    require(
+        bootstrap,
+        "kill -INT",
+        "bootstrap_rustc_octagram.sh must stop x.py with SIGINT so the tree stays resumable",
+    )
+
+    # --- the rustc-cargo job -----------------------------------------------
+    rustc = job_block(workflow, "rustc-cargo")
+    require(
+        rustc,
+        "needs.llvm.outputs.incomplete != 'true'",
+        "rustc-cargo must not run on an incomplete libLLVM",
+    )
+    rustc_timeout = re.search(r"^    timeout-minutes: (\d+)$", rustc, re.M)
+    if not rustc_timeout:
+        fail("rustc-cargo job has no timeout-minutes")
+    elif int(rustc_timeout.group(1)) > GITHUB_JOB_LIMIT_MINUTES:
+        fail(
+            f"rustc-cargo timeout-minutes is {rustc_timeout.group(1)}; GitHub kills hosted "
+            "jobs at 360 and the checkpoint save would never run"
+        )
+    require(rustc, "TIME_BUDGET", "rustc-cargo does not pass a time budget to the bootstrap")
+    require(rustc, "--time-budget", "the rustc build step does not pass --time-budget")
+    require(rustc, "--resume", "the rustc build step never resumes a restored checkout")
+    require(
+        rustc,
+        '"$status" -eq 75',
+        "the rustc build step does not handle the bootstrap's exit 75",
+    )
+    require(
+        rustc,
+        "incomplete=true",
+        "the rustc build step does not publish incomplete=true to the job output",
+    )
+
+    rustc_restore = step_block(rustc, "Restore rustc bootstrap checkpoint")
+    if not rustc_restore:
+        fail("rustc-cargo job does not restore a bootstrap checkpoint")
+    else:
+        require(
+            rustc_restore,
+            "actions/cache/restore@v4",
+            "rustc checkpoint must be restored with actions/cache/restore@v4",
+        )
+        rustc_prefix = re.search(r"restore-keys: \|\n\s+(\S.*)$", rustc_restore, re.M)
+        if not rustc_prefix:
+            fail("rustc checkpoint restore has no restore-keys prefix")
+        elif not rustc_prefix.group(1).strip().endswith("-"):
+            fail("rustc checkpoint restore-keys must be a prefix ending in '-'")
+
+    rustc_save = step_block(rustc, "Save rustc bootstrap checkpoint")
+    if not rustc_save:
+        fail("rustc-cargo job has no bootstrap checkpoint save step")
+    else:
+        require(
+            rustc_save,
+            "incomplete == 'true'",
+            "rustc checkpoint must only be saved for an incomplete bootstrap",
+        )
+        require(
+            rustc_save,
+            "actions/cache/save@v4",
+            "rustc checkpoint must be saved with actions/cache/save@v4",
+        )
+    require(
+        step_block(rustc, "Verify staged toolchain"),
+        "incomplete != 'true'",
+        "rustc-cargo must not verify or publish a toolchain from an incomplete bootstrap",
+    )
+
+    # A checkpoint must be restorable by prefix, and saved only when incomplete.
+    restore = step_block(llvm, "Restore libLLVM build checkpoint")
+    if not restore:
+        fail("llvm job does not restore a build checkpoint")
+    else:
+        require(
+            restore,
+            "actions/cache/restore@v4",
+            "build checkpoint must be restored with actions/cache/restore@v4",
+        )
+        prefix = re.search(r"restore-keys: \|\n\s+(\S.*)$", restore, re.M)
+        if not prefix:
+            fail("build checkpoint restore has no restore-keys prefix")
+        elif not prefix.group(1).strip().endswith("-"):
+            fail("build checkpoint restore-keys must be a prefix ending in '-'")
+
+    save = step_block(llvm, "Save libLLVM build checkpoint")
+    if not save:
+        fail("llvm job has no build checkpoint save step")
+    else:
+        require(
+            save,
+            "actions/cache/save@v4",
+            "build checkpoint must be saved with actions/cache/save@v4",
+        )
+        require(
+            save,
+            "incomplete == 'true'",
+            "build checkpoint must only be saved for an incomplete build",
+        )
+
+    # The install tree is the "done" marker: it may only be saved after the
+    # verifier accepted it, otherwise the next run skips the build entirely.
+    install_restore = step_block(llvm, "Restore libLLVM install tree")
+    if "actions/cache/restore@v4" not in install_restore:
+        fail("libLLVM install tree must be restored with actions/cache/restore@v4")
+    install_save = step_block(llvm, "Save libLLVM install tree")
+    if not install_save:
+        fail("libLLVM install tree has no explicit save step")
+    else:
+        require(
+            install_save,
+            "actions/cache/save@v4",
+            "libLLVM install tree must be saved with actions/cache/save@v4",
+        )
+        require(
+            install_save,
+            "incomplete != 'true'",
+            "install tree must not be cached when the build is incomplete",
+        )
+    verify_at = llvm.find("name: Verify libLLVM install")
+    install_save_at = llvm.find("name: Save libLLVM install tree")
+    if verify_at < 0:
+        fail("llvm job has no install verifier")
+    elif install_save_at < verify_at:
+        fail("install tree is cached before it is verified")
+
+    # --- behaviour that does not need a build -------------------------------
+    cases = [
+        (BUILD, "build_llvm_octagram.sh", ["--help"], 0, "--time-budget"),
+        (BUILD, "build_llvm_octagram.sh", ["--status"], 1, "no build state"),
+        (BUILD, "build_llvm_octagram.sh", ["--time-budget", "soon"], 2, "whole minutes"),
+        (BUILD, "build_llvm_octagram.sh", ["--clean", "--resume"], 2, "contradict"),
+        (BOOTSTRAP, "bootstrap_rustc_octagram.sh", ["--help"], 0, "--time-budget"),
+        (BOOTSTRAP, "bootstrap_rustc_octagram.sh", ["--status"], 1, "no build state"),
+        (BOOTSTRAP, "bootstrap_rustc_octagram.sh", ["--time-budget", "soon"], 2, "whole minutes"),
+        (BOOTSTRAP, "bootstrap_rustc_octagram.sh", ["--clean", "--resume"], 2, "contradict"),
+    ]
+    # Point both scripts at an empty build root: a developer machine that has
+    # already run a build must not change what these cases observe.
+    with tempfile.TemporaryDirectory() as empty_build:
+        environment = dict(os.environ, OCTAGRAM_TOOLCHAIN_BUILD=empty_build)
+        for script, label, arguments, expected_status, expected_text in cases:
+            result = subprocess.run(
+                ["sh", str(script), *arguments],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+            )
+            output = result.stdout + result.stderr
+            if result.returncode != expected_status:
+                fail(
+                    f"{label} {' '.join(arguments)} exited "
+                    f"{result.returncode}, expected {expected_status}"
+                )
+            if expected_text not in output:
+                fail(
+                    f"{label} {' '.join(arguments)} did not mention "
+                    f"'{expected_text}'"
+                )
+
+    if failures:
+        print(f"OCTAGRAM-LLVM-CI-FAIL ({len(failures)})")
+        return 1
+    print(
+        "OCTAGRAM-LLVM-CI-PASS: both build jobs keep their budget below the "
+        "six-hour cap, restore checkpoints by prefix and save them only when "
+        "incomplete, and cache the install tree only after verification"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

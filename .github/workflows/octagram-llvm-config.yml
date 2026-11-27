@@ -19,7 +19,9 @@ on:
       - "tools/toolchain-probes/llvm-config-fixture/**"
       - "tools/bootstrap_rustc_octagram.sh"
       - "tools/build_llvm_octagram.sh"
+      - "tools/check_octagram_llvm_ci.py"
       - ".github/workflows/octagram-llvm-config.yml"
+      - ".github/workflows/octagram-native-toolchain.yml"
   pull_request:
     paths:
       - "tools/octagram_llvm_config.py"
@@ -27,7 +29,9 @@ on:
       - "tools/toolchain-probes/llvm-config-fixture/**"
       - "tools/bootstrap_rustc_octagram.sh"
       - "tools/build_llvm_octagram.sh"
+      - "tools/check_octagram_llvm_ci.py"
       - ".github/workflows/octagram-llvm-config.yml"
+      - ".github/workflows/octagram-native-toolchain.yml"
   workflow_dispatch:
     inputs:
       llvm_version:
@@ -75,6 +79,12 @@ jobs:
           python3 tools/check_octagram_fcntl_commands.py
           echo "WIRING-PASS"
 
+      - name: Check the resumable LLVM CI wiring
+        # GitHub kills a hosted job at six hours and caches 10 GB per repository
+        # by default, so the native toolchain build has to stop early, keep its
+        # build tree and continue on the next run. This guards that contract.
+        run: python3 tools/check_octagram_llvm_ci.py
+
       - name: Run the llvm-config check (fixture)
         run: tools/check_octagram_llvm_config.sh
 
@@ -113,7 +123,9 @@ jobs:
           tarball="$work/llvm-project-$LLVM_VERSION.src.tar.xz"
           if [ ! -f "$tarball" ]; then
             url="https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src.tar.xz"
-            curl -fL --retry 3 -o "$tarball.part" "$url"
+            # -C - continues a transfer that a cancelled run left behind.
+            curl -fL --retry 3 --retry-all-errors -C - -o "$tarball.part" "$url" \
+              || curl -fL --retry 3 --retry-all-errors -o "$tarball.part" "$url"
             mv "$tarball.part" "$tarball"
           fi
           tar -xJf "$tarball" -C "$work"

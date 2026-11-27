@@ -99,9 +99,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Never cancel a run mid-build: a cancelled job does not reach the checkpoint
-  # save step, so hours of LLVM work would be thrown away. A new push queues
-  # behind the running one and resumes from its checkpoint.
+  # Do not auto-cancel an older build when a new commit arrives. Explicit user
+  # cancellation is handled by the bounded Ninja stop + checkpoint save below.
   cancel-in-progress: false
 
 env:
@@ -301,10 +300,9 @@ jobs:
 
       - name: Verify the restored libLLVM inputs
         id: llvm-install
-        # The cache fallback can hand back a tree built from an older sysroot or
-        # other flags, so a restore is not proof by itself. The build writes a
-        # stamp of its inputs into the prefix; compare it here and delete a tree
-        # that does not match, so it is rebuilt instead of linked into rustc.
+        # The exact-stamp cache key should only restore a compatible tree, but
+        # keep this verification as a defence against a damaged or manually
+        # populated cache before the prefix is ever linked into rustc.
         run: |
           set -euo pipefail
           prefix="build/toolchain/llvm-$LLVM_VERSION-octagram"

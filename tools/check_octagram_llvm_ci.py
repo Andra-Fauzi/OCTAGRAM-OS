@@ -259,12 +259,12 @@ def main() -> int:
         "Rust bootstrap must fetch the exact libc crate before patching its registry source",
     )
     for needle, message in (
-        ('libc-rust-workspace = { package = "libc", version = "=$LIBC_VERSION"', "bootstrap must fetch workspace libc 0.2.191"),
-        ('libc-cargo-submodule = { package = "libc", version = "=$LIBC_CARGO_VERSION"', "bootstrap must fetch Cargo libc 0.2.186"),
-        ("LIBC_CARGO_VERSION=0.2.186", "bootstrap must pin Cargo's libc lockfile version"),
-        ("GETRANDOM_CARGO_VERSION=0.3.4", "bootstrap must pin Cargo's getrandom 0.3.4"),
-        ("GETRANDOM_MODERN_VERSION=0.4.3", "bootstrap must pin getrandom 0.4.3"),
-        ("TEMPFILE_CARGO_VERSION=3.27.0", "bootstrap must pin Cargo's tempfile 3.27.0"),
+        ('LIBC_CARGO_VERSION=0.2.186', "bootstrap must pin Cargo's libc lockfile version"),
+        ('GETRANDOM_CARGO_VERSION=0.3.4', "bootstrap must pin Cargo's getrandom 0.3.4"),
+        ('GETRANDOM_MODERN_VERSION=0.4.3', "bootstrap must pin getrandom 0.4.3"),
+        ('TEMPFILE_CARGO_VERSION=3.27.0', "bootstrap must pin Cargo's tempfile 3.27.0"),
+        ('fetch_locked_crate libc "$LIBC_VERSION"', "bootstrap must fetch Rust workspace libc 0.2.191"),
+        ('fetch_locked_crate libc "$LIBC_CARGO_VERSION"', "bootstrap must fetch Cargo libc 0.2.186"),
     ):
         require(bootstrap, needle, message)
     require(
@@ -578,13 +578,8 @@ def main() -> int:
     )
     require(
         stage2_deps_check,
-        "check_rust_workspace_file_abi",
-        "the early target check must compile-check the Rust workspace libc ABI",
-    )
-    require(
-        stage2_deps_check,
-        "check_cargo_file_abi",
-        "the early target check must compile-check the Cargo libc ABI",
+        "check_octagram_file_abi",
+        "the early target check must compile-check the POSIX filesystem ABI for each lockfile",
     )
     require(
         errno_patch,
@@ -608,8 +603,8 @@ def main() -> int:
     )
     require(
         bootstrap,
-        "octagram-errno-fetch",
-        "Rust bootstrap must fetch errno and its pinned libc dependency before x.py",
+        'fetch_locked_crate errno "$ERRNO_VERSION"',
+        "Rust bootstrap must fetch errno before x.py",
     )
 
     # tempfile is a direct compiler dependency and pulls rustix on Unix by
@@ -700,7 +695,7 @@ def main() -> int:
     )
     require(
         bootstrap,
-        'octagram-getrandom-fetch',
+        'fetch_locked_crate getrandom "$GETRANDOM_VERSION"',
         "the bootstrap must fetch getrandom before stage-2 compilation",
     )
     require(
@@ -734,9 +729,9 @@ def main() -> int:
         "preflight must compile the known stage-2 dependency slice before LLVM",
     )
     for needle, message in (
-        ('"rust-workspace"', "dependency preflight must create an isolated Rust workspace lockfile test"),
-        ('"cargo-submodule"', "dependency preflight must create an isolated Cargo submodule lockfile test"),
-        ('"getrandom-modern"', "dependency preflight must test getrandom 0.4.3 separately"),
+        ("rust-workspace", "dependency preflight must create an isolated Rust workspace lockfile test"),
+        ("cargo-submodule", "dependency preflight must create an isolated Cargo submodule lockfile test"),
+        ("getrandom-modern/src", "dependency preflight must test getrandom 0.4.3 separately"),
         ("0.2.191 0.3.3 3.23.0", "Rust workspace preflight must use its exact lockfile dependency versions"),
         ("0.2.186 0.3.4 3.27.0", "Cargo submodule preflight must use its exact lockfile dependency versions"),
         ("-Zbuild-std=core", "dependency check must compile against the target core"),

@@ -508,13 +508,28 @@ def main() -> int:
     )
     require(
         getrandom_patch,
-        "mod getrandom;",
-        "the getrandom patcher must select the upstream libc-backed implementation",
+        "mod octagram;",
+        "the getrandom patcher must select its native OCTAGRAM backend",
     )
     require(
         getrandom_patch,
-        "libc::getrandom",
-        "the getrandom patcher must use OCTAGRAM libc getrandom()",
+        "SYS_GETRANDOM: isize = 121",
+        "the OCTAGRAM backend must use the documented getrandom syscall number",
+    )
+    require(
+        getrandom_patch,
+        '"int 0x80"',
+        "the OCTAGRAM backend must use the native syscall interrupt ABI",
+    )
+    require(
+        getrandom_patch,
+        "Error::from_neg_error_code",
+        "the OCTAGRAM backend must preserve negative syscall errno values",
+    )
+    require(
+        getrandom_patch,
+        "OLD_MANIFEST_BLOCK",
+        "the getrandom patcher must remove the stale libc dependency from cached checkouts",
     )
     require(
         getrandom_patch,
@@ -863,9 +878,9 @@ def main() -> int:
         if changed.returncode != 0 or changed.stdout == first.stdout:
             fail("LLVM input fingerprint did not change when sysroot contents changed")
 
-    # The getrandom patcher is tested with a synthetic registry package so
-    # its source edits and resume/idempotency behaviour are checked without
-    # network access or a Rust rebuild.
+    # Begin with the previous libc-backed patch state. The new patcher must
+    # migrate a cached checkout, remove the stale dependency, install the new
+    # backend, and remain idempotent.
     with tempfile.TemporaryDirectory() as temp_root:
         registry_root = Path(temp_root) / "registry" / "src"
         package = registry_root / "index.test" / "getrandom-0.3.3"
@@ -875,20 +890,23 @@ def main() -> int:
             'name = "getrandom"\n'
             'version = "0.3.3"\n'
             "\n"
+            "[target.'cfg(target_os = \\"octagram\\")'.dependencies]\n"
+            'libc = { version = "0.2.154", default-features = false }\n'
+            "\n"
             "[lints.rust.unexpected_cfgs]\n"
             'level = "warn"\n',
             encoding="utf-8",
         )
         (package / "src" / "backends.rs").write_text(
             "cfg_if! {\n"
+            '    } else if #[cfg(target_os = "octagram")] {\n'
+            "        mod getrandom;\n"
+            "        pub use getrandom::*;\n"
             "    } else if #[cfg(any(\n"
             '        target_os = "android",\n'
             '        target_os = "linux",\n'
             '        target_os = "dragonfly",\n',
             encoding="utf-8",
-        )
-        (package / "src" / "backends" / "getrandom.rs").write_text(
-            "pub fn fill_inner() {}\n", encoding="utf-8"
         )
         patch_runs = []
         for _ in range(2):
@@ -908,10 +926,15 @@ def main() -> int:
             )
         patched_manifest = (package / "Cargo.toml").read_text(encoding="utf-8")
         patched_backends = (package / "src" / "backends.rs").read_text(encoding="utf-8")
-        if patched_manifest.count('target_os = "octagram"') != 1:
-            fail("getrandom patcher did not add exactly one OCTAGRAM libc dependency")
-        if patched_backends.count("mod getrandom;") != 1:
-            fail("getrandom patcher did not add exactly one OCTAGRAM backend selection")
+        patched_native = (package / "src" / "backends" / "octagram.rs").read_text(encoding="utf-8")
+        if 'target_os = "octagram"' in patched_manifest:
+            fail("getrandom patcher left the stale OCTAGRAM libc dependency in Cargo.toml")
+        if patched_backends.count("mod octagram;") != 1:
+            fail("getrandom patcher did not add exactly one native OCTAGRAM backend")
+        if "mod getrandom;" in patched_backends:
+            fail("getrandom patcher did not migrate the old libc-backed backend selection")
+        if "SYS_GETRANDOM: isize = 121" not in patched_native or '"int 0x80"' not in patched_native:
+            fail("getrandom patcher did not install the syscall-121 backend source")
 
     if failures:
         print(f"OCTAGRAM-LLVM-CI-FAIL ({len(failures)})")

@@ -576,9 +576,9 @@ fi
 echo "RUST-LIBC-CARGO-REGISTRY-PATCH-PASS: patched $registry_patch_count registry source(s)"
 
 # getrandom 0.3.3 is used by the stage-2 compiler dependency graph (through
-# hashbrown/parking_lot_core). Upstream does not know target_os=octagram, but
-# OCTAGRAM libc already exports getrandom(), backed by syscall 121. Fetch and
-# patch the exact registry source before x.py starts compiling stage 2.
+# hashbrown/parking_lot_core). Upstream does not know target_os=octagram, so
+# install the native syscall-121 backend into the exact registry source before
+# x.py starts compiling stage 2. The backend does not depend on libc errno APIs.
 echo "fetching getrandom $GETRANDOM_VERSION into Cargo registry cache"
 getrandom_fetch_dir=$rust_checkout/build/octagram-getrandom-fetch
 mkdir -p "$getrandom_fetch_dir/src"

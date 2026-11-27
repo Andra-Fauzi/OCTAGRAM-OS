@@ -14,6 +14,11 @@ MODULE_SOURCE = REPO_ROOT / "patches/rust-libc/octagram/mod.rs"
 
 def replace_once(path: Path, old: str, new: str) -> None:
     source = path.read_text(encoding="utf-8")
+    # Bootstrap can be resumed with the same Cargo registry cache. Treat an
+    # already-applied exact replacement as success instead of failing on the
+    # now-consumed upstream anchor.
+    if new in source:
+        return
     count = source.count(old)
     if count != 1:
         raise SystemExit(f"expected one exact anchor in {path}, found {count}")
@@ -31,6 +36,10 @@ def main() -> int:
     # A vendored copy (for example the extracted crates.io source used by
     # `-Z build-std`) has no git history, so the pin cannot be verified there.
     # The anchors below still fail loudly if the sources moved.
+    target_module = root / "src/unix/octagram/mod.rs"
+    expected_module = MODULE_SOURCE.read_text(encoding="utf-8")
+    if target_module.exists() and target_module.read_text(encoding="utf-8") != expected_module:
+        raise SystemExit(f"existing OCTAGRAM libc module does not match the pinned patch: {target_module}")
     if not allow_unpinned:
         try:
             actual = subprocess.check_output(
@@ -118,11 +127,9 @@ def main() -> int:
     # are the ones cargo compiles.
     (root / ".cargo-ok").write_text('{"v":1}', encoding="utf-8")
 
-    target_module = root / "src/unix/octagram/mod.rs"
     target_module.parent.mkdir(parents=True, exist_ok=True)
-    if target_module.exists():
-        raise SystemExit(f"target module already exists: {target_module}")
-    target_module.write_text(MODULE_SOURCE.read_text(encoding="utf-8"), encoding="utf-8")
+    if not target_module.exists():
+        target_module.write_text(expected_module, encoding="utf-8")
 
     print("RUST-LIBC-OCTAGRAM-PATCH-PASS: exact source anchors and target module installed")
     return 0

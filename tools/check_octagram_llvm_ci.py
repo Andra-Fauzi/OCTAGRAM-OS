@@ -631,6 +631,7 @@ def main() -> int:
     for needle, message in (
         ('errno = { version = "=0.3.14"', "errno check must pin 0.3.14"),
         ('getrandom = { version = "=0.3.3"', "getrandom check must pin 0.3.3"),
+        ('rustix = { version = "=1.1.5"', "rustix check must pin 1.1.5"),
         ('libc = { version = "=0.2.191"', "libc check must pin 0.2.191"),
         ("-Zbuild-std=core", "dependency check must compile against the target core"),
         ("apply_rust_libc_octagram.py", "dependency check must apply the OCTAGRAM libc bindings"),

@@ -997,17 +997,19 @@ def main() -> int:
             encoding="utf-8",
         )
         (package / "src" / "unix.rs").write_text(
-            """#[cfg_attr(
-    any(
-        target_os = "linux",
-        target_os = "hurd",
-        target_os = "redox",
-        target_os = "dragonfly",
-        target_os = "emscripten",
-    ),
-    link_name = "__errno_location"
-)]
-fn errno_location() -> *mut c_int;
+            """extern "C" {
+    #[cfg_attr(
+        any(
+            target_os = "linux",
+            target_os = "hurd",
+            target_os = "redox",
+            target_os = "dragonfly",
+            target_os = "emscripten",
+        ),
+        link_name = "__errno_location"
+    )]
+    fn errno_location() -> *mut c_int;
+}
 """,
             encoding="utf-8",
         )

@@ -240,8 +240,8 @@ echo
 echo "libLLVM for x86_64-unknown-octagram installed at $install_prefix"
 echo "  target llvm-config:   $llvm_config (runs only inside OCTAGRAM)"
 echo "  host llvm-config:     $host_llvm_config ($reported_version, $library_count libraries)"
-"$llvm_config" --version || true
-echo "  static libs: $("$llvm_config" --libdir 2>/dev/null || echo "$install_prefix/lib")"
+echo "  target llvm-config:   $llvm_config (OCTAGRAM ELF; not executed on host)"
+echo "  static libs:          $("$host_llvm_config" --libdir)"
 echo
 echo "Next: tools/bootstrap_rustc_octagram.sh --llvm-prefix $install_prefix"
 echo "The produced binaries are OCTAGRAM ELFs: they cannot be executed on this"

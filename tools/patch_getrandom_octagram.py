@@ -112,7 +112,7 @@ def patch_package(package: Path) -> bool:
     backend_dir = package / "src/backends"
     octagram_backend = backend_dir / "octagram.rs"
     if not manifest.is_file() or not backend.is_file() or not backend_dir.is_dir():
-        raise SystemExit(f"incomplete getrandom {GETRANDOM_VERSION} source tree: {package}")
+        raise SystemExit(f"incomplete getrandom source tree: {package}")
 
     manifest_source = manifest.read_text(encoding="utf-8")
     parsed = tomllib.loads(manifest_source)

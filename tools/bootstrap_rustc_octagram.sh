@@ -582,6 +582,13 @@ if [ ! -f "$host_target_source" ]; then
     echo "bootstrap_rustc_octagram: error: $host_target_source was not installed" >&2
     exit 1
 fi
+# x.py build-std compiles library/std from this pinned Rust checkout. The
+# previous rust-src helper was only used against the host nightly component,
+# leaving this checkout without OCTAGRAM os::unix::platform::{fs, raw} and
+# the Unix thread set_name implementation. Patch the exact sources x.py uses.
+echo "patching pinned Rust library/std PAL for OCTAGRAM"
+OCTAGRAM_RUST_STD_ROOT="$rust_checkout/library/std/src" \
+    python3 "$repo_root/tools/patch_rust_std_octagram.py"
 
 # 4. bootstrap config.toml -------------------------------------------------
 config=$rust_checkout/config.toml

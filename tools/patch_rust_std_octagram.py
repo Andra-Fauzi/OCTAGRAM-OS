@@ -203,6 +203,65 @@ def main() -> int:
 
     backport_thread_spawn_handle_fix(std)
     enable_std_file_locks(std)
+    # OCTAGRAM libc implements accept() but deliberately does not expose accept4().
+    # Preserve CLOEXEC semantics using accept() followed by fcntl, while leaving
+    # Linux's accept4 fast path intact for Linux targets.
+    socket_unix = std / "sys/net/connection/socket/unix.rs"
+    old_accept_select = """        cfg_select! {
+            any(
+                target_os = "android",
+                target_os = "dragonfly",
+                target_os = "freebsd",
+                target_os = "illumos",
+                target_os = "linux",
+                target_os = "hurd",
+                target_os = "netbsd",
+                target_os = "openbsd",
+                target_os = "cygwin",
+            ) => unsafe {
+                let fd =
+                    cvt_r(|| libc::accept4(self.as_raw_fd(), storage, len, libc::SOCK_CLOEXEC))?;
+                Ok(Socket(FileDesc::from_raw_fd(fd)))
+            },
+            _ => unsafe {
+                let fd = cvt_r(|| libc::accept(self.as_raw_fd(), storage, len))?;
+                let fd = FileDesc::from_raw_fd(fd);
+                fd.set_cloexec()?;
+                Ok(Socket(fd))
+            },
+        }"""
+    octagram_accept_select = """        cfg_select! {
+            // OCTAGRAM has accept() but no accept4() ABI wrapper.
+            target_os = "octagram" => unsafe {
+                let fd = cvt_r(|| libc::accept(self.as_raw_fd(), storage, len))?;
+                let fd = FileDesc::from_raw_fd(fd);
+                fd.set_cloexec()?;
+                Ok(Socket(fd))
+            },
+            any(
+                target_os = "android",
+                target_os = "dragonfly",
+                target_os = "freebsd",
+                target_os = "illumos",
+                target_os = "linux",
+                target_os = "hurd",
+                target_os = "netbsd",
+                target_os = "openbsd",
+                target_os = "cygwin",
+            ) => unsafe {
+                let fd =
+                    cvt_r(|| libc::accept4(self.as_raw_fd(), storage, len, libc::SOCK_CLOEXEC))?;
+                Ok(Socket(FileDesc::from_raw_fd(fd)))
+            },
+            _ => unsafe {
+                let fd = cvt_r(|| libc::accept(self.as_raw_fd(), storage, len))?;
+                let fd = FileDesc::from_raw_fd(fd);
+                fd.set_cloexec()?;
+                Ok(Socket(fd))
+            },
+        }"""
+    replace_once(socket_unix, old_accept_select, octagram_accept_select)
+    print("RUST-STD-OCTAGRAM-ACCEPT-FALLBACK-PASS: accept + fcntl replaces unsupported accept4")
 
     os_mod = std / "os/mod.rs"
     replace_once(

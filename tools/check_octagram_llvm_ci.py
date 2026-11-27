@@ -39,6 +39,7 @@ REPO = Path(__file__).resolve().parent.parent
 WORKFLOW = REPO / ".github" / "workflows" / "octagram-native-toolchain.yml"
 BUILD = REPO / "tools" / "build_llvm_octagram.sh"
 BOOTSTRAP = REPO / "tools" / "bootstrap_rustc_octagram.sh"
+STD_PATCH = REPO / "tools" / "patch_rust_std_octagram.py"
 GITHUB_JOB_LIMIT_MINUTES = 360
 
 failures: list[str] = []
@@ -76,6 +77,7 @@ def main() -> int:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
     bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
+    std_patch = STD_PATCH.read_text(encoding="utf-8")
 
     # --- the build script ---------------------------------------------------
     for flag in ("--time-budget", "--resume", "--status", "--print-build-inputs-stamp"):
@@ -264,6 +266,37 @@ def main() -> int:
         bootstrap,
         "libc_checkout=$repo_root/$libc_checkout",
         "relative upstream libc checkout paths must resolve from the repository root",
+    )
+
+    require(
+        bootstrap,
+        'OCTAGRAM_RUST_STD_ROOT="$rust_checkout/library/std/src"',
+        "Rust bootstrap must patch the pinned library/std sources that x.py build-std actually compiles",
+    )
+    require(
+        bootstrap,
+        'python3 "$repo_root/tools/patch_rust_std_octagram.py"',
+        "Rust bootstrap must invoke the OCTAGRAM std PAL patch before building std",
+    )
+    require(
+        std_patch,
+        "OCTAGRAM_RUST_STD_ROOT",
+        "the std PAL patcher must accept an explicit source checkout, not only installed rust-src",
+    )
+    require(
+        std_patch,
+        "if new in source:",
+        "the std PAL patcher must be safe to rerun after a restored bootstrap checkpoint",
+    )
+    require(
+        std_patch,
+        'pub(crate) mod octagram;',
+        "the std PAL patcher must register the OCTAGRAM os module for Unix fs/raw extensions",
+    )
+    require(
+        std_patch,
+        'pub fn set_name(_name: &CStr)',
+        "the std PAL patcher must provide the OCTAGRAM Unix thread set_name implementation",
     )
 
     # --- the rustc-cargo job -----------------------------------------------

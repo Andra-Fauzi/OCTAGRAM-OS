@@ -43,8 +43,8 @@ OCTAGRAM_BACKEND = r'''//! Native OCTAGRAM getrandom backend.
 //! The kernel currently caps one call at 256 bytes.
 
 use crate::Error;
+pub use crate::util::{inner_u32, inner_u64};
 use core::arch::asm;
-use core::convert::TryFrom;
 use core::mem::MaybeUninit;
 
 const SYS_GETRANDOM: isize = 121;
@@ -176,7 +176,7 @@ def patch_package(package: Path) -> bool:
     final_backend = backend.read_text(encoding="utf-8")
     if BACKEND_BLOCK not in final_backend or BACKEND_MARKER not in final_backend:
         raise SystemExit(f"OCTAGRAM getrandom backend selection did not verify in {backend}")
-    if "mod getrandom;" in final_backend:
+    if OLD_BACKEND_BLOCK in final_backend:
         raise SystemExit(f"stale libc-backed OCTAGRAM module selection remains in {backend}")
     return changed
 

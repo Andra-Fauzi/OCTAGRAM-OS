@@ -890,7 +890,7 @@ def main() -> int:
             'name = "getrandom"\n'
             'version = "0.3.3"\n'
             "\n"
-            "[target.'cfg(target_os = \\"octagram\\")'.dependencies]\n"
+            """[target.'cfg(target_os = "octagram")'.dependencies]\n"""
             'libc = { version = "0.2.154", default-features = false }\n'
             "\n"
             "[lints.rust.unexpected_cfgs]\n"
@@ -931,7 +931,7 @@ def main() -> int:
             fail("getrandom patcher left the stale OCTAGRAM libc dependency in Cargo.toml")
         if patched_backends.count("mod octagram;") != 1:
             fail("getrandom patcher did not add exactly one native OCTAGRAM backend")
-        if "mod getrandom;" in patched_backends:
+        if 'target_os = "octagram")] {\n        mod getrandom;' in patched_backends:
             fail("getrandom patcher did not migrate the old libc-backed backend selection")
         if "SYS_GETRANDOM: isize = 121" not in patched_native or '"int 0x80"' not in patched_native:
             fail("getrandom patcher did not install the syscall-121 backend source")

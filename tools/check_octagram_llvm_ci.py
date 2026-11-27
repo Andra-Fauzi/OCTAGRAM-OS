@@ -572,6 +572,11 @@ def main() -> int:
         "the libc patcher must remove stale duplicate OCTAGRAM exports from cached sources",
     )
     require(
+        libc_patcher,
+        'unistd_import = \'#[cfg(target_os = "octagram")]\\nuse common::posix::unistd;\\n\'',
+        "the libc patcher must retain the internal unistd module import after removing duplicate exports",
+    )
+    require(
         libc_module,
         "pub const O_RDONLY:",
         "OCTAGRAM libc must define the POSIX O_RDONLY flag",

@@ -153,6 +153,9 @@ OCTAGRAM_ARM_FILES = {
     # The shared process implementation contains Linux-only pidfd state and
     # methods. OCTAGRAM currently uses the non-Linux stub implementation.
     "sys/process/unix/common.rs",
+    # Keep Linux-only OS namespace gates unchanged; OCTAGRAM uses the shared
+    # Unix module and its dedicated private os::octagram PAL instead.
+    "os/mod.rs",
     # std's Linux-specific extension traits (abstract sockets, ancillary data,
     # TCP quickack) are not part of OCTAGRAM's public OS API yet.
     "os/net/mod.rs",
@@ -169,7 +172,7 @@ def restore_linux_only_cfg_gates(std: Path) -> None:
     patcher generated, so the updated exclusions also work on cache resume.
     """
     restored = 0
-    for relative in ("os/net/mod.rs", "sys/process/unix/common.rs"):
+    for relative in ("os/mod.rs", "os/net/mod.rs", "sys/process/unix/common.rs"):
         path = std / relative
         source = path.read_text(encoding="utf-8")
         updated = source.replace(OCTAGRAM_LINUX, 'target_os = "linux"')

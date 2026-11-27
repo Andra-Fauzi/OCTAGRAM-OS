@@ -535,6 +535,10 @@ build-dir = "$rust_checkout/build"
 docs = false
 extended = false
 submodules = false
+# Do not require src/llvm-project/compiler-rt. This keeps the Rust bootstrap
+# independent from a second LLVM source checkout; Rust's compiler-builtins
+# fallback is functionally equivalent, with only some intrinsics less optimized.
+optimized-compiler-builtins = false
 
 [install]
 prefix = "$stage_dir"

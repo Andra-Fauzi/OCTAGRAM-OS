@@ -235,6 +235,37 @@ def main() -> int:
         "Rust bootstrap must use the Rust-only compiler-builtins implementation when llvm-project is intentionally absent",
     )
 
+    require(
+        bootstrap,
+        "cargo fetch",
+        "Rust bootstrap must fetch the exact libc crate before patching its registry source",
+    )
+    require(
+        bootstrap,
+        'libc = { version = "=$LIBC_VERSION", default-features = false }',
+        "the libc registry prefetch must pin the same version used by Rust std",
+    )
+    require(
+        bootstrap,
+        '"$cargo_home"/registry/src/*/libc-"$LIBC_VERSION"',
+        "Rust bootstrap must locate the extracted libc source Cargo actually compiles",
+    )
+    require(
+        bootstrap,
+        '"$registry_source" --allow-unpinned',
+        "Rust bootstrap must apply the OCTAGRAM patch to the Cargo registry source, not only the upstream checkout",
+    )
+    require(
+        bootstrap,
+        "RUST-LIBC-CARGO-REGISTRY-PATCH-PASS",
+        "Rust bootstrap must fail unless at least one Cargo registry libc source was patched",
+    )
+    require(
+        bootstrap,
+        "libc_checkout=$repo_root/$libc_checkout",
+        "relative upstream libc checkout paths must resolve from the repository root",
+    )
+
     # --- the rustc-cargo job -----------------------------------------------
     rustc = job_block(workflow, "rustc-cargo")
     require(

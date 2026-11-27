@@ -354,6 +354,21 @@ def main() -> int:
         "the std PAL patcher must report the OCTAGRAM stack-overflow fallback",
     )
     require(
+        std_patch,
+        'os_mod = std / "os/mod.rs"',
+        "the std PAL patcher must keep the Linux-specific public os module under review",
+    )
+    require(
+        std_patch,
+        'RUST-STD-OCTAGRAM-LINUX-OS-MODULE-PASS',
+        "the std PAL patcher must keep std::os::linux unselected on OCTAGRAM",
+    )
+    require(
+        std_patch,
+        "'        #[cfg(target_os = \\"linux\\")]\\\\n'",
+        "the std PAL patcher must restore the Linux-only cfg on the public os::linux module",
+    )
+    require(
         host_target_patch,
         "expected_octagram_static_dylib",
         "the Rust target patch must suppress only the expected static OCTAGRAM dylib warning",

@@ -330,6 +330,16 @@ def main() -> int:
     )
     require(
         std_patch,
+        "widened_accept_select = octagram_accept_select.replace(",
+        "the std socket accept patch must remain idempotent after Linux cfg widening on checkpoint resume",
+    )
+    require(
+        std_patch,
+        "if octagram_accept_select in socket_source or widened_accept_select in socket_source:",
+        "the std socket accept patch must recognize both pristine and already-widened checkpoint states",
+    )
+    require(
+        std_patch,
         'RUST-STD-OCTAGRAM-ACCEPT-FALLBACK-PASS',
         "the std PAL patcher must verify the accept4 fallback for OCTAGRAM",
     )

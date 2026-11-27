@@ -638,7 +638,7 @@ jobs:
             fi
           done
           system_libs=$(OCTAGRAM_REAL_LLVM_CONFIG="$host_config" python3 tools/host_llvm_config_wrapper.py --link-static --system-libs)
-          if printf '%s\n' "$system_libs" | grep -Eq '(^|[[:space:]])-llib[^[:space:]]*\\.so([.0-9]*)([[:space:]]|$)'; then
+          if printf '%s\n' "$system_libs" | grep -Eq '(^|[[:space:]])-llib[^[:space:]]*\.so([.0-9]*)([[:space:]]|$)'; then
             echo "FAIL: host llvm-config adapter left an invalid -llib*.so flag:" >&2
             echo "$system_libs" >&2
             exit 1

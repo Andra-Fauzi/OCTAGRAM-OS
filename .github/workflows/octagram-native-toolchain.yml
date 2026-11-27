@@ -98,10 +98,11 @@ on:
       - ".github/workflows/octagram-native-toolchain.yml"
 
 concurrency:
+  # Only one native-toolchain run may use the branch's checkpoint/cache at a time.
+  # A newer commit supersedes queued or running work; the LLVM build script
+  # handles cancellation by stopping Ninja before the checkpoint-save step.
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Do not auto-cancel an older build when a new commit arrives. Explicit user
-  # cancellation is handled by the bounded Ninja stop + checkpoint save below.
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   # Stage0 toolchain for host-side helpers (fmt/check of the kernel, probes).

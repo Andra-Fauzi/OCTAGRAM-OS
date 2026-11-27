@@ -238,7 +238,7 @@ fi
 
 echo
 echo "libLLVM for x86_64-unknown-octagram installed at $install_prefix"
-echo "  target llvm-config:   $llvm_config (runs only inside OCTAGRAM)"
+# Do not execute the target llvm-config on the Linux build runner.
 echo "  host llvm-config:     $host_llvm_config ($reported_version, $library_count libraries)"
 echo "  target llvm-config:   $llvm_config (OCTAGRAM ELF; not executed on host)"
 echo "  static libs:          $("$host_llvm_config" --libdir)"

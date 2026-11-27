@@ -17,6 +17,7 @@
 #                                [--source DIR] [--jobs N] [--time-budget MIN]
 #                                [--resume] [--status] [--clean]
 #                                [--check-install-inputs]
+#                                [--print-build-inputs-stamp]
 #
 #   --time-budget MIN  stop ninja after MIN minutes, keep the build tree and
 #                      exit 75 (EX_TEMPFAIL) with OCTAGRAM-LLVM-BUILD-INCOMPLETE.
@@ -33,6 +34,9 @@
 #                      compare the stamp inside the install prefix with the
 #                      inputs this run would build from; exit 1 and change
 #                      nothing when they differ.
+#   --print-build-inputs-stamp
+#                      print the exact input fingerprint used for cache keys,
+#                      then exit without building or changing any files.
 #
 # A complete prefix is reused only when the stamp it carries matches the current
 # inputs. The stamp covers the LLVM version, the CMake flag vector, the
@@ -89,6 +93,7 @@ clean=0
 resume=0
 status_only=0
 check_install_inputs=0
+print_build_inputs_stamp=0
 
 while [ $# -gt 0 ]; do
     case $1 in
@@ -101,6 +106,7 @@ while [ $# -gt 0 ]; do
         --status) status_only=1; shift ;;
         --clean) clean=1; shift ;;
         --check-install-inputs) check_install_inputs=1; shift ;;
+        --print-build-inputs-stamp) print_build_inputs_stamp=1; shift ;;
         -h|--help)
             sed -n '2,/^$/p' "$0"
             exit 0
@@ -282,6 +288,11 @@ build_inputs_stamp() {
 }
 
 expected_input_stamp=$(build_inputs_stamp)
+
+if [ "$print_build_inputs_stamp" -eq 1 ]; then
+    printf '%s\n' "$expected_input_stamp"
+    exit 0
+fi
 
 installed_input_stamp() {
     sed -n 's/^stamp=//p' "$install_stamp_file" 2>/dev/null | head -n 1

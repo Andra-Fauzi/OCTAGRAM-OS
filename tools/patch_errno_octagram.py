@@ -18,9 +18,9 @@ from pathlib import Path
 ERRNO_VERSION = "0.3.14"
 
 CFG_ATTR_RE = re.compile(
-    r"(?ms)^(?P<indent>[ \\t]*)#\\[cfg_attr\\(.*?^[ \\t]*\\)\\]"
+    r"(?ms)^(?P<indent>[ \t]*)#\[cfg_attr\(.*?^[ \t]*\)\]"
 )
-LINUX_TARGET_RE = re.compile(r'(?m)^(?P<indent>[ \\t]*)target_os = "linux",$')
+LINUX_TARGET_RE = re.compile(r'(?m)^(?P<indent>[ \t]*)target_os = "linux",$')
 
 
 def patch_package(package: Path) -> bool:
@@ -67,7 +67,7 @@ def patch_package(package: Path) -> bool:
     line = linux_lines[0]
     indent = line.group("indent")
     replacement = (
-        f'{indent}target_os = "linux",\\n'
+        f'{indent}target_os = "linux",\n'
         f'{indent}target_os = "octagram",'
     )
     patched_block = block[:line.start()] + replacement + block[line.end():]

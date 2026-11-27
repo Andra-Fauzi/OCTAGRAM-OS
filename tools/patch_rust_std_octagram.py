@@ -263,6 +263,18 @@ def main() -> int:
     replace_once(socket_unix, old_accept_select, octagram_accept_select)
     print("RUST-STD-OCTAGRAM-ACCEPT-FALLBACK-PASS: accept + fcntl replaces unsupported accept4")
 
+    # The upstream Linux stack-overflow handler queries pthread stack bounds.
+    # OCTAGRAM does not yet expose pthread_getattr_np()/pthread_attr_getstack(),
+    # so select the upstream no-op handler rather than linking to absent APIs or
+    # pretending that userspace knows the current stack bounds.
+    stack_overflow_mod = std / "sys/pal/unix/stack_overflow/mod.rs"
+    replace_once(
+        stack_overflow_mod,
+        "cfg_select! {\n    // This is intentionally not enabled on iOS/tvOS/watchOS/visionOS, as it uses\n",
+        "cfg_select! {\n    target_os = \\\"octagram\\\" => {\n        mod handler_none;\n        use handler_none as imp;\n    }\n    // This is intentionally not enabled on iOS/tvOS/watchOS/visionOS, as it uses\n",
+    )
+    print("RUST-STD-OCTAGRAM-STACK-OVERFLOW-NONE-PASS: avoids unavailable pthread stack introspection")
+
     os_mod = std / "os/mod.rs"
     replace_once(
         os_mod,

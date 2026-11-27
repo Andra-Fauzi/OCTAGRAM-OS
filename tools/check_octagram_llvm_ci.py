@@ -311,8 +311,7 @@ def main() -> int:
         "sys/process/unix/mod.rs",
         "sys/process/unix/unix.rs",
         "sys/process/unix/common.rs",
-        "os/mod.rs",
-        "os/net/mod.rs",
+        "os/net/linux_ext/mod.rs",
     ):
         require(
             std_patch,
@@ -326,13 +325,43 @@ def main() -> int:
     )
     require(
         std_patch,
-        'for relative in ("os/mod.rs", "os/net/mod.rs", "sys/process/unix/common.rs")',
+        'for relative in ("os/net/linux_ext/mod.rs", "sys/process/unix/common.rs")',
         "the std patcher must keep Linux networking extensions and pidfd process state Linux-only",
     )
     require(
         std_patch,
         "restore_linux_only_cfg_gates(std)",
         "the std patcher must restore cached cfgs before applying the global Linux PAL widening",
+    )
+    require(
+        std_patch,
+        "def gate_linux_extension_modules(std: Path)",
+        "the std patcher must keep Linux ancillary/TCP extension modules out of OCTAGRAM",
+    )
+    require(
+        std_patch,
+        "gate_linux_extension_modules(std)",
+        "the std patcher must gate Linux-only networking extension modules",
+    )
+    require(
+        std_patch,
+        "def allow_octagram_internal_socket_addr_ext(std: Path)",
+        "the std patcher must handle the internal abstract-socket trait without disabling it",
+    )
+    require(
+        std_patch,
+        'cfg_attr(target_os = "octagram", allow(dead_code))',
+        "only the intentionally internal OCTAGRAM SocketAddrExt helper may allow dead_code",
+    )
+    require(
+        std_patch,
+        "allow_octagram_internal_socket_addr_ext(std)",
+        "the std patcher must apply the OCTAGRAM abstract-socket helper visibility fix",
+    )
+    require(
+        std_patch,
+        "RUST-STD-OCTAGRAM-LINUX-EXTENSIONS-PASS",
+        "the std patcher must report that Linux-only extension modules remain gated",
     )
     require(
         std_patch,

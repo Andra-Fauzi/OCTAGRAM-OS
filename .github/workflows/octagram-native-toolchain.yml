@@ -363,7 +363,7 @@ jobs:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
           if-no-files-found: error
           compression-level: 0
-          retention-days: 7
+          retention-days: 30
 
   rustc-cargo:
     name: rustc + cargo for x86_64-unknown-octagram

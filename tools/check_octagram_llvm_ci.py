@@ -453,6 +453,26 @@ def main() -> int:
     # suppress that warning: doing so shifts Cargo's output-line parser.
     require(
         host_target_patch,
+        'crate-type = ["rlib"]',
+        "the OCTAGRAM rustc_driver must be an rlib linked into the static rustc-main executable",
+    )
+    require(
+        host_target_patch,
+        "RUST-OCTAGRAM-STATIC-RUSTC-DRIVER-PASS",
+        "the Rust target patch must report the static rustc_driver strategy",
+    )
+    require(
+        host_target_patch,
+        "if rustc_driver.is_file():",
+        "bootstrap must strip rustc_driver only when a shared driver artifact exists",
+    )
+    require(
+        host_target_patch,
+        "RUST-OCTAGRAM-STATIC-BOOTSTRAP-PASS",
+        "the Rust target patch must report the static driver bootstrap adjustment",
+    )
+    require(
+        host_target_patch,
         "Keep rustc's unsupported-crate-type warning intact.",
         "the Rust target patch must preserve the diagnostic Cargo uses for unsupported crate types",
     )

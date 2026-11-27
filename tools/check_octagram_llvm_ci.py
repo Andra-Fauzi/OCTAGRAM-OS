@@ -307,6 +307,7 @@ def main() -> int:
         "io/stdio.rs",
         "sys/fs/mod.rs",
         "sys/pal/unix/weak/mod.rs",
+        "sys/process/mod.rs",
         "sys/process/unix/mod.rs",
         "sys/process/unix/unix.rs",
     ):
@@ -317,6 +318,11 @@ def main() -> int:
         )
     if 'pub(in crate::sys) use cfm::CachedFileMetadata;' in std_patch:
         fail("OCTAGRAM must use generic io::copy, not export Linux-only CachedFileMetadata")
+    require(
+        std_patch,
+        '"sys/process/mod.rs"',
+        "the std PAL patcher must not enable the Linux-only PidFd re-export for OCTAGRAM",
+    )
     require(
         host_target_patch,
         "expected_octagram_static_dylib",

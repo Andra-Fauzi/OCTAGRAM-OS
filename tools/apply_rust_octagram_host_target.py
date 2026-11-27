@@ -3,15 +3,17 @@
 
 Bootstrap cannot produce a compiler for a triple that exists only as a JSON
 spec: the host triple must be known to `rustc_target` itself. This script
-applies three checked edits to a pinned rust-lang/rust checkout:
+applies four checked edits to a pinned rust-lang/rust checkout:
 
 1. copies patches/rust/octagram/x86_64_unknown_octagram.rs to
    compiler/rustc_target/src/spec/targets/;
 2. adds `Octagram = "octagram"` to the `Os` enum in
    compiler/rustc_target/src/spec/mod.rs;
-3. registers the target in the `supported_targets!` list.
+3. registers the target in the `supported_targets!` list;
+4. suppresses only the expected unsupported-`dylib` warning for this exact
+   static-only target in compiler/rustc_interface/src/passes.rs.
 
-Every edit is anchored on an exact, unique string and is idempotent, so
+Every source edit is anchored on an exact block and is idempotent, so
 re-running it after a partial failure is safe. The checkout revision is
 verified because anchors are only valid for the pinned upstream tree.
 

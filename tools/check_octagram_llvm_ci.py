@@ -516,15 +516,17 @@ def main() -> int:
         library = sysroot / "usr" / "lib" / "libc++.a"
         library.parent.mkdir(parents=True)
         library.write_bytes(b"fixture-libcxx-v1")
-        fingerprint_env = dict(
-            os.environ,
-            OCTAGRAM_TOOLCHAIN_BUILD=str(temp / "build"),
-            OCTAGRAM_SYSROOT=str(sysroot),
-        )
+        fingerprint_env = dict(os.environ, OCTAGRAM_SYSROOT=str(sysroot))
+        # Keep the default build root so the relative cache-restore prefix
+        # resolves to the same install directory as the build's absolute path.
+        fingerprint_env.pop("OCTAGRAM_TOOLCHAIN_BUILD", None)
 
-        def fingerprint() -> subprocess.CompletedProcess[str]:
+        def fingerprint(*extra_args: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
-                ["sh", str(BUILD), "--print-build-inputs-stamp", "--llvm-version", "22.1.8"],
+                [
+                    "sh", str(BUILD), "--print-build-inputs-stamp",
+                    "--llvm-version", "22.1.8", *extra_args,
+                ],
                 cwd=REPO,
                 capture_output=True,
                 text=True,
@@ -534,10 +536,16 @@ def main() -> int:
 
         first = fingerprint()
         repeated = fingerprint()
+        relative_prefix = fingerprint("--prefix", "build/toolchain/llvm-22.1.8-octagram")
         if first.returncode != 0 or not re.fullmatch(r"[0-9a-f]{64}", first.stdout.strip()):
-            fail(f"LLVM input fingerprint command failed: {first.stdout}{first.stderr}")
+            fail(
+                f"LLVM input fingerprint command failed (status {first.returncode}): "
+                f"{first.stdout}{first.stderr}"
+            )
         if repeated.returncode != 0 or repeated.stdout != first.stdout:
             fail("LLVM input fingerprint is not deterministic for an unchanged sysroot")
+        if relative_prefix.returncode != 0 or relative_prefix.stdout != first.stdout:
+            fail("relative --prefix produced a different LLVM cache fingerprint")
         library.write_bytes(b"fixture-libcxx-v2")
         changed = fingerprint()
         if changed.returncode != 0 or changed.stdout == first.stdout:

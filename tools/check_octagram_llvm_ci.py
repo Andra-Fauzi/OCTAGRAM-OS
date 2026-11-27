@@ -397,6 +397,16 @@ def main() -> int:
         "--check-install-inputs",
         "build_llvm_octagram.sh must accept --check-install-inputs",
     )
+    require(
+        build,
+        "required_install_tools=llvm-config,octagram-llvm-config,llc,llvm-nm,llvm-cov",
+        "the install stamp must change when the required LLVM tool set changes",
+    )
+    require(
+        build,
+        "llvm-cov",
+        "a complete LLVM install must include llvm-cov for Rust bootstrap",
+    )
     stamp_fn = re.search(r"^build_inputs_stamp\(\) \{\n(.*?)^\}\n", build, re.M | re.S)
     if not stamp_fn:
         fail("build_llvm_octagram.sh has no build_inputs_stamp()")

@@ -162,6 +162,17 @@ python3 "$repo_root/tools/patch_errno_octagram.py" --registry-root "$cargo_home/
 python3 "$repo_root/tools/patch_getrandom_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_tempfile_octagram.py" --registry-root "$cargo_home/registry/src"
 
+echo "OCTAGRAM custom-target cfg:"
+rustc "+$toolchain" -Z unstable-options -Z json-target-spec --print cfg --target "$target" | sort
+
+echo "patched tempfile rustix manifest selectors:"
+for manifest in "$cargo_home"/registry/src/*/tempfile-3.23.0/Cargo.toml \
+                "$cargo_home"/registry/src/*/tempfile-3.27.0/Cargo.toml; do
+    [ -f "$manifest" ] || continue
+    echo "--- $manifest"
+    grep -A4 -B1 'dependencies.rustix' "$manifest" || true
+done
+
 check_target_graph() {
     project=$1
     expected_tempfile=$2

@@ -27,8 +27,10 @@ publish = false
 [dependencies]
 errno = { version = "=0.3.14", default-features = false }
 getrandom = { version = "=0.3.3", default-features = false }
-tempfile = { version = "=3.23.0" }
 libc = { version = "=0.2.191", default-features = false }
+
+[dev-dependencies]
+tempfile = { version = "=3.23.0" }
 EOF
 cat > "$check_root/src/lib.rs" <<'EOF'
 #![no_std]
@@ -82,6 +84,20 @@ done
 python3 "$repo_root/tools/patch_errno_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_getrandom_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_tempfile_octagram.py" --registry-root "$cargo_home/registry/src"
+
+echo "checking tempfile's OCTAGRAM dependency graph"
+dependency_tree=$(CARGO_HOME=$cargo_home cargo "+$toolchain" tree \
+    --manifest-path "$check_root/Cargo.toml" \
+    --target "$target" -Zjson-target-spec --edges normal,dev --prefix none)
+if printf '%s\n' "$dependency_tree" | grep -Eq '^rustix v'; then
+    echo "unexpected rustix dependency remains in the OCTAGRAM target graph" >&2
+    printf '%s\n' "$dependency_tree" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$dependency_tree" | grep -Eq '^tempfile v3\.23\.0'; then
+    echo "tempfile 3.23.0 is missing from the OCTAGRAM target dependency graph" >&2
+    exit 1
+fi
 
 echo "checking patched target dependencies for x86_64-unknown-octagram"
 CARGO_HOME=$cargo_home CARGO_TARGET_DIR=$check_root/target \

@@ -139,15 +139,19 @@ def main() -> int:
     if marker in new_source:
         # Every OCTAGRAM binding is already re-exported through the legacy
         # crate::unix::* glob. Re-exporting the same names through new::* makes
-        # libc::flock/unlink/link/etc ambiguous at the crate root.
+        # libc::flock/unlink/link/etc ambiguous at the crate root. Keep only
+        # the internal unistd module import used by the generic new::* exports.
         block_start = new_source.index(marker)
         block_end = new_source.find("};\n", block_start)
         if block_end < 0:
             raise SystemExit(f"incomplete OCTAGRAM libc re-export block in {new_mod}")
         new_source = new_source[:block_start] + new_source[block_end + 3:]
-        new_mod.write_text(new_source, encoding="utf-8")
     if "mod common;\n" not in new_source:
         raise SystemExit(f"missing common module anchor in {new_mod}")
+    unistd_import = '#[cfg(target_os = "octagram")]\nuse common::posix::unistd;\n'
+    if unistd_import not in new_source:
+        new_source = new_source.replace("mod common;\n", "mod common;\n\n" + unistd_import, 1)
+    new_mod.write_text(new_source, encoding="utf-8")
     # Cargo re-extracts a registry crate whenever this marker is missing, which
     # silently discards the edits above; keep the marker so the patched sources
     # are the ones cargo compiles.

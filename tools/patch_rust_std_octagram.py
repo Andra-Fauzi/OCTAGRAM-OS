@@ -14,6 +14,11 @@ TOOLCHAIN = os.environ.get("OCTAGRAM_RUST_TOOLCHAIN", "nightly")
 
 def replace_once(path: Path, old: str, new: str) -> None:
     source = path.read_text(encoding="utf-8")
+    # The Rust bootstrap build directory is checkpointed and this script runs
+    # again on resume. Accept an already-applied exact edit instead of
+    # failing because its upstream anchor has been consumed.
+    if new in source:
+        return
     count = source.count(old)
     if count != 1:
         raise SystemExit(f"expected one exact Rust std source anchor in {path}, found {count}")
@@ -173,13 +178,20 @@ def widen_linux_cfg_gates(std: Path) -> None:
 
 
 def main() -> int:
-    sysroot = Path(subprocess.check_output(
-        ["rustc", f"+{TOOLCHAIN}", "--print", "sysroot"], text=True
-    ).strip())
-    library = sysroot / "lib/rustlib/src/rust/library"
-    std = library / "std/src"
+    std_override = os.environ.get("OCTAGRAM_RUST_STD_ROOT")
+    if std_override:
+        # x.py build-std compiles the pinned rust-lang/rust checkout, not the
+        # rust-src copy installed in the host nightly sysroot.
+        std = Path(std_override).resolve()
+        library = std.parents[1]
+    else:
+        sysroot = Path(subprocess.check_output(
+            ["rustc", f"+{TOOLCHAIN}", "--print", "sysroot"], text=True
+        ).strip())
+        library = sysroot / "lib/rustlib/src/rust/library"
+        std = library / "std/src"
     if not (std / "os/unix/mod.rs").is_file():
-        raise SystemExit(f"rust-src component not found under {library}")
+        raise SystemExit(f"Rust std source directory not found: {std}")
 
     backport_thread_spawn_handle_fix(std)
     enable_std_file_locks(std)
@@ -282,10 +294,13 @@ def main() -> int:
     target.mkdir(parents=True, exist_ok=True)
     for name in ("mod.rs", "raw.rs", "fs.rs"):
         destination = target / name
-        if destination.exists():
-            raise SystemExit(f"refusing to overwrite existing Rust std target file: {destination}")
         source = ROOT / "patches/rust-std/octagram" / name
-        destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        expected = source.read_text(encoding="utf-8")
+        if destination.exists():
+            if destination.read_text(encoding="utf-8") != expected:
+                raise SystemExit(f"refusing to overwrite mismatched Rust std target file: {destination}")
+        else:
+            destination.write_text(expected, encoding="utf-8")
 
     widen_linux_cfg_gates(std)
     print("RUST-STD-OCTAGRAM-PATCH-PASS: Unix target glue installed in rust-src")

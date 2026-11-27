@@ -26,11 +26,15 @@ publish = false
 
 [dependencies]
 errno = { version = "=0.3.14", default-features = false }
-getrandom = { version = "=0.3.3", default-features = false }
-libc = { version = "=0.2.191", default-features = false }
+getrandom_root = { package = "getrandom", version = "=0.3.3", default-features = false }
+getrandom_cargo = { package = "getrandom", version = "=0.3.4", default-features = false }
+getrandom_modern = { package = "getrandom", version = "=0.4.3", default-features = false }
+libc_root = { package = "libc", version = "=0.2.191", default-features = false }
+libc_cargo = { package = "libc", version = "=0.2.186", default-features = false }
 
 [dev-dependencies]
-tempfile = { version = "=3.23.0" }
+tempfile_root = { package = "tempfile", version = "=3.23.0" }
+tempfile_cargo = { package = "tempfile", version = "=3.27.0" }
 EOF
 cat > "$check_root/src/lib.rs" <<'EOF'
 #![no_std]
@@ -39,36 +43,66 @@ pub fn check_errno_surface() -> i32 {
     errno::errno().0
 }
 
-pub fn check_random_surface(buffer: &mut [u8]) -> Result<(), getrandom::Error> {
-    getrandom::fill(buffer)
+pub fn check_random_root(buffer: &mut [u8]) -> Result<(), getrandom_root::Error> {
+    getrandom_root::fill(buffer)
 }
 
-// Keep these references compile-only: they verify that libc's *new* target
-// module re-exports the exact POSIX functions used by Rust std's Unix PAL.
-pub unsafe fn check_octagram_file_abi(
-    path: *const libc::c_char,
-    other_path: *const libc::c_char,
-    fd: libc::c_int,
-    directory_fd: libc::c_int,
+pub fn check_random_cargo(buffer: &mut [u8]) -> Result<(), getrandom_cargo::Error> {
+    getrandom_cargo::fill(buffer)
+}
+
+pub fn check_random_modern(buffer: &mut [u8]) -> Result<(), getrandom_modern::Error> {
+    getrandom_modern::fill(buffer)
+}
+
+// Compile-check the complete libc surface used by errno and the Rust Unix PAL
+// against both Rust workspace and Cargo submodule lockfile versions.
+pub unsafe fn check_rust_workspace_file_abi(
+    path: *const libc_root::c_char,
+    other_path: *const libc_root::c_char,
+    fd: libc_root::c_int,
+    directory_fd: libc_root::c_int,
 ) {
-    let _ = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-    let _ = unsafe { libc::flock(fd, libc::LOCK_UN) };
-    let _ = unsafe { libc::unlink(path) };
-    let _ = unsafe { libc::unlinkat(directory_fd, path, 0) };
-    let _ = unsafe { libc::link(path, other_path) };
-    let _ = unsafe { libc::linkat(directory_fd, path, directory_fd, other_path, 0) };
-    let _ = unsafe { libc::rename(path, other_path) };
-    let _ = unsafe { libc::renameat(directory_fd, path, directory_fd, other_path) };
-    let _ = unsafe { libc::openat(directory_fd, path, libc::O_RDONLY) };
-    let directory = unsafe { libc::fdopendir(fd) };
-    let _ = unsafe { libc::readdir(directory) };
-    let _ = unsafe { libc::closedir(directory) };
-    let _ = unsafe { libc::opendir(path) };
-    let _ = unsafe { libc::strerror_r(0, core::ptr::null_mut(), 0) };
+    let _ = unsafe { libc_root::flock(fd, libc_root::LOCK_EX | libc_root::LOCK_NB) };
+    let _ = unsafe { libc_root::flock(fd, libc_root::LOCK_UN) };
+    let _ = unsafe { libc_root::unlink(path) };
+    let _ = unsafe { libc_root::unlinkat(directory_fd, path, 0) };
+    let _ = unsafe { libc_root::link(path, other_path) };
+    let _ = unsafe { libc_root::linkat(directory_fd, path, directory_fd, other_path, 0) };
+    let _ = unsafe { libc_root::rename(path, other_path) };
+    let _ = unsafe { libc_root::renameat(directory_fd, path, directory_fd, other_path) };
+    let _ = unsafe { libc_root::openat(directory_fd, path, libc_root::O_RDONLY) };
+    let directory = unsafe { libc_root::fdopendir(fd) };
+    let _ = unsafe { libc_root::readdir(directory) };
+    let _ = unsafe { libc_root::closedir(directory) };
+    let _ = unsafe { libc_root::opendir(path) };
+    let _ = unsafe { libc_root::strerror_r(0, core::ptr::null_mut(), 0) };
+}
+
+pub unsafe fn check_cargo_file_abi(
+    path: *const libc_cargo::c_char,
+    other_path: *const libc_cargo::c_char,
+    fd: libc_cargo::c_int,
+    directory_fd: libc_cargo::c_int,
+) {
+    let _ = unsafe { libc_cargo::flock(fd, libc_cargo::LOCK_EX | libc_cargo::LOCK_NB) };
+    let _ = unsafe { libc_cargo::flock(fd, libc_cargo::LOCK_UN) };
+    let _ = unsafe { libc_cargo::unlink(path) };
+    let _ = unsafe { libc_cargo::unlinkat(directory_fd, path, 0) };
+    let _ = unsafe { libc_cargo::link(path, other_path) };
+    let _ = unsafe { libc_cargo::linkat(directory_fd, path, directory_fd, other_path, 0) };
+    let _ = unsafe { libc_cargo::rename(path, other_path) };
+    let _ = unsafe { libc_cargo::renameat(directory_fd, path, directory_fd, other_path) };
+    let _ = unsafe { libc_cargo::openat(directory_fd, path, libc_cargo::O_RDONLY) };
+    let directory = unsafe { libc_cargo::fdopendir(fd) };
+    let _ = unsafe { libc_cargo::readdir(directory) };
+    let _ = unsafe { libc_cargo::closedir(directory) };
+    let _ = unsafe { libc_cargo::opendir(path) };
+    let _ = unsafe { libc_cargo::strerror_r(0, core::ptr::null_mut(), 0) };
 }
 EOF
 
-echo "fetching errno 0.3.14, getrandom 0.3.3, tempfile 3.23.0, and libc 0.2.191"
+echo "fetching errno, all three getrandom versions, both tempfile versions, and both libc versions"
 CARGO_HOME=$cargo_home cargo fetch --manifest-path "$check_root/Cargo.toml"
 
 extract_crate() {
@@ -97,17 +131,29 @@ extract_crate() {
 }
 
 extract_crate libc 0.2.191
+extract_crate libc 0.2.186
 extract_crate errno 0.3.14
 extract_crate getrandom 0.3.3
+extract_crate getrandom 0.3.4
+extract_crate getrandom 0.4.3
 extract_crate tempfile 3.23.0
+extract_crate tempfile 3.27.0
 
-for source in "$cargo_home"/registry/src/*/libc-0.2.191; do
-    [ -f "$source/Cargo.toml" ] || continue
-    python3 "$repo_root/tools/apply_rust_libc_octagram.py" "$source" --allow-unpinned
+for libc_version in 0.2.191 0.2.186; do
+    for source in "$cargo_home"/registry/src/*/libc-"$libc_version"; do
+        [ -f "$source/Cargo.toml" ] || continue
+        python3 "$repo_root/tools/apply_rust_libc_octagram.py" "$source" --allow-unpinned
+    done
 done
 python3 "$repo_root/tools/patch_errno_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_getrandom_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_tempfile_octagram.py" --registry-root "$cargo_home/registry/src"
+for tempfile_version in 3.23.0 3.27.0; do
+    if ! grep -q "TEMPFILE_VERSION = \"$tempfile_version\"" "$repo_root/tools/patch_tempfile_octagram.py"; then
+        echo "tempfile patcher does not declare support for $tempfile_version" >&2
+        exit 1
+    fi
+done
 
 echo "checking tempfile's OCTAGRAM dependency graph"
 dependency_tree=$(CARGO_HOME=$cargo_home cargo "+$toolchain" tree \
@@ -118,10 +164,12 @@ if printf '%s\n' "$dependency_tree" | grep -Eq '^rustix v'; then
     printf '%s\n' "$dependency_tree" >&2
     exit 1
 fi
-if ! printf '%s\n' "$dependency_tree" | grep -Eq '^tempfile v3\.23\.0'; then
-    echo "tempfile 3.23.0 is missing from the OCTAGRAM target dependency graph" >&2
-    exit 1
-fi
+for tempfile_version in 3.23.0 3.27.0; do
+    if ! printf '%s\n' "$dependency_tree" | grep -Eq "^tempfile v$tempfile_version"; then
+        echo "tempfile $tempfile_version is missing from the OCTAGRAM target dependency graph" >&2
+        exit 1
+    fi
+done
 
 echo "checking patched target dependencies for x86_64-unknown-octagram"
 CARGO_HOME=$cargo_home CARGO_TARGET_DIR=$check_root/target \

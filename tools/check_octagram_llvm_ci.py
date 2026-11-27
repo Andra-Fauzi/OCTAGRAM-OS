@@ -871,20 +871,24 @@ def main() -> int:
         package = registry_root / "index.test" / "getrandom-0.3.3"
         (package / "src" / "backends").mkdir(parents=True)
         (package / "Cargo.toml").write_text(
-            '[package]\\nname = "getrandom"\\nversion = "0.3.3"\\n'
-            + '[lints.rust.unexpected_cfgs]\\nlevel = "warn"\\n',
+            "[package]\n"
+            'name = "getrandom"\n'
+            'version = "0.3.3"\n'
+            "\n"
+            "[lints.rust.unexpected_cfgs]\n"
+            'level = "warn"\n',
             encoding="utf-8",
         )
         (package / "src" / "backends.rs").write_text(
-            'cfg_if! {\\n'
-            + '    } else if #[cfg(any(\\n'
-            + '        target_os = "android",\\n'
-            + '        target_os = "linux",\\n'
-            + '        target_os = "dragonfly",\\n',
+            "cfg_if! {\n"
+            "    } else if #[cfg(any(\n"
+            '        target_os = "android",\n'
+            '        target_os = "linux",\n'
+            '        target_os = "dragonfly",\n',
             encoding="utf-8",
         )
         (package / "src" / "backends" / "getrandom.rs").write_text(
-            "pub fn fill_inner() {}\\n", encoding="utf-8"
+            "pub fn fill_inner() {}\n", encoding="utf-8"
         )
         patch_runs = []
         for _ in range(2):
@@ -904,7 +908,7 @@ def main() -> int:
             )
         patched_manifest = (package / "Cargo.toml").read_text(encoding="utf-8")
         patched_backends = (package / "src" / "backends.rs").read_text(encoding="utf-8")
-        if patched_manifest.count("target_os = \\"octagram\\"") != 1:
+        if patched_manifest.count('target_os = "octagram"') != 1:
             fail("getrandom patcher did not add exactly one OCTAGRAM libc dependency")
         if patched_backends.count("mod getrandom;") != 1:
             fail("getrandom patcher did not add exactly one OCTAGRAM backend selection")

@@ -193,6 +193,18 @@ set -- \
     -DLLVM_BUILD_EXTERNAL_COMPILER_RT=OFF \
     -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF
 
+# Reuse compiler outputs across CI runs when a configuration change forces a
+# rebuild. ccache is optional for local builds and does not alter target flags.
+if command -v ccache >/dev/null 2>&1; then
+    ccache --set-config=max_size="${CCACHE_MAXSIZE:-5G}" >/dev/null
+    set -- "$@" \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    echo "  compiler cache: ccache ($(ccache --get-config=max_size))"
+else
+    echo "  compiler cache: unavailable (install ccache to enable incremental CI reuse)"
+fi
+
 echo "configuring LLVM $llvm_version for x86_64-unknown-octagram"
 echo "  source:  $source_dir"
 echo "  build:   $cmake_build"

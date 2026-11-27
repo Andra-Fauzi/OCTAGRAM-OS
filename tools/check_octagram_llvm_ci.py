@@ -42,6 +42,9 @@ BOOTSTRAP = REPO / "tools" / "bootstrap_rustc_octagram.sh"
 STD_PATCH = REPO / "tools" / "patch_rust_std_octagram.py"
 HOST_TARGET_PATCH = REPO / "tools" / "apply_rust_octagram_host_target.py"
 GETRANDOM_PATCH = REPO / "tools" / "patch_getrandom_octagram.py"
+ERRNO_PATCH = REPO / "tools" / "patch_errno_octagram.py"
+LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
+RUNTIME = REPO / "user" / "runtime.c"
 GITHUB_JOB_LIMIT_MINUTES = 360
 
 failures: list[str] = []
@@ -82,6 +85,9 @@ def main() -> int:
     std_patch = STD_PATCH.read_text(encoding="utf-8")
     host_target_patch = HOST_TARGET_PATCH.read_text(encoding="utf-8")
     getrandom_patch = GETRANDOM_PATCH.read_text(encoding="utf-8")
+    errno_patch = ERRNO_PATCH.read_text(encoding="utf-8")
+    libc_module = LIBC_MODULE.read_text(encoding="utf-8")
+    runtime = RUNTIME.read_text(encoding="utf-8")
 
     # --- the build script ---------------------------------------------------
     for flag in ("--time-budget", "--resume", "--status", "--print-build-inputs-stamp"):
@@ -497,6 +503,50 @@ def main() -> int:
         host_target_patch,
         "passes_source = passes_source.replace(new_diagnostic, old_diagnostic, 1)",
         "the Rust target patch must remove the stale OCTAGRAM-only Dylib warning suppression",
+    )
+
+    # errno 0.3.14 uses both strerror_r and errno_location on Unix. The
+    # OCTAGRAM ABI exports strerror_r and __errno_location, so both the libc
+    # binding and errno crate's link_name must be verified before stage 2.
+    require(
+        libc_module,
+        "pub fn strerror_r(",
+        "the OCTAGRAM Rust libc module must expose the runtime's strerror_r symbol",
+    )
+    require(
+        runtime,
+        "int strerror_r(int error, char *buffer, size_t length)",
+        "the OCTAGRAM runtime must implement the POSIX strerror_r ABI",
+    )
+    require(
+        runtime,
+        "int *__errno_location(void)",
+        "the OCTAGRAM runtime must export the errno accessor used by Rust crates",
+    )
+    require(
+        errno_patch,
+        'target_os = "octagram",',
+        "the errno patcher must map errno_location to OCTAGRAM's __errno_location symbol",
+    )
+    require(
+        errno_patch,
+        'link_name = "__errno_location"',
+        "the errno patcher must retain the actual OCTAGRAM errno symbol name",
+    )
+    require(
+        bootstrap,
+        "ERRNO_VERSION=0.3.14",
+        "Rust bootstrap must pin the errno version whose Unix backend is patched",
+    )
+    require(
+        bootstrap,
+        "patch_errno_octagram.py",
+        "Rust bootstrap must patch the errno Cargo registry source before x.py",
+    )
+    require(
+        bootstrap,
+        "octagram-errno-fetch",
+        "Rust bootstrap must fetch errno and its pinned libc dependency before x.py",
     )
 
     # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
@@ -935,6 +985,53 @@ def main() -> int:
             fail("getrandom patcher did not migrate the old libc-backed backend selection")
         if "SYS_GETRANDOM: isize = 121" not in patched_native or '"int 0x80"' not in patched_native:
             fail("getrandom patcher did not install the syscall-121 backend source")
+
+    # The errno patcher must migrate a cached registry source and be
+    # idempotent, so a resumed bootstrap does not lose its target symbol map.
+    with tempfile.TemporaryDirectory() as temp_root:
+        registry_root = Path(temp_root) / "registry" / "src"
+        package = registry_root / "index.test" / "errno-0.3.14"
+        (package / "src").mkdir(parents=True)
+        (package / "Cargo.toml").write_text(
+            '[package]\nname = "errno"\nversion = "0.3.14"\n',
+            encoding="utf-8",
+        )
+        (package / "src" / "unix.rs").write_text(
+            """#[cfg_attr(
+    any(
+        target_os = "linux",
+        target_os = "hurd",
+        target_os = "redox",
+        target_os = "dragonfly",
+        target_os = "emscripten",
+    ),
+    link_name = "__errno_location"
+)]
+fn errno_location() -> *mut c_int;
+""",
+            encoding="utf-8",
+        )
+        patch_runs = []
+        for _ in range(2):
+            patch_runs.append(
+                subprocess.run(
+                    [sys.executable, str(ERRNO_PATCH), "--registry-root", str(registry_root)],
+                    cwd=REPO,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            )
+        if any(result.returncode != 0 for result in patch_runs):
+            fail(
+                "errno patcher fixture failed: "
+                + " | ".join(result.stdout + result.stderr for result in patch_runs)
+            )
+        patched_errno = (package / "src" / "unix.rs").read_text(encoding="utf-8")
+        if patched_errno.count('target_os = "octagram"') != 1:
+            fail("errno patcher did not add exactly one OCTAGRAM errno symbol mapping")
+        if not (package / ".cargo-ok").is_file():
+            fail("errno patcher did not preserve the registry extraction marker")
 
     if failures:
         print(f"OCTAGRAM-LLVM-CI-FAIL ({len(failures)})")

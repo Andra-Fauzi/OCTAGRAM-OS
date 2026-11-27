@@ -270,6 +270,22 @@ jobs:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}/llvm-project-${{ env.LLVM_VERSION }}.src.tar.xz
           key: octagram-llvm-src-${{ env.LLVM_VERSION }}
 
+      - name: Compute exact LLVM build input fingerprint
+        id: llvm-inputs
+        # Use the same stamp that build_llvm_octagram.sh writes into the
+        # verified install. This includes the actual downloaded sysroot tree,
+        # not merely the source files used to produce it.
+        run: |
+          set -euo pipefail
+          stamp=$(tools/build_llvm_octagram.sh \
+            --llvm-version "$LLVM_VERSION" --print-build-inputs-stamp)
+          if ! [[ "$stamp" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Invalid LLVM build input fingerprint: $stamp" >&2
+            exit 1
+          fi
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+          echo "LLVM-INPUT-FINGERPRINT: $stamp"
+
       - name: Restore libLLVM install tree
         id: llvm-cache
         # Restore-only: a partial install must never be saved under this key,
@@ -278,18 +294,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
-          key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile', 'user/include/**', 'user/*.c', 'user/third_party/libcxx/**') }}
-          # A strict key made every edit of build_llvm_octagram.sh rebuild
-          # libLLVM for ~45 minutes, even when only its budget/signal/
-          # checkpoint logic changed and the produced libraries are identical.
-          # Fall back to the newest verified tree for this LLVM version; the
-          # verifier below still checks the ELF shape, the archives and
-          # octagram-llvm-config, and the build step reuses a complete tree.
-          # A change that does alter the produced libraries (CMake flags,
-          # patches) needs the old entries deleted: Actions -> Caches ->
-          # octagram-llvm-install-*. Do that instead of trusting the fallback.
-          restore-keys: |
-            octagram-llvm-install-${{ env.LLVM_VERSION }}-
+          key: octagram-llvm-install-${{ env.LLVM_VERSION }}-${{ steps.llvm-inputs.outputs.stamp }}
+          # The key is the exact build-input stamp checked by the build script.
+          # Do not use a broad restore prefix here: an install built against a
+          # different sysroot must not be restored and then thrown away.
 
       - name: Verify the restored libLLVM inputs
         id: llvm-install
@@ -316,16 +324,15 @@ jobs:
 
       - name: Restore libLLVM build checkpoint
         id: llvm-build-cache
-        # The key carries the run id, so every run can save its own checkpoint;
-        # restore-keys then picks the most recent one written for these inputs.
-        # A changed script, toolchain or sysroot changes the hash and correctly
-        # starts over instead of resuming an incompatible tree.
+        # The fingerprint is identical to the build's verified input stamp.
+        # The run id makes cache entries immutable while restore-keys can find
+        # the newest checkpoint only for this exact LLVM/sysroot/config tuple.
         uses: actions/cache/restore@v4
         with:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}/build-octagram
-          key: octagram-llvm-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile', 'user/include/**', 'user/*.c', 'user/third_party/libcxx/**') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: octagram-llvm-build-${{ env.LLVM_VERSION }}-${{ steps.llvm-inputs.outputs.stamp }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            octagram-llvm-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/build_llvm_octagram.sh', 'tools/octagram_llvm_config.py', 'user/toolchain/**', 'user/Makefile', 'user/include/**', 'user/*.c', 'user/third_party/libcxx/**') }}-
+            octagram-llvm-build-${{ env.LLVM_VERSION }}-${{ steps.llvm-inputs.outputs.stamp }}-
 
       - name: Require cached libLLVM when build_llvm is off
         # The build_llvm input exists only for workflow_dispatch. On push,
@@ -383,14 +390,13 @@ jobs:
           fi
 
       - name: Save libLLVM build checkpoint
-        # Only an interrupted build needs the tree: a finished build is served
-        # by the install tree, and a failed one needs code changes (which change
-        # the cache hash anyway). Cache storage is 10 GB per repository by
-        # default, so this deliberately keeps one tree per inputs hash.
+        # Save both budget-stopped builds and user-cancelled builds. The build
+        # script traps cancellation signals and stops Ninja before the runner
+        # reaches this step; the cache tree is therefore quiescent.
         if: >-
           always() &&
-          steps.llvm-build.outputs.incomplete == 'true' &&
-          steps.checkpoint.outputs.present == 'true'
+          steps.checkpoint.outputs.present == 'true' &&
+          (steps.llvm-build.outputs.incomplete == 'true' || steps.llvm-build.outcome == 'cancelled')
         continue-on-error: true
         uses: actions/cache/save@v4
         with:

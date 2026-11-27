@@ -103,6 +103,61 @@ def main() -> int:
     changed |= replace_once(root / SPEC_MOD, OS_ANCHOR, OS_LINE)
     changed |= replace_once(root / SPEC_MOD, REGISTRATION_ANCHOR, REGISTRATION_LINE)
 
+    # OCTAGRAM's toolchain executables are intentionally static ET_EXEC
+    # binaries. Upstream rustc_driver is normally emitted only as a dylib and
+    # rustc-main links to that shared object. The LLVM backend is already a
+    # built-in dependency through rustc_interface's "llvm" feature, so the
+    # host compiler can link rustc_driver as an rlib and keep the whole
+    # compiler self-contained without enabling shared-object TLS in OCTAGRAM.
+    driver_manifest = root / "compiler/rustc_driver/Cargo.toml"
+    source = driver_manifest.read_text(encoding="utf-8")
+    dylib_crate_type = '[lib]\\ncrate-type = ["dylib"]'
+    static_crate_type = '[lib]\\ncrate-type = ["rlib"]'
+    if static_crate_type not in source:
+        if source.count(dylib_crate_type) != 1:
+            raise SystemExit(
+                "expected one rustc_driver dylib crate-type declaration in "
+                f"{driver_manifest}; refusing an unsafe static-link patch"
+            )
+        source = source.replace(dylib_crate_type, static_crate_type, 1)
+        driver_manifest.write_text(source, encoding="utf-8")
+    print(
+        "RUST-OCTAGRAM-STATIC-RUSTC-DRIVER-PASS: "
+        "rustc_driver is linked statically into rustc-main"
+    )
+
+    # Bootstrap normally strips librustc_driver.so after linking. In the
+    # static OCTAGRAM build there is no such file; make the upstream step
+    # conditional so it remains unchanged for targets that still emit it.
+    compile_steps = root / "src/bootstrap/src/core/build_steps/compile.rs"
+    compile_source = compile_steps.read_text(encoding="utf-8")
+    old_strip = \"\"\"        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
+            && builder.config.rust_debuginfo_level_tools == DebuginfoLevel::None
+        {
+            let rustc_driver = target_root_dir.join("librustc_driver.so");
+            strip_debug(builder, target, &rustc_driver);
+        }\"\"\"
+    new_strip = \"\"\"        if builder.config.rust_debuginfo_level_rustc == DebuginfoLevel::None
+            && builder.config.rust_debuginfo_level_tools == DebuginfoLevel::None
+        {
+            let rustc_driver = target_root_dir.join("librustc_driver.so");
+            if rustc_driver.is_file() {
+                strip_debug(builder, target, &rustc_driver);
+            }
+        }\"\"\"
+    if new_strip not in compile_source:
+        if compile_source.count(old_strip) != 1:
+            raise SystemExit(
+                "expected one rustc_driver strip step in "
+                f"{compile_steps}; refusing an unsafe bootstrap patch"
+            )
+        compile_source = compile_source.replace(old_strip, new_strip, 1)
+        compile_steps.write_text(compile_source, encoding="utf-8")
+    print(
+        "RUST-OCTAGRAM-STATIC-BOOTSTRAP-PASS: "
+        "bootstrap skips the shared-driver strip when no dylib is emitted"
+    )
+
     # Keep rustc's unsupported-crate-type warning intact. Cargo parses this
     # diagnostic while probing --print=file-names to distinguish unsupported
     # crate types from missing output lines. Suppressing the Dylib warning

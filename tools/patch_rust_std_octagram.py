@@ -271,7 +271,7 @@ def main() -> int:
     replace_once(
         stack_overflow_mod,
         "cfg_select! {\n    // This is intentionally not enabled on iOS/tvOS/watchOS/visionOS, as it uses\n",
-        "cfg_select! {\n    target_os = \\\"octagram\\\" => {\n        mod handler_none;\n        use handler_none as imp;\n    }\n    // This is intentionally not enabled on iOS/tvOS/watchOS/visionOS, as it uses\n",
+        "cfg_select! {\n    target_os = \"octagram\" => {\n        mod handler_none;\n        use handler_none as imp;\n    }\n    // This is intentionally not enabled on iOS/tvOS/watchOS/visionOS, as it uses\n",
     )
     print("RUST-STD-OCTAGRAM-STACK-OVERFLOW-NONE-PASS: avoids unavailable pthread stack introspection")
 

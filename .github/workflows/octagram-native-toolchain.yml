@@ -261,7 +261,7 @@ jobs:
       - name: Restore LLVM source tarball
         uses: actions/cache@v4
         with:
-          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}.src.tar.xz
+          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}/llvm-project-${{ env.LLVM_VERSION }}.src.tar.xz
           key: octagram-llvm-src-${{ env.LLVM_VERSION }}
 
       - name: Restore libLLVM install tree

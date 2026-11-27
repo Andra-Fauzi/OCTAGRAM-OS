@@ -324,6 +324,16 @@ def main() -> int:
         "the std PAL patcher must not enable the Linux-only PidFd re-export for OCTAGRAM",
     )
     require(
+        std_patch,
+        'target_os = "octagram" => unsafe {',
+        "std socket accept must use the OCTAGRAM accept()+fcntl fallback, not accept4",
+    )
+    require(
+        std_patch,
+        'RUST-STD-OCTAGRAM-ACCEPT-FALLBACK-PASS',
+        "the std PAL patcher must verify the accept4 fallback for OCTAGRAM",
+    )
+    require(
         host_target_patch,
         "expected_octagram_static_dylib",
         "the Rust target patch must suppress only the expected static OCTAGRAM dylib warning",

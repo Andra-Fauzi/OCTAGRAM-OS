@@ -330,10 +330,30 @@ if [ -z "$host_llvm_config" ] || [ ! -x "$host_llvm_config" ]; then
     echo "bootstrap_rustc_octagram: --host-llvm-config <path> (must report the same version)." >&2
     exit 1
 fi
-host_llvm_config=$(absolute_path "$host_llvm_config")
-host_llvm_version=$("$host_llvm_config" --version 2>/dev/null || true)
+host_llvm_real_config=$(absolute_path "$host_llvm_config")
+host_llvm_version=$("$host_llvm_real_config" --version 2>/dev/null || true)
 if [ -z "$host_llvm_version" ]; then
-    echo "bootstrap_rustc_octagram: error: $host_llvm_config did not report a version" >&2
+    echo "bootstrap_rustc_octagram: error: $host_llvm_real_config did not report a version" >&2
+    exit 1
+fi
+
+# Keep the build-platform LLVM config separate from the OCTAGRAM target config.
+# The pinned Rust rustc_llvm build script mishandles absolute .so filenames in
+# llvm-config --system-libs (it turns /.../libz3.so into -llibz3.so). The
+# adapter normalizes only host --system-libs output; it does not touch target
+# LLVM or its static link configuration.
+host_llvm_config=$repo_root/tools/host_llvm_config_wrapper.py
+if [ ! -f "$host_llvm_config" ]; then
+    echo "bootstrap_rustc_octagram: error: missing host llvm-config adapter $host_llvm_config" >&2
+    exit 1
+fi
+chmod +x "$host_llvm_config"
+python3 "$host_llvm_config" --self-test
+export OCTAGRAM_REAL_LLVM_CONFIG=$host_llvm_real_config
+host_wrapper_version=$("$host_llvm_config" --version 2>/dev/null || true)
+if [ "$host_wrapper_version" != "$host_llvm_version" ]; then
+    echo "bootstrap_rustc_octagram: error: host llvm-config adapter reports '$host_wrapper_version'," >&2
+    echo "bootstrap_rustc_octagram:        expected '$host_llvm_version' from $host_llvm_real_config" >&2
     exit 1
 fi
 target_llvm_major=$(sed -n 's/^#define LLVM_VERSION_MAJOR \([0-9]*\)$/\1/p' \
@@ -564,7 +584,7 @@ echo
 echo "bootstrap prepared:"
 echo "  rust checkout: $rust_checkout"
 echo "  libLLVM:       $llvm_config"
-echo "  host llvm:     $host_llvm_config ($host_llvm_version)"
+echo "  host llvm:     $host_llvm_config -> $host_llvm_real_config ($host_llvm_version)"
 echo "  target llvm:   $target_llvm_config ($target_llvm_reported)"
 echo "  target LLVM bin: $target_llvm_bindir"
 echo "  sysroot:       $sysroot"

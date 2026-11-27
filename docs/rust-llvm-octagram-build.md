@@ -191,7 +191,14 @@ jadi satu run tidak dirancang untuk menyelesaikannya sendirian:
 2. Saat budget habis, `build_llvm_octagram.sh` mengirim `SIGINT` ke ninja,
    membiarkan ninja menyelesaikan edge yang sedang jalan, menulis
    `octagram-build-state.json` dengan `"phase": "incomplete"`, dan keluar
-dengan **75** (`EX_TEMPFAIL`). Build tree tidak dihapus.
+   dengan **75** (`EX_TEMPFAIL`). Build tree tidak dihapus. Kalau ninja tidak
+   keluar setelah `SIGINT` (satu edge `-O2` masih jalan), script mengeskalasi
+   ke `SIGTERM` lalu `SIGKILL` — default tunggu 120 detik, lalu 60 detik — dan
+   tetap menulis state itu, jadi budget stop tidak pernah berakhir tanpa
+   checkpoint. Anak prosesnya (`cc1plus`, `rustc`, `cargo`) ikut disinyal dan
+   ditunggu; sisa yang masih hidup dibunuh, supaya checkpoint tidak
+   mengarsipkan file yang masih ditulis. Sinyal yang akhirnya mematikan build
+   tercatat di `"stop_signal"`.
 3. Step build memetakan exit 75 menjadi `incomplete=true` dan **exit 0**: job
 tidak merah karena batas waktu, dan step verifikasi/upload dilewati. Step
    `Save libLLVM build checkpoint` menyimpan `build-octagram/` dengan key
@@ -204,6 +211,14 @@ tidak merah karena batas waktu, dan step verifikasi/upload dilewati. Step
 tree disimpan dengan key `octagram-llvm-install-<versi>-<hash>`. Key itu
 **restore-only** sampai verifikasi lulus, jadi prefix yang setengah jadi tidak
 pernah dianggap selesai.
+6. Artefak `octagram-llvm-<versi>` adalah **satu arsip tar**, bukan direktori.
+   `actions/upload-artifact` tidak menyimpan bit executable (semua file kembali
+   0644), sehingga `bin/llvm-config` yang diunduh job `rustc-cargo` tidak bisa
+   dieksekusi dan bootstrap berhenti dengan `no static libLLVM install found`
+   padahal build LLVM-nya lulus. Arsip menjaga mode file sekaligus tata letak
+   prefix yang dipakai key cache install tree. Kalau script tetap menemukan
+   `llvm-config` yang ada tapi tidak executable, pesan errornya sekarang
+   menyebut mode file dan penyebabnya, bukan menyuruh membangun LLVM lagi.
 
 Kenapa resume tidak memicu rebuild penuh: source LLVM di-extract ulang dari
 tarball yang di-cache, dan `tar` memulihkan mtime dari arsip. Objek yang sudah
@@ -226,14 +241,26 @@ Konsekuensi yang perlu diketahui:
   sampai libLLVM lengkap.
 
 Job `rustc-cargo` memakai pola yang sama untuk bootstrap rustc: input
-`time_budget` yang sama, `SIGINT` ke `x.py`, exit 75, dan checkpoint
-`build/toolchain/rust` (checkout + build directory) dengan key
+`time_budget` yang sama, `SIGINT` ke `x.py` (eskalasi `SIGTERM`/`SIGKILL` bila
+`x.py` tidak keluar), exit 75, dan checkpoint `build/toolchain/rust` (checkout + build
+directory) dengan key
 `octagram-rust-build-<versi>-<hash>-<run_id>-<attempt>`. Checkout ikut di-cache
 karena clone baru akan mengembalikan mtime sumber ke waktu sekarang dan memaksa
-cargo membangun ulang seluruh tree. Checkpoint rustc biasanya lebih besar dari
-checkpoint libLLVM; kalau kuota 10 GB repo tidak cukup untuk keduanya, naikkan
-*Cache size eviction limit* atau pakai `time_budget` yang lebih besar per run
-supaya jumlah checkpoint lebih sedikit.
+cargo membangun ulang seluruh tree; `.git` juga harus ikut karena bootstrap
+menghitung stempel build dari `git diff`/`git status`.
+
+Supaya checkpoint itu muat di kuota **10 GB per repo**, `prune_checkpoint`
+membuang `build/<host>/stage0` dan `stage0-sysroot` sebelum menulis state
+`incomplete`. Keduanya salinan toolchain rustup yang dipin: stage0 disalin ulang
+ke `build/<host>/stage0` dan `stage0-sysroot` diisi ulang dari
+`initial_sysroot` setiap run, dan keduanya tidak dipakai sebagai input
+fingerprint cargo maupun stempel bootstrap (yang berbasis hash isi). Jadi
+stage1/stage2 yang sudah selesai tetap valid dan run berikutnya hanya menyalin
+ulang stage0. Sisa tree (`build/tmp`, `stage1*`, `stage2*`, checkout, `.git`)
+tetap ikut karena itulah progres build-nya. Setiap run tetap menulis key baru
+(key cache tidak bisa ditimpa), dan saat kuota penuh GitHub membuang entri yang
+paling lama dipakai; kalau beberapa generasi masih tidak muat, naikkan *Cache
+size eviction limit* di Settings → Actions.
 
 Pemeriksaan kontrak ini ada di `tools/check_octagram_llvm_ci.py` (dijalankan
 job `fixture` di `octagram-llvm-config.yml`): timeout kedua job di bawah 360

@@ -261,6 +261,12 @@ yang disediakan di atas.
   directory) yang di-restore lewat prefix `restore-keys` dan dilanjutkan dengan
   `--resume`. Checkout ikut di-cache karena clone baru mengembalikan mtime
   sumber ke waktu sekarang dan memaksa cargo membangun ulang semuanya.
+  `SIGINT` yang tidak dijawab `x.py` dieskalasi ke `SIGTERM` lalu `SIGKILL`
+  (default 120 + 60 detik) dan anak prosesnya ditunggu, jadi run selalu
+  berakhir dengan checkpoint tersimpan, bukan dengan job yang dibunuh di jam
+  keenam. Sebelum checkpoint disimpan, `build/<host>/stage0` dan
+  `stage0-sysroot` dibuang: keduanya disalin ulang dari toolchain rustup yang
+  dipin di run berikutnya dan tidak memengaruhi fingerprint cargo, sehingga
+  checkpoint rustc lebih kecil dan muat di kuota cache 10 GB repo.
   `status-summary` melaporkan `overall=incomplete` untuk run yang berhenti di
-  budget, bukan gagal. Batas cache 10 GB per repo berlaku untuk kedua
-  checkpoint; kalau tidak cukup, naikkan *Cache size eviction limit*.
+  budget, bukan gagal.

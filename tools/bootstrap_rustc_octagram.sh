@@ -32,7 +32,10 @@
 #     --build               also run x.py build (default: prepare only)
 #     --check               validate the inputs, print the pass marker, exit
 #     --time-budget MIN     stop x.py after MIN minutes and keep the build
-#                           directory; exit 75 so CI can checkpoint and resume
+#                           directory; exit 75 so CI can checkpoint and resume.
+#                           The stop is SIGINT, escalating to SIGTERM/SIGKILL
+#                           when x.py ignores it, so the state file is always
+#                           written
 #     --resume              continue the checkout/build directory from an
 #                           earlier run; fails when there is nothing to resume
 #     --status              print octagram-build-state.json and exit
@@ -72,6 +75,14 @@ clean=0
 resume=0
 status_only=0
 time_budget=${OCTAGRAM_RUSTC_TIME_BUDGET:-0}
+# How long the build gets to react to each signal before the next one. A budget
+# stop must reach the state file: a job still running when GitHub kills it at
+# six hours never runs the checkpoint save step.
+stop_grace_int=${OCTAGRAM_STOP_GRACE_INT:-120}
+stop_grace_term=${OCTAGRAM_STOP_GRACE_TERM:-60}
+stop_grace_kill=15
+stop_grace_children=30
+stop_signal=
 
 while [ $# -gt 0 ]; do
     case $1 in
@@ -105,6 +116,15 @@ case $time_budget in
         exit 2
         ;;
 esac
+for grace in "$stop_grace_int" "$stop_grace_term"; do
+    case $grace in
+        ''|*[!0-9]*)
+            echo "bootstrap_rustc_octagram: error: OCTAGRAM_STOP_GRACE_INT and" >&2
+            echo "bootstrap_rustc_octagram:        OCTAGRAM_STOP_GRACE_TERM take whole seconds, got '$grace'" >&2
+            exit 2
+            ;;
+    esac
+done
 if [ "$resume" -eq 1 ] && [ "$clean" -eq 1 ]; then
     echo "bootstrap_rustc_octagram: error: --resume and --clean contradict each other" >&2
     exit 2
@@ -134,11 +154,88 @@ write_state() {
   "target": "$TARGET",
   "jobs": $jobs,
   "time_budget_minutes": $time_budget,
+  "stop_signal": "$stop_signal",
   "checkout": "$rust_checkout",
   "stage_dir": "$stage_dir",
   "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
+}
+
+# The checkpoint travels through the 10 GB repository cache quota, so leave
+# behind what the next run rebuilds in a couple of minutes: build/<host>/stage0
+# and stage0-sysroot are copies of the pinned rustup toolchain (the sysroot is
+# linked from it on every run). Bootstrap's stamps are content hashes and cargo
+# fingerprints track source and rlib mtimes, not the stage0 binaries, so the
+# stage1/stage2 progress in the same tree stays valid and only stage0 is copied
+# again.
+prune_checkpoint() {
+    for dir in stage0 stage0-sysroot; do
+        path=$rust_checkout/build/$HOST/$dir
+        if [ -d "$path" ]; then
+            echo "dropping build/$HOST/$dir from the checkpoint (reinstalled from the pinned toolchain)"
+            rm -rf "$path"
+        fi
+    done
+}
+
+# A budget stop must always end with the state file written and the tree quiet:
+# GitHub kills the job at six hours without running the checkpoint save step, so
+# a build that ignores the stop signal loses every hour spent on it. The driver
+# gets SIGINT first (x.py terminates the cargo/rustc children it started), then
+# SIGTERM, then SIGKILL. Its children are signalled too, because killing only
+# the driver leaves compilers writing into the tree that is about to be
+# checkpointed.
+build_tree_pids() {
+    ps -e -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
+        { kids[$2] = kids[$2] " " $1 }
+        function walk(pid,    i, n, list) {
+            n = split(kids[pid], list, " ")
+            for (i = 1; i <= n; i++) {
+                walk(list[i])
+                print list[i]
+            }
+        }
+        END { walk(root) }'
+}
+
+kill_build_tree() {
+    signal=$1
+    root=$2
+    for pid in $(build_tree_pids "$root"); do
+        kill -"$signal" "$pid" 2>/dev/null || true
+    done
+    kill -"$signal" "$root" 2>/dev/null || true
+}
+
+# The pids were recorded before the signal because a killed driver reparents its
+# children at once. Waiting for them keeps the checkpoint from archiving a file
+# that is still being written; anything left after the grace is an orphan that
+# ignored the stop, so freeze it before the tree is saved.
+wait_for_stopped_children() {
+    pids_file=$1
+    [ -f "$pids_file" ] || return 0
+    waited=0
+    while [ "$waited" -lt "$stop_grace_children" ]; do
+        alive=0
+        while read -r pid; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                alive=1
+                break
+            fi
+        done < "$pids_file"
+        [ "$alive" -eq 0 ] && return 0
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "warning: build children ignored the stop for ${stop_grace_children}s; killing them" >&2
+    while read -r pid; do
+        if [ -n "$pid" ]; then
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done < "$pids_file"
+    sleep 1
+    return 0
 }
 
 # GitHub cancels a hosted job at six hours and never runs the later steps, so a
@@ -164,6 +261,17 @@ fi
 llvm_config=
 if [ -n "$llvm_prefix" ]; then
     llvm_config=$llvm_prefix/bin/llvm-config
+fi
+# A present but non-executable llvm-config is not a missing install: artifact
+# transports that drop mode bits deliver exactly that, and the generic message
+# below would send the reader back to a build that already succeeded.
+if [ -n "$llvm_config" ] && [ -e "$llvm_config" ] && [ ! -x "$llvm_config" ]; then
+    echo "bootstrap_rustc_octagram: error: $llvm_config exists but is not executable" >&2
+    echo "bootstrap_rustc_octagram:        (mode $(ls -ld "$llvm_config" | cut -d' ' -f1))" >&2
+    echo "bootstrap_rustc_octagram: the install lost its mode bits in transport; restore" >&2
+    echo "bootstrap_rustc_octagram: them (chmod +x $llvm_prefix/bin/*) or ship the tree as" >&2
+    echo "bootstrap_rustc_octagram: an archive instead of a directory artifact." >&2
+    exit 1
 fi
 if [ -z "$llvm_config" ] || [ ! -x "$llvm_config" ]; then
     echo "bootstrap_rustc_octagram: error: no static libLLVM install found" >&2
@@ -418,6 +526,7 @@ fi
 
 budget_seconds=$(remaining_budget_seconds)
 if [ "$time_budget" -gt 0 ] && [ "$budget_seconds" -eq 0 ]; then
+    prune_checkpoint
     write_state incomplete
     echo "OCTAGRAM-RUSTC-BUILD-INCOMPLETE: the ${time_budget}m budget was spent before x.py" >&2
     echo "bootstrap_rustc_octagram: checkout kept at $rust_checkout; rerun to continue" >&2
@@ -428,8 +537,10 @@ if [ "$time_budget" -gt 0 ]; then
     echo "running x.py with ${budget_seconds}s remaining of the ${time_budget}m budget"
 fi
 budget_marker=$rust_checkout/build/budget-exhausted
+stop_signal_file=$rust_checkout/build/stop-signal
+stop_pids_file=$rust_checkout/build/stop-pids
 mkdir -p "$rust_checkout/build"
-rm -f "$budget_marker"
+rm -f "$budget_marker" "$stop_signal_file" "$stop_pids_file"
 
 # x.py installs its own SIGINT handler and terminates the cargo/rustc children
 # it started, so the interrupted build leaves a usable incremental directory.
@@ -441,7 +552,25 @@ if [ "$budget_seconds" -gt 0 ]; then
     (
         sleep "$budget_seconds"
         : > "$budget_marker"
-        kill -INT "$build_pid" 2>/dev/null || true
+        # Escalate until the driver is gone: x.py can be stuck waiting on a
+        # cargo job that ignores SIGINT, and the job would then be killed at six
+        # hours with nothing checkpointed.
+        for signal in INT TERM KILL; do
+            printf '%s\n' "$signal" > "$stop_signal_file"
+            build_tree_pids "$build_pid" > "$stop_pids_file"
+            kill_build_tree "$signal" "$build_pid"
+            grace=$stop_grace_int
+            case $signal in
+                TERM) grace=$stop_grace_term ;;
+                KILL) grace=$stop_grace_kill ;;
+            esac
+            waited=0
+            while [ "$waited" -lt "$grace" ] && kill -0 "$build_pid" 2>/dev/null; do
+                sleep 1
+                waited=$((waited + 1))
+            done
+            kill -0 "$build_pid" 2>/dev/null || exit 0
+        done
     ) &
     watcher=$!
 fi
@@ -451,12 +580,21 @@ if [ -n "$watcher" ]; then
     kill "$watcher" 2>/dev/null || true
     wait "$watcher" 2>/dev/null || true
 fi
+if [ -f "$stop_signal_file" ]; then
+    read -r stop_signal < "$stop_signal_file" || stop_signal=
+fi
+wait_for_stopped_children "$stop_pids_file"
 
 stage_root=$rust_checkout/build/$HOST/stage2
 if [ -f "$budget_marker" ]; then
     if [ "$build_status" -eq 0 ] && [ -x "$stage_root/bin/rustc" ]; then
         echo "the budget expired as the build finished; continuing with staging"
     else
+        case $stop_signal in
+            ''|INT) ;;
+            *) echo "bootstrap_rustc_octagram: warning: x.py ignored SIGINT; stopped with SIG$stop_signal" >&2 ;;
+        esac
+        prune_checkpoint
         write_state incomplete
         echo "OCTAGRAM-RUSTC-BUILD-INCOMPLETE: stopped at the ${time_budget}m time budget" >&2
         echo "bootstrap_rustc_octagram: x.py was interrupted; the build directory is kept at" >&2

@@ -430,12 +430,24 @@ jobs:
           path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
           key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
 
+      - name: Pack libLLVM install tree
+        # actions/upload-artifact does not keep file modes: the tree reaches the
+        # rustc job with every file at 0644, so bin/llvm-config is not
+        # executable and the bootstrap rejects the install. One archive keeps
+        # both the modes and the prefix layout the cache keys assume.
+        if: success() && steps.llvm-build.outputs.incomplete != 'true'
+        run: |
+          set -euo pipefail
+          archive="build/toolchain/octagram-llvm-$LLVM_VERSION.tar"
+          tar -C build/toolchain -cf "$archive" "llvm-$LLVM_VERSION-octagram"
+          ls -l "$archive"
+
       - name: Upload libLLVM
         if: success() && steps.llvm-build.outputs.incomplete != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: octagram-llvm-${{ env.LLVM_VERSION }}
-          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
+          path: build/toolchain/octagram-llvm-${{ env.LLVM_VERSION }}.tar
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -542,7 +554,24 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: octagram-llvm-${{ env.LLVM_VERSION }}
-          path: build/toolchain/llvm-${{ env.LLVM_VERSION }}-octagram
+          path: build/toolchain
+
+      - name: Extract libLLVM
+        # The artifact is the archive packed by the llvm job, so unpacking
+        # restores the executable bits and the exact prefix the bootstrap and
+        # the install-tree cache key expect.
+        run: |
+          set -euo pipefail
+          archive="build/toolchain/octagram-llvm-$LLVM_VERSION.tar"
+          prefix="build/toolchain/llvm-$LLVM_VERSION-octagram"
+          rm -rf "$prefix"
+          tar -C build/toolchain -xf "$archive"
+          rm -f "$archive"
+          for tool in llvm-config octagram-llvm-config; do
+            [ -x "$prefix/bin/$tool" ] \
+              || { echo "FAIL: $prefix/bin/$tool is not executable"; ls -l "$prefix/bin"; exit 1; }
+          done
+          echo "libLLVM unpacked: $prefix"
 
       - name: Restore rustc bootstrap checkpoint
         id: rustc-cache

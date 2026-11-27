@@ -17,10 +17,12 @@
 #                                [--source DIR] [--jobs N] [--time-budget MIN]
 #                                [--resume] [--status] [--clean]
 #
-#   --time-budget MIN  stop ninja cleanly after MIN minutes, keep the build
-#                      tree and exit 75 (EX_TEMPFAIL) with
-#                      OCTAGRAM-LLVM-BUILD-INCOMPLETE. Rerun the same command
-#                      to continue: ninja only rebuilds what is still missing.
+#   --time-budget MIN  stop ninja after MIN minutes, keep the build tree and
+#                      exit 75 (EX_TEMPFAIL) with OCTAGRAM-LLVM-BUILD-INCOMPLETE.
+#                      Rerun the same command to continue: ninja only rebuilds
+#                      what is still missing. The stop is SIGINT, escalating to
+#                      SIGTERM/SIGKILL when an edge ignores it, so the state
+#                      file is always written.
 #   --resume           continue the build tree from a previous run. Fails when
 #                      there is nothing to resume instead of silently starting
 #                      over, so CI can report what it actually did.
@@ -58,6 +60,14 @@ repo_root=$(cd "$tools_dir/.." && pwd)
 llvm_version=${LLVM_VERSION:-21.1.0}
 jobs=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
 time_budget=${OCTAGRAM_LLVM_TIME_BUDGET:-0}
+# How long the build gets to react to each signal before the next one. A budget
+# stop must reach the state file: a job still running when GitHub kills it at
+# six hours never runs the checkpoint save step.
+stop_grace_int=${OCTAGRAM_STOP_GRACE_INT:-120}
+stop_grace_term=${OCTAGRAM_STOP_GRACE_TERM:-60}
+stop_grace_kill=15
+stop_grace_children=30
+stop_signal=
 build_root=${OCTAGRAM_TOOLCHAIN_BUILD:-$repo_root/build/toolchain}
 prefix=
 source_dir=
@@ -98,6 +108,15 @@ case $jobs in
         exit 2
         ;;
 esac
+for grace in "$stop_grace_int" "$stop_grace_term"; do
+    case $grace in
+        ''|*[!0-9]*)
+            echo "build_llvm_octagram: error: OCTAGRAM_STOP_GRACE_INT and" >&2
+            echo "build_llvm_octagram:        OCTAGRAM_STOP_GRACE_TERM take whole seconds, got '$grace'" >&2
+            exit 2
+            ;;
+    esac
+done
 if [ "$resume" -eq 1 ] && [ "$clean" -eq 1 ]; then
     echo "build_llvm_octagram: error: --resume and --clean contradict each other" >&2
     exit 2
@@ -127,6 +146,7 @@ write_state() {
   "phase": "$phase",
   "jobs": $jobs,
   "time_budget_minutes": $time_budget,
+  "stop_signal": "$stop_signal",
   "source_dir": "$source_dir",
   "build_dir": "$cmake_build",
   "install_prefix": "$install_prefix",
@@ -164,6 +184,64 @@ install_complete() {
     set -- "$install_prefix"/lib/libLLVM*.a
     set -e
     [ -e "$1" ] || return 1
+    return 0
+}
+
+# A budget stop must always end with the state file written and the tree quiet:
+# GitHub kills the job at six hours without running the checkpoint save step, so
+# a build that ignores the stop signal loses every hour spent on it. The driver
+# gets SIGINT first (ninja finishes the edge it already started), then SIGTERM,
+# then SIGKILL. Its children are signalled too, because killing only the driver
+# leaves compilers writing into the tree that is about to be checkpointed.
+build_tree_pids() {
+    ps -e -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
+        { kids[$2] = kids[$2] " " $1 }
+        function walk(pid,    i, n, list) {
+            n = split(kids[pid], list, " ")
+            for (i = 1; i <= n; i++) {
+                walk(list[i])
+                print list[i]
+            }
+        }
+        END { walk(root) }'
+}
+
+kill_build_tree() {
+    signal=$1
+    root=$2
+    for pid in $(build_tree_pids "$root"); do
+        kill -"$signal" "$pid" 2>/dev/null || true
+    done
+    kill -"$signal" "$root" 2>/dev/null || true
+}
+
+# The pids were recorded before the signal because a killed driver reparents its
+# children at once. Waiting for them keeps the checkpoint from archiving a file
+# that is still being written; anything left after the grace is an orphan that
+# ignored the stop, so freeze it before the tree is saved.
+wait_for_stopped_children() {
+    pids_file=$1
+    [ -f "$pids_file" ] || return 0
+    waited=0
+    while [ "$waited" -lt "$stop_grace_children" ]; do
+        alive=0
+        while read -r pid; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                alive=1
+                break
+            fi
+        done < "$pids_file"
+        [ "$alive" -eq 0 ] && return 0
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "warning: build children ignored the stop for ${stop_grace_children}s; killing them" >&2
+    while read -r pid; do
+        if [ -n "$pid" ]; then
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done < "$pids_file"
+    sleep 1
     return 0
 }
 
@@ -361,7 +439,9 @@ if [ "$reused" -eq 0 ]; then
         echo "  time budget: ${budget_seconds}s remaining of ${time_budget}m"
     fi
     budget_marker=$work_dir/budget-exhausted
-    rm -f "$budget_marker"
+    stop_signal_file=$work_dir/stop-signal
+    stop_pids_file=$work_dir/stop-pids
+    rm -f "$budget_marker" "$stop_signal_file" "$stop_pids_file"
     # ninja handles SIGINT by finishing the edges it already started and
     # stopping, which leaves a tree the next run can continue. cmake --build
     # does not forward the signal to ninja, so run ninja directly.
@@ -372,7 +452,25 @@ if [ "$reused" -eq 0 ]; then
         (
             sleep "$budget_seconds"
             : > "$budget_marker"
-            kill -INT "$build_pid" 2>/dev/null || true
+            # Escalate until the driver is gone: an edge stuck in one long
+            # compile ignores SIGINT, and the job would then be killed at six
+            # hours with nothing checkpointed.
+            for signal in INT TERM KILL; do
+                printf '%s\n' "$signal" > "$stop_signal_file"
+                build_tree_pids "$build_pid" > "$stop_pids_file"
+                kill_build_tree "$signal" "$build_pid"
+                grace=$stop_grace_int
+                case $signal in
+                    TERM) grace=$stop_grace_term ;;
+                    KILL) grace=$stop_grace_kill ;;
+                esac
+                waited=0
+                while [ "$waited" -lt "$grace" ] && kill -0 "$build_pid" 2>/dev/null; do
+                    sleep 1
+                    waited=$((waited + 1))
+                done
+                kill -0 "$build_pid" 2>/dev/null || exit 0
+            done
         ) &
         watcher=$!
     fi
@@ -382,11 +480,19 @@ if [ "$reused" -eq 0 ]; then
         kill "$watcher" 2>/dev/null || true
         wait "$watcher" 2>/dev/null || true
     fi
+    if [ -f "$stop_signal_file" ]; then
+        read -r stop_signal < "$stop_signal_file" || stop_signal=
+    fi
+    wait_for_stopped_children "$stop_pids_file"
 
     if [ -f "$budget_marker" ] && [ "$build_status" -ne 0 ]; then
         write_state incomplete
+        case $stop_signal in
+            ''|INT) ;;
+            *) echo "build_llvm_octagram: warning: ninja ignored SIGINT; stopped with SIG$stop_signal" >&2 ;;
+        esac
         echo "OCTAGRAM-LLVM-BUILD-INCOMPLETE: stopped at the ${time_budget}m time budget" >&2
-        echo "build_llvm_octagram: ninja stopped cleanly; the build tree is kept at" >&2
+        echo "build_llvm_octagram: ninja was stopped; the build tree is kept at" >&2
         echo "build_llvm_octagram:   $cmake_build" >&2
         echo "build_llvm_octagram: rerun the same command to continue from here." >&2
         exit 75

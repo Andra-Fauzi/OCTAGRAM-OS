@@ -10,6 +10,13 @@ libLLVM cross-build does not fit in one run, so the workflow must:
   * restore that checkpoint and pass --resume on the next run;
   * never cache a partial install tree under the "install" key.
 
+A stop that hangs is as bad as no stop: GitHub would kill the job at six hours
+and the checkpoint save step would never run. So the scripts escalate the stop
+from SIGINT to SIGTERM and SIGKILL, wait for the children, and record which
+signal was needed in the state file. The rustc checkpoint also drops the stage0
+compiler tree, which the next run re-copies from the pinned toolchain, so the
+multi-GB checkpoint fits the 10 GB repository cache quota.
+
 These are text assertions on the workflow and the build script. They catch the
 regression that matters: an edit that silently makes the build start over, or
 that reports an unfinished build as done. No LLVM build is needed.
@@ -82,10 +89,23 @@ def main() -> int:
         "octagram-build-state.json",
         "build_llvm_octagram.sh must record build state for the incomplete marker",
     )
+    # A budget stop must always reach the state file. SIGINT alone is not enough
+    # when an edge ignores it: the job would then run into GitHub's six-hour
+    # limit and never save the checkpoint.
     require(
         build,
-        "kill -INT",
-        "build_llvm_octagram.sh must stop ninja with SIGINT so the tree stays resumable",
+        "for signal in INT TERM KILL",
+        "build_llvm_octagram.sh must escalate the budget stop from SIGINT to SIGTERM and SIGKILL",
+    )
+    require(
+        build,
+        "wait_for_stopped_children",
+        "build_llvm_octagram.sh must wait for the stopped build children before checkpointing",
+    )
+    require(
+        build,
+        '"stop_signal": "$stop_signal"',
+        "build_llvm_octagram.sh must record which signal stopped the build",
     )
     require(
         build,
@@ -157,8 +177,31 @@ def main() -> int:
     )
     require(
         bootstrap,
-        "kill -INT",
-        "bootstrap_rustc_octagram.sh must stop x.py with SIGINT so the tree stays resumable",
+        "for signal in INT TERM KILL",
+        "bootstrap_rustc_octagram.sh must escalate the budget stop from SIGINT to SIGTERM and SIGKILL",
+    )
+    require(
+        bootstrap,
+        "wait_for_stopped_children",
+        "bootstrap_rustc_octagram.sh must wait for the stopped build children before checkpointing",
+    )
+    require(
+        bootstrap,
+        '"stop_signal": "$stop_signal"',
+        "bootstrap_rustc_octagram.sh must record which signal stopped the build",
+    )
+    # The rustc checkpoint is the largest cache entry: drop the stage0 compiler
+    # tree, which bootstrap re-copies from the pinned toolchain, instead of
+    # pushing the repository past its 10 GB cache quota.
+    require(
+        bootstrap,
+        "prune_checkpoint",
+        "bootstrap_rustc_octagram.sh must prune the checkpoint before saving it",
+    )
+    require(
+        bootstrap,
+        "stage0-sysroot",
+        "bootstrap_rustc_octagram.sh must drop the reinstalled stage0 tree from the checkpoint",
     )
 
     # --- the rustc-cargo job -----------------------------------------------
@@ -323,8 +366,9 @@ def main() -> int:
         return 1
     print(
         "OCTAGRAM-LLVM-CI-PASS: both build jobs keep their budget below the "
-        "six-hour cap, restore checkpoints by prefix and save them only when "
-        "incomplete, and cache the install tree only after verification"
+        "six-hour cap, escalate the stop until the build is gone, restore "
+        "checkpoints by prefix, save them only when incomplete, and cache the "
+        "install tree only after verification"
     )
     return 0
 

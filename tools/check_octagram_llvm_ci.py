@@ -226,8 +226,13 @@ def main() -> int:
     )
     require(
         bootstrap,
-        "stage0-sysroot",
-        "bootstrap_rustc_octagram.sh must drop the reinstalled stage0 tree from the checkpoint",
+        "submodules = false",
+        "Rust bootstrap should not initialize the full llvm-project source submodule",
+    )
+    require(
+        bootstrap,
+        "optimized-compiler-builtins = false",
+        "Rust bootstrap must use the Rust-only compiler-builtins implementation when llvm-project is intentionally absent",
     )
 
     # --- the rustc-cargo job -----------------------------------------------

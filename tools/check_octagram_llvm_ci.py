@@ -508,6 +508,41 @@ def main() -> int:
                     f"'{expected_text}'"
                 )
 
+    # The cache fingerprint is content-based: identical sysroots must
+    # produce the same key, while a sysroot content change must produce a new one.
+    with tempfile.TemporaryDirectory() as temp_root:
+        temp = Path(temp_root)
+        sysroot = temp / "sysroot"
+        library = sysroot / "usr" / "lib" / "libc++.a"
+        library.parent.mkdir(parents=True)
+        library.write_bytes(b"fixture-libcxx-v1")
+        fingerprint_env = dict(
+            os.environ,
+            OCTAGRAM_TOOLCHAIN_BUILD=str(temp / "build"),
+            OCTAGRAM_SYSROOT=str(sysroot),
+        )
+
+        def fingerprint() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["sh", str(BUILD), "--print-build-inputs-stamp", "--llvm-version", "22.1.8"],
+                cwd=REPO,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=fingerprint_env,
+            )
+
+        first = fingerprint()
+        repeated = fingerprint()
+        if first.returncode != 0 or not re.fullmatch(r"[0-9a-f]{64}\\n?", first.stdout):
+            fail(f"LLVM input fingerprint command failed: {first.stdout}{first.stderr}")
+        if repeated.returncode != 0 or repeated.stdout != first.stdout:
+            fail("LLVM input fingerprint is not deterministic for an unchanged sysroot")
+        library.write_bytes(b"fixture-libcxx-v2")
+        changed = fingerprint()
+        if changed.returncode != 0 or changed.stdout == first.stdout:
+            fail("LLVM input fingerprint did not change when sysroot contents changed")
+
     if failures:
         print(f"OCTAGRAM-LLVM-CI-FAIL ({len(failures)})")
         return 1

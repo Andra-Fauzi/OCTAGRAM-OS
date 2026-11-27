@@ -387,6 +387,22 @@ def main() -> int:
             destination.write_text(expected, encoding="utf-8")
 
     widen_linux_cfg_gates(std)
+
+    # Keep the Linux-specific public namespace Linux-only. The shared private
+    # os::net::linux_ext module above it is still widened for OCTAGRAM because
+    # generic Unix socket/address code uses it, but os::linux itself imports
+    # Linux-only process extensions such as PidFd. Do not expose/compile those
+    # modules for OCTAGRAM.
+    os_mod = std / "os/mod.rs"
+    replace_once(
+        os_mod,
+        '        #[cfg(any(target_os = "linux", target_os = "octagram"))]\\n'
+        "        pub mod linux;\\n",
+        '        #[cfg(target_os = "linux")]\\n'
+        "        pub mod linux;\\n",
+    )
+    print("RUST-STD-OCTAGRAM-LINUX-OS-MODULE-PASS: os::linux remains Linux-only")
+
     print("RUST-STD-OCTAGRAM-PATCH-PASS: Unix target glue installed in rust-src")
     return 0
 

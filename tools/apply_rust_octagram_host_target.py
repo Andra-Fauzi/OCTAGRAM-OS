@@ -102,11 +102,10 @@ def main() -> int:
     changed |= replace_once(root / SPEC_MOD, OS_ANCHOR, OS_LINE)
     changed |= replace_once(root / SPEC_MOD, REGISTRATION_ANCHOR, REGISTRATION_LINE)
 
-    # This target intentionally has no dynamic loader or shared-object ABI.
-    # rustc normally warns when Cargo's std build script requests a dylib that
-    # this static-only target cannot emit. Suppress only this expected warning
-    # for the exact OCTAGRAM triple and Dylib crate type; keep every other
-    # unsupported-output warning visible.
+    # Keep rustc's unsupported-crate-type warning intact. Cargo parses this
+    # diagnostic while probing --print=file-names to distinguish unsupported
+    # crate types from missing output lines. Suppressing the Dylib warning
+    # shifts Cargo's output parser and makes target discovery fail.
     passes = root / "compiler/rustc_interface/src/passes.rs"
     passes_source = passes.read_text(encoding="utf-8")
     old_diagnostic = """            session.dcx().emit_warn(diagnostics::UnsupportedCrateTypeForTarget {
@@ -122,15 +121,15 @@ def main() -> int:
                     target_triple: &session.opts.target_triple,
                 });
             }"""
-    if new_diagnostic not in passes_source:
-        count = passes_source.count(old_diagnostic)
-        if count != 1:
-            raise SystemExit(
-                "expected one UnsupportedCrateTypeForTarget diagnostic in "
-                f"{passes}, found {count}; refusing an unsafe compiler patch"
-            )
-        passes.write_text(passes_source.replace(old_diagnostic, new_diagnostic, 1), encoding="utf-8")
-    print("RUST-OCTAGRAM-STATIC-DYLIB-PASS: only the expected static-target dylib warning is filtered")
+    if new_diagnostic in passes_source:
+        passes_source = passes_source.replace(new_diagnostic, old_diagnostic, 1)
+        passes.write_text(passes_source, encoding="utf-8")
+    elif old_diagnostic not in passes_source:
+        raise SystemExit(
+            "expected the original UnsupportedCrateTypeForTarget diagnostic in "
+            f"{passes}; refusing an unsafe compiler patch"
+        )
+    print("RUST-OCTAGRAM-CRATE-TYPE-DIAGNOSTICS-PASS: Cargo can detect unsupported crate types")
 
     print(
         "registered x86_64-unknown-octagram in compiler/rustc_target/src/spec/mod.rs"

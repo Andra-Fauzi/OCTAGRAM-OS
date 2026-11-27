@@ -526,17 +526,22 @@ libc_checkout=$(CDPATH= cd -- "$libc_checkout" && pwd -P)
 echo "applying pinned libc OCTAGRAM module to $libc_checkout"
 python3 "$repo_root/tools/apply_rust_libc_octagram.py" "$libc_checkout"
 
-# `x.py build-std` does not use the separate upstream-libc checkout above:
-# Cargo resolves std's libc dependency from its crates.io registry cache.
-# Fetch the exact lockfile version now and patch that extracted source before
-# the first stage1 std compilation, otherwise libc exports `unistd` without
-# an OCTAGRAM module and fails with E0432.
-echo "fetching libc $LIBC_VERSION and $LIBC_CARGO_VERSION into Cargo registry cache"
-libc_fetch_dir=$rust_checkout/build/octagram-libc-fetch
-mkdir -p "$libc_fetch_dir/src"
-cat > "$libc_fetch_dir/Cargo.toml" <<EOF
+# Both the Rust workspace and the Cargo submodule have their own Cargo.lock.
+# Several versions below are semver-compatible (for example getrandom 0.3.3
+# and 0.3.4), so they must be fetched in separate tiny workspaces. Putting both
+# exact versions in one manifest makes Cargo attempt to unify them and fail.
+cargo_home=$(printenv CARGO_HOME 2>/dev/null || true)
+if [ -z "$cargo_home" ]; then cargo_home=$HOME/.cargo; fi
+
+fetch_locked_crate() {
+    package=$1
+    version=$2
+    fetch_dir=$rust_checkout/build/octagram-fetch-$package-$version
+    echo "fetching $package $version into Cargo registry cache"
+    mkdir -p "$fetch_dir/src"
+    cat > "$fetch_dir/Cargo.toml" <<EOF
 [package]
-name = "octagram-libc-fetch"
+name = "octagram-fetch-$package-$version"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -544,28 +549,48 @@ publish = false
 [workspace]
 
 [dependencies]
-libc-rust-workspace = { package = "libc", version = "=$LIBC_VERSION", default-features = false }
-libc-cargo-submodule = { package = "libc", version = "=$LIBC_CARGO_VERSION", default-features = false }
+$package = { version = "=$version" }
 EOF
-: > "$libc_fetch_dir/src/lib.rs"
-(
-    cd "$libc_fetch_dir"
-    cargo fetch
-)
-cargo_home=$(printenv CARGO_HOME 2>/dev/null || true)
-if [ -z "$cargo_home" ]; then cargo_home=$HOME/.cargo; fi
-registry_patch_count=0
-for libc_version in "$LIBC_VERSION" "$LIBC_CARGO_VERSION"; do
-    for archive in "$cargo_home"/registry/cache/*/libc-"$libc_version".crate; do
+    : > "$fetch_dir/src/lib.rs"
+    (
+        cd "$fetch_dir"
+        CARGO_HOME=$cargo_home cargo fetch
+    )
+
+    archive_count=0
+    for archive in "$cargo_home"/registry/cache/*/"$package-$version.crate"; do
         [ -f "$archive" ] || continue
         registry_id=$(basename "$(dirname "$archive")")
         registry_source_root=$cargo_home/registry/src/$registry_id
-        registry_source=$registry_source_root/libc-$libc_version
+        registry_source=$registry_source_root/$package-$version
         if [ ! -f "$registry_source/Cargo.toml" ]; then
             mkdir -p "$registry_source_root"
             tar -xzf "$archive" -C "$registry_source_root"
         fi
+        [ -f "$registry_source/Cargo.toml" ] || {
+            echo "bootstrap_rustc_octagram: error: failed to extract $package $version" >&2
+            return 1
+        }
+        archive_count=$((archive_count + 1))
     done
+    if [ "$archive_count" -eq 0 ]; then
+        echo "bootstrap_rustc_octagram: error: cargo fetch did not cache $package $version" >&2
+        return 1
+    fi
+}
+
+# Rust workspace lockfile and Cargo submodule lockfile versions.
+fetch_locked_crate libc "$LIBC_VERSION"
+fetch_locked_crate libc "$LIBC_CARGO_VERSION"
+fetch_locked_crate getrandom "$GETRANDOM_VERSION"
+fetch_locked_crate getrandom "$GETRANDOM_CARGO_VERSION"
+fetch_locked_crate getrandom "$GETRANDOM_MODERN_VERSION"
+fetch_locked_crate errno "$ERRNO_VERSION"
+fetch_locked_crate tempfile "$TEMPFILE_VERSION"
+fetch_locked_crate tempfile "$TEMPFILE_CARGO_VERSION"
+
+registry_patch_count=0
+for libc_version in "$LIBC_VERSION" "$LIBC_CARGO_VERSION"; do
     version_patch_count=0
     for registry_source in "$cargo_home"/registry/src/*/libc-"$libc_version"; do
         [ -f "$registry_source/Cargo.toml" ] || continue
@@ -585,88 +610,8 @@ for libc_version in "$LIBC_VERSION" "$LIBC_CARGO_VERSION"; do
 done
 echo "RUST-LIBC-CARGO-REGISTRY-PATCH-PASS: patched $registry_patch_count registry source(s) across both lockfiles"
 
-# getrandom 0.3.3 is used by the stage-2 compiler dependency graph (through
-# hashbrown/parking_lot_core). Upstream does not know target_os=octagram, so
-# install the native syscall-121 backend into the exact registry source before
-# x.py starts compiling stage 2. The backend does not depend on libc errno APIs.
-echo "fetching getrandom $GETRANDOM_VERSION, $GETRANDOM_CARGO_VERSION, and $GETRANDOM_MODERN_VERSION"
-getrandom_fetch_dir=$rust_checkout/build/octagram-getrandom-fetch
-mkdir -p "$getrandom_fetch_dir/src"
-cat > "$getrandom_fetch_dir/Cargo.toml" <<EOF
-[package]
-name = "octagram-getrandom-fetch"
-version = "0.0.0"
-edition = "2021"
-publish = false
-
-[workspace]
-
-[dependencies]
-getrandom-rust-workspace = { package = "getrandom", version = "=$GETRANDOM_VERSION", default-features = false }
-getrandom-cargo-submodule = { package = "getrandom", version = "=$GETRANDOM_CARGO_VERSION", default-features = false }
-getrandom-modern = { package = "getrandom", version = "=$GETRANDOM_MODERN_VERSION", default-features = false }
-EOF
-: > "$getrandom_fetch_dir/src/lib.rs"
-(
-    cd "$getrandom_fetch_dir"
-    cargo fetch
-)
-for getrandom_version in "$GETRANDOM_VERSION" "$GETRANDOM_CARGO_VERSION" "$GETRANDOM_MODERN_VERSION"; do
-    for archive in "$cargo_home"/registry/cache/*/getrandom-"$getrandom_version".crate; do
-        [ -f "$archive" ] || continue
-        registry_id=$(basename "$(dirname "$archive")")
-        registry_source_root=$cargo_home/registry/src/$registry_id
-        registry_source=$registry_source_root/getrandom-$getrandom_version
-        if [ ! -f "$registry_source/Cargo.toml" ]; then
-            mkdir -p "$registry_source_root"
-            tar -xzf "$archive" -C "$registry_source_root"
-        fi
-    done
-done
 python3 "$repo_root/tools/patch_getrandom_octagram.py" \
     --registry-root "$cargo_home/registry/src"
-
-# errno 0.3.14 is also in the stage-2 dependency graph.  It imports
-# libc::strerror_r and calls errno_location(); OCTAGRAM exports strerror_r
-# and __errno_location(), so patch both the libc binding and this symbol map
-# before starting x.py.  Pin libc here so this fetch uses the same target
-# module version that build-std consumes.
-echo "fetching errno $ERRNO_VERSION into Cargo registry cache"
-errno_fetch_dir=$rust_checkout/build/octagram-errno-fetch
-mkdir -p "$errno_fetch_dir/src"
-cat > "$errno_fetch_dir/Cargo.toml" <<EOF
-[package]
-name = "octagram-errno-fetch"
-version = "0.0.0"
-edition = "2021"
-publish = false
-
-[workspace]
-
-[dependencies]
-errno = { version = "=$ERRNO_VERSION", default-features = false }
-libc-rust-workspace = { package = "libc", version = "=$LIBC_VERSION", default-features = false }
-libc-cargo-submodule = { package = "libc", version = "=$LIBC_CARGO_VERSION", default-features = false }
-tempfile-rust-workspace = { package = "tempfile", version = "=$TEMPFILE_VERSION" }
-tempfile-cargo-submodule = { package = "tempfile", version = "=$TEMPFILE_CARGO_VERSION" }
-EOF
-: > "$errno_fetch_dir/src/lib.rs"
-(
-    cd "$errno_fetch_dir"
-    cargo fetch
-)
-for package_version in "errno-$ERRNO_VERSION" "tempfile-$TEMPFILE_VERSION" "tempfile-$TEMPFILE_CARGO_VERSION"; do
-    for archive in "$cargo_home"/registry/cache/*/"$package_version".crate; do
-        [ -f "$archive" ] || continue
-        registry_id=$(basename "$(dirname "$archive")")
-        registry_source_root=$cargo_home/registry/src/$registry_id
-        registry_source=$registry_source_root/$package_version
-        if [ ! -f "$registry_source/Cargo.toml" ]; then
-            mkdir -p "$registry_source_root"
-            tar -xzf "$archive" -C "$registry_source_root"
-        fi
-    done
-done
 python3 "$repo_root/tools/patch_errno_octagram.py" \
     --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_tempfile_octagram.py" \

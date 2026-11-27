@@ -534,9 +534,9 @@ def main() -> int:
         "the OCTAGRAM runtime must export the errno accessor used by Rust crates",
     )
 
-    # Cargo builds libc's new module tree for the target. A declaration in
-    # the legacy OCTAGRAM module is insufficient unless this patcher re-exports
-    # the symbols that std's generic Unix filesystem PAL imports.
+    # The legacy crate::unix::* glob already re-exports the OCTAGRAM module.
+    # The new module patcher must remove the previous duplicate glob that caused
+    # E0659 ambiguous-name errors for flock/unlink/link/rename and related APIs.
     for symbol in (
         "strerror_r",
         "unlink",
@@ -561,20 +561,25 @@ def main() -> int:
             f"pub fn {symbol}(" if symbol not in ("LOCK_SH", "LOCK_EX", "LOCK_NB", "LOCK_UN") else f"pub const {symbol}:",
             f"OCTAGRAM libc module is missing {symbol}",
         )
-        require(
-            libc_patcher,
-            symbol,
-            f"the libc target-module re-export list is missing {symbol}",
-        )
+    require(
+        libc_patcher,
+        "Re-exporting the same names through new::* makes",
+        "the libc patcher must document and avoid duplicate public re-exports",
+    )
+    require(
+        libc_patcher,
+        "new_source = new_source[:block_start] + new_source[block_end + 3:]",
+        "the libc patcher must remove stale duplicate OCTAGRAM exports from cached sources",
+    )
     require(
         libc_module,
         "pub const O_RDONLY:",
         "OCTAGRAM libc must define the POSIX O_RDONLY flag",
     )
     require(
-        libc_patcher,
-        "O_RDONLY",
-        "the new libc module must re-export O_RDONLY to the crate root",
+        libc_module,
+        "pub const O_RDONLY:",
+        "OCTAGRAM libc module must define O_RDONLY for the legacy Unix re-export",
     )
     require(
         stage2_deps_check,

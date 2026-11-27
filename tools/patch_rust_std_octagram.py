@@ -210,8 +210,8 @@ def preserve_linux_socket_option_cfgs(std: Path) -> None:
         ("passcred", shared_widened, shared_original),
     )
     for method, widened_cfg, original_cfg in edits:
-        widened = f"{widened_cfg}\\n    pub fn {method}"
-        original = f"{original_cfg}\\n    pub fn {method}"
+        widened = f"{widened_cfg}\n    pub fn {method}"
+        original = f"{original_cfg}\n    pub fn {method}"
         if original in source:
             continue
         if source.count(widened) != 1:

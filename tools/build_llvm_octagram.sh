@@ -383,6 +383,45 @@ wait_for_stopped_children() {
     return 0
 }
 
+# GitHub cancellation normally terminates a running step before later steps can
+# save its checkpoint. Catch the first signal, stop Ninja and its compiler
+# descendants, then return the same resumable status as a budget stop. Keep this
+# handler deliberately bounded so the runner's SIGTERM/SIGKILL escalation does
+# not interrupt the checkpoint hand-off.
+external_cancel_checkpoint() {
+    received_signal=$1
+    trap '' INT TERM
+    echo "build_llvm_octagram: received external SIG$received_signal; quiescing Ninja for checkpoint" >&2
+    if [ -n "${watcher:-}" ]; then
+        kill "$watcher" 2>/dev/null || true
+        wait "$watcher" 2>/dev/null || true
+        watcher=
+    fi
+    if [ -n "${build_pid:-}" ]; then
+        cancel_pids_file=$work_dir/cancel-pids
+        build_tree_pids "$build_pid" > "$cancel_pids_file"
+        while read -r pid; do
+            [ -n "$pid" ] && kill -INT "$pid" 2>/dev/null || true
+        done < "$cancel_pids_file"
+        kill -INT "$build_pid" 2>/dev/null || true
+        sleep 3
+        while read -r pid; do
+            [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || true
+        done < "$cancel_pids_file"
+        kill -TERM "$build_pid" 2>/dev/null || true
+        sleep 1
+        while read -r pid; do
+            [ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null || true
+        done < "$cancel_pids_file"
+        kill -KILL "$build_pid" 2>/dev/null || true
+        wait "$build_pid" 2>/dev/null || true
+    fi
+    stop_signal="external-$received_signal"
+    write_state incomplete
+    echo "OCTAGRAM-LLVM-BUILD-INCOMPLETE: external cancellation stopped the build; checkpoint is safe to save" >&2
+    exit 75
+}
+
 for tool in cmake ninja gcc g++ curl tar python3; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "build_llvm_octagram: error: '$tool' is required on the host" >&2
@@ -599,8 +638,11 @@ CMAKE_ARGUMENTS
         ) &
         watcher=$!
     fi
+    trap 'external_cancel_checkpoint INT' INT
+    trap 'external_cancel_checkpoint TERM' TERM
     build_status=0
     wait "$build_pid" || build_status=$?
+    trap - INT TERM
     if [ -n "$watcher" ]; then
         kill "$watcher" 2>/dev/null || true
         wait "$watcher" 2>/dev/null || true

@@ -132,53 +132,22 @@ def main() -> int:
     # module lives in the legacy tree, so make it visible from `src/new` too
     # instead of maintaining two copies of the same definitions.
     new_mod = root / "src/new/mod.rs"
-    octagram_exports = (
-        "#[cfg(target_os = \"octagram\")]\n"
-        "use common::posix::unistd;\n"
-        "#[cfg(target_os = \"octagram\")]\n"
-        "pub use crate::unix::octagram::{\n"
-        "    dirent, dirent64, fstat, fstat64, fstatat, fstatat64, ftruncate, ftruncate64,\n"
-        "    lseek, lseek64, lstat, lstat64, open, open64, openat, openat64, pread, pread64,\n"
-        "    pwrite, pwrite64, readdir, readdir64, rename, renameat, stat, stat64, unlink,\n"
-        "    unlinkat, link, linkat, flock, fdopendir, opendir, closedir, sendfile, sigaltstack,\n"
-        "    stack_t, syscall,\n"
-        "    MAP_FAILED, MSG_NOSIGNAL, SA_ONSTACK, SA_SIGINFO, SS_DISABLE, SYS_futex, off64_t,\n"
-        "    cmsghdr, CMSG_ALIGN, CMSG_DATA, CMSG_FIRSTHDR, CMSG_LEN, CMSG_NXTHDR, CMSG_SPACE,\n"
-        "    SCM_RIGHTS, SCM_CREDENTIALS, siginfo_t, cpu_set_t, sendmsg, recvmsg, CPU_SETSIZE, CPU_ZERO,\n"
-        "    CPU_SET, CPU_CLR, CPU_ISSET, SOCK_CLOEXEC, MSG_TRUNC, MSG_CTRUNC, WEXITED,\n"
-        "    WUNTRACED, WCONTINUED, GRND_NONBLOCK, GRND_INSECURE, SOCK_SEQPACKET, SO_MARK,\n"
-        "    SO_PASSCRED, MSG_CMSG_CLOEXEC, TCP_DEFER_ACCEPT, TCP_QUICKACK, UIO_MAXIOV,\n"
-        "    SYS_pidfd_open, SYS_pidfd_send_signal, CLD_EXITED, CLD_KILLED, CLD_DUMPED,\n"
-        "    CLD_TRAPPED, CLD_STOPPED, CLD_CONTINUED, SOCK_NONBLOCK, F_SETFD,\n"
-        "    SIGSTKSZ, MINSIGSTKSZ, MAP_STACK, O_PATH, O_RDONLY, O_WRONLY, O_RDWR,\n"
-        "    O_ACCMODE, O_CREAT, O_TRUNC, O_APPEND, O_EXCL, O_NONBLOCK, O_CLOEXEC,\n"
-        "    O_NOFOLLOW, O_DIRECTORY, AT_FDCWD, AT_REMOVEDIR, AT_SYMLINK_NOFOLLOW,\n"
-        "    MSG_EOR, AT_MINSIGSTKSZ, pipe2,\n"
-        "    preadv, pwritev, getauxval, P_PIDFD, PIDFD_SIGNAL_PROCESS_GROUP, PIDFD_GET_INFO,\n"
-        "    PIDFD_INFO_EXIT, pidfd_info, waitid, accept4, pthread_attr_getstack,\n"
-        "    pthread_attr_getguardsize, pthread_getattr_np, clock_nanosleep, SO_PEERCRED,\n"
-        "    ucred, __xpg_strerror_r, strerror_r, LOCK_SH, LOCK_EX, LOCK_NB, LOCK_UN,\n"
-        "    FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP,\n"
-        "    FUTEX_WAIT_BITSET, FUTEX_WAKE_BITSET, FUTEX_PRIVATE_FLAG, FUTEX_CLOCK_REALTIME,\n"
-        "    FUTEX_WAIT_PRIVATE, FUTEX_WAKE_PRIVATE, FUTEX_REQUEUE_PRIVATE,\n"
-        "    FUTEX_CMP_REQUEUE_PRIVATE, FUTEX_WAKE_OP_PRIVATE, FUTEX_WAIT_BITSET_PRIVATE,\n"
-        "    FUTEX_WAKE_BITSET_PRIVATE,\n"
-        "};\n"
-    )
     new_source = new_mod.read_text(encoding="utf-8")
     marker = '#[cfg(target_os = "octagram")]\nuse common::posix::unistd;\n'
     if new_source.count(marker) > 1:
         raise SystemExit(f"duplicate OCTAGRAM libc re-export blocks in {new_mod}")
     if marker in new_source:
+        # Every OCTAGRAM binding is already re-exported through the legacy
+        # crate::unix::* glob. Re-exporting the same names through new::* makes
+        # libc::flock/unlink/link/etc ambiguous at the crate root.
         block_start = new_source.index(marker)
         block_end = new_source.find("};\n", block_start)
         if block_end < 0:
             raise SystemExit(f"incomplete OCTAGRAM libc re-export block in {new_mod}")
         new_source = new_source[:block_start] + new_source[block_end + 3:]
-    if new_source.count("mod common;\n") != 1:
-        raise SystemExit(f"expected one common module anchor in {new_mod}")
-    new_source = new_source.replace("mod common;\n", "mod common;\n\n" + octagram_exports, 1)
-    new_mod.write_text(new_source, encoding="utf-8")
+        new_mod.write_text(new_source, encoding="utf-8")
+    if "mod common;\n" not in new_source:
+        raise SystemExit(f"missing common module anchor in {new_mod}")
     # Cargo re-extracts a registry crate whenever this marker is missing, which
     # silently discards the edits above; keep the marker so the patched sources
     # are the ones cargo compiles.

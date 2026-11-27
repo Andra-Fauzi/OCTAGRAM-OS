@@ -365,8 +365,8 @@ def main() -> int:
     )
     require(
         std_patch,
-        '        #[cfg(target_os = "linux")]',
-        "the std PAL patcher must restore the Linux-only cfg on the public os::linux module",
+        "condition == '#[cfg(target_os = \"linux\")]'",
+        "the std PAL patcher must recognize the restored Linux-only os::linux cfg",
     )
     require(
         host_target_patch,

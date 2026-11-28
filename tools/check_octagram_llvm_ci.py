@@ -46,6 +46,8 @@ ERRNO_PATCH = REPO / "tools" / "patch_errno_octagram.py"
 TEMPFILE_PATCH = REPO / "tools" / "patch_tempfile_octagram.py"
 FILETIME_PATCH = REPO / "tools" / "patch_filetime_octagram.py"
 SOCKET2_PATCH = REPO / "tools" / "patch_socket2_octagram.py"
+RUSTIX_PATCHER = REPO / "tools" / "patch_rustix_octagram.py"
+RUSTIX_PATCH = REPO / "patches" / "rustix-1.1.6-octagram.patch"
 LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
 LIBC_PATCHER = REPO / "tools" / "apply_rust_libc_octagram.py"
 RUNTIME = REPO / "user" / "runtime.c"
@@ -94,6 +96,8 @@ def main() -> int:
     tempfile_patch = TEMPFILE_PATCH.read_text(encoding="utf-8")
     filetime_patch = FILETIME_PATCH.read_text(encoding="utf-8")
     socket2_patch = SOCKET2_PATCH.read_text(encoding="utf-8")
+    rustix_patcher = RUSTIX_PATCHER.read_text(encoding="utf-8")
+    rustix_patch = RUSTIX_PATCH.read_text(encoding="utf-8")
     libc_module = LIBC_MODULE.read_text(encoding="utf-8")
     libc_patcher = LIBC_PATCHER.read_text(encoding="utf-8")
     runtime = RUNTIME.read_text(encoding="utf-8")
@@ -750,23 +754,18 @@ def main() -> int:
 
     require(
         bootstrap,
-        'SOCKET2_VERSION=0.6.5',
-        "Rust bootstrap must pin workspace socket2 0.6.5",
+        'RUSTIX_VERSION=1.1.6',
+        "Rust bootstrap must pin rustix 1.1.6 for Cargo's Unix dependency graph",
     )
     require(
         bootstrap,
-        'SOCKET2_CARGO_VERSION=0.6.4',
-        "Rust bootstrap must pin Cargo submodule socket2 0.6.4",
+        'fetch_locked_crate rustix "$RUSTIX_VERSION"',
+        "Rust bootstrap must fetch rustix 1.1.6 before stage 2",
     )
     require(
         bootstrap,
-        'fetch_locked_crate socket2 "$SOCKET2_VERSION"',
-        "Rust bootstrap must fetch socket2 0.6.5 before stage 2",
-    )
-    require(
-        bootstrap,
-        "patch_socket2_octagram.py",
-        "Rust bootstrap must patch socket2 before stage 2",
+        "patch_rustix_octagram.py",
+        "Rust bootstrap must patch rustix before stage 2",
     )
 
     # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
@@ -870,6 +869,7 @@ def main() -> int:
         ('socket2 = { version = "=$socket2_version" }', "dependency preflight must compile the locked socket2 crate"),
         ("patch_filetime_octagram.py", "dependency check must patch filetime to utimensat"),
         ("patch_socket2_octagram.py", "dependency check must patch socket2 msghdr ABI for OCTAGRAM"),
+        ("patch_rustix_octagram.py", "dependency check must patch rustix before Cargo target compilation"),
         ("patch_rust_std_octagram.py", "dependency check must patch installed rust-src before compiling std-based dependencies"),
         ("OCTAGRAM_RUST_STD_ROOT", "dependency check must patch the exact rust-src standard library it compiles"),
         ("CARGO_TARGET_DIR=$check_root/target-octagram", "dependency checks must share build-std artifacts to avoid compiling std three times"),
@@ -886,6 +886,9 @@ def main() -> int:
     ):
         require(socket2_patch, needle, message)
 
+    require(rustix_patcher, 'VERSION = "1.1.6"', "rustix patcher must target the Cargo lockfile version")
+    require(rustix_patcher, '["patch", "-p1"', "rustix patcher must apply the version-pinned compatibility diff")
+    require(rustix_patch, 'target_os = "octagram"', "rustix compatibility diff must use OCTAGRAM cfg gates")
     # --- the rustc-cargo job -----------------------------------------------
     rustc = job_block(workflow, "rustc-cargo")
     require(

@@ -19,9 +19,17 @@ def main() -> int:
     source_text = SOURCE.read_text(encoding="utf-8")
     harness_text = HARNESS.read_text(encoding="utf-8")
 
-    source_markers = set(SOURCE_MARKER.findall(source_text))
-    source_markers.update(DIRECT_OUTPUT_MARKER.findall(source_text))
-    harness_markers = set(HARNESS_MARKER.findall(harness_text))
+    source_positions = [
+        (match.start(), match.group(1))
+        for match in SOURCE_MARKER.finditer(source_text)
+    ] + [
+        (match.start(), match.group(1))
+        for match in DIRECT_OUTPUT_MARKER.finditer(source_text)
+    ]
+    source_order = [marker for _, marker in sorted(source_positions)]
+    source_markers = set(source_order)
+    harness_order = HARNESS_MARKER.findall(harness_text)
+    harness_markers = set(harness_order)
 
     missing = sorted(source_markers - harness_markers)
     if missing:
@@ -30,9 +38,23 @@ def main() -> int:
             print(f"  - {marker}")
         return 1
 
+    if source_order != harness_order:
+        mismatch = next(
+            (index for index, pair in enumerate(zip(source_order, harness_order))
+             if pair[0] != pair[1]),
+            min(len(source_order), len(harness_order)),
+        )
+        expected = source_order[mismatch] if mismatch < len(source_order) else "<end>"
+        actual = harness_order[mismatch] if mismatch < len(harness_order) else "<end>"
+        print(
+            "RUST-STD-PROBE-MARKERS-ORDER-FAIL: "
+            f"first mismatch at index {mismatch}: source={expected}, harness={actual}"
+        )
+        return 1
+
     print(
         "RUST-STD-PROBE-MARKERS-PASS: "
-        f"{len(source_markers)} source markers are covered by the QEMU harness"
+        f"{len(source_markers)} source markers are covered in execution order"
     )
     return 0
 

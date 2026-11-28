@@ -477,6 +477,75 @@ if [ "$check_only" -eq 1 ]; then
     exit 0
 fi
 
+# OpenSSL's Unix Configure target and libnghttp2-sys both include
+# <arpa/inet.h>. OCTAGRAM currently exposes the address ABI and inet_* API
+# through <netinet/in.h>, so add a build-only forwarding header to this
+# bootstrap's private sysroot copy. This happens only after the LLVM job has
+# consumed the canonical sysroot artifact: it must not change LLVM's input
+# fingerprint, sysroot source files, or the uploaded sysroot artifact.
+network_header_dir=$sysroot/usr/include/arpa
+network_header=$network_header_dir/inet.h
+mkdir -p "$network_header_dir"
+network_header_tmp=$(mktemp "$network_header_dir/.inet.h.XXXXXX")
+cat > "$network_header_tmp" <<'OCTAGRAM_ARPA_INET_H'
+#ifndef OCTAGRAM_ARPA_INET_H
+#define OCTAGRAM_ARPA_INET_H
+
+#include <netinet/in.h>
+
+#ifndef INET_ADDRSTRLEN
+#define INET_ADDRSTRLEN 16
+#endif
+#ifndef INET6_ADDRSTRLEN
+#define INET6_ADDRSTRLEN 46
+#endif
+#ifndef INADDR_NONE
+#define INADDR_NONE ((in_addr_t)0xffffffffu)
+#endif
+#ifndef INADDR_BROADCAST
+#define INADDR_BROADCAST ((in_addr_t)0xffffffffu)
+#endif
+
+#endif /* OCTAGRAM_ARPA_INET_H */
+OCTAGRAM_ARPA_INET_H
+
+if [ -e "$network_header" ]; then
+    if ! cmp -s "$network_header_tmp" "$network_header"; then
+        rm -f "$network_header_tmp"
+        echo "bootstrap_rustc_octagram: error: refusing to overwrite conflicting $network_header" >&2
+        exit 1
+    fi
+    rm -f "$network_header_tmp"
+else
+    mv "$network_header_tmp" "$network_header"
+fi
+
+# Verify this exact private sysroot with the OCTAGRAM compiler before spending
+# time in x.py. The declarations are already implemented by OCTAGRAM libc.
+if ! "$linker" --sysroot="$sysroot" -x c -fsyntax-only - <<'OCTAGRAM_INET_PROBE'
+#include <arpa/inet.h>
+
+static void octagram_arpa_inet_probe(void)
+{
+    struct in_addr ipv4 = {0};
+    struct in6_addr ipv6 = {{0}};
+    char text4[INET_ADDRSTRLEN];
+    char text6[INET6_ADDRSTRLEN];
+
+    (void)inet_addr("127.0.0.1");
+    (void)inet_ntoa(ipv4);
+    (void)inet_pton(AF_INET, "127.0.0.1", &ipv4);
+    (void)inet_ntop(AF_INET, &ipv4, text4, sizeof(text4));
+    (void)inet_pton(AF_INET6, "::1", &ipv6);
+    (void)inet_ntop(AF_INET6, &ipv6, text6, sizeof(text6));
+}
+OCTAGRAM_INET_PROBE
+then
+    echo "bootstrap_rustc_octagram: error: OCTAGRAM <arpa/inet.h> compatibility probe failed" >&2
+    exit 1
+fi
+echo "OCTAGRAM-RUST-ARPA-INET-HEADER-PASS"
+
 if [ "$resume" -eq 1 ] && [ ! -d "$rust_checkout/.git" ]; then
     echo "bootstrap_rustc_octagram: error: --resume but no checkout at $rust_checkout" >&2
     echo "bootstrap_rustc_octagram: rerun without --resume to clone and prepare one" >&2

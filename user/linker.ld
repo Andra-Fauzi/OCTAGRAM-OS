@@ -39,10 +39,6 @@ SECTIONS
 
     . = __oct_tls_end;
     .data : {
-        /* GCC's crtbegin normally supplies this DSO identity. OCTAGRAM links
-           freestanding executables with -nostdlib, so provide the equivalent
-           hidden self-address for __cxa_atexit registrations. */
-        PROVIDE_HIDDEN (__dso_handle = .);
         *(.data .data.*)
         . = ALIGN(8);
         __oct_tls_filesz = .;

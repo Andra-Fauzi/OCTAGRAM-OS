@@ -590,6 +590,22 @@ def main() -> int:
         "pub use crate::unix::octagram::strerror_r;",
         "the libc new module must re-export only the missing strerror_r API",
     )
+
+    require(
+        socket2_patch,
+        'VERSIONS = ("0.6.4", "0.6.5")',
+        "the socket2 patcher must cover both locked crate versions",
+    )
+    require(
+        socket2_patch,
+        "type IovLen = usize;",
+        "the socket2 patcher must select the 64-bit size_t iovlen ABI",
+    )
+    require(
+        socket2_patch,
+        'target_os = "octagram"',
+        "the socket2 patcher must add the OCTAGRAM cfg to the size_t branch",
+    )
     require(
         libc_patcher,
         "unistd_import = (",

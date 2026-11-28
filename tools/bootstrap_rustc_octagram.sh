@@ -714,6 +714,16 @@ fi
 export OCTAGRAM_RUST_LINKER_DRIVER="$linker"
 export OCTAGRAM_RUST_DSO_OBJECT="$rust_dso_object"
 
+# rustc_llvm compiles LLVM's C++ shims for the target. Force cc-rs to use the
+# OCTAGRAM drivers rather than silently falling back to the Linux host gcc/g++.
+cxx_linker=$repo_root/user/toolchain/bin/x86_64-octagram-g++
+if [ ! -x "$cxx_linker" ]; then
+    echo "bootstrap_rustc_octagram: error: missing OCTAGRAM C++ driver $cxx_linker" >&2
+    exit 1
+fi
+export CC_x86_64_unknown_octagram="$linker"
+export CXX_x86_64_unknown_octagram="$cxx_linker"
+
 # 4. bootstrap config.toml -------------------------------------------------
 config=$rust_checkout/config.toml
 echo "writing $config (refreshing absolute toolchain paths)"

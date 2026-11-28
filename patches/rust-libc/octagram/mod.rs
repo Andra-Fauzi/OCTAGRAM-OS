@@ -558,6 +558,9 @@ pub const FIONBIO: c_ulong = 0x5421;
 // yet, so a caller such as jobserver gets ENOTTY at runtime instead of a wrong
 // count; the constant still has to exist for the crate to compile.
 pub const FIONREAD: c_ulong = 0x541B;
+// user/include/sys/ioctl.h: the guest ioctl serves the terminal-size query, so
+// the constant and the `winsize` layout match the Linux numbering.
+pub const TIOCGWINSZ: c_ulong = 0x5413;
 pub const O_DIRECTORY: c_int = 0o200000;
 pub const SEEK_SET: c_int = 0;
 pub const SEEK_CUR: c_int = 1;
@@ -742,6 +745,15 @@ s! {
         pub l_start: off_t,
         pub l_len: off_t,
         pub l_pid: pid_t,
+    }
+
+    /// `struct winsize` from user/include/sys/ioctl.h, filled in by
+    /// `ioctl(TIOCGWINSZ)`.
+    pub struct winsize {
+        pub ws_row: c_ushort,
+        pub ws_col: c_ushort,
+        pub ws_xpixel: c_ushort,
+        pub ws_ypixel: c_ushort,
     }
 
     /// `Dl_info` from user/include/dlfcn.h, filled in by the guest `dladdr`.

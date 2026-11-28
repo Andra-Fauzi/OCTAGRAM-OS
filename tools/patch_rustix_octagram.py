@@ -42,21 +42,70 @@ def verify_manifest(package: Path, version: str) -> None:
 
 
 def ensure_octagram_cfg(package: Path) -> None:
-    # OCTAGRAM deliberately shares Horizon's libc implementation for these
-    # rustix interfaces. Normalize only the exact source files that must carry
-    # the OCTAGRAM target cfg, including the two 1.1.5 context-drift files.
+    # Normalize the shared Horizon libc cfgs, then selectively restore the
+    # filesystem APIs that OCTAGRAM's libc actually implements.
     for relative in VERIFY_FILES:
         path = package / relative
         if not path.is_file():
             raise SystemExit(f"rustix patch verification file is missing: {path}")
         source = path.read_text(encoding="utf-8")
         normalized = re.sub(
-            r'(?<!any\()target_os = "horizon"',
+            r'(?<!any\\()target_os = "horizon"',
             'any(target_os = "horizon", target_os = "octagram")',
             source,
         )
         if normalized != source:
             path.write_text(normalized, encoding="utf-8")
+    enable_octagram_filesystem_apis(package)
+
+
+def enable_octagram_for_item(package: Path, relative: str, marker: str) -> None:
+    """Re-enable a libc API for OCTAGRAM when Horizon alone lacks it."""
+    path = package / relative
+    source = path.read_text(encoding="utf-8")
+    item = source.find(marker)
+    if item < 0:
+        raise SystemExit(f"rustix compatibility item is missing: {relative}: {marker}")
+    cfg_start = source.rfind("#[cfg(", 0, item)
+    if cfg_start < 0:
+        raise SystemExit(f"rustix cfg attribute is missing before {relative}: {marker}")
+    open_paren = source.find("(", cfg_start)
+    depth = 0
+    cfg_end = -1
+    for index in range(open_paren, len(source)):
+        if source[index] == "(":
+            depth += 1
+        elif source[index] == ")":
+            depth -= 1
+            if depth == 0:
+                cfg_end = index + 1
+                break
+    if cfg_end < 0:
+        raise SystemExit(f"malformed rustix cfg attribute in {relative}: {marker}")
+    cfg = source[cfg_start:cfg_end]
+    corrected = cfg.replace(
+        'any(target_os = "horizon", target_os = "octagram")',
+        'target_os = "horizon"',
+    )
+    if corrected == cfg:
+        raise SystemExit(f"expected Horizon/OCTAGRAM exclusion not found: {relative}: {marker}")
+    path.write_text(source[:cfg_start] + corrected + source[cfg_end:], encoding="utf-8")
+
+
+def enable_octagram_filesystem_apis(package: Path) -> None:
+    # These libc interfaces exist in OCTAGRAM; Horizon alone lacks them.
+    items = (
+        ("src/backend/libc/fs/types.rs", "pub struct Access:"),
+        ("src/backend/libc/fs/types.rs", "pub enum FlockOperation"),
+        ("src/backend/libc/fs/types.rs", "pub(crate) const fn from_dirent_d_type"),
+        ("src/backend/libc/fs/syscalls.rs", "pub(crate) fn access("),
+        ("src/backend/libc/fs/syscalls.rs", "pub(crate) fn accessat("),
+        ("src/backend/libc/fs/syscalls.rs", "pub(crate) fn utimensat("),
+        ("src/backend/libc/fs/syscalls.rs", "pub(crate) fn futimens("),
+        ("src/backend/libc/fs/syscalls.rs", "pub(crate) fn flock("),
+    )
+    for relative, marker in items:
+        enable_octagram_for_item(package, relative, marker)
 
 
 def verify(package: Path, version: str) -> None:

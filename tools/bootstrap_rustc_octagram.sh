@@ -332,7 +332,7 @@ if [ -z "$host_llvm_config" ]; then
     host_llvm_config=${HOST_LLVM_CONFIG:-}
 fi
 if [ -z "$host_llvm_config" ]; then
-    for candidate in llvm-config llvm-config-21; do
+    for candidate in llvm-config llvm-config-22; do
         if command -v "$candidate" >/dev/null 2>&1; then
             host_llvm_config=$(command -v "$candidate")
             break
@@ -703,6 +703,7 @@ rust_dso_object=$rust_checkout/build/octagram-dso-handle.o
 mkdir -p "$rust_checkout/build"
 cat > "$rust_dso_source" <<'EOF'
 __attribute__((visibility("hidden"), weak)) void *__dso_handle = &__dso_handle;
+__attribute__((weak)) void *_Unwind_FindEnclosingFunction(void *pc) { (void)pc; return (void *)0; }
 EOF
 echo "building Rust-only hidden __dso_handle object"
 OCTAGRAM_SYSROOT="$sysroot" "$linker" -c "$rust_dso_source" -o "$rust_dso_object"
@@ -711,8 +712,16 @@ if ! readelf -s --wide "$rust_dso_object" | grep -Eq 'OBJECT +(GLOBAL|WEAK) +HID
     readelf -s --wide "$rust_dso_object" >&2 || true
     exit 1
 fi
+if ! readelf -s --wide "$rust_dso_object" | grep -Eq 'FUNC +WEAK +DEFAULT +[0-9]+ +_Unwind_FindEnclosingFunction'; then
+    echo "bootstrap_rustc_octagram: error: generated _Unwind_FindEnclosingFunction is not a weak function" >&2
+    readelf -s --wide "$rust_dso_object" >&2 || true
+    exit 1
+fi
 export OCTAGRAM_RUST_LINKER_DRIVER="$linker"
 export OCTAGRAM_RUST_DSO_OBJECT="$rust_dso_object"
+
+# rustc_llvm must link the OCTAGRAM libLLVM, not the build runner archive.
+export OCTAGRAM_TARGET_LLVM_CONFIG="$target_llvm_config"
 
 # rustc_llvm compiles LLVM's C++ shims for the target. Force cc-rs to use the
 # OCTAGRAM drivers rather than silently falling back to the Linux host gcc/g++.

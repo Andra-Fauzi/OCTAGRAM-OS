@@ -3,6 +3,9 @@
 
 The changes are intentionally confined to Rust's temporary bootstrap checkout:
 * OCTAGRAM uses its sysroot libc++, never the runner's GNU libstdc++.
+* For a crossed build, bootstrap exposes the build-machine llvm-config as
+  LLVM_CONFIG. OCTAGRAM must use OCTAGRAM_TARGET_LLVM_CONFIG so it does not
+  bundle the runner's libLLVM archives and GNU C++ ABI into rustc_llvm.
 * Cross-link search paths come from the target llvm-config --libdir, not
   host paths accidentally captured in LLVM_LDFLAGS during CMake configure.
 """
@@ -16,6 +19,22 @@ import sys
 SOURCE = Path("compiler/rustc_llvm/build.rs")
 OLD_CXX = '    let stdcppname = if target.contains("openbsd")'
 NEW_CXX = '    let stdcppname = if target.contains("octagram") || target.contains("openbsd")'
+
+OLD_LLVM_CONFIG = '''    let llvm_config =
+        PathBuf::from(tracked_env_var_os("LLVM_CONFIG").expect("LLVM_CONFIG was not set"));
+'''
+
+NEW_LLVM_CONFIG = '''    // OCTAGRAM: for a crossed build bootstrap passes the build machine's
+    // llvm-config in LLVM_CONFIG. An OCTAGRAM target must link the OCTAGRAM
+    // libLLVM, so it reads the target llvm-config from its own variable.
+    let llvm_config = if env::var("TARGET").map_or(false, |t| t.contains("octagram")) {
+        PathBuf::from(tracked_env_var_os("OCTAGRAM_TARGET_LLVM_CONFIG").expect(
+            "OCTAGRAM_TARGET_LLVM_CONFIG was not set (bootstrap_rustc_octagram.sh exports it)",
+        ))
+    } else {
+        PathBuf::from(tracked_env_var_os("LLVM_CONFIG").expect("LLVM_CONFIG was not set"))
+    };
+'''
 
 OLD_LD_BLOCK = '''    // LLVM ldflags
     //
@@ -96,6 +115,13 @@ def patch_source(source: str) -> str:
     elif NEW_CXX not in source:
         raise ValueError("Rust LLVM C++ runtime selector does not match the pinned source")
 
+    if OLD_LLVM_CONFIG in source:
+        if source.count(OLD_LLVM_CONFIG) != 1:
+            raise ValueError("expected exactly one Rust LLVM llvm-config lookup")
+        source = source.replace(OLD_LLVM_CONFIG, NEW_LLVM_CONFIG, 1)
+    elif NEW_LLVM_CONFIG not in source:
+        raise ValueError("Rust LLVM llvm-config lookup does not match the pinned source")
+
     if OLD_LD_BLOCK in source:
         if source.count(OLD_LD_BLOCK) != 1:
             raise ValueError("expected exactly one Rust LLVM linker-flags block")
@@ -111,14 +137,21 @@ def patch_source(source: str) -> str:
 
 
 def self_test() -> int:
-    sample = OLD_CXX + "\n" + OLD_LD_BLOCK + CXXRT_MARKER
+    sample = OLD_CXX + "\n" + OLD_LLVM_CONFIG + OLD_LD_BLOCK + CXXRT_MARKER
     patched = patch_source(sample)
-    if NEW_CXX not in patched or NEW_LD_BLOCK not in patched or CXXRT_INSERTION not in patched:
+    if (
+        NEW_CXX not in patched
+        or NEW_LLVM_CONFIG not in patched
+        or NEW_LD_BLOCK not in patched
+        or CXXRT_INSERTION not in patched
+    ):
         raise AssertionError("patch did not install all OCTAGRAM link fixes")
     if patch_source(patched) != patched:
         raise AssertionError("patch is not idempotent")
-    if OLD_CXX in patched or OLD_LD_BLOCK in patched:
+    if OLD_CXX in patched or OLD_LLVM_CONFIG in patched or OLD_LD_BLOCK in patched:
         raise AssertionError("old Rust host-link behaviour remained after patch")
+    if "OCTAGRAM_TARGET_LLVM_CONFIG" not in patched:
+        raise AssertionError("target llvm-config selection missing after patch")
     print("RUST-OCTAGRAM-LLVM-LINK-PATCH-SELF-TEST-PASS")
     return 0
 

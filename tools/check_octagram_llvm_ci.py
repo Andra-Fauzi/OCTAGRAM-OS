@@ -51,6 +51,7 @@ RUSTIX_PATCH = REPO / "patches" / "rustix-1.1.6-octagram.patch"
 LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
 LIBC_PATCHER = REPO / "tools" / "apply_rust_libc_octagram.py"
 RUNTIME = REPO / "user" / "runtime.c"
+POSIX_EXTRA = REPO / "user" / "posix_extra.c"
 STAGE2_DEPS_CHECK = REPO / "tools" / "check_rust_stage2_deps.sh"
 GITHUB_JOB_LIMIT_MINUTES = 360
 
@@ -101,6 +102,7 @@ def main() -> int:
     libc_module = LIBC_MODULE.read_text(encoding="utf-8")
     libc_patcher = LIBC_PATCHER.read_text(encoding="utf-8")
     runtime = RUNTIME.read_text(encoding="utf-8")
+    posix_extra = POSIX_EXTRA.read_text(encoding="utf-8")
     stage2_deps_check = STAGE2_DEPS_CHECK.read_text(encoding="utf-8")
 
     # --- the build script ---------------------------------------------------
@@ -542,12 +544,12 @@ def main() -> int:
         "the OCTAGRAM runtime must export the errno accessor used by Rust crates",
     )
     require(
-        runtime,
+        posix_extra,
         "int madvise(void *address, size_t length, int advice)",
-        "the Rust mmap dependency needs an explicit OCTAGRAM madvise stub",
+        "the Rust mmap dependency needs the existing OCTAGRAM madvise stub",
     )
     require(
-        runtime,
+        posix_extra,
         "errno = ENOSYS;",
         "unsupported madvise must fail honestly with ENOSYS",
     )

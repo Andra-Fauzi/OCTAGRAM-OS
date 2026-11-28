@@ -45,6 +45,7 @@ GETRANDOM_PATCH = REPO / "tools" / "patch_getrandom_octagram.py"
 ERRNO_PATCH = REPO / "tools" / "patch_errno_octagram.py"
 TEMPFILE_PATCH = REPO / "tools" / "patch_tempfile_octagram.py"
 FILETIME_PATCH = REPO / "tools" / "patch_filetime_octagram.py"
+SOCKET2_PATCH = REPO / "tools" / "patch_socket2_octagram.py"
 LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
 LIBC_PATCHER = REPO / "tools" / "apply_rust_libc_octagram.py"
 RUNTIME = REPO / "user" / "runtime.c"
@@ -92,6 +93,7 @@ def main() -> int:
     errno_patch = ERRNO_PATCH.read_text(encoding="utf-8")
     tempfile_patch = TEMPFILE_PATCH.read_text(encoding="utf-8")
     filetime_patch = FILETIME_PATCH.read_text(encoding="utf-8")
+    socket2_patch = SOCKET2_PATCH.read_text(encoding="utf-8")
     libc_module = LIBC_MODULE.read_text(encoding="utf-8")
     libc_patcher = LIBC_PATCHER.read_text(encoding="utf-8")
     runtime = RUNTIME.read_text(encoding="utf-8")
@@ -806,6 +808,11 @@ def main() -> int:
         ("0.2.186 0.3.4 3.27.0 0.2.29 0.6.4", "Cargo submodule preflight must include filetime 0.2.29 and socket2 0.6.4"),
         ('socket2 = { version = "=$socket2_version" }', "dependency preflight must compile the locked socket2 crate"),
         ("patch_filetime_octagram.py", "dependency check must patch filetime to utimensat"),
+        ("patch_socket2_octagram.py", "dependency check must patch socket2 msghdr ABI for OCTAGRAM"),
+        ("SOCKET2_VERSION=0.6.5", "bootstrap must pin socket2 0.6.5 from the Rust lockfile"),
+        ("SOCKET2_CARGO_VERSION=0.6.4", "bootstrap must pin socket2 0.6.4 from the Cargo lockfile"),
+        ("target_os = \"octagram\"", "socket2 must select size_t for OCTAGRAM msghdr.msg_iovlen"),
+        ("type IovLen = usize;", "socket2 OCTAGRAM patch must target the size_t iovlen branch"),
         ("patch_rust_std_octagram.py", "dependency check must patch installed rust-src before compiling std-based dependencies"),
         ("OCTAGRAM_RUST_STD_ROOT", "dependency check must patch the exact rust-src standard library it compiles"),
         ("CARGO_TARGET_DIR=$check_root/target-octagram", "dependency checks must share build-std artifacts to avoid compiling std three times"),

@@ -24,16 +24,21 @@ NEW_TARGET_ENTRY = (
 
 
 def patch_source(source: str) -> str:
-    if source.count(OLD_TARGET_ENTRY) != 1:
-        if source.count(NEW_TARGET_ENTRY) == 1:
+    octagram_entry = '"x86_64-unknown-octagram" => "linux-x86_64",'
+    existing_octagram_entries = [
+        line for line in source.splitlines() if '"x86_64-unknown-octagram" =>' in line
+    ]
+    if existing_octagram_entries:
+        if existing_octagram_entries == ["            " + octagram_entry] and source.count(OLD_TARGET_ENTRY) == 1:
             return source
         raise ValueError(
-            "openssl-src target table does not match the pinned 300.6.1+3.6.3 source"
+            "openssl-src already has a different or duplicate OCTAGRAM mapping; "
+            "refusing to overwrite it"
         )
 
-    if '"x86_64-unknown-octagram" => "linux-x86_64"' in source:
+    if source.count(OLD_TARGET_ENTRY) != 1:
         raise ValueError(
-            "openssl-src already has a different OCTAGRAM mapping; refusing to overwrite it"
+            "openssl-src target table does not match the pinned 300.6.1+3.6.3 source"
         )
 
     patched = source.replace(OLD_TARGET_ENTRY, NEW_TARGET_ENTRY, 1)

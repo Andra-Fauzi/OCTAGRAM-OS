@@ -4,6 +4,11 @@
 Rustix 1.1.5 has two source-context differences in Horizon cfg lists. The
 maintained patch applies all other changes; those two narrowly-validated
 rejects are normalized explicitly before the backend is verified.
+
+Rustix 1.1.4 (locked by the Cargo submodule) predates those hunk contexts
+entirely, so it is patched by performing the same source edits the patch
+makes: every Horizon cfg also selects OCTAGRAM, and ClockId uses the same
+representation other 64-bit non-AIX targets use.
 """
 
 from __future__ import annotations
@@ -14,7 +19,10 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSIONS = ("1.1.5", "1.1.6")
+VERSIONS = ("1.1.4", "1.1.5")
+# 1.1.4 predates the exact hunk contexts in the maintained patch; the edits
+# below reproduce its Horizon/OCTAGRAM changes without a fuzzy apply.
+REGEX_VERSION = "1.1.4"
 PATCH_FILE = ROOT / "patches" / "rustix-1.1.6-octagram.patch"
 MARKER = ".octagram-patched"
 VERIFY_FILES = (
@@ -30,6 +38,21 @@ EXPECTED_1_1_5_REJECTS = {
     "src/backend/libc/thread/syscalls.rs.rej",
     "src/thread/clock.rs.rej",
 }
+
+
+def find_packages(root: Path, name: str) -> list[Path]:
+    """Locate a crate source under either a registry index dir or its parent."""
+    if not root.is_dir():
+        raise SystemExit(f"Cargo registry source root is missing: {root}")
+    matches = [path for path in root.iterdir() if path.is_dir() and path.name == name]
+    if matches:
+        return sorted(matches)
+    for index in root.iterdir():
+        if index.is_dir():
+            matches.extend(
+                path for path in index.iterdir() if path.is_dir() and path.name == name
+            )
+    return sorted(matches)
 
 
 def verify_manifest(package: Path, version: str) -> None:
@@ -59,6 +82,41 @@ def ensure_octagram_cfg(package: Path) -> None:
     enable_octagram_filesystem_apis(package)
 
 
+def normalize_all_horizon_cfgs(package: Path) -> None:
+    """Let every Horizon cfg list also select OCTAGRAM, crate-wide."""
+    for path in (package / "src").rglob("*.rs"):
+        source = path.read_text(encoding="utf-8")
+        normalized = re.sub(
+            r'(?<!any\()target_os = "horizon"',
+            'any(target_os = "horizon", target_os = "octagram")',
+            source,
+        )
+        if normalized != source:
+            path.write_text(normalized, encoding="utf-8")
+
+
+def apply_pre_patch_source_edits(package: Path) -> None:
+    """Apply the two non-Horizon edits the maintained patch carries."""
+    clockid = package / "src/clockid.rs"
+    source = clockid.read_text(encoding="utf-8")
+    old_repr = (
+        '    not(any(target_os = "aix", target_os = "cygwin", target_os = "dragonfly")),\n'
+        '    repr(i32)\n'
+        ')]\n'
+        '#[cfg_attr(any(target_os = "cygwin", target_os = "dragonfly"), repr(u64))]\n'
+    )
+    new_repr = (
+        '    not(any(target_os = "aix", target_os = "cygwin", target_os = "dragonfly", target_os = "octagram")),\n'
+        '    repr(i32)\n'
+        ')]\n'
+        '#[cfg_attr(any(target_os = "cygwin", target_os = "dragonfly", target_os = "octagram"), repr(u64))]\n'
+    )
+    if old_repr in source:
+        clockid.write_text(source.replace(old_repr, new_repr, 1), encoding="utf-8")
+    elif new_repr not in source:
+        raise SystemExit(f"could not find the ClockId representation anchors in {clockid}")
+
+
 def enable_octagram_for_item(package: Path, relative: str, marker: str) -> None:
     """Re-enable a libc API for OCTAGRAM when Horizon alone lacks it."""
     path = package / relative
@@ -68,7 +126,8 @@ def enable_octagram_for_item(package: Path, relative: str, marker: str) -> None:
         raise SystemExit(f"rustix compatibility item is missing: {relative}: {marker}")
     cfg_start = source.rfind("#[cfg(", 0, item)
     if cfg_start < 0:
-        raise SystemExit(f"rustix cfg attribute is missing before {relative}: {marker}")
+        # Already unconditional on every target.
+        return
     open_paren = source.find("(", cfg_start)
     depth = 0
     cfg_end = -1
@@ -83,12 +142,14 @@ def enable_octagram_for_item(package: Path, relative: str, marker: str) -> None:
     if cfg_end < 0:
         raise SystemExit(f"malformed rustix cfg attribute in {relative}: {marker}")
     cfg = source[cfg_start:cfg_end]
+    if 'any(target_os = "horizon", target_os = "octagram")' not in cfg:
+        # The nearest enclosing cfg never mentioned Horizon, so the item is
+        # already compiled for OCTAGRAM.
+        return
     corrected = cfg.replace(
         'any(target_os = "horizon", target_os = "octagram")',
         'target_os = "horizon"',
     )
-    if corrected == cfg:
-        raise SystemExit(f"expected Horizon/OCTAGRAM exclusion not found: {relative}: {marker}")
     path.write_text(source[:cfg_start] + corrected + source[cfg_end:], encoding="utf-8")
 
 
@@ -189,7 +250,7 @@ def main() -> int:
     checked = 0
     patched = 0
     for version in VERSIONS:
-        packages = sorted(args.registry_root.glob(f"*/rustix-{version}"))
+        packages = find_packages(args.registry_root, f"rustix-{version}")
         if not packages:
             raise SystemExit(
                 f"rustix {version} is missing from Cargo's registry cache; "
@@ -198,7 +259,28 @@ def main() -> int:
 
         for package in packages:
             verify_manifest(package, version)
+            # Cargo treats a missing or empty `.cargo-ok` as an interrupted
+            # extraction and re-extracts the crate, discarding these edits.
+            cargo_ok = package / ".cargo-ok"
+            if not cargo_ok.is_file() or not cargo_ok.read_text(encoding="utf-8").strip():
+                cargo_ok.write_text('{"v":1}', encoding="utf-8")
             marker = package / MARKER
+            if version == REGEX_VERSION:
+                already_patched = marker.is_file()
+                # Normalization is idempotent; the filesystem item re-enables
+                # rely on it to restore their Horizon/OCTAGRAM cfg first.
+                normalize_all_horizon_cfgs(package)
+                apply_pre_patch_source_edits(package)
+                enable_octagram_filesystem_apis(package)
+                if not already_patched:
+                    marker.write_text(
+                        f"rustix {version} OCTAGRAM cfg patch applied\n",
+                        encoding="utf-8",
+                    )
+                    patched += 1
+                verify(package, version)
+                checked += 1
+                continue
             if not marker.is_file():
                 result = subprocess.run(
                     ["patch", "-p1", "--batch", "--forward", "--fuzz=0"],

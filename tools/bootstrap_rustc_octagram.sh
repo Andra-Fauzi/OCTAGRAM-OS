@@ -70,10 +70,12 @@ FILETIME_VERSION=0.2.27
 FILETIME_CARGO_VERSION=0.2.29
 SOCKET2_VERSION=0.6.5
 SOCKET2_CARGO_VERSION=0.6.4
-RUSTIX_VERSION=1.1.6
-RUSTIX_CARGO_VERSION=1.1.5
+RUSTIX_VERSION=1.1.5
+RUSTIX_CARGO_VERSION=1.1.4
 TERMINAL_SIZE_VERSION=0.4.4
 LIBLOADING_VERSION=0.9.0
+CTRLC_VERSION=3.5.1
+NIX_VERSION=0.30.1
 HOST=x86_64-unknown-octagram
 TARGET=x86_64-unknown-none
 
@@ -584,6 +586,10 @@ EOF
         if [ ! -f "$registry_source/Cargo.toml" ]; then
             mkdir -p "$registry_source_root"
             tar -xzf "$archive" -C "$registry_source_root"
+            # Cargo re-extracts sources whose marker is missing or empty, which
+            # would discard the OCTAGRAM patches applied below; use the marker
+            # format Cargo itself writes.
+            printf '%s' '{"v":1}' > "$registry_source/.cargo-ok"
         fi
         [ -f "$registry_source/Cargo.toml" ] || {
             echo "bootstrap_rustc_octagram: error: failed to extract $package $version" >&2
@@ -614,6 +620,8 @@ fetch_locked_crate rustix "$RUSTIX_VERSION"
 fetch_locked_crate rustix "$RUSTIX_CARGO_VERSION"
 fetch_locked_crate terminal_size "$TERMINAL_SIZE_VERSION"
 fetch_locked_crate libloading "$LIBLOADING_VERSION"
+fetch_locked_crate ctrlc "$CTRLC_VERSION"
+fetch_locked_crate nix "$NIX_VERSION"
 
 registry_patch_count=0
 for libc_version in "$LIBC_VERSION" "$LIBC_CARGO_VERSION"; do
@@ -651,6 +659,10 @@ python3 "$repo_root/tools/patch_rustix_octagram.py" \
 python3 "$repo_root/tools/patch_terminal_size_octagram.py" \
     --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_libloading_octagram.py" \
+    --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_ctrlc_octagram.py" \
+    --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_nix_octagram.py" \
     --registry-root "$cargo_home/registry/src"
 
 

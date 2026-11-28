@@ -48,6 +48,8 @@ FILETIME_PATCH = REPO / "tools" / "patch_filetime_octagram.py"
 SOCKET2_PATCH = REPO / "tools" / "patch_socket2_octagram.py"
 TERMINAL_SIZE_PATCH = REPO / "tools" / "patch_terminal_size_octagram.py"
 LIBLOADING_PATCH = REPO / "tools" / "patch_libloading_octagram.py"
+CTRLC_PATCH = REPO / "tools" / "patch_ctrlc_octagram.py"
+NIX_PATCH = REPO / "tools" / "patch_nix_octagram.py"
 RUSTIX_PATCHER = REPO / "tools" / "patch_rustix_octagram.py"
 RUSTIX_PATCH = REPO / "patches" / "rustix-1.1.6-octagram.patch"
 TERMINAL_SIZE_PATCH = REPO / "tools" / "patch_terminal_size_octagram.py"
@@ -102,6 +104,8 @@ def main() -> int:
     socket2_patch = SOCKET2_PATCH.read_text(encoding="utf-8")
     terminal_size_patch = TERMINAL_SIZE_PATCH.read_text(encoding="utf-8")
     libloading_patch = LIBLOADING_PATCH.read_text(encoding="utf-8")
+    ctrlc_patch = CTRLC_PATCH.read_text(encoding="utf-8")
+    nix_patch = NIX_PATCH.read_text(encoding="utf-8")
     rustix_patcher = RUSTIX_PATCHER.read_text(encoding="utf-8")
     rustix_patch = RUSTIX_PATCH.read_text(encoding="utf-8")
     terminal_size_patch = TERMINAL_SIZE_PATCH.read_text(encoding="utf-8")
@@ -279,8 +283,8 @@ def main() -> int:
         ('GETRANDOM_CARGO_VERSION=0.3.4', "bootstrap must pin Cargo's getrandom 0.3.4"),
         ('GETRANDOM_MODERN_VERSION=0.4.3', "bootstrap must pin getrandom 0.4.3"),
         ('TEMPFILE_CARGO_VERSION=3.27.0', "bootstrap must pin Cargo's tempfile 3.27.0"),
-        ('RUSTIX_VERSION=1.1.6', "bootstrap must pin Rust workspace rustix 1.1.6"),
-        ('RUSTIX_CARGO_VERSION=1.1.5', "bootstrap must pin Cargo rustix 1.1.5"),
+        ('RUSTIX_VERSION=1.1.5', "bootstrap must pin Rust workspace rustix 1.1.5"),
+        ('RUSTIX_CARGO_VERSION=1.1.4', "bootstrap must pin Cargo rustix 1.1.4"),
         ('fetch_locked_crate rustix "$RUSTIX_VERSION"', "bootstrap must fetch Rust workspace rustix"),
         ('fetch_locked_crate rustix "$RUSTIX_CARGO_VERSION"', "bootstrap must fetch Cargo rustix"),
         ('fetch_locked_crate libc "$LIBC_VERSION"', "bootstrap must fetch Rust workspace libc 0.2.191"),
@@ -825,13 +829,23 @@ def main() -> int:
 
     require(
         bootstrap,
-        'RUSTIX_VERSION=1.1.6',
-        "Rust bootstrap must pin rustix 1.1.6 for Cargo's Unix dependency graph",
+        'RUSTIX_VERSION=1.1.5',
+        "Rust bootstrap must pin rustix 1.1.5 for the Rust workspace lockfile",
+    )
+    require(
+        bootstrap,
+        'RUSTIX_CARGO_VERSION=1.1.4',
+        "Rust bootstrap must pin rustix 1.1.4 for the Cargo submodule lockfile",
     )
     require(
         bootstrap,
         'fetch_locked_crate rustix "$RUSTIX_VERSION"',
-        "Rust bootstrap must fetch rustix 1.1.6 before stage 2",
+        "Rust bootstrap must fetch rustix 1.1.5 before stage 2",
+    )
+    require(
+        bootstrap,
+        'fetch_locked_crate rustix "$RUSTIX_CARGO_VERSION"',
+        "Rust bootstrap must fetch rustix 1.1.4 before stage 2",
     )
     require(
         bootstrap,
@@ -879,6 +893,59 @@ def main() -> int:
         libloading_patch,
         'target_os = "octagram"',
         "libloading patcher must add OCTAGRAM to the RTLD constant table",
+    )
+
+    require(
+        bootstrap,
+        'CTRLC_VERSION=3.5.1',
+        "Rust bootstrap must pin ctrlc 3.5.1 for rustc_driver's Ctrl-C handler",
+    )
+    require(
+        bootstrap,
+        'fetch_locked_crate ctrlc "$CTRLC_VERSION"',
+        "Rust bootstrap must fetch ctrlc 3.5.1 before stage 2",
+    )
+    require(
+        bootstrap,
+        "patch_ctrlc_octagram.py",
+        "Rust bootstrap must replace ctrlc's nix backend for OCTAGRAM",
+    )
+    require(
+        ctrlc_patch,
+        'VERSION = "3.5.1"',
+        "ctrlc patcher must cover the locked 3.5.1 release",
+    )
+    for needle in ("fn sigaction", "init_os_handler", "block_ctrl_c"):
+        require(
+            ctrlc_patch,
+            needle,
+            "ctrlc patcher must provide a complete OCTAGRAM signal backend",
+        )
+
+    require(
+        bootstrap,
+        'NIX_VERSION=0.30.1',
+        "Rust bootstrap must pin nix 0.30.1 for ctrlc's host dependency",
+    )
+    require(
+        bootstrap,
+        'fetch_locked_crate nix "$NIX_VERSION"',
+        "Rust bootstrap must fetch nix 0.30.1 before stage 2",
+    )
+    require(
+        bootstrap,
+        "patch_nix_octagram.py",
+        "Rust bootstrap must compile nix empty for the OCTAGRAM host",
+    )
+    require(
+        nix_patch,
+        'VERSION = "0.30.1"',
+        "nix patcher must cover the locked 0.30.1 release",
+    )
+    require(
+        nix_patch,
+        'not(target_os = "octagram")',
+        "nix patcher must gate the crate away from OCTAGRAM",
     )
 
     # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
@@ -967,6 +1034,10 @@ def main() -> int:
         ('jobserver = { version = "=0.1.34"', "dependency preflight must compile the locked jobserver crate"),
         ('libloading = { version = "=0.9.0"', "dependency preflight must compile the locked libloading crate"),
         ("patch_libloading_octagram.py", "dependency check must patch libloading's RTLD table"),
+        ('ctrlc = { version = "=3.5.1"', "dependency preflight must compile the locked ctrlc crate"),
+        ("patch_ctrlc_octagram.py", "dependency check must give ctrlc an OCTAGRAM backend without nix"),
+        ("patch_nix_octagram.py", "dependency check must compile nix empty for the OCTAGRAM host"),
+        ("rustix-cargo-locked/src", "dependency preflight must compile the Cargo submodule's locked rustix 1.1.4"),
         ('gix-index = { version = "=0.58.0"', "Cargo preflight must include gix-index 0.58.0"),
         ('terminal_size = { version = "=0.4.4"', "Cargo preflight must include terminal_size 0.4.4"),
         ("0.2.191 0.3.3 3.23.0", "Rust workspace preflight must use its exact lockfile dependency versions"),
@@ -1007,7 +1078,8 @@ def main() -> int:
     ):
         require(socket2_patch, needle, message)
 
-    require(rustix_patcher, 'VERSIONS = ("1.1.5", "1.1.6")', "rustix patcher must cover both locked Cargo versions")
+    require(rustix_patcher, 'VERSIONS = ("1.1.4", "1.1.5")', "rustix patcher must cover both locked rustix versions")
+    require(rustix_patcher, "normalize_all_horizon_cfgs", "rustix patcher must handle the pre-hunk 1.1.4 sources")
     # An interface and the types in its signature sit behind separate Horizon
     # cfgs. Re-enabling only the function compiles a body whose signature names
     # types that are still cfg'd out, which is how the OCTAGRAM filesystem

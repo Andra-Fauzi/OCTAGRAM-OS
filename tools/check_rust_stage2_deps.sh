@@ -166,6 +166,25 @@ cat > "$check_root/rustix-locked/src/lib.rs" <<'EOF'
 #![no_std]
 EOF
 
+# The Cargo submodule's own lockfile still selects rustix 1.1.4, so it needs
+# the same OCTAGRAM backend as the Rust workspace version.
+mkdir -p "$check_root/rustix-cargo-locked/src"
+cat > "$check_root/rustix-cargo-locked/Cargo.toml" <<'EOF'
+[package]
+name = "octagram-rustix-cargo-locked-dependency-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+rustix = { version = "=1.1.4" }
+EOF
+cat > "$check_root/rustix-cargo-locked/src/lib.rs" <<'EOF'
+pub fn check_rustix_surface() {}
+EOF
+
 # getrandom 0.4.3 is also present in the two lockfiles. Test it separately to
 # avoid Cargo unifying semver-compatible exact versions inside one workspace.
 mkdir -p "$check_root/getrandom-modern/src"
@@ -204,6 +223,7 @@ publish = false
 [dependencies]
 gix-index = { version = "=0.58.0", default-features = false, features = ["sha1"] }
 terminal_size = { version = "=0.4.4" }
+termize = { version = "=0.2.1" }
 EOF
 cat > "$check_root/cargo-active-deps/build.rs" <<'EOF'
 fn main() {
@@ -234,6 +254,7 @@ publish = false
 [workspace]
 
 [dependencies]
+ctrlc = { version = "=3.5.1" }
 jobserver = { version = "=0.1.34" }
 libloading = { version = "=0.9.0" }
 EOF
@@ -241,6 +262,12 @@ cat > "$check_root/rustc-build-deps/src/lib.rs" <<'EOF'
 pub fn check_jobserver_surface() -> std::io::Result<usize> {
     let client = jobserver::Client::new(1)?;
     client.available()
+}
+
+// ctrlc wires rustc_driver's Ctrl-C handler; its Unix backend is the only
+// consumer of nix in this graph, which does not know target_os = "octagram".
+pub fn check_ctrlc_surface() -> Result<(), ctrlc::Error> {
+    ctrlc::set_handler(|| {})
 }
 
 // libloading compiles a per-target RTLD constant table and refuses unknown
@@ -260,7 +287,8 @@ for manifest in \
     "$check_root/getrandom-modern/Cargo.toml" \
     "$check_root/cargo-active-deps/Cargo.toml" \
     "$check_root/rustc-build-deps/Cargo.toml" \
-    "$check_root/rustix-locked/Cargo.toml"; do
+    "$check_root/rustix-locked/Cargo.toml" \
+    "$check_root/rustix-cargo-locked/Cargo.toml"; do
     CARGO_HOME=$cargo_home cargo fetch --manifest-path "$manifest"
 done
 
@@ -276,6 +304,9 @@ extract_crate() {
         if [ ! -f "$source/Cargo.toml" ]; then
             mkdir -p "$source_root"
             tar -xzf "$archive" -C "$source_root"
+            # Cargo re-extracts sources whose marker is missing or empty,
+            # discarding patches; use the format Cargo writes itself.
+            printf '%s' '{"v":1}' > "$source/.cargo-ok"
         fi
         [ -f "$source/Cargo.toml" ] || {
             echo "failed to extract $package $version from $archive" >&2
@@ -296,6 +327,9 @@ for version in 3.23.0 3.27.0; do extract_crate tempfile "$version"; done
 for version in 0.2.27 0.2.29; do extract_crate filetime "$version"; done
 for version in 0.6.5 0.6.4; do extract_crate socket2 "$version"; done
 extract_crate libloading 0.9.0
+extract_crate ctrlc 3.5.1
+extract_crate nix 0.30.1
+extract_crate rustix 1.1.4
 
 for libc_version in 0.2.191 0.2.186; do
     for source in "$cargo_home"/registry/src/*/libc-"$libc_version"; do
@@ -311,6 +345,8 @@ python3 "$repo_root/tools/patch_socket2_octagram.py" --registry-root "$cargo_hom
 python3 "$repo_root/tools/patch_rustix_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_terminal_size_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_libloading_octagram.py" --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_ctrlc_octagram.py" --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_nix_octagram.py" --registry-root "$cargo_home/registry/src"
 
 # The preflight includes std-based crates (tempfile, filetime, socket2), not
 # just no_std crates. Build the patched target std from the installed rust-src
@@ -375,6 +411,7 @@ check_and_compile() {
 check_and_compile "$check_root/rust-workspace" 3.23.0 rust-workspace
 check_and_compile "$check_root/cargo-submodule" 3.27.0 cargo-submodule
 check_and_compile "$check_root/getrandom-modern" "" getrandom-modern
+check_and_compile "$check_root/rustix-cargo-locked" "" rustix-cargo-locked
 check_and_compile "$check_root/cargo-active-deps" "" cargo-active-deps
 check_and_compile "$check_root/rustc-build-deps" "" rustc-build-deps
 

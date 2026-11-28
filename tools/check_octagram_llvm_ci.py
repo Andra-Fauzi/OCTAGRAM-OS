@@ -46,6 +46,7 @@ ERRNO_PATCH = REPO / "tools" / "patch_errno_octagram.py"
 TEMPFILE_PATCH = REPO / "tools" / "patch_tempfile_octagram.py"
 FILETIME_PATCH = REPO / "tools" / "patch_filetime_octagram.py"
 SOCKET2_PATCH = REPO / "tools" / "patch_socket2_octagram.py"
+TERMINAL_SIZE_PATCH = REPO / "tools" / "patch_terminal_size_octagram.py"
 RUSTIX_PATCHER = REPO / "tools" / "patch_rustix_octagram.py"
 RUSTIX_PATCH = REPO / "patches" / "rustix-1.1.6-octagram.patch"
 TERMINAL_SIZE_PATCH = REPO / "tools" / "patch_terminal_size_octagram.py"
@@ -98,6 +99,7 @@ def main() -> int:
     tempfile_patch = TEMPFILE_PATCH.read_text(encoding="utf-8")
     filetime_patch = FILETIME_PATCH.read_text(encoding="utf-8")
     socket2_patch = SOCKET2_PATCH.read_text(encoding="utf-8")
+    terminal_size_patch = TERMINAL_SIZE_PATCH.read_text(encoding="utf-8")
     rustix_patcher = RUSTIX_PATCHER.read_text(encoding="utf-8")
     rustix_patch = RUSTIX_PATCH.read_text(encoding="utf-8")
     terminal_size_patch = TERMINAL_SIZE_PATCH.read_text(encoding="utf-8")
@@ -1589,6 +1591,63 @@ type IovLen = c_int;
                 fail(f"socket2 {version} patcher did not add one OCTAGRAM IovLen arm")
             if not iovlen_cfg or 'target_os = "octagram"' not in iovlen_cfg.group("body"):
                 fail(f"socket2 {version} patcher modified a preceding cfg block instead of IovLen")
+
+    # terminal_size's Unix implementation imports rustix::termios, which
+    # OCTAGRAM intentionally does not expose. Verify its no-size fallback.
+    with tempfile.TemporaryDirectory() as temp_root:
+        registry_root = Path(temp_root) / "registry" / "src"
+        package = registry_root / "index.test" / "terminal_size-0.4.4"
+        (package / "src").mkdir(parents=True)
+        (package / "Cargo.toml").write_text(
+            """[package]
+name = "terminal_size"
+version = "0.4.4"
+
+[target."cfg(unix)".dependencies.rustix]
+version = "1.0.1"
+features = ["termios"]
+""",
+            encoding="utf-8",
+        )
+        (package / ".cargo-ok").write_text('{"v":1}', encoding="utf-8")
+        (package / "src" / "unix.rs").write_text(
+            """#[cfg(not(any(target_os = "horizon", target_os = "vita")))]
+pub fn terminal_size_of<Fd: AsFd>(fd: Fd) -> Option<(Width, Height)> {
+    use rustix::termios::{isatty, tcgetwinsize};
+    None
+}
+
+#[cfg(any(target_os = "horizon", target_os = "vita"))]
+pub fn terminal_size_of<Fd: AsFd>(_fd: Fd) -> Option<(Width, Height)> {
+    None
+}
+""",
+            encoding="utf-8",
+        )
+        patch_runs = []
+        for _ in range(2):
+            patch_runs.append(
+                subprocess.run(
+                    [sys.executable, str(TERMINAL_SIZE_PATCH), "--registry-root", str(registry_root)],
+                    cwd=REPO,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            )
+        if any(result.returncode != 0 for result in patch_runs):
+            fail(
+                "terminal_size patcher fixture failed: "
+                + " | ".join(result.stdout + result.stderr for result in patch_runs)
+            )
+        patched_manifest = (package / "Cargo.toml").read_text(encoding="utf-8")
+        patched_unix = (package / "src" / "unix.rs").read_text(encoding="utf-8")
+        if 'cfg(all(unix, not(target_os = "octagram")))' not in patched_manifest:
+            fail("terminal_size patcher did not exclude rustix on OCTAGRAM")
+        if 'not(any(target_os = "horizon", target_os = "vita", target_os = "octagram"))' not in patched_unix:
+            fail("terminal_size patcher did not gate the rustix termios implementation")
+        if 'any(target_os = "horizon", target_os = "vita", target_os = "octagram")' not in patched_unix:
+            fail("terminal_size patcher did not enable the no-size fallback on OCTAGRAM")
 
     # Test both pinned filetime crate sources and ensure OCTAGRAM selects
     # utimensat instead of the generic utimes/lutimes fallback.

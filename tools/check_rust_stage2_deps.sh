@@ -1,7 +1,14 @@
 #!/bin/sh
-# Compile target-side Rust dependency slices before the expensive LLVM build.
+# Compile the OCTAGRAM dependency graphs before the expensive LLVM build.
 # Rust and Cargo have separate lockfiles, so use separate Cargo workspaces: Cargo
 # otherwise unifies semver-compatible exact versions such as getrandom 0.3.3/0.3.4.
+#
+# Two kinds of checks run here. The probe projects below cover the crates that
+# already failed once, with the exact feature selectors that made them fail.
+# They are followed by tools/check_stage2_cargo_graph.py, which asks Cargo for
+# the resolved graph of the pinned rustc and Cargo workspaces and compiles every
+# registry crate in it, so a crate nobody thought of fails here instead of hours
+# into the stage-2 build.
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -10,12 +17,52 @@ toolchain=${OCTAGRAM_RUST_TOOLCHAIN:-nightly-2026-11-23}
 target=$repo_root/user/rust/targets/x86_64-unknown-octagram.json
 cargo_home=${CARGO_HOME:-$HOME/.cargo}
 check_root=${RUNNER_TEMP:-/tmp}/octagram-stage2-dependency-check
+# Pins shared with tools/bootstrap_rustc_octagram.sh: RUST_PIN is the checkout
+# x.py builds, and CARGO_PIN is its src/tools/cargo submodule. The graph check
+# resolves those two workspaces at exactly these revisions, so the versions it
+# compiles are the versions stage 2 compiles.
+RUST_PIN=342d74463af7dd3018ef6aa04dd5500c2deb5bd1
+CARGO_PIN=f93c676e3e7ab1aee08dc95d869700f6b99a1a20
 
 [ -f "$target" ] || { echo "missing OCTAGRAM target spec: $target" >&2; exit 1; }
 command -v cargo >/dev/null 2>&1 || { echo "cargo is not installed" >&2; exit 1; }
+command -v git >/dev/null 2>&1 || { echo "git is not installed" >&2; exit 1; }
 
 rm -rf "$check_root"
 mkdir -p "$check_root"
+
+# Fetch only the commit the build uses. A blob-filtered clone would read every
+# workspace manifest over a separate round trip, which is slower than the
+# ~300 MB shallow fetch this does once per run.
+clone_pinned_checkout() {
+    url=$1
+    pin=$2
+    destination=$3
+    echo "fetching $url at $pin"
+    rm -rf "$destination"
+    mkdir -p "$destination"
+    git -C "$destination" init --quiet
+    git -C "$destination" remote add origin "$url"
+    git -C "$destination" fetch --quiet --depth 1 origin "$pin"
+    git -C "$destination" checkout --quiet FETCH_HEAD
+}
+
+clone_pinned_checkout https://github.com/rust-lang/rust "$RUST_PIN" \
+    "$check_root/rust-graph-checkout"
+clone_pinned_checkout https://github.com/rust-lang/cargo "$CARGO_PIN" \
+    "$check_root/cargo-graph-checkout"
+
+# The Cargo workspace stage 2 builds is the submodule recorded by the rust pin,
+# not whatever rust-lang/cargo master holds today. Compare the gitlink so a
+# stale CARGO_PIN cannot make this check compile a different Cargo.
+cargo_submodule=$(git -C "$check_root/rust-graph-checkout" ls-tree HEAD src/tools/cargo | awk '{print $3}')
+if [ "$cargo_submodule" != "$CARGO_PIN" ]; then
+    echo "CARGO_PIN=$CARGO_PIN does not match the src/tools/cargo submodule of" >&2
+    echo "$RUST_PIN (recorded commit: $cargo_submodule); update CARGO_PIN in" >&2
+    echo "tools/check_rust_stage2_deps.sh" >&2
+    exit 1
+fi
+echo "CARGO-PIN-MATCH: src/tools/cargo is $CARGO_PIN"
 
 write_dependency_project() {
     project=$1
@@ -414,5 +461,37 @@ check_and_compile "$check_root/getrandom-modern" "" getrandom-modern
 check_and_compile "$check_root/rustix-cargo-locked" "" rustix-cargo-locked
 check_and_compile "$check_root/cargo-active-deps" "" cargo-active-deps
 check_and_compile "$check_root/rustc-build-deps" "" rustc-build-deps
+
+# `x.py build --stage 2 --host $HOST compiler/rustc src/tools/cargo` compiles
+# both workspaces for OCTAGRAM. Compile their resolved registry graphs here,
+# reusing the target directory the probes above already filled with build-std
+# artifacts. Running the tool outside each checkout keeps -Zbuild-std on the
+# patched rust-src standard library instead of the checkout's own library/.
+check_cargo_graph() {
+    checkout=$1
+    package=$2
+    label=$3
+    shift 3
+    python3 "$repo_root/tools/check_stage2_cargo_graph.py" \
+        --checkout "$check_root/$checkout" \
+        --package "$package" \
+        --label "$label" \
+        --target "$target" \
+        --toolchain "$toolchain" \
+        --registry-root "$cargo_home/registry/src" \
+        --target-dir "$check_root/target-octagram" \
+        --work-dir "$check_root" \
+        "$@"
+}
+
+check_cargo_graph rust-graph-checkout rustc-main "rustc $RUST_PIN"
+# gix-prompt imports rustix::termios, which rustix keeps Linux-only because
+# Horizon has no termios backend; the OCTAGRAM guest libc does have termios
+# (user/include/termios.h, TCGETS), so this is a rustix port that is still
+# missing, not an API the guest lacks. Cargo only reaches it through that one
+# crate, so the rest of the graph is still compiled. Drop the skip once
+# patch_rustix_octagram.py enables the termios backend for OCTAGRAM.
+check_cargo_graph cargo-graph-checkout cargo "Cargo submodule $CARGO_PIN" \
+    --skip gix-prompt
 
 echo "OCTAGRAM-RUST-STAGE2-DEPENDENCY-CHECK-PASS"

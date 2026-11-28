@@ -58,6 +58,7 @@ LIBC_PATCHER = REPO / "tools" / "apply_rust_libc_octagram.py"
 RUNTIME = REPO / "user" / "runtime.c"
 POSIX_EXTRA = REPO / "user" / "posix_extra.c"
 STAGE2_DEPS_CHECK = REPO / "tools" / "check_rust_stage2_deps.sh"
+STAGE2_GRAPH_CHECK = REPO / "tools" / "check_stage2_cargo_graph.py"
 GITHUB_JOB_LIMIT_MINUTES = 360
 
 failures: list[str] = []
@@ -114,6 +115,7 @@ def main() -> int:
     runtime = RUNTIME.read_text(encoding="utf-8")
     posix_extra = POSIX_EXTRA.read_text(encoding="utf-8")
     stage2_deps_check = STAGE2_DEPS_CHECK.read_text(encoding="utf-8")
+    stage2_graph_check = STAGE2_GRAPH_CHECK.read_text(encoding="utf-8")
 
     # --- the build script ---------------------------------------------------
     for flag in ("--time-budget", "--resume", "--status", "--print-build-inputs-stamp"):
@@ -921,6 +923,26 @@ def main() -> int:
             needle,
             "ctrlc patcher must provide a complete OCTAGRAM signal backend",
         )
+    # Cargo resolves a crate's dependency edges from the registry index
+    # metadata, not from the Cargo.toml it extracts, so rewriting the manifest
+    # changes nothing about the graph. The patcher replaces the backend only,
+    # and tools/patch_nix_octagram.py compiles the nix build that stays in the
+    # graph as an empty crate.
+    require(
+        ctrlc_patch,
+        "index metadata",
+        "ctrlc patcher must record why the nix dependency cannot be patched away",
+    )
+    if "MANIFEST_OLD" in ctrlc_patch or "MANIFEST_NEW" in ctrlc_patch:
+        fail(
+            "ctrlc patcher must not rewrite the extracted manifest: Cargo "
+            "resolves dependencies from the index metadata"
+        )
+    require(
+        ctrlc_patch,
+        "MANIFEST_NIX_SELECTOR",
+        "ctrlc patcher must still assert that the nix dependency it works around exists",
+    )
 
     require(
         bootstrap,
@@ -1037,6 +1059,38 @@ def main() -> int:
         ('ctrlc = { version = "=3.5.1"', "dependency preflight must compile the locked ctrlc crate"),
         ("patch_ctrlc_octagram.py", "dependency check must give ctrlc an OCTAGRAM backend without nix"),
         ("patch_nix_octagram.py", "dependency check must compile nix empty for the OCTAGRAM host"),
+        (
+            "check_stage2_cargo_graph.py",
+            "dependency check must compile the resolved stage-2 dependency graphs, not only hand-written probes",
+        ),
+        (
+            "RUST_PIN=342d74463af7dd3018ef6aa04dd5500c2deb5bd1",
+            "dependency check must resolve rustc at the pinned revision",
+        ),
+        (
+            "CARGO_PIN=f93c676e3e7ab1aee08dc95d869700f6b99a1a20",
+            "dependency check must resolve Cargo at the submodule revision the rust pin records",
+        ),
+        (
+            "ls-tree HEAD src/tools/cargo",
+            "dependency check must verify CARGO_PIN against the rust checkout's submodule gitlink",
+        ),
+        (
+            "clone_pinned_checkout",
+            "dependency check must fetch the pinned checkouts it resolves the graphs from",
+        ),
+        (
+            'check_cargo_graph rust-graph-checkout rustc-main',
+            "dependency check must compile the graph of the rustc workspace stage 2 builds",
+        ),
+        (
+            'check_cargo_graph cargo-graph-checkout cargo',
+            "dependency check must compile the graph of the Cargo workspace stage 2 builds",
+        ),
+        (
+            "--skip gix-prompt",
+            "the Cargo graph check must name the one crate whose OCTAGRAM port is still missing",
+        ),
         ("rustix-cargo-locked/src", "dependency preflight must compile the Cargo submodule's locked rustix 1.1.4"),
         ('gix-index = { version = "=0.58.0"', "Cargo preflight must include gix-index 0.58.0"),
         ('terminal_size = { version = "=0.4.4"', "Cargo preflight must include terminal_size 0.4.4"),
@@ -1072,6 +1126,34 @@ def main() -> int:
         require(stage2_deps_check, needle, message)
 
     for needle, message in (
+        (
+            '"tree"',
+            "the graph check must ask Cargo for the resolved dependency graph",
+        ),
+        (
+            '"--edges"',
+            "the graph check must resolve normal dependencies only, not dev-dependencies",
+        ),
+        (
+            '"check"',
+            "the graph check must compile what cargo tree resolved",
+        ),
+        (
+            'LINKS_KEY',
+            "the graph check must skip crates that build C for the target before the sysroot exists",
+        ),
+        (
+            'proc-macro',
+            "the graph check must leave proc-macro crates to the build platform",
+        ),
+        (
+            'OCTAGRAM-CARGO-GRAPH-CHECK-PASS',
+            "the graph check must emit a verifiable pass marker",
+        ),
+    ):
+        require(stage2_graph_check, needle, message)
+
+    for needle, message in (
         ('VERSIONS = ("0.6.4", "0.6.5")', "socket2 patcher must cover both locked versions"),
         ('target_os = "octagram"', "socket2 patcher must add the OCTAGRAM target cfg"),
         ("type IovLen = usize;", "socket2 patcher must select size_t for msghdr.msg_iovlen"),
@@ -1103,6 +1185,19 @@ def main() -> int:
         ),
     ):
         require(rustix_patcher, needle, message)
+    # The guest libc has no seekdir(), so the 1.1.4 source path has to apply
+    # the same Dir::seek gate the maintained patch carries; without it rustix
+    # fails to compile as soon as a workspace enables its fs Dir iterator.
+    require(
+        rustix_patcher,
+        'src/backend/libc/fs/dir.rs',
+        "rustix patcher must gate Dir::seek away from OCTAGRAM, whose libc has no seekdir()",
+    )
+    require(
+        rustix_patcher,
+        'not(target_os = "octagram")))]',
+        "rustix patcher must install the seekdir-free Dir::seek cfg",
+    )
     require(rustix_patcher, '["patch", "-p1"', "rustix patcher must apply the version-pinned compatibility diff")
     require(rustix_patch, 'target_os = "octagram"', "rustix compatibility diff must use OCTAGRAM cfg gates")
     require(terminal_size_patch, 'VERSION = "0.4.4"', "terminal_size patcher must target the Cargo lockfile version")

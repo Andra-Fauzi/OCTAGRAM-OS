@@ -7,8 +7,9 @@ rejects are normalized explicitly before the backend is verified.
 
 Rustix 1.1.4 (locked by the Cargo submodule) predates those hunk contexts
 entirely, so it is patched by performing the same source edits the patch
-makes: every Horizon cfg also selects OCTAGRAM, and ClockId uses the same
-representation other 64-bit non-AIX targets use.
+makes: every Horizon cfg also selects OCTAGRAM, ClockId uses the same
+representation other 64-bit non-AIX targets use, and Dir::seek is gated away
+from OCTAGRAM because the guest libc has no seekdir().
 """
 
 from __future__ import annotations
@@ -96,7 +97,26 @@ def normalize_all_horizon_cfgs(package: Path) -> None:
 
 
 def apply_pre_patch_source_edits(package: Path) -> None:
-    """Apply the two non-Horizon edits the maintained patch carries."""
+    """Apply the non-Horizon edits the maintained patch carries."""
+    # The guest libc has no seekdir(): its directory reads return no reusable
+    # cookie, and the kernel has no dir-seek call. The maintained patch gates
+    # Dir::seek away from OCTAGRAM; 1.1.4 needs the same edit, or rustix fails
+    # to compile the moment a workspace enables its fs Dir iterator.
+    directory = package / "src/backend/libc/fs/dir.rs"
+    source = directory.read_text(encoding="utf-8")
+    seek_anchor = (
+        "    /// [`libc::seekdir`]: https://docs.rs/libc/*/arm-unknown-linux-gnueabihf/libc/fn.seekdir.html\n"
+        '    #[cfg(target_pointer_width = "64")]\n'
+    )
+    seek_gated = (
+        "    /// [`libc::seekdir`]: https://docs.rs/libc/*/arm-unknown-linux-gnueabihf/libc/fn.seekdir.html\n"
+        '    #[cfg(all(target_pointer_width = "64", not(target_os = "octagram")))]\n'
+    )
+    if seek_anchor in source:
+        directory.write_text(source.replace(seek_anchor, seek_gated, 1), encoding="utf-8")
+    elif seek_gated not in source:
+        raise SystemExit(f"could not find the Dir::seek cfg anchors in {directory}")
+
     clockid = package / "src/clockid.rs"
     source = clockid.read_text(encoding="utf-8")
     old_repr = (

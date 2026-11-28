@@ -5,8 +5,13 @@
 x86_64-unknown-octagram host. Its Unix backend is built on nix 0.30, which
 does not know that target_os and fails to compile for it. The OCTAGRAM guest
 libc already exports sigaction() and the standard signal numbers, so this
-patch installs a small backend that uses them directly and keeps nix out of
-the OCTAGRAM dependency graph.
+patch installs a small backend that uses them directly.
+
+Only the crate's sources are patched. Cargo resolves dependency edges from the
+registry index metadata, not from the Cargo.toml it extracts, so narrowing the
+manifest's nix target selector changes nothing about the graph: nix stays a
+dependency of ctrlc for OCTAGRAM and the backend here simply never imports it.
+tools/patch_nix_octagram.py compiles that nix build empty instead.
 """
 
 from __future__ import annotations
@@ -16,8 +21,10 @@ import re
 from pathlib import Path
 
 VERSION = "3.5.1"
-MANIFEST_OLD = '[target."cfg(unix)".dependencies.nix]'
-MANIFEST_NEW = "[target.'cfg(all(unix, not(target_os = \"octagram\")))'.dependencies.nix]"
+# ctrlc 3.5.1's Unix dependency table. A cache that still carries the old
+# manifest selector from an earlier patcher version is accepted too: Cargo
+# ignores it either way, so only the presence of the dependency matters here.
+MANIFEST_NIX_SELECTOR = "dependencies.nix"
 PLATFORM_OLD = """#[cfg(unix)]
 mod unix;
 
@@ -201,17 +208,6 @@ def find_packages(root: Path, name: str) -> list[Path]:
     return sorted(matches)
 
 
-def patch_manifest(path: Path) -> bool:
-    source = path.read_text(encoding="utf-8")
-    count = source.count(MANIFEST_OLD)
-    if count == 1:
-        path.write_text(source.replace(MANIFEST_OLD, MANIFEST_NEW, 1), encoding="utf-8")
-        return True
-    if count == 0 and MANIFEST_NEW in source:
-        return False
-    raise SystemExit(f"unexpected ctrlc {VERSION} nix dependency layout: {path}")
-
-
 def patch_platform(path: Path) -> bool:
     source = path.read_text(encoding="utf-8")
     if PLATFORM_OLD in source:
@@ -226,8 +222,14 @@ def verify(package: Path) -> None:
     manifest = (package / "Cargo.toml").read_text(encoding="utf-8")
     platform = (package / "src/platform/mod.rs").read_text(encoding="utf-8")
     backend = package / "src/platform/octagram.rs"
-    if MANIFEST_OLD in manifest or MANIFEST_NEW not in manifest:
-        raise SystemExit(f"ctrlc nix dependency is not excluded for OCTAGRAM: {package}")
+    # The manifest is not patched on purpose: Cargo builds the graph from the
+    # index metadata, so a rewritten Cargo.toml only hides that nix is still
+    # compiled for OCTAGRAM (patch_nix_octagram.py makes it an empty crate).
+    if MANIFEST_NIX_SELECTOR not in manifest:
+        raise SystemExit(
+            f"ctrlc {VERSION} no longer depends on nix for unix; the OCTAGRAM "
+            f"backend and the empty-nix stub need review: {package}"
+        )
     if PLATFORM_OLD in platform or PLATFORM_NEW not in platform:
         raise SystemExit(f"ctrlc platform selection is not patched for OCTAGRAM: {package}")
     if not backend.is_file():
@@ -265,8 +267,7 @@ def main() -> int:
         ):
             raise SystemExit(f"unexpected ctrlc package version in {manifest}")
 
-        changed = patch_manifest(manifest)
-        changed = patch_platform(platform) or changed
+        changed = patch_platform(platform)
         backend = package / "src/platform/octagram.rs"
         if not backend.is_file():
             backend.write_text(OCTAGRAM_BACKEND, encoding="utf-8")

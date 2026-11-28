@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Apply the OCTAGRAM cfg compatibility patch to rustix 1.1.6.
+"""Apply the OCTAGRAM cfg compatibility patch to the locked rustix releases.
 
-The cfg adaptation is based on the rustix 1.1.6 Horizon fallback work in
-KorinOS (Stéphane Wegener and contributors, commit c619001dd700d5f5e8560d8a4869c60a4a4924e8),
-with the custom target changed to OCTAGRAM.
+The patch was authored against rustix 1.1.6 and its unchanged patch contexts
+were checked against 1.1.5 as well. Rust's compiler and Cargo sub-workspaces
+can lock different compatible rustix releases, so both must be patched.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "1.1.6"
+VERSIONS = ("1.1.5", "1.1.6")
 PATCH_FILE = ROOT / "patches" / "rustix-1.1.6-octagram.patch"
 MARKER = ".octagram-patched"
 VERIFY_FILES = (
@@ -26,7 +26,13 @@ VERIFY_FILES = (
 )
 
 
-def verify(package: Path) -> None:
+def verify(package: Path, version: str) -> None:
+    manifest = package / "Cargo.toml"
+    if not manifest.is_file() or not re.search(
+        rf'(?m)^version = "{re.escape(version)}"$',
+        manifest.read_text(encoding="utf-8"),
+    ):
+        raise SystemExit(f"unexpected rustix package version in {manifest}")
     for relative in VERIFY_FILES:
         path = package / relative
         if not path.is_file():
@@ -49,45 +55,49 @@ def main() -> int:
     if 'target_os = "korin"' in patch_text or 'target_os = "octagram"' not in patch_text:
         raise SystemExit("rustix patch must contain OCTAGRAM cfgs and no Korin cfgs")
 
-    packages = sorted(args.registry_root.glob(f"*/rustix-{VERSION}"))
-    if not packages:
-        raise SystemExit(f"rustix {VERSION} is missing from Cargo's registry cache")
-
+    checked = 0
     patched = 0
-    for package in packages:
-        manifest = package / "Cargo.toml"
-        if not manifest.is_file() or not re.search(
-            rf'(?m)^version = "{re.escape(VERSION)}"$',
-            manifest.read_text(encoding="utf-8"),
-        ):
-            raise SystemExit(f"unexpected rustix package version in {manifest}")
-
-        marker = package / MARKER
-        if marker.is_file():
-            verify(package)
-            continue
-
-        result = subprocess.run(
-            ["patch", "-p1", "--batch", "--forward", "--fuzz=0"],
-            cwd=package,
-            input=patch_text,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
+    for version in VERSIONS:
+        packages = sorted(args.registry_root.glob(f"*/rustix-{version}"))
+        if not packages:
             raise SystemExit(
-                f"failed to apply rustix OCTAGRAM patch to {package}\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                f"rustix {version} is missing from Cargo's registry cache; "
+                "fetch every locked rustix version before applying the OCTAGRAM patch"
             )
 
-        verify(package)
-        marker.write_text("rustix 1.1.6 OCTAGRAM cfg patch applied\n", encoding="utf-8")
-        patched += 1
+        for package in packages:
+            verify(package, version)
+            marker = package / MARKER
+            if marker.is_file():
+                checked += 1
+                continue
+
+            result = subprocess.run(
+                ["patch", "-p1", "--batch", "--forward", "--fuzz=0"],
+                cwd=package,
+                input=patch_text,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise SystemExit(
+                    f"failed to apply rustix OCTAGRAM patch to {package}\n"
+                    f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                )
+
+            verify(package, version)
+            marker.write_text(
+                f"rustix {version} OCTAGRAM cfg patch applied\n",
+                encoding="utf-8",
+            )
+            checked += 1
+            patched += 1
 
     print(
         "RUST-RUSTIX-OCTAGRAM-BACKEND-PASS: "
-        f"checked {len(packages)} rustix {VERSION} source tree(s); patched {patched}"
+        f"checked {checked} rustix source tree(s) across versions "
+        f"{', '.join(VERSIONS)}; patched {patched}"
     )
     return 0
 

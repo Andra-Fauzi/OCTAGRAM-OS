@@ -131,11 +131,42 @@ pub fn check_random_surface(buffer: &mut [u8]) -> Result<(), getrandom::Error> {
 }
 EOF
 
-echo "fetching separate Rust-workspace, Cargo-submodule, and getrandom 0.4.3 dependency graphs"
+# These are active Cargo 0.103 dependencies on Unix. Both pull rustix, so
+# checking only tempfile would miss a later Cargo stage-2 failure.
+mkdir -p "$check_root/cargo-active-deps/src"
+cat > "$check_root/cargo-active-deps/Cargo.toml" <<'EOF'
+[package]
+name = "octagram-cargo-active-dependency-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+gix-index = { version = "=0.58.0", default-features = false, features = ["sha1"] }
+terminal_size = { version = "=0.4.4" }
+EOF
+cat > "$check_root/cargo-active-deps/build.rs" <<'EOF'
+fn main() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os != "octagram" {
+        panic!(
+            "Cargo target cfg mismatch: expected target_os=octagram, got {target_os:?}"
+        );
+    }
+}
+EOF
+cat > "$check_root/cargo-active-deps/src/lib.rs" <<'EOF'
+#![no_std]
+EOF
+
+echo "fetching separate Rust-workspace, Cargo-submodule, getrandom 0.4.3, and active Cargo dependency graphs"
 for manifest in \
     "$check_root/rust-workspace/Cargo.toml" \
     "$check_root/cargo-submodule/Cargo.toml" \
-    "$check_root/getrandom-modern/Cargo.toml"; do
+    "$check_root/getrandom-modern/Cargo.toml" \
+    "$check_root/cargo-active-deps/Cargo.toml"; do
     CARGO_HOME=$cargo_home cargo fetch --manifest-path "$manifest"
 done
 
@@ -246,5 +277,6 @@ check_and_compile() {
 check_and_compile "$check_root/rust-workspace" 3.23.0 rust-workspace
 check_and_compile "$check_root/cargo-submodule" 3.27.0 cargo-submodule
 check_and_compile "$check_root/getrandom-modern" "" getrandom-modern
+check_and_compile "$check_root/cargo-active-deps" "" cargo-active-deps
 
 echo "OCTAGRAM-RUST-STAGE2-DEPENDENCY-CHECK-PASS"

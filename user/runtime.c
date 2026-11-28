@@ -2993,14 +2993,6 @@ int posix_madvise(void *address, size_t length, int advice)
     return result < 0 ? (int)-result : 0;
 }
 
-int madvise(void *address, size_t length, int advice)
-{
-    (void)address;
-    (void)length;
-    (void)advice;
-    errno = ENOSYS;
-    return -1;
-}
 
 void *memcpy(void *destination, const void *source, size_t count)
 {

@@ -570,8 +570,18 @@ def main() -> int:
     )
     require(
         libc_patcher,
-        "new_source = new_source[:block_start] + new_source[block_end + 3:]",
-        "the libc patcher must remove stale duplicate OCTAGRAM exports from cached sources",
+        "legacy_export_re = re.compile(",
+        "the libc patcher must identify the exact stale OCTAGRAM export block",
+    )
+    require(
+        libc_patcher,
+        "legacy_export_count = legacy_export_re.subn",
+        "the libc patcher must remove only the stale export block, never a broad cfg_if region",
+    )
+    require(
+        libc_patcher,
+        "if legacy_export_count > 1:",
+        "the libc patcher must reject duplicate stale OCTAGRAM export blocks",
     )
     require(
         libc_patcher,
@@ -580,8 +590,8 @@ def main() -> int:
     )
     require(
         libc_patcher,
-        'unistd_import = \'#[cfg(target_os = "octagram")]\\nuse common::posix::unistd;\\n\'',
-        "the libc patcher must retain the internal unistd module import after removing duplicate exports",
+        "unistd_import = (",
+        "the libc patcher must preserve the internal unistd module import",
     )
     require(
         libc_module,

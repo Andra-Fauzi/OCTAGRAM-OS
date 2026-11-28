@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Host-only llvm-config adapter used by the OCTAGRAM Rust bootstrap.
 
-LLVM's host llvm-config may emit shared-library filenames (for example
-`/usr/lib/x86_64-linux-gnu/libz3.so`) in `--system-libs`. Rust's
-rustc_llvm build script interprets those as bare library names and turns them
-into the invalid linker option `-llibz3.so`. Normalize such entries to the
-portable linker form `-lz3`. Do not change the OCTAGRAM target llvm-config.
+LLVM's host llvm-config may emit shared-library filenames in `--system-libs`
+and optional Polly archives in `--libs`. Polly is not used by rustc and its
+runner-built archives reference glibc symbols that do not exist in OCTAGRAM.
+Normalize shared-library filenames and omit those host-only optional archives.
+Do not change the OCTAGRAM target llvm-config.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 SHARED_LIBRARY_RE = re.compile(r"lib(?P<name>[A-Za-z0-9_+.-]+)\.so(?:\.\d+)*")
+HOST_ONLY_COMPONENTS = {"-lPolly", "-lPollyISL"}
 
 
 def normalize_shared_library_token(token: str) -> str:
@@ -42,6 +43,16 @@ def normalize_system_libraries(output: str) -> str:
     return "\n".join(normalized_lines) + suffix
 
 
+def filter_host_only_components(output: str) -> str:
+    """Remove optional Polly archives built for the Linux runner, not OCTAGRAM."""
+    normalized_lines = []
+    for line in output.splitlines():
+        tokens = [token for token in shlex.split(line) if token not in HOST_ONLY_COMPONENTS]
+        normalized_lines.append(shlex.join(tokens))
+    suffix = "\n" if output.endswith("\n") else ""
+    return "\n".join(normalized_lines) + suffix
+
+
 def self_test() -> int:
     cases = {
         "-llibz3.so": "-lz3",
@@ -58,6 +69,10 @@ def self_test() -> int:
     actual = normalize_system_libraries("-lrt /usr/lib/libz3.so -llibxml2.so\n")
     if actual != "-lrt -lz3 -lxml2\n":
         print(f"FAIL: system-libs normalization returned {actual!r}", file=sys.stderr)
+        return 1
+    actual = filter_host_only_components("-lLLVMCore -lPolly -lPollyISL -lLLVMSupport\n")
+    if actual != "-lLLVMCore -lLLVMSupport\n":
+        print(f"FAIL: host-only component filter returned {actual!r}", file=sys.stderr)
         return 1
     print("OCTAGRAM-HOST-LLVM-CONFIG-WRAPPER-PASS")
     return 0
@@ -92,6 +107,8 @@ def main(argv: list[str]) -> int:
     output = result.stdout
     if "--system-libs" in argv:
         output = normalize_system_libraries(output)
+    if "--libs" in argv:
+        output = filter_host_only_components(output)
     sys.stdout.write(output)
     return 0
 

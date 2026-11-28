@@ -47,6 +47,7 @@ TEMPFILE_PATCH = REPO / "tools" / "patch_tempfile_octagram.py"
 FILETIME_PATCH = REPO / "tools" / "patch_filetime_octagram.py"
 SOCKET2_PATCH = REPO / "tools" / "patch_socket2_octagram.py"
 TERMINAL_SIZE_PATCH = REPO / "tools" / "patch_terminal_size_octagram.py"
+LIBLOADING_PATCH = REPO / "tools" / "patch_libloading_octagram.py"
 RUSTIX_PATCHER = REPO / "tools" / "patch_rustix_octagram.py"
 RUSTIX_PATCH = REPO / "patches" / "rustix-1.1.6-octagram.patch"
 TERMINAL_SIZE_PATCH = REPO / "tools" / "patch_terminal_size_octagram.py"
@@ -100,6 +101,7 @@ def main() -> int:
     filetime_patch = FILETIME_PATCH.read_text(encoding="utf-8")
     socket2_patch = SOCKET2_PATCH.read_text(encoding="utf-8")
     terminal_size_patch = TERMINAL_SIZE_PATCH.read_text(encoding="utf-8")
+    libloading_patch = LIBLOADING_PATCH.read_text(encoding="utf-8")
     rustix_patcher = RUSTIX_PATCHER.read_text(encoding="utf-8")
     rustix_patch = RUSTIX_PATCH.read_text(encoding="utf-8")
     terminal_size_patch = TERMINAL_SIZE_PATCH.read_text(encoding="utf-8")
@@ -853,6 +855,32 @@ def main() -> int:
         "Rust bootstrap must patch terminal_size before stage 2",
     )
 
+    require(
+        bootstrap,
+        'LIBLOADING_VERSION=0.9.0',
+        "Rust bootstrap must pin libloading 0.9.0 for rustc_metadata",
+    )
+    require(
+        bootstrap,
+        'fetch_locked_crate libloading "$LIBLOADING_VERSION"',
+        "Rust bootstrap must fetch libloading 0.9.0 before stage 2",
+    )
+    require(
+        bootstrap,
+        "patch_libloading_octagram.py",
+        "Rust bootstrap must patch libloading's RTLD table before stage 2",
+    )
+    require(
+        libloading_patch,
+        'VERSION = "0.9.0"',
+        "libloading patcher must cover the locked 0.9.0 release",
+    )
+    require(
+        libloading_patch,
+        'target_os = "octagram"',
+        "libloading patcher must add OCTAGRAM to the RTLD constant table",
+    )
+
     # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
     # not an unsupported-target bypass or a CPU-specific substitute.
     require(
@@ -937,6 +965,8 @@ def main() -> int:
         ("cargo-active-deps", "dependency preflight must compile active Cargo Unix dependencies that pull rustix"),
         ("rustc-build-deps/src", "dependency preflight must compile rustc's own build dependencies such as jobserver"),
         ('jobserver = { version = "=0.1.34"', "dependency preflight must compile the locked jobserver crate"),
+        ('libloading = { version = "=0.9.0"', "dependency preflight must compile the locked libloading crate"),
+        ("patch_libloading_octagram.py", "dependency check must patch libloading's RTLD table"),
         ('gix-index = { version = "=0.58.0"', "Cargo preflight must include gix-index 0.58.0"),
         ('terminal_size = { version = "=0.4.4"', "Cargo preflight must include terminal_size 0.4.4"),
         ("0.2.191 0.3.3 3.23.0", "Rust workspace preflight must use its exact lockfile dependency versions"),
@@ -954,6 +984,9 @@ def main() -> int:
         ("0.2.191 0.3.3 3.23.0 0.2.27 0.6.5", "Rust workspace preflight must include filetime 0.2.27 and socket2 0.6.5"),
         ("0.2.186 0.3.4 3.27.0 0.2.29 0.6.4", "Cargo submodule preflight must include filetime 0.2.29 and socket2 0.6.4"),
         ('socket2 = { version = "=$socket2_version" }', "dependency preflight must compile the locked socket2 crate"),
+        ("libc::F_SETLK", "dependency preflight must compile the POSIX record-lock surface rustc_data_structures uses"),
+        ("libc::umask", "dependency preflight must compile Cargo's umask/setsid process surface"),
+        ("libc::backtrace", "dependency preflight must compile rustc's signal-handler and dladdr surface"),
         ("patch_filetime_octagram.py", "dependency check must patch filetime to utimensat"),
         ("patch_socket2_octagram.py", "dependency check must patch socket2 msghdr ABI for OCTAGRAM"),
         ("patch_rustix_octagram.py", "dependency check must patch rustix before Cargo target compilation"),

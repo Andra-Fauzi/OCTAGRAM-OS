@@ -73,6 +73,7 @@ SOCKET2_CARGO_VERSION=0.6.4
 RUSTIX_VERSION=1.1.6
 RUSTIX_CARGO_VERSION=1.1.5
 TERMINAL_SIZE_VERSION=0.4.4
+LIBLOADING_VERSION=0.9.0
 HOST=x86_64-unknown-octagram
 TARGET=x86_64-unknown-none
 
@@ -612,6 +613,7 @@ fetch_locked_crate socket2 "$SOCKET2_CARGO_VERSION"
 fetch_locked_crate rustix "$RUSTIX_VERSION"
 fetch_locked_crate rustix "$RUSTIX_CARGO_VERSION"
 fetch_locked_crate terminal_size "$TERMINAL_SIZE_VERSION"
+fetch_locked_crate libloading "$LIBLOADING_VERSION"
 
 registry_patch_count=0
 for libc_version in "$LIBC_VERSION" "$LIBC_CARGO_VERSION"; do
@@ -647,6 +649,8 @@ python3 "$repo_root/tools/patch_socket2_octagram.py" \
 python3 "$repo_root/tools/patch_rustix_octagram.py" \
     --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_terminal_size_octagram.py" \
+    --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_libloading_octagram.py" \
     --registry-root "$cargo_home/registry/src"
 
 

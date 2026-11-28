@@ -93,6 +93,44 @@ pub unsafe fn check_octagram_file_abi(
     let _ = unsafe { libc::opendir(path) };
     let _ = unsafe { libc::strerror_r(0, core::ptr::null_mut(), 0) };
 }
+
+// rustc_driver's crash handler and its dladdr-based path lookup.
+pub unsafe fn check_octagram_introspection_abi() -> libc::c_int {
+    let mut info: libc::Dl_info = unsafe { core::mem::zeroed() };
+    let mut frame: *mut libc::c_void = core::ptr::null_mut();
+    let _ = unsafe { libc::backtrace(&mut frame, 1) };
+    let _ = unsafe { libc::dladdr(frame, &mut info) };
+    let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+    action.sa_flags = libc::SA_NODEFER | libc::SA_RESETHAND | libc::SA_ONSTACK;
+    let _ = unsafe { libc::sigemptyset(&mut action.sa_mask) };
+    let _ = unsafe { libc::sysconf(libc::_SC_ARG_MAX) };
+    0
+}
+
+// Cargo's Unix process helpers call these while spawning build scripts.
+pub unsafe fn check_octagram_process_abi() -> libc::mode_t {
+    let previous = unsafe { libc::umask(0o022) };
+    let _ = unsafe { libc::umask(previous) };
+    let _ = unsafe { libc::setsid() };
+    previous
+}
+
+// rustc_data_structures locks its build directories through the POSIX
+// record-lock interface, so the struct and the RDLK/WRLK/UNLK commands have to
+// exist for the compiler build, not just the flock() wrapper.
+pub unsafe fn check_octagram_record_lock_abi(fd: libc::c_int) -> libc::c_int {
+    let mut lock: libc::flock = unsafe { core::mem::zeroed() };
+    lock.l_type = libc::F_WRLCK as libc::c_short;
+    lock.l_whence = libc::SEEK_SET as libc::c_short;
+    lock.l_start = 0;
+    lock.l_len = 0;
+    let _ = (libc::F_RDLCK, libc::F_GETLK, libc::F_SETLKW);
+    let locked = unsafe { libc::fcntl(fd, libc::F_SETLK, &lock) };
+
+    lock.l_type = libc::F_UNLCK as libc::c_short;
+    let _ = unsafe { libc::fcntl(fd, libc::F_SETLK, &lock) };
+    locked
+}
 EOF
 }
 
@@ -197,11 +235,21 @@ publish = false
 
 [dependencies]
 jobserver = { version = "=0.1.34" }
+libloading = { version = "=0.9.0" }
 EOF
 cat > "$check_root/rustc-build-deps/src/lib.rs" <<'EOF'
 pub fn check_jobserver_surface() -> std::io::Result<usize> {
     let client = jobserver::Client::new(1)?;
     client.available()
+}
+
+// libloading compiles a per-target RTLD constant table and refuses unknown
+// target_os values; rustc_metadata needs it to open proc-macro dylibs.
+pub fn check_libloading_surface() -> i32 {
+    libloading::os::unix::RTLD_LAZY
+        | libloading::os::unix::RTLD_NOW
+        | libloading::os::unix::RTLD_LOCAL
+        | libloading::os::unix::RTLD_GLOBAL
 }
 EOF
 
@@ -247,6 +295,7 @@ for version in 0.3.3 0.3.4 0.4.3; do extract_crate getrandom "$version"; done
 for version in 3.23.0 3.27.0; do extract_crate tempfile "$version"; done
 for version in 0.2.27 0.2.29; do extract_crate filetime "$version"; done
 for version in 0.6.5 0.6.4; do extract_crate socket2 "$version"; done
+extract_crate libloading 0.9.0
 
 for libc_version in 0.2.191 0.2.186; do
     for source in "$cargo_home"/registry/src/*/libc-"$libc_version"; do
@@ -261,6 +310,7 @@ python3 "$repo_root/tools/patch_filetime_octagram.py" --registry-root "$cargo_ho
 python3 "$repo_root/tools/patch_socket2_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_rustix_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_terminal_size_octagram.py" --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_libloading_octagram.py" --registry-root "$cargo_home/registry/src"
 
 # The preflight includes std-based crates (tempfile, filetime, socket2), not
 # just no_std crates. Build the patched target std from the installed rust-src

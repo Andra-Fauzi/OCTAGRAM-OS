@@ -539,6 +539,15 @@ pub const F_GETFD: c_int = 1;
 pub const F_SETFD: c_int = 2;
 pub const F_GETFL: c_int = 3;
 pub const F_SETFL: c_int = 4;
+// POSIX record-lock commands. The guest libc maps the whole-file form onto its
+// flock syscall (see user/include/fcntl.h), which is the form rustc's file
+// locks and LLVM's lock files use.
+pub const F_GETLK: c_int = 5;
+pub const F_SETLK: c_int = 6;
+pub const F_SETLKW: c_int = 7;
+pub const F_RDLCK: c_int = 0;
+pub const F_WRLCK: c_int = 1;
+pub const F_UNLCK: c_int = 2;
 pub const LOCK_SH: c_int = 1;
 pub const LOCK_EX: c_int = 2;
 pub const LOCK_NB: c_int = 4;
@@ -554,6 +563,7 @@ pub const SEEK_SET: c_int = 0;
 pub const SEEK_CUR: c_int = 1;
 pub const SEEK_END: c_int = 2;
 pub const UTIME_OMIT: c_long = 0x3ffffffe;
+pub const _SC_ARG_MAX: c_int = 0;
 pub const _SC_HOST_NAME_MAX: c_int = 5;
 pub const _SC_GETPW_R_SIZE_MAX: c_int = 6;
 pub const _SC_PAGESIZE: c_int = 30;
@@ -691,6 +701,10 @@ pub const MAP_FAILED: *mut c_void = -1isize as *mut c_void;
 
 pub const SA_ONSTACK: c_int = 0x0800_0000;
 pub const SA_SIGINFO: c_int = 0x0000_0004;
+// From user/include/signal.h. SA_RESETHAND is the high bit, which is why it is
+// written through u32 before the cast.
+pub const SA_NODEFER: c_int = 0x4000_0000;
+pub const SA_RESETHAND: c_int = 0x8000_0000u32 as c_int;
 pub const SS_DISABLE: c_int = 2;
 
 pub const MSG_NOSIGNAL: c_int = 0x4000;
@@ -719,10 +733,32 @@ s! {
         pub ss_flags: c_int,
         pub ss_size: size_t,
     }
+
+    /// `struct flock` from user/include/fcntl.h. The name shares no namespace
+    /// with the `flock()` function the module also declares.
+    pub struct flock {
+        pub l_type: c_short,
+        pub l_whence: c_short,
+        pub l_start: off_t,
+        pub l_len: off_t,
+        pub l_pid: pid_t,
+    }
+
+    /// `Dl_info` from user/include/dlfcn.h, filled in by the guest `dladdr`.
+    pub struct Dl_info {
+        pub dli_fname: *const c_char,
+        pub dli_fbase: *mut c_void,
+        pub dli_sname: *const c_char,
+        pub dli_saddr: *mut c_void,
+    }
 }
 
 const _: [(); 24] = [(); core::mem::size_of::<stack_t>()];
 const _: [(); 8] = [(); core::mem::align_of::<stack_t>()];
+const _: [(); 32] = [(); core::mem::size_of::<flock>()];
+const _: [(); 8] = [(); core::mem::align_of::<flock>()];
+const _: [(); 32] = [(); core::mem::size_of::<Dl_info>()];
+const _: [(); 8] = [(); core::mem::align_of::<Dl_info>()];
 
 extern "C" {
     pub fn syscall(number: c_long, ...) -> c_long;
@@ -950,10 +986,19 @@ pub const MSG_EOR: c_int = 0x80;
 pub const AT_MINSIGSTKSZ: c_ulong = 51;
 
 extern "C" {
+    // Cargo's Unix process helpers use these; the guest runtime exports them.
+    pub fn setsid() -> pid_t;
+    pub fn umask(mask: mode_t) -> mode_t;
+
     pub fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
     pub fn preadv(fd: c_int, iov: *const iovec, iovcnt: c_int, offset: off_t) -> ssize_t;
     pub fn pwritev(fd: c_int, iov: *const iovec, iovcnt: c_int, offset: off_t) -> ssize_t;
     pub fn getauxval(kind: c_ulong) -> c_ulong;
+    // glibc-compatible introspection the guest runtime implements
+    // (user/include/execinfo.h and user/include/dlfcn.h). A static binary
+    // yields no symbol names, which the callers already handle.
+    pub fn backtrace(buffer: *mut *mut c_void, size: c_int) -> c_int;
+    pub fn dladdr(address: *const c_void, info: *mut Dl_info) -> c_int;
 }
 
 impl siginfo_t {

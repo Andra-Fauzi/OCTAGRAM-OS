@@ -72,6 +72,7 @@ write_dependency_project() {
     tempfile_version=$5
     filetime_version=$6
     socket2_version=$7
+    rustix_version=$8
     mkdir -p "$project/src"
 
     cat > "$project/Cargo.toml" <<EOF
@@ -90,6 +91,11 @@ libc = { version = "=$libc_version", default-features = false }
 filetime = { version = "=$filetime_version" }
 socket2 = { version = "=$socket2_version" }
 tempfile = { version = "=$tempfile_version" }
+# tempfile's requirement is just `rustix 1`, so without this pin the probe
+# compiles whatever crates.io published last (1.1.6 did not exist when these
+# lockfiles were made) and tests a rustix the patcher never saw. Assert the
+# version the lockfile actually selects instead.
+rustix = { version = "=$rustix_version", default-features = false }
 
 EOF
 
@@ -181,17 +187,18 @@ pub unsafe fn check_octagram_record_lock_abi(fd: libc::c_int) -> libc::c_int {
 EOF
 }
 
-# Rust root lockfile: libc 0.2.191, getrandom 0.3.3, tempfile 3.23.0.
+# Rust root lockfile: libc 0.2.191, getrandom 0.3.3, tempfile 3.23.0, rustix 1.1.5.
 write_dependency_project \
     "$check_root/rust-workspace" \
     octagram-rust-workspace-dependency-check \
-    0.2.191 0.3.3 3.23.0 0.2.27 0.6.5
+    0.2.191 0.3.3 3.23.0 0.2.27 0.6.5 1.1.5
 
-# Cargo submodule lockfile: libc 0.2.186, getrandom 0.3.4, tempfile 3.27.0.
+# Cargo submodule lockfile: libc 0.2.186, getrandom 0.3.4, tempfile 3.27.0,
+# rustix 1.1.4.
 write_dependency_project \
     "$check_root/cargo-submodule" \
     octagram-cargo-submodule-dependency-check \
-    0.2.186 0.3.4 3.27.0 0.2.29 0.6.4
+    0.2.186 0.3.4 3.27.0 0.2.29 0.6.4 1.1.4
 
 # The pinned Cargo submodule lockfile uses rustix 1.1.5, while the
 # freshly resolved dependency probes select 1.1.6. Fetch the exact older
@@ -457,6 +464,7 @@ check_and_compile() {
 
 check_and_compile "$check_root/rust-workspace" 3.23.0 rust-workspace
 check_and_compile "$check_root/cargo-submodule" 3.27.0 cargo-submodule
+
 check_and_compile "$check_root/getrandom-modern" "" getrandom-modern
 check_and_compile "$check_root/rustix-cargo-locked" "" rustix-cargo-locked
 check_and_compile "$check_root/cargo-active-deps" "" cargo-active-deps

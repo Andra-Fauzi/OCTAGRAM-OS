@@ -1096,6 +1096,19 @@ def main() -> int:
         ('terminal_size = { version = "=0.4.4"', "Cargo preflight must include terminal_size 0.4.4"),
         ("0.2.191 0.3.3 3.23.0", "Rust workspace preflight must use its exact lockfile dependency versions"),
         ("0.2.186 0.3.4 3.27.0", "Cargo submodule preflight must use its exact lockfile dependency versions"),
+        (
+            'rustix = { version = "=$rustix_version", default-features = false }',
+            "dependency preflight must pin rustix, or a new crates.io release "
+            "is compiled without the OCTAGRAM patch",
+        ),
+        (
+            "0.2.191 0.3.3 3.23.0 0.2.27 0.6.5 1.1.5",
+            "Rust workspace preflight must pin the rustix version its lockfile selects",
+        ),
+        (
+            "0.2.186 0.3.4 3.27.0 0.2.29 0.6.4 1.1.4",
+            "Cargo submodule preflight must pin the rustix version its lockfile selects",
+        ),
         ("-Zbuild-std=core,alloc,std", "dependency check must compile target core, alloc, and std before checking std-based crates"),
         ("cargo \"+$toolchain\" tree", "dependency check must inspect the resolved OCTAGRAM dependency graph"),
         ("rustc \"+$toolchain\" -Z unstable-options --print cfg --target", "dependency check must inspect the custom target cfg values"),

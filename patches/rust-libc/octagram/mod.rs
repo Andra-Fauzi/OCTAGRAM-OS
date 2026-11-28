@@ -148,6 +148,21 @@ s! {
         pub imr_interface: in_addr,
     }
 
+    // Linux-compatible layouts used by socket2's generic Unix implementation.
+    // OCTAGRAM currently does not implement source-specific multicast or the
+    // Linux interface-index extension; these types preserve ABI layout only.
+    pub struct ip_mreqn {
+        pub imr_multiaddr: in_addr,
+        pub imr_address: in_addr,
+        pub imr_ifindex: c_int,
+    }
+
+    pub struct ip_mreq_source {
+        pub imr_multiaddr: in_addr,
+        pub imr_interface: in_addr,
+        pub imr_sourceaddr: in_addr,
+    }
+
     pub struct addrinfo {
         pub ai_flags: c_int,
         pub ai_family: c_int,
@@ -418,6 +433,13 @@ pub const POLLERR: c_short = 0x0008;
 pub const POLLHUP: c_short = 0x0010;
 pub const POLLNVAL: c_short = 0x0020;
 pub const SO_LINGER: c_int = 13;
+// Linux-compatible socket option numbers. Several are reserved by OCTAGRAM
+// and may return ENOPROTOOPT until their kernel handlers are implemented.
+pub const SO_SNDBUF: c_int = 7;
+pub const SO_RCVBUF: c_int = 8;
+pub const SO_OOBINLINE: c_int = 10;
+pub const SOCK_RDM: c_int = 4;
+pub const MSG_OOB: c_int = 1;
 pub const AF_UNSPEC: c_int = 0;
 pub const AF_UNIX: c_int = 1;
 pub const AF_INET: c_int = 2;
@@ -441,13 +463,21 @@ pub const IPPROTO_IP: c_int = 0;
 pub const IPPROTO_TCP: c_int = 6;
 pub const IPPROTO_UDP: c_int = 17;
 pub const TCP_NODELAY: c_int = 1;
+pub const TCP_KEEPIDLE: c_int = 4;
+pub const IP_TOS: c_int = 1;
 pub const IP_TTL: c_int = 2;
+pub const IP_RECVTOS: c_int = 13;
+pub const IP_MULTICAST_IF: c_int = 32;
+pub const IP_ADD_SOURCE_MEMBERSHIP: c_int = 39;
+pub const IP_DROP_SOURCE_MEMBERSHIP: c_int = 40;
 pub const IP_ADD_MEMBERSHIP: c_int = 35;
 pub const IP_DROP_MEMBERSHIP: c_int = 36;
 pub const IP_MULTICAST_TTL: c_int = 33;
 pub const IP_MULTICAST_LOOP: c_int = 34;
 pub const IPV6_UNICAST_HOPS: c_int = 16;
+pub const IPV6_MULTICAST_IF: c_int = 17;
 pub const IPV6_MULTICAST_HOPS: c_int = 18;
+pub const IPV6_RECVTCLASS: c_int = 66;
 pub const IPV6_MULTICAST_LOOP: c_int = 19;
 pub const IPV6_V6ONLY: c_int = 26;
 pub const IPV6_ADD_MEMBERSHIP: c_int = 20;

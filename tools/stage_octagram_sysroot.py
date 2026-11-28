@@ -108,7 +108,7 @@ def main() -> int:
         print("stage_octagram_sysroot: run 'make -C user all' first", file=sys.stderr)
         return 1
 
-    for required_header in ("include/stdio.h", "linker.ld", "third_party/libcxx/include/__config"):
+    for required_header in ("include/stdio.h", "include/strings.h", "linker.ld", "third_party/libcxx/include/__config"):
         if not (user_dir / required_header).exists():
             print(
                 f"stage_octagram_sysroot: missing source path user/{required_header}",

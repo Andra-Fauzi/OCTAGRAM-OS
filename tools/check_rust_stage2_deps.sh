@@ -181,6 +181,7 @@ python3 "$repo_root/tools/patch_errno_octagram.py" --registry-root "$cargo_home/
 python3 "$repo_root/tools/patch_getrandom_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_tempfile_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_filetime_octagram.py" --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_socket2_octagram.py" --registry-root "$cargo_home/registry/src"
 
 # The preflight includes std-based crates (tempfile, filetime, socket2), not
 # just no_std crates. Build the patched target std from the installed rust-src

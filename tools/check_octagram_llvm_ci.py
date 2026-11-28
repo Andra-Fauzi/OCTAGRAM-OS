@@ -1364,7 +1364,7 @@ pub fn reopen(file: &File, path: &Path) -> io::Result<File> {
             package = registry_root / "index.test" / f"filetime-{version}"
             (package / "src" / "unix").mkdir(parents=True)
             (package / "Cargo.toml").write_text(
-                f'[package]\\nname = "filetime"\\nversion = "{version}"\\n',
+                f'[package]\nname = "filetime"\nversion = "{version}"\n',
                 encoding="utf-8",
             )
             (package / "src" / "unix" / "mod.rs").write_text(

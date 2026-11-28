@@ -706,7 +706,7 @@ __attribute__((visibility("hidden"), weak)) void *__dso_handle = &__dso_handle;
 EOF
 echo "building Rust-only hidden __dso_handle object"
 OCTAGRAM_SYSROOT="$sysroot" "$linker" -c "$rust_dso_source" -o "$rust_dso_object"
-if ! readelf -s --wide "$rust_dso_object" | grep -Eq 'OBJECT +GLOBAL +HIDDEN +[0-9]+ +__dso_handle'; then
+if ! readelf -s --wide "$rust_dso_object" | grep -Eq 'OBJECT +(GLOBAL|WEAK) +HIDDEN +[0-9]+ +__dso_handle'; then
     echo "bootstrap_rustc_octagram: error: generated __dso_handle is not a hidden global object" >&2
     readelf -s --wide "$rust_dso_object" >&2 || true
     exit 1

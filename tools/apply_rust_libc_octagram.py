@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -128,35 +129,50 @@ def main() -> int:
     )
 
     # libc 0.2.x carries two module trees: the legacy `src/unix` one and the
-    # newer `src/new` one that std actually resolves through. The OCTAGRAM ABI
-    # module lives in the legacy tree, so make it visible from `src/new` too
-    # instead of maintaining two copies of the same definitions.
+    # newer `src/new` one that errno and std resolve through. The OCTAGRAM
+    # ABI lives in the legacy tree. Re-export only the missing strerror_r API
+    # from the new tree; all other target symbols already arrive via src/unix.
     new_mod = root / "src/new/mod.rs"
     new_source = new_mod.read_text(encoding="utf-8")
-    marker = '#[cfg(target_os = "octagram")]\nuse common::posix::unistd;\n'
-    if new_source.count(marker) > 1:
-        raise SystemExit(f"duplicate OCTAGRAM libc re-export blocks in {new_mod}")
-    if marker in new_source:
-        # Every OCTAGRAM binding is already re-exported through the legacy
-        # crate::unix::* glob. Re-exporting the same names through new::* makes
-        # libc::flock/unlink/link/etc ambiguous at the crate root. Keep only
-        # the internal unistd module import used by the generic new::* exports.
-        block_start = new_source.index(marker)
-        block_end = new_source.find("};\n", block_start)
-        if block_end < 0:
-            raise SystemExit(f"incomplete OCTAGRAM libc re-export block in {new_mod}")
-        new_source = new_source[:block_start] + new_source[block_end + 3:]
-    if "mod common;\n" not in new_source:
-        raise SystemExit(f"missing common module anchor in {new_mod}")
-    unistd_import = '#[cfg(target_os = "octagram")]\nuse common::posix::unistd;\n'
-    if unistd_import not in new_source:
-        new_source = new_source.replace("mod common;\n", "mod common;\n\n" + unistd_import, 1)
-    strerror_export = (
-        '#[cfg(target_os = "octagram")]\n'
-        'pub use crate::unix::octagram::strerror_r;\n'
+
+    # Older iterations inserted a broad OCTAGRAM re-export list here. Remove
+    # only that exact syntactic block. Never search for the next generic `};`,
+    # which could be the end of an unrelated cfg_if! and delete libc modules.
+    legacy_export_re = re.compile(
+        r'(?ms)^#\\[cfg\\(target_os = "octagram"\\)\\]\\n'
+        r'pub use crate::unix::octagram::\\{\\n.*?^\\};\\n?'
     )
+    new_source, legacy_export_count = legacy_export_re.subn("", new_source)
+    if legacy_export_count > 1:
+        raise SystemExit(f"duplicate legacy OCTAGRAM re-export blocks in {new_mod}")
+    if "pub use crate::unix::octagram::{" in new_source:
+        raise SystemExit(f"unrecognized legacy OCTAGRAM re-export block in {new_mod}")
+
+    unistd_import = (
+        '#[cfg(target_os = "octagram")]\\n'
+        'use common::posix::unistd;\\n'
+    )
+    if new_source.count(unistd_import) > 1:
+        raise SystemExit(f"duplicate OCTAGRAM unistd imports in {new_mod}")
+    if unistd_import not in new_source:
+        if "mod common;\\n" not in new_source:
+            raise SystemExit(f"missing common module anchor in {new_mod}")
+        new_source = new_source.replace(
+            "mod common;\\n", "mod common;\\n\\n" + unistd_import, 1
+        )
+
+    strerror_export = (
+        '#[cfg(target_os = "octagram")]\\n'
+        'pub use crate::unix::octagram::strerror_r;\\n'
+    )
+    if new_source.count(strerror_export) > 1:
+        raise SystemExit(f"duplicate OCTAGRAM strerror_r exports in {new_mod}")
     if strerror_export not in new_source:
-        new_source = new_source.replace(unistd_import, unistd_import + strerror_export, 1)
+        new_source = new_source.replace(
+            unistd_import, unistd_import + strerror_export, 1
+        )
+    if unistd_import not in new_source or strerror_export not in new_source:
+        raise SystemExit(f"failed to install OCTAGRAM libc exports in {new_mod}")
     new_mod.write_text(new_source, encoding="utf-8")
     # Cargo re-extracts a registry crate whenever this marker is missing, which
     # silently discards the edits above; keep the marker so the patched sources

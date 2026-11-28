@@ -94,7 +94,14 @@ def enable_octagram_for_item(package: Path, relative: str, marker: str) -> None:
 
 def enable_octagram_filesystem_apis(package: Path) -> None:
     # These libc interfaces exist in OCTAGRAM; Horizon alone lacks them.
+    # A re-enabled interface also needs the types it names in scope: the
+    # definitions and their `use` lines sit behind their own Horizon cfg, so
+    # enabling one without the other compiles the fn but not its signature.
     items = (
+        ("src/backend/libc/fs/types.rs", "use crate::ffi;"),
+        ("src/backend/libc/fs/syscalls.rs", "use crate::fs::Access;"),
+        ("src/backend/libc/fs/syscalls.rs", "use crate::fs::FlockOperation;"),
+        ("src/backend/libc/fs/syscalls.rs", "use crate::fs::Timestamps;"),
         ("src/backend/libc/fs/types.rs", "pub struct Access:"),
         ("src/backend/libc/fs/types.rs", "pub enum FlockOperation"),
         ("src/backend/libc/fs/types.rs", "pub(crate) const fn from_dirent_d_type"),

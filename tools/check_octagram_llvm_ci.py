@@ -973,6 +973,29 @@ def main() -> int:
         require(socket2_patch, needle, message)
 
     require(rustix_patcher, 'VERSIONS = ("1.1.5", "1.1.6")', "rustix patcher must cover both locked Cargo versions")
+    # An interface and the types in its signature sit behind separate Horizon
+    # cfgs. Re-enabling only the function compiles a body whose signature names
+    # types that are still cfg'd out, which is how the OCTAGRAM filesystem
+    # re-enable first failed with E0425/E0433 in the dependency preflight.
+    for needle, message in (
+        (
+            '"src/backend/libc/fs/types.rs", "use crate::ffi;"',
+            "rustix patcher must restore the ffi import used by the Access bitflags",
+        ),
+        (
+            '"src/backend/libc/fs/syscalls.rs", "use crate::fs::Access;"',
+            "rustix patcher must import Access for the enabled access()/accessat()",
+        ),
+        (
+            '"src/backend/libc/fs/syscalls.rs", "use crate::fs::FlockOperation;"',
+            "rustix patcher must import FlockOperation for the enabled flock()",
+        ),
+        (
+            '"src/backend/libc/fs/syscalls.rs", "use crate::fs::Timestamps;"',
+            "rustix patcher must import Timestamps for the enabled utimensat()/futimens()",
+        ),
+    ):
+        require(rustix_patcher, needle, message)
     require(rustix_patcher, '["patch", "-p1"', "rustix patcher must apply the version-pinned compatibility diff")
     require(rustix_patch, 'target_os = "octagram"', "rustix compatibility diff must use OCTAGRAM cfg gates")
     require(terminal_size_patch, 'VERSION = "0.4.4"', "terminal_size patcher must target the Cargo lockfile version")

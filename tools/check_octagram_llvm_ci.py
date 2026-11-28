@@ -541,6 +541,16 @@ def main() -> int:
         "int *__errno_location(void)",
         "the OCTAGRAM runtime must export the errno accessor used by Rust crates",
     )
+    require(
+        runtime,
+        "int madvise(void *address, size_t length, int advice)",
+        "the Rust mmap dependency needs an explicit OCTAGRAM madvise stub",
+    )
+    require(
+        runtime,
+        "errno = ENOSYS;",
+        "unsupported madvise must fail honestly with ENOSYS",
+    )
 
     # The legacy crate::unix::* glob already re-exports the OCTAGRAM module.
     # The new module patcher must remove the previous duplicate glob that caused
@@ -562,6 +572,8 @@ def main() -> int:
         "faccessat",
         "statvfs",
         "fstatvfs",
+        "msync",
+        "madvise",
         "LOCK_SH",
         "LOCK_EX",
         "LOCK_NB",
@@ -658,6 +670,14 @@ def main() -> int:
         "EPROTO",
         "ETIME",
         "ETOOMANYREFS",
+        "MS_ASYNC",
+        "MS_INVALIDATE",
+        "MS_SYNC",
+        "MADV_NORMAL",
+        "MADV_RANDOM",
+        "MADV_SEQUENTIAL",
+        "MADV_WILLNEED",
+        "MADV_DONTNEED",
     ):
         require(
             libc_module,

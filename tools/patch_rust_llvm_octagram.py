@@ -77,6 +77,17 @@ NEW_LD_BLOCK = '''    // LLVM ldflags
 '''
 
 
+CXXRT_MARKER = '    // libc++abi and libunwind have to be specified explicitly on AIX.'
+CXXRT_INSERTION = '''    // OCTAGRAM ships libc++ and its C++ ABI runtime as separate archives.
+    // Match the libraries selected by user/toolchain/bin/octagram-cc.
+    if target.contains("octagram") {
+        println!("cargo:rustc-link-lib=cxxrt");
+    }
+
+'''
+
+
+
 def patch_source(source: str) -> str:
     if OLD_CXX in source:
         if source.count(OLD_CXX) != 1:
@@ -91,14 +102,19 @@ def patch_source(source: str) -> str:
         source = source.replace(OLD_LD_BLOCK, NEW_LD_BLOCK, 1)
     elif NEW_LD_BLOCK not in source:
         raise ValueError("Rust LLVM linker-flags block does not match the pinned source")
+
+    if CXXRT_INSERTION not in source:
+        if source.count(CXXRT_MARKER) != 1:
+            raise ValueError("Rust LLVM C++ runtime insertion point does not match the pinned source")
+        source = source.replace(CXXRT_MARKER, CXXRT_INSERTION + CXXRT_MARKER, 1)
     return source
 
 
 def self_test() -> int:
-    sample = OLD_CXX + "\n" + OLD_LD_BLOCK
+    sample = OLD_CXX + "\n" + OLD_LD_BLOCK + CXXRT_MARKER
     patched = patch_source(sample)
-    if NEW_CXX not in patched or NEW_LD_BLOCK not in patched:
-        raise AssertionError("patch did not install both OCTAGRAM fixes")
+    if NEW_CXX not in patched or NEW_LD_BLOCK not in patched or CXXRT_INSERTION not in patched:
+        raise AssertionError("patch did not install all OCTAGRAM link fixes")
     if patch_source(patched) != patched:
         raise AssertionError("patch is not idempotent")
     if OLD_CXX in patched or OLD_LD_BLOCK in patched:

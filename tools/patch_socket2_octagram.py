@@ -9,7 +9,9 @@ from pathlib import Path
 
 VERSIONS = ("0.6.4", "0.6.5")
 IOVLEN_CFG = re.compile(
-    r"(?ms)^#\[cfg\(any\(\n(?P<body>.*?)^\)\)\]\ntype IovLen = usize;"
+    r"(?ms)^#\[cfg\(any\(\n"
+    r"(?P<body>(?:(?!^#\[cfg).)*?)"
+    r"^\)\)\]\ntype IovLen = usize;"
 )
 ANDROID_CFG = re.compile(r'(?m)^(?P<indent>[ \t]*)target_os = "android",[ \t]*$')
 
@@ -18,8 +20,6 @@ def patch_source(path: Path) -> bool:
     source = path.read_text(encoding="utf-8")
     matches = list(IOVLEN_CFG.finditer(source))
     if len(matches) != 1:
-        if 'target_os = "octagram"' in source and "type IovLen = usize;" in source:
-            return False
         raise SystemExit(
             f"expected one socket2 usize IovLen cfg block in {path}, found {len(matches)}"
         )

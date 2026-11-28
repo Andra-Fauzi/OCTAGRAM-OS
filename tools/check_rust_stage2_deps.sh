@@ -42,8 +42,6 @@ getrandom = { version = "=$getrandom_version", default-features = false }
 libc = { version = "=$libc_version", default-features = false }
 filetime = { version = "=$filetime_version" }
 socket2 = { version = "=$socket2_version" }
-
-[dev-dependencies]
 tempfile = { version = "=$tempfile_version" }
 
 # This negative cfg dependency is a direct compile-time probe: if Cargo fails
@@ -193,9 +191,11 @@ check_target_graph() {
     echo "checking $label target dependency graph"
     dependency_tree=$(CARGO_HOME=$cargo_home cargo "+$toolchain" tree \
         --manifest-path "$project/Cargo.toml" \
-        --target "$target" -Zjson-target-spec --edges normal,dev --prefix none)
+        --target "$target" -Zjson-target-spec --edges normal --prefix none)
     if printf '%s\n' "$dependency_tree" | grep -Eq '^rustix v'; then
-        echo "NOTE: cargo tree reports rustix for $label; the negative target-cfg probe in cargo check is authoritative"
+        echo "unexpected rustix dependency in the OCTAGRAM $label graph; refusing to start Rust compilation" >&2
+        printf '%s\n' "$dependency_tree" >&2
+        exit 1
     fi
     if [ -n "$expected_tempfile" ] &&
        ! printf '%s\n' "$dependency_tree" | grep -Eq "^tempfile v$expected_tempfile"; then

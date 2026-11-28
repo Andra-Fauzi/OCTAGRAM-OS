@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Teach the locked openssl-src crate to build OpenSSL for OCTAGRAM.
 
-OpenSSL's own Configure target for the OCTAGRAM x86_64 ABI is currently the
-Linux x86_64 profile, while the actual compiler, archiver and headers come
-from OCTAGRAM's cross toolchain. This is a Configure-platform mapping only;
-it does not use the host Linux compiler or host OpenSSL libraries.
+OpenSSL's Configure target for the OCTAGRAM x86_64 ABI uses the Linux
+x86_64 profile, while the actual compiler, archiver and headers come from
+OCTAGRAM's cross toolchain. The patch also adds an OpenSSL-local strings.h
+shim for its unconditional Unix include; it does not change the OCTAGRAM
+sysroot, use host Linux OpenSSL libraries, or invalidate the LLVM input stamp.
 """
 
 from __future__ import annotations

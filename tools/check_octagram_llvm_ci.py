@@ -711,6 +711,27 @@ def main() -> int:
         "Rust bootstrap must patch filetime before stage 2",
     )
 
+    require(
+        bootstrap,
+        'SOCKET2_VERSION=0.6.5',
+        "Rust bootstrap must pin workspace socket2 0.6.5",
+    )
+    require(
+        bootstrap,
+        'SOCKET2_CARGO_VERSION=0.6.4',
+        "Rust bootstrap must pin Cargo submodule socket2 0.6.4",
+    )
+    require(
+        bootstrap,
+        'fetch_locked_crate socket2 "$SOCKET2_VERSION"',
+        "Rust bootstrap must fetch socket2 0.6.5 before stage 2",
+    )
+    require(
+        bootstrap,
+        "patch_socket2_octagram.py",
+        "Rust bootstrap must patch socket2 before stage 2",
+    )
+
     # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
     # not an unsupported-target bypass or a CPU-specific substitute.
     require(

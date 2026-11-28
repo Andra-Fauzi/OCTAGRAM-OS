@@ -108,6 +108,26 @@ write_dependency_project \
     octagram-cargo-submodule-dependency-check \
     0.2.186 0.3.4 3.27.0 0.2.29 0.6.4
 
+# The pinned Cargo submodule lockfile uses rustix 1.1.5, while the
+# freshly resolved dependency probes select 1.1.6. Fetch the exact older
+# locked source as a fetch-only package so the patcher can validate both.
+mkdir -p "$check_root/rustix-locked/src"
+cat > "$check_root/rustix-locked/Cargo.toml" <<'EOF'
+[package]
+name = "octagram-rustix-locked-source-fetch"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+rustix = { version = "=1.1.5", default-features = false }
+EOF
+cat > "$check_root/rustix-locked/src/lib.rs" <<'EOF'
+#![no_std]
+EOF
+
 # getrandom 0.4.3 is also present in the two lockfiles. Test it separately to
 # avoid Cargo unifying semver-compatible exact versions inside one workspace.
 mkdir -p "$check_root/getrandom-modern/src"
@@ -166,7 +186,8 @@ for manifest in \
     "$check_root/rust-workspace/Cargo.toml" \
     "$check_root/cargo-submodule/Cargo.toml" \
     "$check_root/getrandom-modern/Cargo.toml" \
-    "$check_root/cargo-active-deps/Cargo.toml"; do
+    "$check_root/cargo-active-deps/Cargo.toml" \
+    "$check_root/rustix-locked/Cargo.toml"; do
     CARGO_HOME=$cargo_home cargo fetch --manifest-path "$manifest"
 done
 

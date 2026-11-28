@@ -3169,6 +3169,17 @@ int strncasecmp(const char *left, const char *right, size_t count)
     return 0;
 }
 
+int strcasecmp(const char *left, const char *right)
+{
+    for (;;) {
+        unsigned char a = (unsigned char)tolower((unsigned char)*left++);
+        unsigned char b = (unsigned char)tolower((unsigned char)*right++);
+        if (a != b || a == '\0') {
+            return (int)a - (int)b;
+        }
+    }
+}
+
 int atoi(const char *text)
 {
     return (int)strtol(text, NULL, 10);

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Apply the OCTAGRAM cfg compatibility patch to the locked rustix releases.
+"""Apply the OCTAGRAM cfg compatibility patch to locked rustix releases.
 
-The patch is shared by rustix 1.1.5 and 1.1.6. A small source-context drift
-between those releases is normalized after applying the maintained patch.
+Rustix 1.1.5 has two source-context differences in Horizon cfg lists. The
+maintained patch applies all other changes; those two narrowly-validated
+rejects are normalized explicitly before the backend is verified.
 """
 
 from __future__ import annotations
@@ -21,8 +22,14 @@ VERIFY_FILES = (
     "src/backend/libc/fs/types.rs",
     "src/backend/libc/fs/syscalls.rs",
     "src/backend/libc/io/syscalls.rs",
+    "src/backend/libc/thread/syscalls.rs",
+    "src/thread/clock.rs",
     "src/ioctl/mod.rs",
 )
+EXPECTED_1_1_5_REJECTS = {
+    "src/backend/libc/thread/syscalls.rs",
+    "src/thread/clock.rs",
+}
 
 
 def verify_manifest(package: Path, version: str) -> None:
@@ -35,10 +42,9 @@ def verify_manifest(package: Path, version: str) -> None:
 
 
 def ensure_octagram_cfg(package: Path) -> None:
-    # rustix 1.1.5 has a context drift in errno.rs compared with 1.1.6.
-    # OCTAGRAM deliberately shares Horizon's libc errno implementation.
-    # Normalize only remaining, not-yet-wrapped Horizon cfg entries in the
-    # exact files covered by the upstream compatibility patch.
+    # OCTAGRAM deliberately shares Horizon's libc implementation for these
+    # rustix interfaces. Normalize only the exact source files that must carry
+    # the OCTAGRAM target cfg, including the two 1.1.5 context-drift files.
     for relative in VERIFY_FILES:
         path = package / relative
         if not path.is_file():
@@ -64,6 +70,41 @@ def verify(package: Path, version: str) -> None:
             raise SystemExit(f"rustix OCTAGRAM cfg was not installed in {path}")
         if 'target_os = "korin"' in source:
             raise SystemExit(f"unconverted Korin target cfg remains in {path}")
+
+
+def validate_expected_rejects(package: Path, version: str) -> None:
+    rejects = sorted(package.rglob("*.rej"))
+    if not rejects:
+        return
+
+    relative_rejects = {str(path.relative_to(package)) for path in rejects}
+    if version != "1.1.5" or relative_rejects != EXPECTED_1_1_5_REJECTS:
+        raise SystemExit(
+            f"unexpected rustix patch rejects for {version}: "
+            f"{sorted(relative_rejects)}"
+        )
+
+    expected_removed = 'target_os = "horizon",'
+    expected_added = 'any(target_os = "horizon", target_os = "octagram"),'
+    for reject in rejects:
+        changed = [
+            line[1:].strip()
+            for line in reject.read_text(encoding="utf-8").splitlines()
+            if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+        ]
+        if (
+            not changed
+            or len(changed) % 2 != 0
+            or any(changed[index] != expected_removed for index in range(0, len(changed), 2))
+            or any(changed[index] != expected_added for index in range(1, len(changed), 2))
+        ):
+            raise SystemExit(
+                f"rustix reject contains changes beyond the expected Horizon cfg "
+                f"normalization: {reject}"
+            )
+
+    for reject in rejects:
+        reject.unlink()
 
 
 def main() -> int:
@@ -99,20 +140,24 @@ def main() -> int:
                     text=True,
                     check=False,
                 )
-                if result.returncode != 0:
+                if result.returncode != 0 and not result.stdout:
                     raise SystemExit(
                         f"failed to apply rustix OCTAGRAM patch to {package}\n"
                         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
                     )
 
+                # For 1.1.5, only the known Horizon cfg hunks differ. Rejects
+                # are accepted only when their files and every changed line
+                # match that narrow, audited compatibility adjustment.
+                validate_expected_rejects(package, version)
                 marker.write_text(
                     f"rustix {version} OCTAGRAM cfg patch applied\n",
                     encoding="utf-8",
                 )
                 patched += 1
 
-            # Also repairs a partially patched cache left by an earlier CI
-            # attempt, then validates every required file before compilation.
+            # Repairs the two known 1.1.5 cfg-context differences, then
+            # validates all required backend files before compilation.
             ensure_octagram_cfg(package)
             verify(package, version)
             checked += 1

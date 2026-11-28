@@ -559,6 +559,9 @@ def main() -> int:
         "closedir",
         "readdir",
         "openat",
+        "faccessat",
+        "statvfs",
+        "fstatvfs",
         "LOCK_SH",
         "LOCK_EX",
         "LOCK_NB",
@@ -629,6 +632,42 @@ def main() -> int:
         stage2_deps_check,
         "check_octagram_file_abi",
         "the early target check must compile-check the POSIX filesystem ABI for each lockfile",
+    )
+
+    for symbol in (
+        "RTLD_DEFAULT",
+        "R_OK",
+        "W_OK",
+        "X_OK",
+        "F_OK",
+        "AT_EACCESS",
+        "AT_SYMLINK_FOLLOW",
+        "O_SYNC",
+        "UTIME_NOW",
+        "EBADMSG",
+        "ECANCELED",
+        "EHOSTDOWN",
+        "EIDRM",
+        "EMULTIHOP",
+        "ENODATA",
+        "ENOLINK",
+        "ENOMSG",
+        "ENOSR",
+        "ENOSTR",
+        "EPFNOSUPPORT",
+        "EPROTO",
+        "ETIME",
+        "ETOOMANYREFS",
+    ):
+        require(
+            libc_module,
+            f"pub const {symbol}:",
+            f"OCTAGRAM libc module is missing rustix compatibility constant {symbol}",
+        )
+    require(
+        libc_module,
+        "pub struct statvfs",
+        "OCTAGRAM libc module must match the public sys/statvfs.h layout",
     )
     require(
         errno_patch,

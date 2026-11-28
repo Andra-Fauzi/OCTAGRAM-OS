@@ -277,6 +277,10 @@ def main() -> int:
         ('GETRANDOM_CARGO_VERSION=0.3.4', "bootstrap must pin Cargo's getrandom 0.3.4"),
         ('GETRANDOM_MODERN_VERSION=0.4.3', "bootstrap must pin getrandom 0.4.3"),
         ('TEMPFILE_CARGO_VERSION=3.27.0', "bootstrap must pin Cargo's tempfile 3.27.0"),
+        ('RUSTIX_VERSION=1.1.6', "bootstrap must pin Rust workspace rustix 1.1.6"),
+        ('RUSTIX_CARGO_VERSION=1.1.5', "bootstrap must pin Cargo rustix 1.1.5"),
+        ('fetch_locked_crate rustix "$RUSTIX_VERSION"', "bootstrap must fetch Rust workspace rustix"),
+        ('fetch_locked_crate rustix "$RUSTIX_CARGO_VERSION"', "bootstrap must fetch Cargo rustix"),
         ('fetch_locked_crate libc "$LIBC_VERSION"', "bootstrap must fetch Rust workspace libc 0.2.191"),
         ('fetch_locked_crate libc "$LIBC_CARGO_VERSION"', "bootstrap must fetch Cargo libc 0.2.186"),
     ):
@@ -968,7 +972,7 @@ def main() -> int:
     ):
         require(socket2_patch, needle, message)
 
-    require(rustix_patcher, 'VERSION = "1.1.6"', "rustix patcher must target the Cargo lockfile version")
+    require(rustix_patcher, 'VERSIONS = ("1.1.5", "1.1.6")', "rustix patcher must cover both locked Cargo versions")
     require(rustix_patcher, '["patch", "-p1"', "rustix patcher must apply the version-pinned compatibility diff")
     require(rustix_patch, 'target_os = "octagram"', "rustix compatibility diff must use OCTAGRAM cfg gates")
     require(terminal_size_patch, 'VERSION = "0.4.4"', "terminal_size patcher must target the Cargo lockfile version")

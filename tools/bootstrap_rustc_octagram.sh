@@ -458,6 +458,12 @@ if [ ! -x "$linker" ]; then
     echo "bootstrap_rustc_octagram: error: missing linker driver $linker" >&2
     exit 1
 fi
+rust_linker=$repo_root/tools/octagram-rust-linker.sh
+if [ ! -f "$rust_linker" ]; then
+    echo "bootstrap_rustc_octagram: error: missing Rust linker adapter $rust_linker" >&2
+    exit 1
+fi
+python3 "$repo_root/tools/patch_rust_llvm_octagram.py" --self-test
 
 # --check stops here: every input has been validated (sysroot, linker, and both
 # llvm-config binaries), so CI can test the preflight without a Rust toolchain
@@ -493,6 +499,11 @@ if [ "$current" != "$RUST_PIN" ]; then
     git -C "$rust_checkout" fetch --depth 1 origin "$RUST_PIN"
     git -C "$rust_checkout" checkout --detach "$RUST_PIN"
 fi
+
+# Apply the target-specific C++ runtime and LLVM search-path fixes to this
+# pinned Rust checkout. These never modify OCTAGRAM's LLVM source/build/cache.
+echo "patching pinned Rust LLVM linker integration for OCTAGRAM"
+python3 "$repo_root/tools/patch_rust_llvm_octagram.py" "$rust_checkout"
 
 # 1b. Submodules the build reads from ---------------------------------------
 # src/tools/cargo and library/backtrace are submodules, and config.toml keeps
@@ -682,6 +693,27 @@ echo "patching pinned Rust library/std PAL for OCTAGRAM"
 OCTAGRAM_RUST_STD_ROOT="$rust_checkout/library/std/src" \
     python3 "$repo_root/tools/patch_rust_std_octagram.py"
 
+# rustc's Linux-like std PAL references __dso_handle when registering
+# thread_local destructors. OCTAGRAM libc implements __cxa_thread_atexit but
+# intentionally does not export a process-global CRT handle, so provide the
+# standard hidden handle only to Rust executable links (not the shared sysroot).
+chmod +x "$rust_linker"
+rust_dso_source=$rust_checkout/build/octagram-dso-handle.c
+rust_dso_object=$rust_checkout/build/octagram-dso-handle.o
+mkdir -p "$rust_checkout/build"
+cat > "$rust_dso_source" <<'EOF'
+__attribute__((visibility("hidden"))) void *__dso_handle = &__dso_handle;
+EOF
+echo "building Rust-only hidden __dso_handle object"
+"$linker" -c "$rust_dso_source" -o "$rust_dso_object"
+if ! readelf -s --wide "$rust_dso_object" | grep -Eq 'GLOBAL +HIDDEN +OBJECT +[0-9]+ +__dso_handle'; then
+    echo "bootstrap_rustc_octagram: error: generated __dso_handle is not a hidden global object" >&2
+    readelf -s --wide "$rust_dso_object" >&2 || true
+    exit 1
+fi
+export OCTAGRAM_RUST_LINKER_DRIVER="$linker"
+export OCTAGRAM_RUST_DSO_OBJECT="$rust_dso_object"
+
 # 4. bootstrap config.toml -------------------------------------------------
 config=$rust_checkout/config.toml
 echo "writing $config (refreshing absolute toolchain paths)"
@@ -737,7 +769,7 @@ llvm-config = "$host_llvm_config"
 # the native one is the expected shape); the raw $llvm_config binary cannot be
 # executed here.
 [target.$HOST]
-linker = "$linker"
+linker = "$rust_linker"
 llvm-config = "$target_llvm_config"
 crt-static = true
 

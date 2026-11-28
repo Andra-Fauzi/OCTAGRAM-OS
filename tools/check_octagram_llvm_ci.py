@@ -748,6 +748,27 @@ def main() -> int:
         "Rust bootstrap must patch socket2 before stage 2",
     )
 
+    require(
+        bootstrap,
+        'SOCKET2_VERSION=0.6.5',
+        "Rust bootstrap must pin workspace socket2 0.6.5",
+    )
+    require(
+        bootstrap,
+        'SOCKET2_CARGO_VERSION=0.6.4',
+        "Rust bootstrap must pin Cargo submodule socket2 0.6.4",
+    )
+    require(
+        bootstrap,
+        'fetch_locked_crate socket2 "$SOCKET2_VERSION"',
+        "Rust bootstrap must fetch socket2 0.6.5 before stage 2",
+    )
+    require(
+        bootstrap,
+        "patch_socket2_octagram.py",
+        "Rust bootstrap must patch socket2 before stage 2",
+    )
+
     # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
     # not an unsupported-target bypass or a CPU-specific substitute.
     require(
@@ -834,7 +855,7 @@ def main() -> int:
         ("-Zbuild-std=core,alloc,std", "dependency check must compile target core, alloc, and std before checking std-based crates"),
         ("cargo \"+$toolchain\" tree", "dependency check must inspect the resolved OCTAGRAM dependency graph"),
         ("rustc \"+$toolchain\" -Z unstable-options --print cfg --target", "dependency check must inspect the custom target cfg values"),
-        ('target_os = "octagram"', "dependency check must use OCTAGRAM target-specific cfg selectors"),
+        ('target_os != "octagram"', "dependency check must verify OCTAGRAM target-specific cfg selectors"),
         ("CARGO_CFG_TARGET_OS", "dependency check must verify Cargo sees the custom target OS"),
         ("Cargo target cfg mismatch", "dependency check must fail early if Cargo does not honor the custom target cfg"),
         ("^rustix v", "dependency check must report rustix when the custom target selector is not applied"),
@@ -846,11 +867,6 @@ def main() -> int:
         ('socket2 = { version = "=$socket2_version" }', "dependency preflight must compile the locked socket2 crate"),
         ("patch_filetime_octagram.py", "dependency check must patch filetime to utimensat"),
         ("patch_socket2_octagram.py", "dependency check must patch socket2 msghdr ABI for OCTAGRAM"),
-        ("patch_socket2_octagram.py", "dependency check must patch socket2 msghdr ABI for OCTAGRAM"),
-        ("SOCKET2_VERSION=0.6.5", "bootstrap must pin socket2 0.6.5 from the Rust lockfile"),
-        ("SOCKET2_CARGO_VERSION=0.6.4", "bootstrap must pin socket2 0.6.4 from the Cargo lockfile"),
-        ("target_os = \"octagram\"", "socket2 must select size_t for OCTAGRAM msghdr.msg_iovlen"),
-        ("type IovLen = usize;", "socket2 OCTAGRAM patch must target the size_t iovlen branch"),
         ("patch_rust_std_octagram.py", "dependency check must patch installed rust-src before compiling std-based dependencies"),
         ("OCTAGRAM_RUST_STD_ROOT", "dependency check must patch the exact rust-src standard library it compiles"),
         ("CARGO_TARGET_DIR=$check_root/target-octagram", "dependency checks must share build-std artifacts to avoid compiling std three times"),
@@ -859,6 +875,13 @@ def main() -> int:
         ("patch_getrandom_octagram.py", "dependency check must patch all getrandom target backends"),
     ):
         require(stage2_deps_check, needle, message)
+
+    for needle, message in (
+        ('VERSIONS = ("0.6.4", "0.6.5")', "socket2 patcher must cover both locked versions"),
+        ('target_os = "octagram"', "socket2 patcher must add the OCTAGRAM target cfg"),
+        ("type IovLen = usize;", "socket2 patcher must select size_t for msghdr.msg_iovlen"),
+    ):
+        require(socket2_patch, needle, message)
 
     # --- the rustc-cargo job -----------------------------------------------
     rustc = job_block(workflow, "rustc-cargo")

@@ -18,6 +18,8 @@ on:
       - "tools/check_octagram_llvm_config.sh"
       - "tools/toolchain-probes/llvm-config-fixture/**"
       - "tools/bootstrap_rustc_octagram.sh"
+      - "tools/patch_rust_llvm_octagram.py"
+      - "tools/octagram-rust-linker.sh"
       - "tools/build_llvm_octagram.sh"
       - "tools/check_octagram_llvm_ci.py"
       - ".github/workflows/octagram-llvm-config.yml"
@@ -28,6 +30,8 @@ on:
       - "tools/check_octagram_llvm_config.sh"
       - "tools/toolchain-probes/llvm-config-fixture/**"
       - "tools/bootstrap_rustc_octagram.sh"
+      - "tools/patch_rust_llvm_octagram.py"
+      - "tools/octagram-rust-linker.sh"
       - "tools/build_llvm_octagram.sh"
       - "tools/check_octagram_llvm_ci.py"
       - ".github/workflows/octagram-llvm-config.yml"
@@ -60,9 +64,10 @@ jobs:
       - name: Parse checks
         run: |
           set -euo pipefail
-          python3 -m py_compile tools/octagram_llvm_config.py
+          python3 -m py_compile tools/octagram_llvm_config.py tools/patch_rust_llvm_octagram.py
           sh -n tools/check_octagram_llvm_config.sh
           sh -n tools/bootstrap_rustc_octagram.sh
+          sh -n tools/octagram-rust-linker.sh
           sh -n tools/build_llvm_octagram.sh
           echo "PARSE-PASS"
 

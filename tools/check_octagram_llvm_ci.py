@@ -46,7 +46,6 @@ ERRNO_PATCH = REPO / "tools" / "patch_errno_octagram.py"
 TEMPFILE_PATCH = REPO / "tools" / "patch_tempfile_octagram.py"
 FILETIME_PATCH = REPO / "tools" / "patch_filetime_octagram.py"
 SOCKET2_PATCH = REPO / "tools" / "patch_socket2_octagram.py"
-SOCKET2_PATCH = REPO / "tools" / "patch_socket2_octagram.py"
 LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
 LIBC_PATCHER = REPO / "tools" / "apply_rust_libc_octagram.py"
 RUNTIME = REPO / "user" / "runtime.c"
@@ -94,7 +93,6 @@ def main() -> int:
     errno_patch = ERRNO_PATCH.read_text(encoding="utf-8")
     tempfile_patch = TEMPFILE_PATCH.read_text(encoding="utf-8")
     filetime_patch = FILETIME_PATCH.read_text(encoding="utf-8")
-    socket2_patch = SOCKET2_PATCH.read_text(encoding="utf-8")
     socket2_patch = SOCKET2_PATCH.read_text(encoding="utf-8")
     libc_module = LIBC_MODULE.read_text(encoding="utf-8")
     libc_patcher = LIBC_PATCHER.read_text(encoding="utf-8")

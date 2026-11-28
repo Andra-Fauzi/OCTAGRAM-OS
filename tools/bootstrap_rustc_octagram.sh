@@ -543,11 +543,21 @@ fetch_locked_crate() {
     package=$1
     version=$2
     fetch_dir=$rust_checkout/build/octagram-fetch-$package-$version
+    # Cargo package names cannot contain dots (or other punctuation used by
+    # some crate versions). Keep the cache directory readable, but normalize
+    # every non-name character in the temporary manifest package name.
+    fetch_manifest_name=$(printf '%s' "octagram-fetch-$package-$version" | sed 's/[^A-Za-z0-9_-]/_/g')
+    case $fetch_manifest_name in
+        ''|[!A-Za-z_]*)
+            echo "bootstrap_rustc_octagram: error: invalid temporary package name for $package $version" >&2
+            return 1
+            ;;
+    esac
     echo "fetching $package $version into Cargo registry cache"
     mkdir -p "$fetch_dir/src"
     cat > "$fetch_dir/Cargo.toml" <<EOF
 [package]
-name = "octagram-fetch-$package-$version"
+name = "$fetch_manifest_name"
 version = "0.0.0"
 edition = "2021"
 publish = false

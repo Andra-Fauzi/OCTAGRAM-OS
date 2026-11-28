@@ -48,6 +48,7 @@ FILETIME_PATCH = REPO / "tools" / "patch_filetime_octagram.py"
 SOCKET2_PATCH = REPO / "tools" / "patch_socket2_octagram.py"
 RUSTIX_PATCHER = REPO / "tools" / "patch_rustix_octagram.py"
 RUSTIX_PATCH = REPO / "patches" / "rustix-1.1.6-octagram.patch"
+TERMINAL_SIZE_PATCH = REPO / "tools" / "patch_terminal_size_octagram.py"
 LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
 LIBC_PATCHER = REPO / "tools" / "apply_rust_libc_octagram.py"
 RUNTIME = REPO / "user" / "runtime.c"
@@ -99,6 +100,7 @@ def main() -> int:
     socket2_patch = SOCKET2_PATCH.read_text(encoding="utf-8")
     rustix_patcher = RUSTIX_PATCHER.read_text(encoding="utf-8")
     rustix_patch = RUSTIX_PATCH.read_text(encoding="utf-8")
+    terminal_size_patch = TERMINAL_SIZE_PATCH.read_text(encoding="utf-8")
     libc_module = LIBC_MODULE.read_text(encoding="utf-8")
     libc_patcher = LIBC_PATCHER.read_text(encoding="utf-8")
     runtime = RUNTIME.read_text(encoding="utf-8")
@@ -829,6 +831,22 @@ def main() -> int:
         "Rust bootstrap must patch rustix before stage 2",
     )
 
+    require(
+        bootstrap,
+        'TERMINAL_SIZE_VERSION=0.4.4',
+        "Rust bootstrap must pin terminal_size 0.4.4",
+    )
+    require(
+        bootstrap,
+        'fetch_locked_crate terminal_size "$TERMINAL_SIZE_VERSION"',
+        "Rust bootstrap must fetch terminal_size 0.4.4 before stage 2",
+    )
+    require(
+        bootstrap,
+        "patch_terminal_size_octagram.py",
+        "Rust bootstrap must patch terminal_size before stage 2",
+    )
+
     # getrandom 0.3.3 must use OCTAGRAM libc's real getrandom() API,
     # not an unsupported-target bypass or a CPU-specific substitute.
     require(
@@ -931,6 +949,7 @@ def main() -> int:
         ("patch_filetime_octagram.py", "dependency check must patch filetime to utimensat"),
         ("patch_socket2_octagram.py", "dependency check must patch socket2 msghdr ABI for OCTAGRAM"),
         ("patch_rustix_octagram.py", "dependency check must patch rustix before Cargo target compilation"),
+        ("patch_terminal_size_octagram.py", "dependency check must avoid unsupported rustix termios in terminal_size"),
         ("patch_rust_std_octagram.py", "dependency check must patch installed rust-src before compiling std-based dependencies"),
         ("OCTAGRAM_RUST_STD_ROOT", "dependency check must patch the exact rust-src standard library it compiles"),
         ("CARGO_TARGET_DIR=$check_root/target-octagram", "dependency checks must share build-std artifacts to avoid compiling std three times"),
@@ -950,6 +969,9 @@ def main() -> int:
     require(rustix_patcher, 'VERSION = "1.1.6"', "rustix patcher must target the Cargo lockfile version")
     require(rustix_patcher, '["patch", "-p1"', "rustix patcher must apply the version-pinned compatibility diff")
     require(rustix_patch, 'target_os = "octagram"', "rustix compatibility diff must use OCTAGRAM cfg gates")
+    require(terminal_size_patch, 'VERSION = "0.4.4"', "terminal_size patcher must target the Cargo lockfile version")
+    require(terminal_size_patch, "NEW_RUSTIX_CFG", "terminal_size patcher must cfg-gate its rustix termios path")
+    require(terminal_size_patch, "NEW_FALLBACK_CFG", "terminal_size patcher must use the no-terminal-size fallback on OCTAGRAM")
     # --- the rustc-cargo job -----------------------------------------------
     rustc = job_block(workflow, "rustc-cargo")
     require(

@@ -935,6 +935,8 @@ def main() -> int:
         ("cargo-submodule", "dependency preflight must create an isolated Cargo submodule lockfile test"),
         ("getrandom-modern/src", "dependency preflight must test getrandom 0.4.3 separately"),
         ("cargo-active-deps", "dependency preflight must compile active Cargo Unix dependencies that pull rustix"),
+        ("rustc-build-deps/src", "dependency preflight must compile rustc's own build dependencies such as jobserver"),
+        ('jobserver = { version = "=0.1.34"', "dependency preflight must compile the locked jobserver crate"),
         ('gix-index = { version = "=0.58.0"', "Cargo preflight must include gix-index 0.58.0"),
         ('terminal_size = { version = "=0.4.4"', "Cargo preflight must include terminal_size 0.4.4"),
         ("0.2.191 0.3.3 3.23.0", "Rust workspace preflight must use its exact lockfile dependency versions"),

@@ -545,6 +545,10 @@ pub const LOCK_NB: c_int = 4;
 pub const LOCK_UN: c_int = 8;
 pub const FIOCLEX: c_ulong = 0x5451;
 pub const FIONBIO: c_ulong = 0x5421;
+// Linux-compatible request number. The guest ioctl has no FIONREAD handler
+// yet, so a caller such as jobserver gets ENOTTY at runtime instead of a wrong
+// count; the constant still has to exist for the crate to compile.
+pub const FIONREAD: c_ulong = 0x541B;
 pub const O_DIRECTORY: c_int = 0o200000;
 pub const SEEK_SET: c_int = 0;
 pub const SEEK_CUR: c_int = 1;
@@ -1066,10 +1070,11 @@ s! {
 const _: [(); 12] = [(); core::mem::size_of::<ucred>()];
 
 // ---------------------------------------------------------------------------
-// Two entry points std expects that the guest libc does not export yet.
+// Entry points that the guest libc does not export yet.
 //
 // `__xpg_strerror_r` is the POSIX flavour of `strerror_r` that the gnu target
-// env selects, and `waitid` is emulated on top of `waitpid`.
+// env selects, `waitid` is emulated on top of `waitpid`, and `pthread_kill`
+// reports `ENOSYS` because OCTAGRAM has no per-thread signal delivery.
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __xpg_strerror_r(
@@ -1091,6 +1096,17 @@ pub unsafe extern "C" fn __xpg_strerror_r(
     }
     core::ptr::copy_nonoverlapping(message, buf, length + 1);
     0
+}
+
+/// OCTAGRAM has no `tgkill`; `kill` only addresses a whole process, and
+/// delivering the signal there would run the handler on an arbitrary thread
+/// instead of the one the caller named. Report the missing facility instead:
+/// callers that use this as a best-effort wakeup, such as jobserver's helper
+/// thread cleanup, already ignore the result and keep working.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pthread_kill(thread: pthread_t, signal: c_int) -> c_int {
+    let _ = (thread, signal);
+    ENOSYS
 }
 
 pub unsafe extern "C" fn waitid(

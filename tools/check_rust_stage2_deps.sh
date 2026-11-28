@@ -181,12 +181,37 @@ cat > "$check_root/cargo-active-deps/src/lib.rs" <<'EOF'
 #![no_std]
 EOF
 
+# rustc's own build graph compiles jobserver for the OCTAGRAM host, and its
+# Unix backend needs FIONREAD and pthread_kill from libc. Compile the locked
+# crate here so a missing binding fails in preflight instead of partway through
+# the stage-2 compiler build.
+mkdir -p "$check_root/rustc-build-deps/src"
+cat > "$check_root/rustc-build-deps/Cargo.toml" <<'EOF'
+[package]
+name = "octagram-rustc-build-dependency-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+jobserver = { version = "=0.1.34" }
+EOF
+cat > "$check_root/rustc-build-deps/src/lib.rs" <<'EOF'
+pub fn check_jobserver_surface() -> std::io::Result<usize> {
+    let client = jobserver::Client::new(1)?;
+    client.available()
+}
+EOF
+
 echo "fetching separate Rust-workspace, Cargo-submodule, getrandom 0.4.3, and active Cargo dependency graphs"
 for manifest in \
     "$check_root/rust-workspace/Cargo.toml" \
     "$check_root/cargo-submodule/Cargo.toml" \
     "$check_root/getrandom-modern/Cargo.toml" \
     "$check_root/cargo-active-deps/Cargo.toml" \
+    "$check_root/rustc-build-deps/Cargo.toml" \
     "$check_root/rustix-locked/Cargo.toml"; do
     CARGO_HOME=$cargo_home cargo fetch --manifest-path "$manifest"
 done
@@ -301,5 +326,6 @@ check_and_compile "$check_root/rust-workspace" 3.23.0 rust-workspace
 check_and_compile "$check_root/cargo-submodule" 3.27.0 cargo-submodule
 check_and_compile "$check_root/getrandom-modern" "" getrandom-modern
 check_and_compile "$check_root/cargo-active-deps" "" cargo-active-deps
+check_and_compile "$check_root/rustc-build-deps" "" rustc-build-deps
 
 echo "OCTAGRAM-RUST-STAGE2-DEPENDENCY-CHECK-PASS"

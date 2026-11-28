@@ -45,7 +45,7 @@ def patch_package(package: Path) -> bool:
         )
     replacement = (
         'target_os = "haiku",\n'
-        '                        target_os = "octagram"))] {\n'
+        '                        target_os = "octagram",))] {\n'
         '        mod utimensat;'
     )
     source = source.replace(expected, replacement, 1)

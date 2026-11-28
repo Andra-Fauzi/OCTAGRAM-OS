@@ -351,7 +351,7 @@ publish = false
 [workspace]
 
 [dependencies]
-openssl-sys = { version = "=0.9.117", features = ["vendored"] }
+openssl = { version = "=0.10.76", features = ["vendored"] }
 openssl-src = { version = "=300.6.1+3.6.3" }
 EOF
 cat > "$check_root/openssl-vendored-fetch/src/lib.rs" <<'EOF'

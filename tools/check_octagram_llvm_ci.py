@@ -972,8 +972,9 @@ def main() -> int:
     require(rustix_patcher, '["patch", "-p1"', "rustix patcher must apply the version-pinned compatibility diff")
     require(rustix_patch, 'target_os = "octagram"', "rustix compatibility diff must use OCTAGRAM cfg gates")
     require(terminal_size_patch, 'VERSION = "0.4.4"', "terminal_size patcher must target the Cargo lockfile version")
-    require(terminal_size_patch, "NEW_RUSTIX_CFG", "terminal_size patcher must cfg-gate its rustix termios path")
-    require(terminal_size_patch, "NEW_FALLBACK_CFG", "terminal_size patcher must use the no-terminal-size fallback on OCTAGRAM")
+    require(terminal_size_patch, 'cfg(not(target_os = "octagram"))', "terminal_size patcher must cfg-gate its rustix termios path")
+    require(terminal_size_patch, 'cfg(target_os = "octagram")', "terminal_size patcher must provide the no-size OCTAGRAM fallback")
+    require(terminal_size_patch, "rustix::termios::{isatty, tcgetwinsize}", "terminal_size patcher must guard the rustix termios implementation")
     # --- the rustc-cargo job -----------------------------------------------
     rustc = job_block(workflow, "rustc-cargo")
     require(
@@ -1611,15 +1612,13 @@ features = ["termios"]
         )
         (package / ".cargo-ok").write_text('{"v":1}', encoding="utf-8")
         (package / "src" / "unix.rs").write_text(
-            """#[cfg(not(any(target_os = "horizon", target_os = "vita")))]
-pub fn terminal_size_of<Fd: AsFd>(fd: Fd) -> Option<(Width, Height)> {
+            """pub fn terminal_size_of<Fd: AsFd>(fd: Fd) -> Option<(Width, Height)> {
     use rustix::termios::{isatty, tcgetwinsize};
-    None
-}
-
-#[cfg(any(target_os = "horizon", target_os = "vita"))]
-pub fn terminal_size_of<Fd: AsFd>(_fd: Fd) -> Option<(Width, Height)> {
-    None
+    if !isatty(&fd) {
+        return None;
+    }
+    let winsize = tcgetwinsize(&fd).ok()?;
+    Some((Width(winsize.ws_col), Height(winsize.ws_row)))
 }
 """,
             encoding="utf-8",
@@ -1644,10 +1643,10 @@ pub fn terminal_size_of<Fd: AsFd>(_fd: Fd) -> Option<(Width, Height)> {
         patched_unix = (package / "src" / "unix.rs").read_text(encoding="utf-8")
         if 'cfg(all(unix, not(target_os = "octagram")))' not in patched_manifest:
             fail("terminal_size patcher did not exclude rustix on OCTAGRAM")
-        if 'not(any(target_os = "horizon", target_os = "vita", target_os = "octagram"))' not in patched_unix:
+        if '#[cfg(not(target_os = "octagram"))]\npub fn terminal_size_of<Fd: AsFd>(fd: Fd)' not in patched_unix:
             fail("terminal_size patcher did not gate the rustix termios implementation")
-        if 'any(target_os = "horizon", target_os = "vita", target_os = "octagram")' not in patched_unix:
-            fail("terminal_size patcher did not enable the no-size fallback on OCTAGRAM")
+        if '#[cfg(target_os = "octagram")]\npub fn terminal_size_of<Fd: AsFd>(_fd: Fd)' not in patched_unix:
+            fail("terminal_size patcher did not install the no-size fallback on OCTAGRAM")
 
     # Test both pinned filetime crate sources and ensure OCTAGRAM selects
     # utimensat instead of the generic utimes/lutimes fallback.

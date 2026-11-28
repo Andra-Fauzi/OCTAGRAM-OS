@@ -175,6 +175,9 @@ jobs:
             sh "$script" --help >/dev/null
             echo "PASS sh -n + --help: $script"
           done
+          sh -n tools/octagram-rust-linker.sh
+          python3 -m py_compile tools/patch_rust_llvm_octagram.py
+          python3 tools/patch_rust_llvm_octagram.py --self-test
 
       - name: Check resumable LLVM CI contract
         run: python3 tools/check_octagram_llvm_ci.py

@@ -72,10 +72,22 @@ def verify(package: Path, version: str) -> None:
             raise SystemExit(f"unconverted Korin target cfg remains in {path}")
 
 
-def validate_expected_rejects(package: Path, version: str) -> None:
+def validate_expected_rejects(
+    package: Path, version: str, patch_returncode: int
+) -> None:
     rejects = sorted(package.rglob("*.rej"))
-    if not rejects:
+    if patch_returncode == 0:
+        if rejects:
+            raise SystemExit(
+                f"patch command succeeded but left reject files: "
+                f"{[str(path.relative_to(package)) for path in rejects]}"
+            )
         return
+    if not rejects:
+        raise SystemExit(
+            f"rustix patch command failed without auditable reject files "
+            f"(exit {patch_returncode})"
+        )
 
     relative_rejects = {str(path.relative_to(package)) for path in rejects}
     if version != "1.1.5" or relative_rejects != EXPECTED_1_1_5_REJECTS:
@@ -140,16 +152,10 @@ def main() -> int:
                     text=True,
                     check=False,
                 )
-                if result.returncode != 0 and not result.stdout:
-                    raise SystemExit(
-                        f"failed to apply rustix OCTAGRAM patch to {package}\n"
-                        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-                    )
-
                 # For 1.1.5, only the known Horizon cfg hunks differ. Rejects
                 # are accepted only when their files and every changed line
                 # match that narrow, audited compatibility adjustment.
-                validate_expected_rejects(package, version)
+                validate_expected_rejects(package, version, result.returncode)
                 marker.write_text(
                     f"rustix {version} OCTAGRAM cfg patch applied\n",
                     encoding="utf-8",

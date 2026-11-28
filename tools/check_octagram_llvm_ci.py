@@ -46,6 +46,7 @@ ERRNO_PATCH = REPO / "tools" / "patch_errno_octagram.py"
 TEMPFILE_PATCH = REPO / "tools" / "patch_tempfile_octagram.py"
 FILETIME_PATCH = REPO / "tools" / "patch_filetime_octagram.py"
 SOCKET2_PATCH = REPO / "tools" / "patch_socket2_octagram.py"
+SOCKET2_PATCH = REPO / "tools" / "patch_socket2_octagram.py"
 LIBC_MODULE = REPO / "patches" / "rust-libc" / "octagram" / "mod.rs"
 LIBC_PATCHER = REPO / "tools" / "apply_rust_libc_octagram.py"
 RUNTIME = REPO / "user" / "runtime.c"
@@ -93,6 +94,7 @@ def main() -> int:
     errno_patch = ERRNO_PATCH.read_text(encoding="utf-8")
     tempfile_patch = TEMPFILE_PATCH.read_text(encoding="utf-8")
     filetime_patch = FILETIME_PATCH.read_text(encoding="utf-8")
+    socket2_patch = SOCKET2_PATCH.read_text(encoding="utf-8")
     socket2_patch = SOCKET2_PATCH.read_text(encoding="utf-8")
     libc_module = LIBC_MODULE.read_text(encoding="utf-8")
     libc_patcher = LIBC_PATCHER.read_text(encoding="utf-8")
@@ -809,6 +811,7 @@ def main() -> int:
         ('socket2 = { version = "=$socket2_version" }', "dependency preflight must compile the locked socket2 crate"),
         ("patch_filetime_octagram.py", "dependency check must patch filetime to utimensat"),
         ("patch_socket2_octagram.py", "dependency check must patch socket2 msghdr ABI for OCTAGRAM"),
+        ("patch_socket2_octagram.py", "dependency check must patch socket2 msghdr ABI for OCTAGRAM"),
         ("SOCKET2_VERSION=0.6.5", "bootstrap must pin socket2 0.6.5 from the Rust lockfile"),
         ("SOCKET2_CARGO_VERSION=0.6.4", "bootstrap must pin socket2 0.6.4 from the Cargo lockfile"),
         ("target_os = \"octagram\"", "socket2 must select size_t for OCTAGRAM msghdr.msg_iovlen"),
@@ -1376,6 +1379,58 @@ pub fn reopen(file: &File, path: &Path) -> io::Result<File> {
             fail("tempfile 3.27.0 patcher did not install std filesystem wrappers")
         if not (package / ".cargo-ok").is_file():
             fail("tempfile 3.27.0 patcher did not preserve the Cargo registry extraction marker")
+
+    # Both Cargo.lock files use socket2, but its Unix msghdr cfg omits custom
+    # operating systems. Verify the OCTAGRAM size_t arm is patched idempotently.
+    with tempfile.TemporaryDirectory() as temp_root:
+        registry_root = Path(temp_root) / "registry" / "src"
+        for version in ("0.6.4", "0.6.5"):
+            package = registry_root / "index.test" / f"socket2-{version}"
+            (package / "src" / "sys").mkdir(parents=True)
+            (package / "Cargo.toml").write_text(
+                f'[package]\nname = "socket2"\nversion = "{version}"\n',
+                encoding="utf-8",
+            )
+            (package / ".cargo-ok").write_text('{"v":1}', encoding="utf-8")
+            (package / "src" / "sys" / "unix.rs").write_text(
+                """#[cfg(any(
+    all(
+        target_os = "linux",
+        any(target_env = "gnu", all(target_env = "uclibc", target_pointer_width = "64"))
+    ),
+    target_os = "android",
+))]
+type IovLen = usize;
+
+#[cfg(target_os = "freebsd")]
+type IovLen = c_int;
+""",
+                encoding="utf-8",
+            )
+        patch_runs = []
+        for _ in range(2):
+            patch_runs.append(
+                subprocess.run(
+                    [sys.executable, str(SOCKET2_PATCH), "--registry-root", str(registry_root)],
+                    cwd=REPO,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            )
+        if any(result.returncode != 0 for result in patch_runs):
+            fail(
+                "socket2 patcher fixture failed: "
+                + " | ".join(result.stdout + result.stderr for result in patch_runs)
+            )
+        for version in ("0.6.4", "0.6.5"):
+            source = (
+                registry_root / "index.test" / f"socket2-{version}" / "src" / "sys" / "unix.rs"
+            ).read_text(encoding="utf-8")
+            if source.count('target_os = "octagram"') != 1:
+                fail(f"socket2 {version} patcher did not add one OCTAGRAM IovLen arm")
+            if "type IovLen = usize;" not in source:
+                fail(f"socket2 {version} patcher changed the wrong IovLen branch")
 
     # Test both pinned filetime crate sources and ensure OCTAGRAM selects
     # utimensat instead of the generic utimes/lutimes fallback.

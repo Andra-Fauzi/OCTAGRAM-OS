@@ -50,7 +50,7 @@ def ensure_octagram_cfg(package: Path) -> None:
             raise SystemExit(f"rustix patch verification file is missing: {path}")
         source = path.read_text(encoding="utf-8")
         normalized = re.sub(
-            r'(?<!any\\()target_os = "horizon"',
+            r'(?<!any\()target_os = "horizon"',
             'any(target_os = "horizon", target_os = "octagram")',
             source,
         )

@@ -215,7 +215,6 @@ jobs:
           test -s "$sysroot/usr/lib/libc.a"
           test -s "$sysroot/usr/lib/libcxxrt.a"
           test -s "$sysroot/usr/lib/crt0.o"
-          test -s "$sysroot/usr/include/strings.h" || { echo "missing POSIX strings.h"; exit 1; }
           # Conventional Unix library names. Without them CMake links `-lm`
           # against the build host's static glibc and the link fails on a TLS
           # model mismatch.

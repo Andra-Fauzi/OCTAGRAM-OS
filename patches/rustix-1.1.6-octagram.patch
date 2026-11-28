@@ -1,0 +1,2707 @@
+--- a/src/backend/libc/conv.rs
++++ b/src/backend/libc/conv.rs
+@@ -22,7 +22,7 @@
+ #[cfg(not(any(
+     windows,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+--- a/src/backend/libc/fs/dir.rs
++++ b/src/backend/libc/fs/dir.rs
+@@ -16,7 +16,7 @@
+ #[cfg(not(any(
+     solarish,
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "redox",
+@@ -160,7 +160,7 @@
+     /// fit in a `c_long`.
+     ///
+     /// [`libc::seekdir`]: https://docs.rs/libc/*/arm-unknown-linux-gnueabihf/libc/fn.seekdir.html
+-    #[cfg(target_pointer_width = "64")]
++    #[cfg(all(target_pointer_width = "64", not(target_os = "octagram")))]
+     #[cfg_attr(docsrs, doc(cfg(target_pointer_width = "64")))]
+     #[doc(alias = "seekdir")]
+     #[inline]
+@@ -235,7 +235,7 @@
+     }
+ 
+     /// `fstat(self)`
+-    #[cfg(not(any(target_os = "horizon", target_os = "vita")))]
++    #[cfg(not(any(any(target_os = "horizon", target_os = "octagram"), target_os = "vita")))]
+     #[inline]
+     pub fn stat(&self) -> io::Result<Stat> {
+         fstat(unsafe { BorrowedFd::borrow_raw(c::dirfd(self.libc_dir.as_ptr())) })
+@@ -245,7 +245,7 @@
+     #[cfg(not(any(
+         solarish,
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "netbsd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -260,7 +260,7 @@
+     /// `fstatvfs(self)`
+     #[cfg(not(any(
+         solarish,
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "vita",
+         target_os = "wasi"
+     )))]
+@@ -273,7 +273,7 @@
+     #[cfg(feature = "process")]
+     #[cfg(not(any(
+         target_os = "fuchsia",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "vita",
+         target_os = "wasi"
+     )))]
+@@ -310,7 +310,7 @@
+ impl fmt::Debug for Dir {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         let mut s = f.debug_struct("Dir");
+-        #[cfg(not(any(target_os = "horizon", target_os = "vita")))]
++        #[cfg(not(any(any(target_os = "horizon", target_os = "octagram"), target_os = "vita")))]
+         s.field("fd", unsafe { &c::dirfd(self.libc_dir.as_ptr()) });
+         s.finish()
+     }
+--- a/src/backend/libc/fs/mod.rs
++++ b/src/backend/libc/fs/mod.rs
+@@ -8,7 +8,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+--- a/src/backend/libc/fs/syscalls.rs
++++ b/src/backend/libc/fs/syscalls.rs
+@@ -18,7 +18,7 @@
+     netbsdlike,
+     target_os = "dragonfly",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita",
+@@ -41,7 +41,7 @@
+     solarish,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "redox",
+@@ -54,7 +54,7 @@
+ #[cfg(not(any(
+     apple,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -82,7 +82,7 @@
+     target_os = "dragonfly",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "solaris",
+     target_os = "vita",
+@@ -256,7 +256,7 @@
+     solarish,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "redox",
+@@ -1208,7 +1208,7 @@
+ #[cfg(not(any(
+     apple,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -1289,7 +1289,7 @@
+     target_os = "dragonfly",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "solaris",
+     target_os = "vita",
+@@ -1376,7 +1376,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -1534,7 +1534,7 @@
+ 
+ #[cfg(not(any(
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -1609,7 +1609,7 @@
+     solarish,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "redox",
+@@ -1755,7 +1755,7 @@
+     netbsdlike,
+     target_os = "dragonfly",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita",
+@@ -1841,7 +1841,7 @@
+     target_os = "dragonfly",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+ )))]
+--- a/src/backend/libc/fs/types.rs
++++ b/src/backend/libc/fs/types.rs
+@@ -101,7 +101,7 @@
+     }
+ }
+ 
+-#[cfg(not(target_os = "horizon"))]
++#[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+ bitflags! {
+     /// `S_I*` constants for use with [`openat`], [`chmodat`], and [`fchmod`].
+     ///
+@@ -176,7 +176,7 @@
+     }
+ }
+ 
+-#[cfg(target_os = "horizon")]
++#[cfg(any(target_os = "horizon", target_os = "octagram"))]
+ bitflags! {
+     /// `S_I*` constants for use with [`openat`], [`chmodat`], and [`fchmod`].
+     ///
+@@ -266,7 +266,7 @@
+         const DIRECTORY = bitcast!(c::O_DIRECTORY);
+ 
+         /// `O_DSYNC`
+-        #[cfg(not(any(target_os = "dragonfly", target_os = "espidf", target_os = "horizon", target_os = "l4re", target_os = "redox", target_os = "vita")))]
++        #[cfg(not(any(target_os = "dragonfly", target_os = "espidf", any(target_os = "horizon", target_os = "octagram"), target_os = "l4re", target_os = "redox", target_os = "vita")))]
+         const DSYNC = bitcast!(c::O_DSYNC);
+ 
+         /// `O_EXCL`
+@@ -298,7 +298,7 @@
+         const RDWR = bitcast!(c::O_RDWR);
+ 
+         /// `O_NOCTTY`
+-        #[cfg(not(any(target_os = "espidf", target_os = "horizon", target_os = "l4re", target_os = "redox", target_os = "vita")))]
++        #[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"), target_os = "l4re", target_os = "redox", target_os = "vita")))]
+         const NOCTTY = bitcast!(c::O_NOCTTY);
+ 
+         /// `O_RSYNC`
+@@ -390,7 +390,7 @@
+             target_os = "cygwin",
+             target_os = "espidf",
+             target_os = "haiku",
+-            target_os = "horizon",
++            any(target_os = "horizon", target_os = "octagram"),
+             target_os = "wasi",
+             target_os = "vita",
+             solarish
+@@ -661,7 +661,7 @@
+     netbsdlike,
+     target_os = "dragonfly",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "haiku",
+     target_os = "redox",
+     target_os = "solaris",
+@@ -776,7 +776,7 @@
+ #[cfg(not(any(
+     netbsdlike,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita"
+@@ -905,11 +905,11 @@
+         const NOEXEC = c::ST_NOEXEC as u64;
+ 
+         /// `ST_NOSUID`
+-        #[cfg(not(any(target_os = "espidf", target_os = "haiku", target_os = "horizon", target_os = "redox", target_os = "vita")))]
++        #[cfg(not(any(target_os = "espidf", target_os = "haiku", any(target_os = "horizon", target_os = "octagram"), target_os = "redox", target_os = "vita")))]
+         const NOSUID = c::ST_NOSUID as u64;
+ 
+         /// `ST_RDONLY`
+-        #[cfg(not(any(target_os = "espidf", target_os = "haiku", target_os = "horizon", target_os = "redox", target_os = "vita")))]
++        #[cfg(not(any(target_os = "espidf", target_os = "haiku", any(target_os = "horizon", target_os = "octagram"), target_os = "redox", target_os = "vita")))]
+         const RDONLY = c::ST_RDONLY as u64;
+ 
+         /// `ST_RELATIME`
+@@ -1070,7 +1070,7 @@
+     solarish,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "redox",
+@@ -1093,7 +1093,7 @@
+     target_os = "cygwin",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita",
+--- a/src/backend/libc/io/errno.rs
++++ b/src/backend/libc/io/errno.rs
+@@ -51,7 +51,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -76,7 +76,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -92,7 +92,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -109,7 +109,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -126,7 +126,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -140,7 +140,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -154,7 +154,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -179,7 +179,7 @@
+         windows,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -193,7 +193,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -217,7 +217,7 @@
+         target_os = "android",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "vita",
+         target_os = "wasi",
+@@ -243,7 +243,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -279,7 +279,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -330,7 +330,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -347,7 +347,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -364,7 +364,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -381,7 +381,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -395,7 +395,7 @@
+         windows,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -408,7 +408,7 @@
+         windows,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -421,7 +421,7 @@
+         windows,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -434,7 +434,7 @@
+         windows,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -448,7 +448,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -462,7 +462,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -476,7 +476,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "l4re",
+         target_os = "vita",
+         target_os = "wasi",
+@@ -489,7 +489,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -503,7 +503,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -516,7 +516,7 @@
+         windows,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -534,7 +534,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -564,7 +564,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -592,7 +592,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -611,7 +611,7 @@
+         windows,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -645,7 +645,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -667,7 +667,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -691,7 +691,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -705,7 +705,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -746,7 +746,7 @@
+         windows,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "vita",
+         target_os = "wasi"
+     )))]
+@@ -770,7 +770,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -803,7 +803,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -873,7 +873,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -884,7 +884,7 @@
+     #[cfg(not(any(
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "l4re",
+         target_os = "vita",
+         target_os = "wasi"
+@@ -899,7 +899,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -914,7 +914,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -931,7 +931,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -949,7 +949,7 @@
+     /// `ESHUTDOWN`
+     #[cfg(not(any(
+         target_os = "espidf",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "l4re",
+         target_os = "vita",
+         target_os = "wasi"
+@@ -959,7 +959,7 @@
+     #[cfg(not(any(
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "l4re",
+         target_os = "vita",
+         target_os = "wasi"
+@@ -978,7 +978,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -994,7 +994,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -1031,7 +1031,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "nto",
+@@ -1045,7 +1045,7 @@
+         windows,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+@@ -1056,7 +1056,7 @@
+     #[cfg(not(any(
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "l4re",
+         target_os = "vita",
+         target_os = "wasi"
+@@ -1074,7 +1074,7 @@
+         target_os = "aix",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "l4re",
+         target_os = "vita",
+--- a/src/backend/libc/io/syscalls.rs
++++ b/src/backend/libc/io/syscalls.rs
+@@ -8,7 +8,7 @@
+ #[cfg(not(any(
+     target_os = "aix",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -19,7 +19,7 @@
+ use crate::io::{self, FdFlags};
+ use crate::ioctl::{IoctlOutput, Opcode};
+ use core::cmp::min;
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ use {
+     crate::backend::MAX_IOV,
+     crate::io::{IoSlice, IoSliceMut},
+@@ -71,7 +71,7 @@
+     unsafe { ret_usize(c::pwrite(borrowed_fd(fd), buf.as_ptr().cast(), len, offset)) }
+ }
+ 
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ pub(crate) fn readv(fd: BorrowedFd<'_>, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+     unsafe {
+         ret_usize(c::readv(
+@@ -82,7 +82,7 @@
+     }
+ }
+ 
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ pub(crate) fn writev(fd: BorrowedFd<'_>, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+     unsafe {
+         ret_usize(c::writev(
+@@ -97,7 +97,7 @@
+     target_os = "cygwin",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "solaris",
+@@ -129,7 +129,7 @@
+     target_os = "espidf",
+     target_os = "haiku",
+     target_os = "nto",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "solaris",
+     target_os = "vita",
+@@ -272,7 +272,7 @@
+     target_os = "dragonfly",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita",
+--- a/src/backend/libc/mod.rs
++++ b/src/backend/libc/mod.rs
+@@ -115,7 +115,7 @@
+ #[cfg(not(any(
+     windows,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -152,7 +152,7 @@
+ #[cfg(not(target_os = "wasi"))]
+ #[cfg(feature = "system")]
+ pub(crate) mod system;
+-#[cfg(not(any(windows, target_os = "horizon", target_os = "vita")))]
++#[cfg(not(any(windows, any(target_os = "horizon", target_os = "octagram"), target_os = "vita")))]
+ #[cfg(feature = "termios")]
+ pub(crate) mod termios;
+ #[cfg(not(windows))]
+@@ -192,7 +192,7 @@
+     windows,
+     target_os = "android",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -215,6 +215,6 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "nto",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+ )))]
+ const MAX_IOV: usize = 16; // The minimum value required by POSIX.
+--- a/src/backend/libc/net/mod.rs
++++ b/src/backend/libc/net/mod.rs
+@@ -3,7 +3,7 @@
+ #[cfg(not(any(
+     windows,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita"
+ )))]
+ pub(crate) mod msghdr;
+--- a/src/backend/libc/net/send_recv.rs
++++ b/src/backend/libc/net/send_recv.rs
+@@ -20,7 +20,7 @@
+             target_os = "espidf",
+             target_os = "nto",
+             target_os = "haiku",
+-            target_os = "horizon",
++            any(target_os = "horizon", target_os = "octagram"),
+             target_os = "hurd",
+             target_os = "redox",
+             target_os = "vita",
+@@ -32,7 +32,7 @@
+         #[cfg(not(windows))]
+         const DONTWAIT = bitcast!(c::MSG_DONTWAIT);
+         /// `MSG_EOR`
+-        #[cfg(not(any(windows, target_os = "horizon")))]
++        #[cfg(not(any(windows, any(target_os = "horizon", target_os = "octagram"))))]
+         const EOR = bitcast!(c::MSG_EOR);
+         /// `MSG_MORE`
+         #[cfg(not(any(
+@@ -46,6 +46,7 @@
+             target_os = "nto",
+             target_os = "redox",
+             target_os = "vita",
++            target_os = "octagram",
+         )))]
+         const MORE = bitcast!(c::MSG_MORE);
+         #[cfg(not(any(apple, windows, target_os = "redox", target_os = "vita")))]
+@@ -76,7 +77,7 @@
+             target_os = "aix",
+             target_os = "espidf",
+             target_os = "haiku",
+-            target_os = "horizon",
++            any(target_os = "horizon", target_os = "octagram"),
+             target_os = "nto",
+             target_os = "redox",
+             target_os = "vita",
+@@ -94,7 +95,7 @@
+             target_os = "cygwin",
+             target_os = "espidf",
+             target_os = "haiku",
+-            target_os = "horizon",
++            any(target_os = "horizon", target_os = "octagram"),
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "redox",
+@@ -109,7 +110,7 @@
+         // Apple, illumos, and NetBSD have `MSG_TRUNC` but it's not documented
+         // for use with `recv` and friends, and in practice appears to be
+         // ignored.
+-        #[cfg(not(any(apple, solarish, target_os = "horizon", target_os = "netbsd")))]
++        #[cfg(not(any(apple, solarish, any(target_os = "horizon", target_os = "octagram"), target_os = "netbsd")))]
+         const TRUNC = bitcast!(c::MSG_TRUNC);
+         /// `MSG_WAITALL`
+         const WAITALL = bitcast!(c::MSG_WAITALL);
+@@ -131,13 +132,13 @@
+         /// `MSG_OOB`
+         const OOB = bitcast!(c::MSG_OOB);
+         /// `MSG_EOR`
+-        #[cfg(not(any(windows, target_os = "horizon")))]
++        #[cfg(not(any(windows, any(target_os = "horizon", target_os = "octagram"))))]
+         const EOR = bitcast!(c::MSG_EOR);
+         /// `MSG_TRUNC`
+-        #[cfg(not(target_os = "horizon"))]
++        #[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+         const TRUNC = bitcast!(c::MSG_TRUNC);
+         /// `MSG_CTRUNC`
+-        #[cfg(not(target_os = "horizon"))]
++        #[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+         const CTRUNC = bitcast!(c::MSG_CTRUNC);
+ 
+         /// `MSG_CMSG_CLOEXEC`
+--- a/src/backend/libc/net/sockopt.rs
++++ b/src/backend/libc/net/sockopt.rs
+@@ -27,7 +27,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "vita",
+@@ -391,7 +391,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "hurd",
+     target_os = "netbsd",
+     target_os = "nto",
+@@ -902,7 +902,7 @@
+     windows,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita"
+ )))]
+@@ -916,7 +916,7 @@
+     windows,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita"
+ )))]
+--- a/src/backend/libc/net/syscalls.rs
++++ b/src/backend/libc/net/syscalls.rs
+@@ -20,7 +20,7 @@
+ #[cfg(not(any(
+     windows,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita"
+ )))]
+ use {
+@@ -185,7 +185,7 @@
+ #[cfg(not(any(
+     windows,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita"
+ )))]
+ pub(crate) fn recvmsg(
+@@ -219,7 +219,7 @@
+ #[cfg(not(any(
+     windows,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita"
+ )))]
+ pub(crate) fn sendmsg(
+@@ -241,7 +241,7 @@
+ #[cfg(not(any(
+     windows,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita"
+ )))]
+ pub(crate) fn sendmsg_addr(
+@@ -287,7 +287,7 @@
+     target_os = "aix",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita",
+@@ -322,7 +322,7 @@
+     target_os = "aix",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita",
+@@ -351,7 +351,7 @@
+     target_os = "aix",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita",
+@@ -368,7 +368,7 @@
+     target_os = "aix",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita",
+--- a/src/backend/libc/param/auxv.rs
++++ b/src/backend/libc/param/auxv.rs
+@@ -17,7 +17,7 @@
+     unsafe { c::sysconf(c::_SC_PAGESIZE) as usize }
+ }
+ 
+-#[cfg(not(any(target_os = "horizon", target_os = "vita", target_os = "wasi")))]
++#[cfg(not(any(any(target_os = "horizon", target_os = "octagram"), target_os = "vita", target_os = "wasi")))]
+ #[inline]
+ pub(crate) fn clock_ticks_per_second() -> u64 {
+     unsafe { c::sysconf(c::_SC_CLK_TCK) as u64 }
+--- a/src/backend/libc/pipe/types.rs
++++ b/src/backend/libc/pipe/types.rs
+@@ -20,7 +20,7 @@
+             solarish,
+             target_os = "espidf",
+             target_os = "haiku",
+-            target_os = "horizon",
++            any(target_os = "horizon", target_os = "octagram"),
+             target_os = "hurd",
+             target_os = "nto",
+             target_os = "openbsd",
+--- a/src/backend/libc/process/syscalls.rs
++++ b/src/backend/libc/process/syscalls.rs
+@@ -10,7 +10,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -34,7 +34,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -49,7 +49,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -59,7 +59,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -68,7 +68,7 @@
+ #[cfg(not(any(
+     target_os = "cygwin",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",
+@@ -161,7 +161,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -179,7 +179,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -197,7 +197,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -215,7 +215,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -227,7 +227,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -245,7 +245,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -263,7 +263,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -280,7 +280,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -311,7 +311,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -334,7 +334,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -389,7 +389,7 @@
+ #[cfg(not(any(
+     target_os = "cygwin",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",
+@@ -412,7 +412,7 @@
+ #[cfg(not(any(
+     target_os = "cygwin",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",
+@@ -438,7 +438,7 @@
+ #[cfg(not(any(
+     target_os = "cygwin",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",
+@@ -464,7 +464,7 @@
+ #[cfg(not(any(
+     target_os = "cygwin",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",
+@@ -514,7 +514,7 @@
+ #[cfg(not(any(
+     target_os = "cygwin",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",
+@@ -686,7 +686,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+--- a/src/backend/libc/process/types.rs
++++ b/src/backend/libc/process/types.rs
+@@ -1,7 +1,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -17,7 +17,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+--- a/src/backend/libc/process/wait.rs
++++ b/src/backend/libc/process/wait.rs
+@@ -4,12 +4,12 @@
+     WEXITSTATUS, WIFCONTINUED, WIFEXITED, WIFSIGNALED, WIFSTOPPED, WNOHANG, WSTOPSIG, WTERMSIG,
+ };
+ 
+-#[cfg(not(target_os = "horizon"))]
++#[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+ pub(crate) use c::{WCONTINUED, WUNTRACED};
+ 
+ #[cfg(not(any(
+     target_os = "cygwin",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "wasi",
+--- a/src/backend/libc/system/syscalls.rs
++++ b/src/backend/libc/system/syscalls.rs
+@@ -14,7 +14,7 @@
+ #[cfg(not(any(
+     target_os = "emscripten",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -51,7 +51,7 @@
+ #[cfg(not(any(
+     target_os = "emscripten",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -72,7 +72,7 @@
+     target_os = "espidf",
+     target_os = "illumos",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "solaris",
+     target_os = "vita",
+--- a/src/backend/libc/termios/syscalls.rs
++++ b/src/backend/libc/termios/syscalls.rs
+@@ -349,12 +349,12 @@
+     }
+ }
+ 
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon", target_os = "wasi")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"), target_os = "wasi")))]
+ pub(crate) fn tcsetwinsize(fd: BorrowedFd<'_>, winsize: Winsize) -> io::Result<()> {
+     unsafe { ret(c::ioctl(borrowed_fd(fd), c::TIOCSWINSZ, &winsize)) }
+ }
+ 
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon", target_os = "wasi")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"), target_os = "wasi")))]
+ pub(crate) fn tcgetwinsize(fd: BorrowedFd<'_>) -> io::Result<Winsize> {
+     unsafe {
+         let mut buf = MaybeUninit::<Winsize>::uninit();
+--- a/src/backend/libc/thread/syscalls.rs
++++ b/src/backend/libc/thread/syscalls.rs
+@@ -13,7 +13,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",
+@@ -52,7 +52,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",
+@@ -115,7 +115,7 @@
+         apple,
+         target_os = "emscripten",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "vita"
+     ))
+ ))]
+@@ -162,7 +162,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",
+@@ -218,7 +218,7 @@
+         apple,
+         target_os = "emscripten",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "vita"
+     ))
+ ))]
+--- a/src/clockid.rs
++++ b/src/clockid.rs
+@@ -13,10 +13,10 @@
+ #[cfg(not(any(apple, target_os = "wasi")))]
+ #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+ #[cfg_attr(
+-    not(any(target_os = "aix", target_os = "cygwin", target_os = "dragonfly")),
++    not(any(target_os = "aix", target_os = "cygwin", target_os = "dragonfly", target_os = "octagram")),
+     repr(i32)
+ )]
+-#[cfg_attr(any(target_os = "cygwin", target_os = "dragonfly"), repr(u64))]
++#[cfg_attr(any(target_os = "cygwin", target_os = "dragonfly", target_os = "octagram"), repr(u64))]
+ #[cfg_attr(target_os = "aix", repr(i64))]
+ #[non_exhaustive]
+ pub enum ClockId {
+--- a/src/fs/abs.rs
++++ b/src/fs/abs.rs
+@@ -7,7 +7,7 @@
+     solarish,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "redox",
+@@ -258,7 +258,7 @@
+     solarish,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "redox",
+--- a/src/fs/at.rs
++++ b/src/fs/at.rs
+@@ -23,7 +23,7 @@
+ #[cfg(not(any(
+     apple,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -474,7 +474,7 @@
+ #[cfg(not(any(
+     apple,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi",
+     target_os = "redox",
+@@ -505,7 +505,7 @@
+ #[cfg(not(any(
+     apple,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi",
+     target_os = "redox",
+--- a/src/fs/fcntl.rs
++++ b/src/fs/fcntl.rs
+@@ -94,7 +94,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+--- a/src/fs/fd.rs
++++ b/src/fs/fd.rs
+@@ -11,7 +11,7 @@
+     netbsdlike,
+     target_os = "dragonfly",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita",
+@@ -32,7 +32,7 @@
+     solarish,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "redox",
+@@ -170,7 +170,7 @@
+     solarish,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "redox",
+@@ -240,7 +240,7 @@
+     netbsdlike,
+     target_os = "dragonfly",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "vita",
+@@ -283,7 +283,7 @@
+     target_os = "dragonfly",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+ )))]
+--- a/src/fs/mod.rs
++++ b/src/fs/mod.rs
+@@ -16,7 +16,7 @@
+     target_os = "dragonfly",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "solaris",
+     target_os = "vita",
+@@ -39,7 +39,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -59,7 +59,7 @@
+ mod statx;
+ #[cfg(not(any(
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -84,7 +84,7 @@
+     target_os = "dragonfly",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "solaris",
+     target_os = "vita",
+@@ -105,7 +105,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -125,7 +125,7 @@
+ pub use statx::*;
+ #[cfg(not(any(
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+--- a/src/io/dup.rs
++++ b/src/io/dup.rs
+@@ -114,7 +114,7 @@
+ #[cfg(not(any(
+     target_os = "aix",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "vita",
+     target_os = "wasi"
+--- a/src/io/ioctl.rs
++++ b/src/io/ioctl.rs
+@@ -86,7 +86,7 @@
+ /// [FreeBSD]: https://man.freebsd.org/cgi/man.cgi?query=ioctl&sektion=2#GENERIC%09IOCTLS
+ /// [NetBSD]: https://man.netbsd.org/ioctl.2#GENERIC%20IOCTLS
+ /// [OpenBSD]: https://man.openbsd.org/ioctl.2#GENERIC_IOCTLS
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon", target_os = "vita")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"), target_os = "vita")))]
+ #[inline]
+ #[doc(alias = "FIONREAD")]
+ pub fn ioctl_fionread<Fd: AsFd>(fd: Fd) -> io::Result<u64> {
+--- a/src/io/read_write.rs
++++ b/src/io/read_write.rs
+@@ -159,7 +159,7 @@
+ /// [DragonFly BSD]: https://man.dragonflybsd.org/?command=readv&section=2
+ /// [illumos]: https://illumos.org/man/2/readv
+ /// [glibc]: https://sourceware.org/glibc/manual/latest/html_node/Scatter_002dGather.html#index-readv
+-#[cfg(not(any(windows, target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(windows, target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ #[inline]
+ pub fn readv<Fd: AsFd>(fd: Fd, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+     backend::io::syscalls::readv(fd.as_fd(), bufs)
+@@ -187,7 +187,7 @@
+ /// [DragonFly BSD]: https://man.dragonflybsd.org/?command=writev&section=2
+ /// [illumos]: https://illumos.org/man/2/writev
+ /// [glibc]: https://sourceware.org/glibc/manual/latest/html_node/Scatter_002dGather.html#index-writev
+-#[cfg(not(any(windows, target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(windows, target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ #[inline]
+ pub fn writev<Fd: AsFd>(fd: Fd, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+     backend::io::syscalls::writev(fd.as_fd(), bufs)
+@@ -217,7 +217,7 @@
+     target_os = "cygwin",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "solaris",
+@@ -256,7 +256,7 @@
+     target_os = "cygwin",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "nto",
+     target_os = "redox",
+     target_os = "solaris",
+--- a/src/ioctl/mod.rs
++++ b/src/ioctl/mod.rs
+@@ -318,7 +318,7 @@
+     bsd,
+     target_os = "redox",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "hurd",
+     target_os = "vita"
+ ))]
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -232,7 +232,7 @@
+ #[cfg(not(any(
+     windows,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -279,7 +279,7 @@
+     windows,
+     target_os = "android",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita",
+     target_os = "wasi"
+ )))]
+@@ -294,7 +294,7 @@
+ #[cfg(not(any(windows, target_os = "wasi")))]
+ #[cfg_attr(docsrs, doc(cfg(feature = "system")))]
+ pub mod system;
+-#[cfg(not(any(windows, target_os = "horizon", target_os = "vita")))]
++#[cfg(not(any(windows, any(target_os = "horizon", target_os = "octagram"), target_os = "vita")))]
+ #[cfg(feature = "termios")]
+ #[cfg_attr(docsrs, doc(cfg(feature = "termios")))]
+ pub mod termios;
+--- a/src/net/send_recv/mod.rs
++++ b/src/net/send_recv/mod.rs
+@@ -14,7 +14,7 @@
+ #[cfg(not(any(
+     windows,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita"
+ )))]
+ mod msg;
+@@ -22,7 +22,7 @@
+ #[cfg(not(any(
+     windows,
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita"
+ )))]
+ pub use msg::*;
+--- a/src/net/sockopt.rs
++++ b/src/net/sockopt.rs
+@@ -156,7 +156,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "netbsd",
+     target_os = "nto",
+     target_os = "vita",
+@@ -577,7 +577,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "hurd",
+     target_os = "netbsd",
+     target_os = "nto",
+@@ -1400,7 +1400,7 @@
+     windows,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita"
+ )))]
+@@ -1420,7 +1420,7 @@
+     windows,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita"
+ )))]
+--- a/src/net/types.rs
++++ b/src/net/types.rs
+@@ -23,18 +23,18 @@
+     pub const DGRAM: Self = Self(c::SOCK_DGRAM as _);
+ 
+     /// `SOCK_SEQPACKET`
+-    #[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++    #[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+     pub const SEQPACKET: Self = Self(c::SOCK_SEQPACKET as _);
+ 
+     /// `SOCK_RAW`
+-    #[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++    #[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+     pub const RAW: Self = Self(c::SOCK_RAW as _);
+ 
+     /// `SOCK_RDM`
+     #[cfg(not(any(
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox"
+     )))]
+     pub const RDM: Self = Self(c::SOCK_RDM as _);
+@@ -98,7 +98,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -117,7 +117,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -129,7 +129,7 @@
+         target_os = "aix",
+         target_os = "cygwin",
+         target_os = "espidf",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita",
+     )))]
+@@ -137,7 +137,7 @@
+     /// `AF_APPLETALK`
+     #[cfg(not(any(
+         target_os = "espidf",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita"
+     )))]
+@@ -151,7 +151,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -167,7 +167,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -183,7 +183,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -198,7 +198,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -214,7 +214,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -225,7 +225,7 @@
+     #[cfg(not(any(
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita"
+     )))]
+@@ -239,7 +239,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -255,7 +255,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -270,7 +270,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -290,7 +290,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -306,7 +306,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -322,7 +322,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -338,7 +338,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -354,7 +354,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -365,7 +365,7 @@
+     #[cfg(not(any(
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita"
+     )))]
+@@ -378,7 +378,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -394,7 +394,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -410,7 +410,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -426,7 +426,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -442,7 +442,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -458,7 +458,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -473,7 +473,7 @@
+         target_os = "aix",
+         target_os = "cygwin",
+         target_os = "espidf",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "redox",
+         target_os = "vita",
+@@ -488,7 +488,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -504,7 +504,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -519,7 +519,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "redox",
+         target_os = "vita",
+@@ -534,7 +534,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -550,7 +550,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -813,7 +813,7 @@
+         solarish,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "vita"
+     )))]
+     pub const IGMP: Protocol = Protocol(new_raw_protocol(c::IPPROTO_IGMP as _));
+@@ -823,7 +823,7 @@
+         windows,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita"
+     )))]
+@@ -835,7 +835,7 @@
+         solarish,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita"
+     )))]
+@@ -845,7 +845,7 @@
+         solarish,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "vita"
+     )))]
+     pub const PUP: Protocol = Protocol(new_raw_protocol(c::IPPROTO_PUP as _));
+@@ -856,7 +856,7 @@
+         solarish,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "vita"
+     )))]
+     pub const IDP: Protocol = Protocol(new_raw_protocol(c::IPPROTO_IDP as _));
+@@ -867,7 +867,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita",
+     )))]
+@@ -882,7 +882,7 @@
+         target_os = "dragonfly",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "nto",
+         target_os = "openbsd",
+         target_os = "redox",
+@@ -898,7 +898,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita",
+     )))]
+@@ -910,7 +910,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita",
+     )))]
+@@ -920,7 +920,7 @@
+         solarish,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita"
+     )))]
+@@ -930,7 +930,7 @@
+         solarish,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita"
+     )))]
+@@ -944,7 +944,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "nto",
+         target_os = "redox",
+         target_os = "vita",
+@@ -959,7 +959,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "nto",
+         target_os = "redox",
+         target_os = "vita",
+@@ -973,7 +973,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita",
+     )))]
+@@ -985,7 +985,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita",
+     )))]
+@@ -999,7 +999,7 @@
+         target_os = "cygwin",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "nto",
+         target_os = "redox",
+         target_os = "vita",
+@@ -1012,7 +1012,7 @@
+         target_os = "dragonfly",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "openbsd",
+         target_os = "redox",
+         target_os = "vita",
+@@ -1029,7 +1029,7 @@
+         target_os = "dragonfly",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "nto",
+         target_os = "redox",
+         target_os = "vita",
+@@ -1045,7 +1045,7 @@
+         target_os = "dragonfly",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "netbsd",
+         target_os = "nto",
+         target_os = "redox",
+@@ -1056,7 +1056,7 @@
+     #[cfg(linux_kernel)]
+     pub const ETHERNET: Protocol = Protocol(new_raw_protocol(c::IPPROTO_ETHERNET as _));
+     /// `IPPROTO_RAW`
+-    #[cfg(not(any(target_os = "espidf", target_os = "horizon", target_os = "vita")))]
++    #[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"), target_os = "vita")))]
+     pub const RAW: Protocol = Protocol(new_raw_protocol(c::IPPROTO_RAW as _));
+     /// `IPPROTO_MPTCP`
+     #[cfg(not(any(
+@@ -1069,7 +1069,7 @@
+         target_os = "espidf",
+         target_os = "fuchsia",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "nto",
+         target_os = "redox",
+         target_os = "vita",
+@@ -1080,7 +1080,7 @@
+         solarish,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita"
+     )))]
+@@ -1097,7 +1097,7 @@
+         target_os = "dragonfly",
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "nto",
+         target_os = "redox",
+         target_os = "vita",
+@@ -1108,7 +1108,7 @@
+         solarish,
+         target_os = "espidf",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "redox",
+         target_os = "vita"
+     )))]
+@@ -1705,7 +1705,7 @@
+             target_os = "aix",
+             target_os = "espidf",
+             target_os = "haiku",
+-            target_os = "horizon",
++            any(target_os = "horizon", target_os = "octagram"),
+             target_os = "nto",
+             target_os = "vita",
+         )))]
+--- a/src/param/auxv.rs
++++ b/src/param/auxv.rs
+@@ -38,7 +38,7 @@
+ ///
+ /// [POSIX]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/sysconf.html
+ /// [Linux]: https://man7.org/linux/man-pages/man3/sysconf.3.html
+-#[cfg(not(any(target_os = "horizon", target_os = "vita", target_os = "wasi")))]
++#[cfg(not(any(any(target_os = "horizon", target_os = "octagram"), target_os = "vita", target_os = "wasi")))]
+ #[inline]
+ #[doc(alias = "_SC_CLK_TCK")]
+ pub fn clock_ticks_per_second() -> u64 {
+--- a/src/path/arg.rs
++++ b/src/path/arg.rs
+@@ -1003,7 +1003,7 @@
+             libc,
+             not(any(
+                 target_os = "espidf",
+-                target_os = "horizon",
++                any(target_os = "horizon", target_os = "octagram"),
+                 target_os = "hurd",
+                 target_os = "vita",
+                 target_os = "wasi"
+@@ -1014,7 +1014,7 @@
+         const LARGE_PATH_BUFFER_SIZE: usize = linux_raw_sys::general::PATH_MAX as usize;
+         #[cfg(any(
+             target_os = "espidf",
+-            target_os = "horizon",
++            any(target_os = "horizon", target_os = "octagram"),
+             target_os = "hurd",
+             target_os = "vita",
+             target_os = "wasi"
+--- a/src/pipe.rs
++++ b/src/pipe.rs
+@@ -9,7 +9,7 @@
+     windows,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi",
+@@ -37,7 +37,7 @@
+     windows,
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "hurd",
+     target_os = "redox",
+     target_os = "vita",
+--- a/src/process/mod.rs
++++ b/src/process/mod.rs
+@@ -9,7 +9,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -19,7 +19,7 @@
+ mod id;
+ #[cfg(not(any(
+     target_os = "aix",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "espidf",
+     target_os = "vita"
+ )))]
+@@ -42,7 +42,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -71,7 +71,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -82,7 +82,7 @@
+ #[cfg(not(any(
+     target_os = "aix",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita"
+ )))]
+ pub use ioctl::*;
+@@ -103,7 +103,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -113,7 +113,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "fuchsia",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+--- a/src/process/priority.rs
++++ b/src/process/priority.rs
+@@ -1,4 +1,4 @@
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ use crate::process::{Pid, Uid};
+ use crate::{backend, io};
+ 
+@@ -26,7 +26,7 @@
+ /// [POSIX]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/getpriority.html
+ /// [Linux]: https://man7.org/linux/man-pages/man2/getpriority.2.html
+ /// [Apple]: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setpriority.2.html
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ #[inline]
+ #[doc(alias = "getpriority")]
+ pub fn getpriority_user(uid: Uid) -> io::Result<i32> {
+@@ -46,7 +46,7 @@
+ /// [POSIX]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/getpriority.html
+ /// [Linux]: https://man7.org/linux/man-pages/man2/getpriority.2.html
+ /// [Apple]: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setpriority.2.html
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ #[inline]
+ #[doc(alias = "getpriority")]
+ pub fn getpriority_pgrp(pgid: Option<Pid>) -> io::Result<i32> {
+@@ -66,7 +66,7 @@
+ /// [POSIX]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/getpriority.html
+ /// [Linux]: https://man7.org/linux/man-pages/man2/getpriority.2.html
+ /// [Apple]: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setpriority.2.html
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ #[inline]
+ #[doc(alias = "getpriority")]
+ pub fn getpriority_process(pid: Option<Pid>) -> io::Result<i32> {
+@@ -84,7 +84,7 @@
+ /// [POSIX]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/setpriority.html
+ /// [Linux]: https://man7.org/linux/man-pages/man2/setpriority.2.html
+ /// [Apple]: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setpriority.2.html
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ #[inline]
+ #[doc(alias = "setpriority")]
+ pub fn setpriority_user(uid: Uid, priority: i32) -> io::Result<()> {
+@@ -104,7 +104,7 @@
+ /// [POSIX]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/setpriority.html
+ /// [Linux]: https://man7.org/linux/man-pages/man2/setpriority.2.html
+ /// [Apple]: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setpriority.2.html
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ #[inline]
+ #[doc(alias = "setpriority")]
+ pub fn setpriority_pgrp(pgid: Option<Pid>, priority: i32) -> io::Result<()> {
+@@ -124,7 +124,7 @@
+ /// [POSIX]: https://pubs.opengroup.org/onlinepubs/9799919799/functions/setpriority.html
+ /// [Linux]: https://man7.org/linux/man-pages/man2/setpriority.2.html
+ /// [Apple]: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setpriority.2.html
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ #[inline]
+ #[doc(alias = "setpriority")]
+ pub fn setpriority_process(pid: Option<Pid>, priority: i32) -> io::Result<()> {
+--- a/src/process/types.rs
++++ b/src/process/types.rs
+@@ -4,17 +4,17 @@
+ 
+ #![allow(unsafe_code)]
+ 
+-#[cfg(not(target_os = "horizon"))]
++#[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+ use crate::backend::c;
+-#[cfg(not(target_os = "horizon"))]
++#[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+ use crate::pid::Pid;
+-#[cfg(not(target_os = "horizon"))]
++#[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+ use core::mem::transmute;
+ 
+ /// File lock data structure used in [`fcntl_getlk`].
+ ///
+ /// [`fcntl_getlk`]: crate::process::fcntl_getlk()
+-#[cfg(not(target_os = "horizon"))]
++#[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub struct Flock {
+     /// Starting offset for lock
+@@ -30,7 +30,7 @@
+     pub offset_type: FlockOffsetType,
+ }
+ 
+-#[cfg(not(target_os = "horizon"))]
++#[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+ impl Flock {
+     pub(crate) const unsafe fn from_raw_unchecked(raw_fl: c::flock) -> Self {
+         #[cfg(not(all(target_os = "hurd", target_arch = "x86")))]
+@@ -66,7 +66,7 @@
+     }
+ }
+ 
+-#[cfg(not(target_os = "horizon"))]
++#[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+ impl From<FlockType> for Flock {
+     fn from(value: FlockType) -> Self {
+         Self {
+@@ -82,7 +82,7 @@
+ /// `F_*LCK` constants for use with [`fcntl_getlk`].
+ ///
+ /// [`fcntl_getlk`]: crate::process::fcntl_getlk()
+-#[cfg(not(target_os = "horizon"))]
++#[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(not(all(target_os = "hurd", target_arch = "x86")), repr(i16))]
+ #[cfg_attr(all(target_os = "hurd", target_arch = "x86"), repr(i32))]
+@@ -98,7 +98,7 @@
+ /// `F_SEEK*` constants for use with [`fcntl_getlk`].
+ ///
+ /// [`fcntl_getlk`]: crate::process::fcntl_getlk()
+-#[cfg(not(target_os = "horizon"))]
++#[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[cfg_attr(not(all(target_os = "hurd", target_arch = "x86")), repr(i16))]
+ #[cfg_attr(all(target_os = "hurd", target_arch = "x86"), repr(i32))]
+--- a/src/process/wait.rs
++++ b/src/process/wait.rs
+@@ -27,13 +27,13 @@
+         /// Return if a child has stopped (but not traced via [`ptrace`]).
+         ///
+         /// [`ptrace`]: https://man7.org/linux/man-pages/man2/ptrace.2.html
+-        #[cfg(not(target_os = "horizon"))]
++        #[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+         const UNTRACED = bitcast!(backend::process::wait::WUNTRACED);
+         /// Return if a stopped child has been resumed by delivery of
+         /// [`Signal::Cont`].
+         ///
+         /// [`Signal::Cont`]: crate::process::Signal::Cont
+-        #[cfg(not(target_os = "horizon"))]
++        #[cfg(not(any(target_os = "horizon", target_os = "octagram")))]
+         const CONTINUED = bitcast!(backend::process::wait::WCONTINUED);
+ 
+         /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+@@ -42,7 +42,7 @@
+ }
+ 
+ #[cfg(not(any(
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "wasi"
+@@ -181,7 +181,7 @@
+ #[derive(Clone, Copy)]
+ #[repr(transparent)]
+ #[cfg(not(any(
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "wasi"
+@@ -198,7 +198,7 @@
+ unsafe impl Sync for WaitIdStatus {}
+ 
+ #[cfg(not(any(
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "wasi"
+@@ -342,7 +342,7 @@
+ }
+ 
+ #[cfg(not(any(
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "wasi"
+@@ -479,7 +479,7 @@
+ /// state.
+ #[cfg(not(any(
+     target_os = "cygwin",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "wasi",
+--- a/src/pty.rs
++++ b/src/pty.rs
+@@ -35,7 +35,7 @@
+         const RDWR = c::O_RDWR as c::c_uint;
+ 
+         /// `O_NOCTTY`
+-        #[cfg(not(any(target_os = "espidf", target_os = "horizon", target_os = "l4re", target_os = "redox", target_os = "vita")))]
++        #[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"), target_os = "l4re", target_os = "redox", target_os = "vita")))]
+         const NOCTTY = c::O_NOCTTY as c::c_uint;
+ 
+         /// `O_CLOEXEC`
+--- a/src/signal.rs
++++ b/src/signal.rs
+@@ -92,7 +92,7 @@
+         target_os = "aix",
+         target_os = "cygwin",
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "nto",
+         target_os = "vita",
+@@ -155,7 +155,7 @@
+     #[cfg(not(any(
+         bsd,
+         target_os = "haiku",
+-        target_os = "horizon",
++        any(target_os = "horizon", target_os = "octagram"),
+         target_os = "hurd",
+         target_os = "vita"
+     )))]
+@@ -313,7 +313,7 @@
+                 target_os = "aix",
+                 target_os = "cygwin",
+                 target_os = "haiku",
+-                target_os = "horizon",
++                any(target_os = "horizon", target_os = "octagram"),
+                 target_os = "hurd",
+                 target_os = "nto",
+                 target_os = "vita",
+@@ -359,7 +359,7 @@
+             #[cfg(not(any(
+                 bsd,
+                 target_os = "haiku",
+-                target_os = "horizon",
++                any(target_os = "horizon", target_os = "octagram"),
+                 target_os = "hurd",
+                 target_os = "vita"
+             )))]
+@@ -421,7 +421,7 @@
+                 target_os = "aix",
+                 target_os = "cygwin",
+                 target_os = "haiku",
+-                target_os = "horizon",
++                any(target_os = "horizon", target_os = "octagram"),
+                 target_os = "hurd",
+                 target_os = "nto",
+                 target_os = "vita",
+@@ -467,7 +467,7 @@
+             #[cfg(not(any(
+                 bsd,
+                 target_os = "haiku",
+-                target_os = "horizon",
++                any(target_os = "horizon", target_os = "octagram"),
+                 target_os = "hurd",
+                 target_os = "vita"
+             )))]
+--- a/src/system.rs
++++ b/src/system.rs
+@@ -9,7 +9,7 @@
+ #[cfg(not(any(
+     target_os = "espidf",
+     target_os = "emscripten",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "vita"
+ )))]
+ use crate::io;
+@@ -160,7 +160,7 @@
+ #[cfg(not(any(
+     target_os = "emscripten",
+     target_os = "espidf",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "vita",
+     target_os = "wasi"
+@@ -183,7 +183,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "illumos",
+     target_os = "redox",
+     target_os = "solaris",
+--- a/src/termios/ioctl.rs
++++ b/src/termios/ioctl.rs
+@@ -23,7 +23,7 @@
+ /// [OpenBSD]: https://man.openbsd.org/tty.4
+ #[cfg(not(any(
+     windows,
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "wasi"
+ )))]
+@@ -51,7 +51,7 @@
+ /// [OpenBSD]: https://man.openbsd.org/tty.4
+ #[cfg(not(any(
+     windows,
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "redox",
+     target_os = "wasi"
+ )))]
+--- a/src/termios/tc.rs
++++ b/src/termios/tc.rs
+@@ -41,7 +41,7 @@
+ /// [Linux]: https://man7.org/linux/man-pages/man4/tty_ioctl.4.html
+ #[cfg(not(any(
+     windows,
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "espidf",
+     target_os = "wasi"
+ )))]
+@@ -217,7 +217,7 @@
+ ///  - [Linux]
+ ///
+ /// [Linux]: https://man7.org/linux/man-pages/man4/tty_ioctl.4.html
+-#[cfg(not(any(target_os = "espidf", target_os = "horizon")))]
++#[cfg(not(any(target_os = "espidf", any(target_os = "horizon", target_os = "octagram"))))]
+ #[inline]
+ #[doc(alias = "TIOCSWINSZ")]
+ pub fn tcsetwinsize<Fd: AsFd>(fd: Fd, winsize: Winsize) -> io::Result<()> {
+--- a/src/thread/clock.rs
++++ b/src/thread/clock.rs
+@@ -34,7 +34,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",
+@@ -65,7 +65,7 @@
+     target_os = "emscripten",
+     target_os = "espidf",
+     target_os = "haiku",
+-    target_os = "horizon",
++    any(target_os = "horizon", target_os = "octagram"),
+     target_os = "openbsd",
+     target_os = "redox",
+     target_os = "vita",

@@ -768,8 +768,8 @@ def main() -> int:
     )
 
     # Check the dependencies that already failed in stage 2 before the
-    # multi-hour LLVM build. This target check only builds core plus the
-    # errno/libc/getrandom dependency slice and does not consume libLLVM.
+    # multi-hour LLVM build. This target check builds patched core/alloc/std
+    # plus the locked Rust/Cargo dependency slices and does not consume libLLVM.
     preflight = job_block(workflow, "preflight")
     rust_install = step_block(preflight, "Install Rust nightly")
     require(
@@ -792,7 +792,7 @@ def main() -> int:
         ("getrandom-modern/src", "dependency preflight must test getrandom 0.4.3 separately"),
         ("0.2.191 0.3.3 3.23.0", "Rust workspace preflight must use its exact lockfile dependency versions"),
         ("0.2.186 0.3.4 3.27.0", "Cargo submodule preflight must use its exact lockfile dependency versions"),
-        ("-Zbuild-std=core", "dependency check must compile against the target core"),
+        ("-Zbuild-std=core,alloc,std", "dependency check must compile target core, alloc, and std before checking std-based crates"),
         ("cargo \"+$toolchain\" tree", "dependency check must inspect the resolved OCTAGRAM dependency graph"),
         ("rustc \"+$toolchain\" -Z unstable-options --print cfg --target", "dependency check must inspect the custom target cfg values"),
         ('target_os = "octagram"', "dependency check must use OCTAGRAM target-specific cfg selectors"),
@@ -805,6 +805,9 @@ def main() -> int:
         ("0.2.186 0.3.4 3.27.0 0.2.29 0.6.4", "Cargo submodule preflight must include filetime 0.2.29 and socket2 0.6.4"),
         ('socket2 = { version = "=$socket2_version" }', "dependency preflight must compile the locked socket2 crate"),
         ("patch_filetime_octagram.py", "dependency check must patch filetime to utimensat"),
+        ("patch_rust_std_octagram.py", "dependency check must patch installed rust-src before compiling std-based dependencies"),
+        ("OCTAGRAM_RUST_STD_ROOT", "dependency check must patch the exact rust-src standard library it compiles"),
+        ("CARGO_TARGET_DIR=$check_root/target-octagram", "dependency checks must share build-std artifacts to avoid compiling std three times"),
         ("apply_rust_libc_octagram.py", "dependency check must apply the OCTAGRAM libc bindings"),
         ("patch_errno_octagram.py", "dependency check must patch errno's errno accessor"),
         ("patch_getrandom_octagram.py", "dependency check must patch all getrandom target backends"),

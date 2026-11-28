@@ -520,10 +520,42 @@ else
     mv "$network_header_tmp" "$network_header"
 fi
 
-# Verify this exact private sysroot with the OCTAGRAM compiler before spending
-# time in x.py. The declarations are already implemented by OCTAGRAM libc.
+# OpenSSL's Unix sockets layer also includes <netinet/tcp.h>. For OCTAGRAM,
+# TCP_NODELAY is part of <netinet/in.h>; provide the conventional include path
+# only in this private Rust/Cargo sysroot copy.
+tcp_header_dir=$sysroot/usr/include/netinet
+tcp_header=$tcp_header_dir/tcp.h
+tcp_header_tmp=$(mktemp "$tcp_header_dir/.tcp.h.XXXXXX")
+cat > "$tcp_header_tmp" <<'OCTAGRAM_NETINET_TCP_H'
+#ifndef OCTAGRAM_NETINET_TCP_H
+#define OCTAGRAM_NETINET_TCP_H
+
+#include <netinet/in.h>
+
+#endif /* OCTAGRAM_NETINET_TCP_H */
+OCTAGRAM_NETINET_TCP_H
+
+if [ -e "$tcp_header" ]; then
+    if ! cmp -s "$tcp_header_tmp" "$tcp_header"; then
+        rm -f "$tcp_header_tmp"
+        echo "bootstrap_rustc_octagram: error: refusing to overwrite conflicting $tcp_header" >&2
+        exit 1
+    fi
+    rm -f "$tcp_header_tmp"
+else
+    mv "$tcp_header_tmp" "$tcp_header"
+fi
+
+# Verify both private networking compatibility headers before spending time
+# in x.py. The address conversion and TCP_NODELAY APIs are implemented by
+# OCTAGRAM libc; these headers only expose the standard include paths.
 if ! "$linker" --sysroot="$sysroot" -x c -fsyntax-only - <<'OCTAGRAM_INET_PROBE'
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
+
+#ifndef TCP_NODELAY
+#error "OCTAGRAM netinet/tcp.h must expose TCP_NODELAY"
+#endif
 
 static void octagram_arpa_inet_probe(void)
 {
@@ -531,7 +563,9 @@ static void octagram_arpa_inet_probe(void)
     struct in6_addr ipv6 = {{0}};
     char text4[INET_ADDRSTRLEN];
     char text6[INET6_ADDRSTRLEN];
+    int tcp_no_delay = TCP_NODELAY;
 
+    (void)tcp_no_delay;
     (void)inet_addr("127.0.0.1");
     (void)inet_ntoa(ipv4);
     (void)inet_pton(AF_INET, "127.0.0.1", &ipv4);
@@ -541,10 +575,10 @@ static void octagram_arpa_inet_probe(void)
 }
 OCTAGRAM_INET_PROBE
 then
-    echo "bootstrap_rustc_octagram: error: OCTAGRAM <arpa/inet.h> compatibility probe failed" >&2
+    echo "bootstrap_rustc_octagram: error: OCTAGRAM arpa/inet.h/netinet/tcp.h compatibility probe failed" >&2
     exit 1
 fi
-echo "OCTAGRAM-RUST-ARPA-INET-HEADER-PASS"
+echo "OCTAGRAM-RUST-NETWORK-HEADERS-PASS"
 
 if [ "$resume" -eq 1 ] && [ ! -d "$rust_checkout/.git" ]; then
     echo "bootstrap_rustc_octagram: error: --resume but no checkout at $rust_checkout" >&2

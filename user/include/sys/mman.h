@@ -52,13 +52,6 @@ int mlock(const void *address, size_t length);
 int munlock(const void *address, size_t length);
 int mlockall(int flags);
 int munlockall(void);
-/* madvise is a compatibility stub; the kernel currently supports only posix_madvise. */
-#define MADV_NORMAL     0
-#define MADV_RANDOM     1
-#define MADV_SEQUENTIAL 2
-#define MADV_WILLNEED   3
-#define MADV_DONTNEED   4
-int madvise(void *address, size_t length, int advice);
 int posix_madvise(void *address, size_t length, int advice);
 int madvise(void *address, size_t length, int advice);
 void *mremap(void *old_address, size_t old_size, size_t new_size, int flags, ...);

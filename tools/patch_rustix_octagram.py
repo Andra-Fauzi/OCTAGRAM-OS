@@ -27,8 +27,8 @@ VERIFY_FILES = (
     "src/ioctl/mod.rs",
 )
 EXPECTED_1_1_5_REJECTS = {
-    "src/backend/libc/thread/syscalls.rs",
-    "src/thread/clock.rs",
+    "src/backend/libc/thread/syscalls.rs.rej",
+    "src/thread/clock.rs.rej",
 }
 
 

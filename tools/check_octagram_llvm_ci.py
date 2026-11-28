@@ -1455,6 +1455,12 @@ pub fn reopen(file: &File, path: &Path) -> io::Result<File> {
             (package / ".cargo-ok").write_text('{"v":1}', encoding="utf-8")
             (package / "src" / "sys" / "unix.rs").write_text(
                 """#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+))]
+pub(crate) use libc::SO_LINGER_SEC;
+
+#[cfg(any(
     all(
         target_os = "linux",
         any(target_env = "gnu", all(target_env = "uclibc", target_pointer_width = "64"))
@@ -1488,10 +1494,14 @@ type IovLen = c_int;
             source = (
                 registry_root / "index.test" / f"socket2-{version}" / "src" / "sys" / "unix.rs"
             ).read_text(encoding="utf-8")
+            iovlen_cfg = re.search(
+                r'(?ms)^#\\[cfg\\(any\\(\\n(?P<body>(?:(?!^#\\[cfg).)*?)^\\)\\)\\]\\ntype IovLen = usize;',
+                source,
+            )
             if source.count('target_os = "octagram"') != 1:
                 fail(f"socket2 {version} patcher did not add one OCTAGRAM IovLen arm")
-            if "type IovLen = usize;" not in source:
-                fail(f"socket2 {version} patcher changed the wrong IovLen branch")
+            if not iovlen_cfg or 'target_os = "octagram"' not in iovlen_cfg.group("body"):
+                fail(f"socket2 {version} patcher modified a preceding cfg block instead of IovLen")
 
     # Test both pinned filetime crate sources and ensure OCTAGRAM selects
     # utimensat instead of the generic utimes/lutimes fallback.

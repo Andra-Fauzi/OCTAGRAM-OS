@@ -76,6 +76,8 @@ TERMINAL_SIZE_VERSION=0.4.4
 LIBLOADING_VERSION=0.9.0
 CTRLC_VERSION=3.5.1
 NIX_VERSION=0.30.1
+# Exact openssl-src selected by the pinned Cargo submodule Cargo.lock.
+OPENSSL_SRC_VERSION=300.6.1+3.6.3
 HOST=x86_64-unknown-octagram
 TARGET=x86_64-unknown-none
 
@@ -633,6 +635,7 @@ fetch_locked_crate terminal_size "$TERMINAL_SIZE_VERSION"
 fetch_locked_crate libloading "$LIBLOADING_VERSION"
 fetch_locked_crate ctrlc "$CTRLC_VERSION"
 fetch_locked_crate nix "$NIX_VERSION"
+fetch_locked_crate openssl-src "$OPENSSL_SRC_VERSION"
 
 registry_patch_count=0
 for libc_version in "$LIBC_VERSION" "$LIBC_CARGO_VERSION"; do
@@ -674,6 +677,8 @@ python3 "$repo_root/tools/patch_libloading_octagram.py" \
 python3 "$repo_root/tools/patch_ctrlc_octagram.py" \
     --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_nix_octagram.py" \
+    --registry-root "$cargo_home/registry/src"
+python3 "$repo_root/tools/patch_openssl_src_octagram.py" \
     --registry-root "$cargo_home/registry/src"
 
 
@@ -768,6 +773,12 @@ lld = false
 codegen-tests = false
 download-rustc = false
 remap-debuginfo = false
+
+# Cargo's native host build needs TLS, but the build runner's OpenSSL must not
+# leak into the OCTAGRAM ELF. Use the vendored OpenSSL source and a pinned
+# openssl-src mapping to the OCTAGRAM cross compiler instead.
+[build.tool.cargo]
+features = ["vendored-openssl"]
 EOF
     # External LLVM is selected per target triple: the build machine needs it
     # to link stage0 tools, the OCTAGRAM host entry to produce a compiler that

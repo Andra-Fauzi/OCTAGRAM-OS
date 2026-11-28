@@ -1495,7 +1495,8 @@ type IovLen = c_int;
                 registry_root / "index.test" / f"socket2-{version}" / "src" / "sys" / "unix.rs"
             ).read_text(encoding="utf-8")
             iovlen_cfg = re.search(
-                r'(?ms)^#\\[cfg\\(any\\(\\n(?P<body>(?:(?!^#\\[cfg).)*?)^\\)\\)\\]\\ntype IovLen = usize;',
+                r'(?ms)^#\[cfg\(any\(\n(?P<body>(?:(?!^#\[cfg).)*?)^\)\)\]\ntype IovLen = usize;',
+
                 source,
             )
             if source.count('target_os = "octagram"') != 1:

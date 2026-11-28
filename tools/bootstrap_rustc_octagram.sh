@@ -702,7 +702,7 @@ rust_dso_source=$rust_checkout/build/octagram-dso-handle.c
 rust_dso_object=$rust_checkout/build/octagram-dso-handle.o
 mkdir -p "$rust_checkout/build"
 cat > "$rust_dso_source" <<'EOF'
-__attribute__((visibility("hidden"))) void *__dso_handle = &__dso_handle;
+__attribute__((visibility("hidden"), weak)) void *__dso_handle = &__dso_handle;
 EOF
 echo "building Rust-only hidden __dso_handle object"
 OCTAGRAM_SYSROOT="$sysroot" "$linker" -c "$rust_dso_source" -o "$rust_dso_object"

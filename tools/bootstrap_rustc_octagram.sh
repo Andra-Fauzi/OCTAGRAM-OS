@@ -71,6 +71,7 @@ FILETIME_CARGO_VERSION=0.2.29
 SOCKET2_VERSION=0.6.5
 SOCKET2_CARGO_VERSION=0.6.4
 RUSTIX_VERSION=1.1.6
+RUSTIX_CARGO_VERSION=1.1.5
 TERMINAL_SIZE_VERSION=0.4.4
 HOST=x86_64-unknown-octagram
 TARGET=x86_64-unknown-none
@@ -609,6 +610,7 @@ fetch_locked_crate filetime "$FILETIME_CARGO_VERSION"
 fetch_locked_crate socket2 "$SOCKET2_VERSION"
 fetch_locked_crate socket2 "$SOCKET2_CARGO_VERSION"
 fetch_locked_crate rustix "$RUSTIX_VERSION"
+fetch_locked_crate rustix "$RUSTIX_CARGO_VERSION"
 fetch_locked_crate terminal_size "$TERMINAL_SIZE_VERSION"
 
 registry_patch_count=0

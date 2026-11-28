@@ -565,8 +565,8 @@ def main() -> int:
         )
     require(
         libc_patcher,
-        "Re-exporting the same names through new::* makes",
-        "the libc patcher must document and avoid duplicate public re-exports",
+        "all other target symbols already arrive via src/unix",
+        "the libc patcher must avoid duplicate public re-exports from the new module",
     )
     require(
         libc_patcher,

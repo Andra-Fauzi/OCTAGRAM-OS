@@ -44,11 +44,20 @@ filetime = { version = "=$filetime_version" }
 socket2 = { version = "=$socket2_version" }
 tempfile = { version = "=$tempfile_version" }
 
-# This negative cfg dependency is a direct compile-time probe: if Cargo fails
-# to recognize target_os="octagram" from the custom JSON spec, rustix is built
-# and its unsupported libc surface fails before any LLVM work begins.
-[target.'cfg(not(target_os = "octagram"))'.dependencies]
-rustix-cfg-probe = { package = "rustix", version = "=1.1.6", default-features = false, features = ["fs"] }
+EOF
+
+    # Verify Cargo itself sees the custom target OS. A direct negative rustix
+    # dependency is a poor probe: it deliberately builds an unsupported crate
+    # and obscures whether rustix came from tempfile or the probe.
+    cat > "$project/build.rs" <<'EOF'
+fn main() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os != "octagram" {
+        panic!(
+            "Cargo target cfg mismatch: expected target_os=octagram, got {target_os:?}"
+        );
+    }
+}
 EOF
 
     cat > "$project/src/lib.rs" <<'EOF'

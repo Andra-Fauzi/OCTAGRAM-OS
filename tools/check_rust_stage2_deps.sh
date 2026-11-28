@@ -173,6 +173,19 @@ python3 "$repo_root/tools/patch_getrandom_octagram.py" --registry-root "$cargo_h
 python3 "$repo_root/tools/patch_tempfile_octagram.py" --registry-root "$cargo_home/registry/src"
 python3 "$repo_root/tools/patch_filetime_octagram.py" --registry-root "$cargo_home/registry/src"
 
+# The preflight includes std-based crates (tempfile, filetime, socket2), not
+# just no_std crates. Build the patched target std from the installed rust-src
+# component so missing std APIs and libc bindings fail here, before LLVM.
+rust_sysroot=$(rustc "+$toolchain" --print sysroot)
+rust_library=$rust_sysroot/lib/rustlib/src/rust/library
+if [ ! -f "$rust_library/std/src/os/unix/mod.rs" ]; then
+    echo "Rust nightly rust-src is missing the library/std sources: $rust_library" >&2
+    exit 1
+fi
+OCTAGRAM_RUST_STD_ROOT="$rust_library/std/src" \
+OCTAGRAM_RUST_TOOLCHAIN="$toolchain" \
+    python3 "$repo_root/tools/patch_rust_std_octagram.py"
+
 echo "OCTAGRAM custom-target cfg:"
 rustc "+$toolchain" -Z unstable-options --print cfg --target "$target" | sort
 
@@ -212,12 +225,12 @@ check_and_compile() {
     label=$3
     check_target_graph "$project" "$expected_tempfile" "$label"
     echo "compiling $label dependencies for x86_64-unknown-octagram"
-    CARGO_HOME=$cargo_home CARGO_TARGET_DIR=$check_root/target-$label \
+    CARGO_HOME=$cargo_home CARGO_TARGET_DIR=$check_root/target-octagram \
         cargo "+$toolchain" check \
         --manifest-path "$project/Cargo.toml" \
         --target "$target" \
         -Zjson-target-spec \
-        -Zbuild-std=core
+        -Zbuild-std=core,alloc,std
 }
 
 check_and_compile "$check_root/rust-workspace" 3.23.0 rust-workspace

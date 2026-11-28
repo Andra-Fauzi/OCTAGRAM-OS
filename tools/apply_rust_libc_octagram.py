@@ -139,8 +139,8 @@ def main() -> int:
     # only that exact syntactic block. Never search for the next generic `};`,
     # which could be the end of an unrelated cfg_if! and delete libc modules.
     legacy_export_re = re.compile(
-        r'(?ms)^#\\[cfg\\(target_os = "octagram"\\)\\]\\n'
-        r'pub use crate::unix::octagram::\\{\\n.*?^\\};\\n?'
+        r'(?ms)^#\[cfg\(target_os = "octagram"\)\]\n'
+        r'pub use crate::unix::octagram::\{\n.*?^\};\n?'
     )
     new_source, legacy_export_count = legacy_export_re.subn("", new_source)
     if legacy_export_count > 1:
@@ -149,21 +149,21 @@ def main() -> int:
         raise SystemExit(f"unrecognized legacy OCTAGRAM re-export block in {new_mod}")
 
     unistd_import = (
-        '#[cfg(target_os = "octagram")]\\n'
-        'use common::posix::unistd;\\n'
+        '#[cfg(target_os = "octagram")]\n'
+        'use common::posix::unistd;\n'
     )
     if new_source.count(unistd_import) > 1:
         raise SystemExit(f"duplicate OCTAGRAM unistd imports in {new_mod}")
     if unistd_import not in new_source:
-        if "mod common;\\n" not in new_source:
+        if "mod common;\n" not in new_source:
             raise SystemExit(f"missing common module anchor in {new_mod}")
         new_source = new_source.replace(
-            "mod common;\\n", "mod common;\\n\\n" + unistd_import, 1
+            "mod common;\n", "mod common;\n\n" + unistd_import, 1
         )
 
     strerror_export = (
-        '#[cfg(target_os = "octagram")]\\n'
-        'pub use crate::unix::octagram::strerror_r;\\n'
+        '#[cfg(target_os = "octagram")]\n'
+        'pub use crate::unix::octagram::strerror_r;\n'
     )
     if new_source.count(strerror_export) > 1:
         raise SystemExit(f"duplicate OCTAGRAM strerror_r exports in {new_mod}")

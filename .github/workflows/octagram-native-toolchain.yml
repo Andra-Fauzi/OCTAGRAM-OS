@@ -57,6 +57,8 @@ on:
     paths:
       - "tools/build_llvm_octagram.sh"
       - "tools/bootstrap_rustc_octagram.sh"
+      - "tools/patch_rust_llvm_octagram.py"
+      - "tools/octagram-rust-linker.sh"
       - "tools/octagram_llvm_config.py"
       - "tools/check_octagram_llvm_ci.py"
       - "tools/build_octagram_toolchain.sh"
@@ -726,9 +728,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: build/toolchain/rust
-          key: octagram-rust-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/bootstrap_rustc_octagram.sh', 'tools/host_llvm_config_wrapper.py', 'tools/apply_rust_libc_octagram.py', 'tools/apply_rust_octagram_host_target.py', 'tools/patch_rust_std_octagram.py', 'tools/patch_getrandom_octagram.py', 'tools/patch_errno_octagram.py', 'tools/patch_tempfile_octagram.py', 'tools/patch_filetime_octagram.py', 'tools/patch_socket2_octagram.py', 'tools/patch_rustix_octagram.py', 'tools/patch_terminal_size_octagram.py', 'tools/patch_ctrlc_octagram.py', 'tools/patch_nix_octagram.py', 'patches/rustix-1.1.6-octagram.patch', 'tools/stage_octagram_toolchain.sh', 'patches/rust/**', 'patches/rust-std/**', 'patches/libc/**', 'patches/rust-libc/**', 'user/toolchain/**', 'user/include/**', 'user/*.c') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: octagram-rust-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/bootstrap_rustc_octagram.sh', 'tools/patch_rust_llvm_octagram.py', 'tools/octagram-rust-linker.sh', 'tools/host_llvm_config_wrapper.py', 'tools/apply_rust_libc_octagram.py', 'tools/apply_rust_octagram_host_target.py', 'tools/patch_rust_std_octagram.py', 'tools/patch_getrandom_octagram.py', 'tools/patch_errno_octagram.py', 'tools/patch_tempfile_octagram.py', 'tools/patch_filetime_octagram.py', 'tools/patch_socket2_octagram.py', 'tools/patch_rustix_octagram.py', 'tools/patch_terminal_size_octagram.py', 'tools/patch_ctrlc_octagram.py', 'tools/patch_nix_octagram.py', 'patches/rustix-1.1.6-octagram.patch', 'tools/stage_octagram_toolchain.sh', 'patches/rust/**', 'patches/rust-std/**', 'patches/libc/**', 'patches/rust-libc/**', 'user/toolchain/**', 'user/include/**', 'user/*.c') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            octagram-rust-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/bootstrap_rustc_octagram.sh', 'tools/host_llvm_config_wrapper.py', 'tools/apply_rust_libc_octagram.py', 'tools/apply_rust_octagram_host_target.py', 'tools/patch_rust_std_octagram.py', 'tools/patch_getrandom_octagram.py', 'tools/patch_errno_octagram.py', 'tools/patch_tempfile_octagram.py', 'tools/patch_filetime_octagram.py', 'tools/patch_socket2_octagram.py', 'tools/patch_rustix_octagram.py', 'tools/patch_terminal_size_octagram.py', 'tools/patch_ctrlc_octagram.py', 'tools/patch_nix_octagram.py', 'patches/rustix-1.1.6-octagram.patch', 'tools/stage_octagram_toolchain.sh', 'patches/rust/**', 'patches/rust-std/**', 'patches/libc/**', 'patches/rust-libc/**', 'user/toolchain/**', 'user/include/**', 'user/*.c') }}-
+            octagram-rust-build-${{ env.LLVM_VERSION }}-${{ hashFiles('tools/bootstrap_rustc_octagram.sh', 'tools/patch_rust_llvm_octagram.py', 'tools/octagram-rust-linker.sh', 'tools/host_llvm_config_wrapper.py', 'tools/apply_rust_libc_octagram.py', 'tools/apply_rust_octagram_host_target.py', 'tools/patch_rust_std_octagram.py', 'tools/patch_getrandom_octagram.py', 'tools/patch_errno_octagram.py', 'tools/patch_tempfile_octagram.py', 'tools/patch_filetime_octagram.py', 'tools/patch_socket2_octagram.py', 'tools/patch_rustix_octagram.py', 'tools/patch_terminal_size_octagram.py', 'tools/patch_ctrlc_octagram.py', 'tools/patch_nix_octagram.py', 'patches/rustix-1.1.6-octagram.patch', 'tools/stage_octagram_toolchain.sh', 'patches/rust/**', 'patches/rust-std/**', 'patches/libc/**', 'patches/rust-libc/**', 'user/toolchain/**', 'user/include/**', 'user/*.c') }}-
 
       - name: Prepare rustc bootstrap
         if: env.RUSTC_MODE == 'prepare-only'

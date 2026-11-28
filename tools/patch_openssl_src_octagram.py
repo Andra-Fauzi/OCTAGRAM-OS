@@ -17,6 +17,25 @@ from pathlib import Path
 
 OPENSSL_SRC_VERSION = "300.6.1+3.6.3"
 OLD_TARGET_ENTRY = '            "x86_64-unknown-linux-gnu" => "linux-x86_64",'
+
+# OpenSSL's e_os.h unconditionally includes <strings.h> on Unix. OCTAGRAM's
+# toolchain sysroot currently exposes strncasecmp through string.h but does not
+# ship the separate POSIX strings.h header. Keep this shim inside the vendored
+# OpenSSL source tree so the sysroot and LLVM build inputs remain untouched.
+OPENSSL_STRINGS_SHIM = """#ifndef OCTAGRAM_OPENSSL_STRINGS_H
+#define OCTAGRAM_OPENSSL_STRINGS_H
+
+#include <string.h>
+
+/* OpenSSL does not call the host strcasecmp symbol directly; map the standard
+ * spelling to OCTAGRAM libc's existing strncasecmp implementation. */
+static inline int strcasecmp(const char *left, const char *right)
+{
+    return strncasecmp(left, right, (size_t)-1);
+}
+
+#endif
+"""
 NEW_TARGET_ENTRY = (
     '            "x86_64-unknown-octagram" => "linux-x86_64",\n'
     + OLD_TARGET_ENTRY
@@ -65,15 +84,34 @@ def patch_package(package: Path) -> bool:
 
     original = source_file.read_text(encoding="utf-8")
     patched = patch_source(original)
-    if patched == original:
-        return False
+    changed = patched != original
+    if changed:
+        source_file.write_text(patched, encoding="utf-8")
 
-    source_file.write_text(patched, encoding="utf-8")
+    # openssl-src copies this directory to OUT_DIR before invoking Configure,
+    # so the compatibility header remains local to its vendored OpenSSL build
+    # and never leaks into the OCTAGRAM sysroot or the LLVM build fingerprint.
+    openssl_include = package / "openssl" / "include"
+    if not openssl_include.is_dir():
+        raise SystemExit(
+            f"vendored OpenSSL include directory is missing: {openssl_include}"
+        )
+    strings_header = openssl_include / "strings.h"
+    if strings_header.exists():
+        existing_header = strings_header.read_text(encoding="utf-8")
+        if existing_header != OPENSSL_STRINGS_SHIM:
+            raise SystemExit(
+                f"unexpected pre-existing OpenSSL strings.h shim: {strings_header}; "
+                "refusing to overwrite unreviewed source"
+            )
+    else:
+        strings_header.write_text(OPENSSL_STRINGS_SHIM, encoding="utf-8")
+        changed = True
 
     # Cargo re-extracts a package if its marker is missing or empty. Preserve
-    # this local target mapping across the build-script invocation.
+    # these local target adaptations across the build-script invocation.
     (package / ".cargo-ok").write_text('{"v":1}', encoding="utf-8")
-    return True
+    return changed
 
 
 def main() -> int:
@@ -97,6 +135,8 @@ def main() -> int:
             raise SystemExit("openssl-src patch is not idempotent")
         if patched.count('"x86_64-unknown-octagram" => "linux-x86_64"') != 1:
             raise SystemExit("openssl-src self-test did not add the OCTAGRAM mapping")
+        if "strncasecmp(left, right, (size_t)-1)" not in OPENSSL_STRINGS_SHIM:
+            raise SystemExit("OpenSSL strings.h shim is missing the OCTAGRAM strncasecmp adapter")
         print("RUST-OPENSSL-SRC-OCTAGRAM-PATCH-SELF-TEST-PASS")
         return 0
 
@@ -117,7 +157,7 @@ def main() -> int:
     print(
         "RUST-OPENSSL-SRC-OCTAGRAM-PATCH-PASS: "
         f"checked {len(packages)} source tree(s), patched {changed}; "
-        "x86_64 OCTAGRAM uses the cross-compiler with OpenSSL's linux-x86_64 Configure profile"
+        "x86_64 OCTAGRAM uses the cross-compiler, OpenSSL's linux-x86_64 Configure profile, and a build-local strings.h adapter"
     )
     return 0
 

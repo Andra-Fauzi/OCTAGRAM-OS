@@ -337,13 +337,35 @@ pub fn check_libloading_surface() -> i32 {
 }
 EOF
 
-echo "fetching separate Rust-workspace, Cargo-submodule, getrandom 0.4.3, and active Cargo dependency graphs"
+# The pinned Cargo submodule builds vendored OpenSSL for the OCTAGRAM target.
+# Fetch the exact build dependency in preflight so the source-tree patch (and
+# its vendored OpenSSL directory) is validated before the multi-hour LLVM job.
+mkdir -p "$check_root/openssl-vendored-fetch/src"
+cat > "$check_root/openssl-vendored-fetch/Cargo.toml" <<'EOF'
+[package]
+name = "octagram-openssl-vendored-source-fetch"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+openssl-sys = { version = "=0.9.117", features = ["vendored"] }
+openssl-src = { version = "=300.6.1+3.6.3" }
+EOF
+cat > "$check_root/openssl-vendored-fetch/src/lib.rs" <<'EOF'
+pub fn check_vendored_openssl_source() {}
+EOF
+
+echo "fetching Rust/Cargo workspaces, active dependency graphs, and vendored OpenSSL source"
 for manifest in \
     "$check_root/rust-workspace/Cargo.toml" \
     "$check_root/cargo-submodule/Cargo.toml" \
     "$check_root/getrandom-modern/Cargo.toml" \
     "$check_root/cargo-active-deps/Cargo.toml" \
     "$check_root/rustc-build-deps/Cargo.toml" \
+    "$check_root/openssl-vendored-fetch/Cargo.toml" \
     "$check_root/rustix-locked/Cargo.toml" \
     "$check_root/rustix-cargo-locked/Cargo.toml"; do
     CARGO_HOME=$cargo_home cargo fetch --manifest-path "$manifest"
@@ -387,6 +409,9 @@ extract_crate libloading 0.9.0
 extract_crate ctrlc 3.5.1
 extract_crate nix 0.30.1
 extract_crate rustix 1.1.4
+extract_crate openssl-src 300.6.1+3.6.3
+python3 "$repo_root/tools/patch_openssl_src_octagram.py" \
+    --registry-root "$cargo_home/registry/src"
 
 for libc_version in 0.2.191 0.2.186; do
     for source in "$cargo_home"/registry/src/*/libc-"$libc_version"; do

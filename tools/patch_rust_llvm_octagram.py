@@ -101,8 +101,8 @@ def self_test() -> int:
         raise AssertionError("patch did not install both OCTAGRAM fixes")
     if patch_source(patched) != patched:
         raise AssertionError("patch is not idempotent")
-    if 'println!("cargo:rustc-link-lib={stdcppname}");' not in patched:
-        raise AssertionError("C++ runtime selection path was unexpectedly removed")
+    if OLD_CXX in patched or OLD_LD_BLOCK in patched:
+        raise AssertionError("old Rust host-link behaviour remained after patch")
     print("RUST-OCTAGRAM-LLVM-LINK-PATCH-SELF-TEST-PASS")
     return 0
 

@@ -73,6 +73,20 @@ s! {
         pub st_ctime_nsec: time_t,
     }
 
+    pub struct statvfs {
+        pub f_bsize: c_ulong,
+        pub f_frsize: c_ulong,
+        pub f_blocks: fsblkcnt_t,
+        pub f_bfree: fsblkcnt_t,
+        pub f_bavail: fsblkcnt_t,
+        pub f_files: fsfilcnt_t,
+        pub f_ffree: fsfilcnt_t,
+        pub f_favail: fsfilcnt_t,
+        pub f_fsid: c_ulong,
+        pub f_flag: c_ulong,
+        pub f_namemax: c_ulong,
+    }
+
     pub struct dirent {
         pub d_ino: ino_t,
         pub d_off: off_t,
@@ -284,9 +298,17 @@ pub const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = pthread_mutex_t {
 pub const PTHREAD_COND_INITIALIZER: pthread_cond_t = pthread_cond_t { sequence: 0 };
 
 pub const PATH_MAX: c_int = 4096;
+pub const F_OK: c_int = 0;
+pub const X_OK: c_int = 1;
+pub const W_OK: c_int = 2;
+pub const R_OK: c_int = 4;
+pub const RTLD_DEFAULT: *mut c_void = core::ptr::null_mut();
+pub const UTIME_NOW: c_long = 0x3fffffff;
 pub const AT_FDCWD: c_int = -100;
 pub const AT_SYMLINK_NOFOLLOW: c_int = 1 << 8;
 pub const AT_REMOVEDIR: c_int = 1 << 9;
+pub const AT_EACCESS: c_int = 1 << 10;
+pub const AT_SYMLINK_FOLLOW: c_int = 1 << 11;
 
 pub const O_RDONLY: c_int = 0;
 pub const O_WRONLY: c_int = 1;
@@ -299,6 +321,8 @@ pub const O_NONBLOCK: c_int = 1 << 11;
 pub const O_EXCL: c_int = 1 << 12;
 pub const O_CLOEXEC: c_int = 1 << 19;
 pub const O_NOFOLLOW: c_int = 1 << 17;
+// Reserved OCTAGRAM open flag; the runtime may reject it until O_SYNC is implemented.
+pub const O_SYNC: c_int = 1 << 20;
 
 pub const S_IFMT: mode_t = 0o170000;
 pub const S_IFIFO: mode_t = 0o010000;
@@ -424,6 +448,21 @@ pub const ESHUTDOWN: c_int = 108;
 pub const ETIMEDOUT: c_int = 110;
 pub const ECONNREFUSED: c_int = 111;
 pub const EHOSTUNREACH: c_int = 113;
+// Linux-compatible extended errno values used by rustix's libc backend.
+pub const EIDRM: c_int = 43;
+pub const ENOMSG: c_int = 42;
+pub const EBADMSG: c_int = 74;
+pub const EPROTO: c_int = 71;
+pub const EMULTIHOP: c_int = 72;
+pub const ENODATA: c_int = 61;
+pub const ENOSTR: c_int = 60;
+pub const ENOSR: c_int = 63;
+pub const ENOLINK: c_int = 67;
+pub const ETIME: c_int = 62;
+pub const ETOOMANYREFS: c_int = 109;
+pub const EHOSTDOWN: c_int = 112;
+pub const ECANCELED: c_int = 125;
+pub const EPFNOSUPPORT: c_int = 96;
 pub const EALREADY: c_int = 114;
 pub const EINPROGRESS: c_int = 115;
 pub const MSG_PEEK: c_int = 0x02;
@@ -687,6 +726,9 @@ extern "C" {
     pub fn lstat(path: *const c_char, buf: *mut stat) -> c_int;
     pub fn fstat(fd: c_int, buf: *mut stat) -> c_int;
     pub fn fstatat(dirfd: c_int, path: *const c_char, buf: *mut stat, flag: c_int) -> c_int;
+    pub fn faccessat(dirfd: c_int, path: *const c_char, mode: c_int, flags: c_int) -> c_int;
+    pub fn statvfs(path: *const c_char, buffer: *mut statvfs) -> c_int;
+    pub fn fstatvfs(fd: c_int, buffer: *mut statvfs) -> c_int;
     pub fn lseek(fd: c_int, offset: off_t, whence: c_int) -> off_t;
     pub fn ftruncate(fd: c_int, length: off_t) -> c_int;
     pub fn pread(fd: c_int, buf: *mut c_void, count: size_t, offset: off_t) -> ssize_t;

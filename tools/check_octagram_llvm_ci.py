@@ -1052,6 +1052,11 @@ def main() -> int:
         ("cargo-submodule", "dependency preflight must create an isolated Cargo submodule lockfile test"),
         ("getrandom-modern/src", "dependency preflight must test getrandom 0.4.3 separately"),
         ("cargo-active-deps", "dependency preflight must compile active Cargo Unix dependencies that pull rustix"),
+        (
+            'rustix = { version = "=1.1.4", default-features = false }',
+            "the active Cargo dependency probe must pin the rustix version the "
+            "Cargo lockfile selects",
+        ),
         ("rustc-build-deps/src", "dependency preflight must compile rustc's own build dependencies such as jobserver"),
         ('jobserver = { version = "=0.1.34"', "dependency preflight must compile the locked jobserver crate"),
         ('libloading = { version = "=0.9.0"', "dependency preflight must compile the locked libloading crate"),

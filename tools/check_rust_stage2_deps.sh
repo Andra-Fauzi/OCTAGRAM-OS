@@ -278,6 +278,9 @@ publish = false
 gix-index = { version = "=0.58.0", default-features = false, features = ["sha1"] }
 terminal_size = { version = "=0.4.4" }
 termize = { version = "=0.2.1" }
+# Same pin as the Cargo submodule probe: without it these crates pull the
+# newest rustix on crates.io, which the patcher never saw.
+rustix = { version = "=1.1.4", default-features = false }
 EOF
 cat > "$check_root/cargo-active-deps/build.rs" <<'EOF'
 fn main() {

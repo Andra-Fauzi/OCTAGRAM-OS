@@ -19,7 +19,6 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
-#include <strings.h>
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -3168,17 +3167,6 @@ int strncasecmp(const char *left, const char *right, size_t count)
         }
     }
     return 0;
-}
-
-int strcasecmp(const char *left, const char *right)
-{
-    for (;;) {
-        unsigned char a = (unsigned char)tolower((unsigned char)*left++);
-        unsigned char b = (unsigned char)tolower((unsigned char)*right++);
-        if (a != b || a == '\0') {
-            return (int)a - (int)b;
-        }
-    }
 }
 
 int atoi(const char *text)
